@@ -62,7 +62,7 @@ export const FILTERS: Record<string, string> = {
   chromakey: "color (#00ff00), similarity (0.1), blend (0.05)", denoise: "strength (1..10, 4)",
   stabilize: "deshake (FFmpeg deshake filter)", ffmpeg: "value: raw FFmpeg -vf filter string (escape hatch)",
 };
-export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed"];
+export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 
 type F = Record<string, [string[], string]>;
 const T = (...t: string[]) => t; // allowed json types: number,string,boolean,object,array,null
@@ -111,7 +111,8 @@ export const MEDIA_FIELDS: F = {
   fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
-  focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16)"],
+  focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
+  remove_background: [T("boolean", "object"), "true or {model}: AI alpha matte (cached; needs uv, see op remove_background)"],
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
@@ -175,7 +176,7 @@ export function fieldsFor(t: string): F {
   if (t === "video" || t === "image" || t === "audio") Object.assign(f, MEDIA_FIELDS);
   if (t === "video" || t === "audio") Object.assign(f, AUDIO_FX_FIELDS);
   if (t === "audio") {
-    for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze"]) delete f[k];
+    for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze", "remove_background"]) delete f[k];
     f.keyframes = [T("object"), "{volume: [[t, gain]], speed: [[t, s]]}"];
   }
   if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];

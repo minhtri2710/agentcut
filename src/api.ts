@@ -12,6 +12,8 @@ import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
+import { attachMattes } from "./ops-vision.ts";
+import { analyzeSubject } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
 
@@ -19,6 +21,8 @@ const renderMod = async () => { await loadCanvas(); return import("./render.ts")
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
 
 export const openProject = (p?: string) => new Project(findProject(p));
+/** timeline ready to draw: absolute paths + cached background mattes */
+const drawable = (p: Project, tl: M.Timeline) => attachMattes(p.absolutized(tl), p.root);
 
 function brief(issues: M.Issue[], limit = 15) {
   const errs = issues.filter((i) => i.level === "error"), warns = issues.filter((i) => i.level === "warning");
@@ -87,7 +91,7 @@ export async function frameImage(project: string | undefined, t: number | string
   requireValid(p, tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
-  return { t: tt, revision: tl.revision, data: await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, !!o.guides, o.format ?? "jpeg") };
+  return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, !!o.guides, o.format ?? "jpeg") };
 }
 
 export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
@@ -107,7 +111,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
-  const png = await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, false, "png");
+  const png = await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, false, "png");
   mkdirSync(dirname(out), { recursive: true });
   return { t: tt, ...frameScopes(png, out) };
 }
@@ -123,7 +127,7 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
   const { contactSheet } = await renderMod();
   const out = outPath(p, o.out, `previews/sheet-${Date.now()}.jpg`);
-  const png = await contactSheet(p.absolutized(tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides, stillFmt(out));
+  const png = await contactSheet(drawable(p, tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides, stillFmt(out));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return { image: out, times: ts, duration: T };
@@ -154,7 +158,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
   const tl = p.load();
   requireValid(p, tl);
   const { motionStrips, transitionWindows } = await inspectMod();
-  const at = p.absolutized(M.resolve(tl));
+  const at = drawable(p, M.resolve(tl));
   const windows = o.start !== undefined || o.end !== undefined
     ? [{ label: "range", start: M.parseTime(o.start ?? 0), end: o.end !== undefined ? M.parseTime(o.end) : M.totalDuration(at) }]
     : transitionWindows(at, o.pad ?? 0.15);
@@ -177,7 +181,7 @@ export async function review(project: string | undefined, o: { beats?: number[] 
   requireValid(p, tl);
   const { review: rv } = await inspectMod();
   const beats = typeof o.beats === "string" && o.beats !== "music" ? o.beats.split(",").map((x) => M.parseTime(x)) : o.beats as number[] | "music" | undefined;
-  return rv(p.absolutized(M.resolve(tl)), p.root, { ...o, beats, issues });
+  return rv(drawable(p, M.resolve(tl)), p.root, { ...o, beats, issues });
 }
 
 const INTERCHANGE: Record<string, "fcpxml" | "otio"> = { ".fcpxml": "fcpxml", ".otio": "otio" };
@@ -232,7 +236,7 @@ export async function render(project: string | undefined, o: {
   }
   const { contactSheet } = await renderMod();
   const { renderVideo } = await import("./encode.ts");
-  const res: M.Dict = await renderVideo(p.absolutized(tl), p.root, out, {
+  const res: M.Dict = await renderVideo(drawable(p, tl), p.root, out, {
     start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
     hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha,
   });
@@ -250,7 +254,7 @@ export async function render(project: string | undefined, o: {
     const loud = AN.loudnessAsync(out);
     try {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
-      const png = await contactSheet(p.absolutized(tl), p.root, ts, 4, 300);
+      const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
       const sp = out.replace(/\.[^.]+$/, ".sheet.jpg");
       writeFileSync(sp, png);
       res.contact_sheet = sp;
@@ -286,7 +290,8 @@ export function capabilities() {
 }
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts };
+export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts,
+  subject: (p: string, fps?: number) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height }); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),
