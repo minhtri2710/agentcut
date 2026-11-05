@@ -1,11 +1,12 @@
 // AI vision features run as an optional external tool: a Python helper (vision-py.ts) executed with `uv run --with ...`,
-// so packages are fetched on demand and AgentCut core never needs them. Results are cached per file hash + params.
-import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+// so packages are fetched on demand and AgentCut core never needs them. Results are cached per file hash + params and are
+// only computed by `prepare` (prepare.ts), never inside apply_ops.
+import { createHash, randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { EditError, MATTE_MODELS } from "./model.ts";
+import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
 
 // pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
@@ -32,67 +33,97 @@ const scriptHash = createHash("sha256").update(VISION_PY).digest("hex").slice(0,
 export const cacheKey = (path: string, params: unknown) =>
   createHash("sha256").update(`${fileHash(path)}|${scriptHash}|${JSON.stringify(params)}`).digest("hex").slice(0, 20);
 
-const writeAtomic = (file: string, data: string) => { writeFileSync(file + ".tmp", data); renameSync(file + ".tmp", file); };
+const writeAtomic = (file: string, data: string) => { const t = `${file}.${process.pid}.tmp`; writeFileSync(t, data); renameSync(t, file); };
 
-function runHelper(job: Record<string, unknown>, pkgs: string[], root?: string): any {
-  const dir = cacheDir(root);
+/** A derived asset (analysis JSON or alpha matte) in the cache: `file` exists once it was computed. Ops only look it up;
+ *  `compute` (run by prepare, never inside apply_ops) produces it. `frames` estimates the helper's work for progress. */
+export interface Derived { kind: "subject" | "track" | "matte"; file: string; job: Record<string, unknown>; pkgs: string[]; root?: string; frames: number; w?: number; h?: number }
+export const isReady = (d: Derived) => existsSync(d.file);
+export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(readFileSync(d.file, "utf8"));
+
+export const helperScript = (root?: string) => join(cacheDir(root), `vision-${scriptHash}.py`);
+const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
+const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
+
+function runHelper(d: Derived, out: string, onFrames?: (n: number) => void): Promise<any> {
+  const dir = cacheDir(d.root);
   mkdirSync(dir, { recursive: true });
-  const script = join(dir, `vision-${scriptHash}.py`);
+  const script = helperScript(d.root);
   if (!existsSync(script)) writeAtomic(script, VISION_PY);
   const uv = process.env.AGENTCUT_UV || "uv";
-  const r = spawnSync(uv, ["run", "--no-project", "--quiet", ...pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)],
-    { encoding: "utf8", maxBuffer: 256 << 20 });
-  if ((r.error as any)?.code === "ENOENT")
-    throw new EditError(`${job.cmd === "matte" ? "remove_background" : job.cmd === "track" ? "track_to" : "subject analysis"} needs uv (runs the Python vision helper)`, "missing_dependency",
-      "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
-      (job.cmd === "matte" ? "rembg + onnxruntime and a ~5 MB segmentation model" : "opencv (~40 MB)"));
-  if (r.error || r.status !== 0)
-    throw new EditError(`vision helper failed (${job.cmd}): ${(r.stderr || String(r.error ?? "")).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
-      "the first run needs network access for uv to download packages; check the media file decodes (probe_media)");
-  try { return JSON.parse(r.stdout); } catch { throw new EditError(`vision helper printed no JSON: ${r.stdout.slice(0, 200)}`, "vision_failed"); }
+  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
+  return new Promise((res, rej) => {
+    const ch = spawn(uv, ["run", "--no-project", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", err = "", partial = "";
+    ch.stdout.on("data", (b) => { stdout += b; });
+    ch.stderr.on("data", (b) => {
+      const lines = (partial + b).split("\n");
+      partial = lines.pop() ?? "";
+      for (const l of lines) { const m = PROGRESS.exec(l); if (m) onFrames?.(Number(m[1])); else err += l + "\n"; }
+    });
+    ch.on("error", (e: any) => rej(e.code === "ENOENT"
+      ? new EditError(`${label(job.cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
+        "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
+        (job.cmd === "matte" ? "rembg + onnxruntime and a ~5 MB segmentation model" : "opencv (~40 MB)"))
+      : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
+    ch.on("close", (code) => {
+      if (code !== 0) return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
+        "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"));
+      try { res(JSON.parse(stdout)); } catch { rej(new EditError(`vision helper printed no JSON: ${stdout.slice(0, 200)}`, "vision_failed")); }
+    });
+  });
 }
 
-function cachedJson<T>(root: string | undefined, name: string, f: () => T): T & { cached: boolean } {
-  const file = join(cacheDir(root), `${name}.json`);
-  if (existsSync(file)) return { ...JSON.parse(readFileSync(file, "utf8")), cached: true };
-  const v = f();
-  mkdirSync(cacheDir(root), { recursive: true });
-  writeAtomic(file, JSON.stringify(v));
-  return { ...v, cached: false };
+/** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file. */
+export async function compute(d: Derived, onFrames?: (n: number) => void): Promise<{ cached: boolean }> {
+  if (isReady(d)) return { cached: true };
+  const tmp = d.file.replace(/(\.\w+)$/, `.part-${process.pid}-${randomBytes(3).toString("hex")}$1`);
+  try {
+    const r = await runHelper(d, tmp, onFrames);
+    if (d.kind === "matte") renameSync(tmp, d.file);
+    else writeAtomic(d.file, JSON.stringify(r));
+  } finally { rmSync(tmp, { force: true }); }
+  return { cached: false };
 }
 
 export interface Sample { t: number; x?: number; y?: number; w?: number; h?: number; kind?: string; score?: number; ok?: boolean }
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
+const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict, pkgs: string[], root: string | undefined, frames: number, extra: Partial<Derived> = {}): Derived =>
+  ({ kind, file: join(cacheDir(root), `${kind}-${cacheKey(path, params)}${ext}`), job: { ...params, path }, pkgs, root, frames: Math.max(1, Math.round(frames)), ...extra });
 
 /** Subject centre over time (largest face, else saliency centroid); x/y are 0..1 of the full source frame. */
-export function analyzeSubject(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; srcW: number; srcH: number; root?: string }) {
+export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; srcW: number; srcH: number; root?: string }) {
   const fps = o.still ? null : o.fps ?? 6, w = even(Math.min(480, o.srcW)), h = even((w * o.srcH) / o.srcW);
   // a still is one frame: no seek, no fps resampling (either would yield zero frames)
   const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, w, h };
-  const res = cachedJson(o.root, `subject-${cacheKey(path, params)}`, () => runHelper({ ...params, path }, CV, o.root) as { samples: Sample[] });
-  if (!res.samples.length) throw new EditError(`subject analysis decoded no frames from ${path}`, "vision_failed", "check the file and range with probe_media / preview_frame");
-  return { source: path, fps, ...res };
+  return derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
+}
+/** Cached subject samples; throws vision_failed when the helper decoded nothing. */
+export function subjectSamples(d: Derived) {
+  const res = readResult(d);
+  if (!res.samples.length) throw new EditError(`subject analysis decoded no frames from ${d.job.path}`, "vision_failed", "check the file and range with probe_media / preview_frame");
+  return res.samples;
+}
+/** Standalone analysis (analyze_subject): computes on a cache miss. */
+export async function analyzeSubject(path: string, o: Parameters<typeof subjectJob>[1]) {
+  const d = subjectJob(path, o), { cached } = await compute(d);
+  return { source: path, fps: d.job.fps, samples: subjectSamples(d), cached };
 }
 
 /** OpenCV CSRT/KCF track of a box (fractions of the source frame) given at source time `at`, forwards and backwards. */
-export function trackBox(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
+export function trackJob(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
   const fps = o.fps ?? 15, w = even(Math.min(640, o.srcW)), h = even((w * o.srcH) / o.srcW);
   const params = { cmd: "track", start: o.start, duration: o.duration, at: o.at, box: o.box.map((v) => +v.toFixed(5)), fps, w, h, tracker: o.tracker ?? "csrt" };
-  return cachedJson(o.root, `track-${cacheKey(path, params)}`, () => runHelper({ ...params, path }, CV, o.root) as { samples: Sample[] });
+  return derived("track", ".json", path, params, CV, o.root, o.duration * fps);
 }
 
 /** Alpha version of a video (ProRes 4444 .mov, source audio kept) or image (.png), cached by content hash + model. */
-export function matte(path: string, o: { kind: string; fps?: number | null; srcW: number; srcH: number; model?: string; root?: string }) {
+export function matteJob(path: string, o: { kind: string; fps?: number | null; duration?: number; srcW: number; srcH: number; model?: string; root?: string }) {
   const model = o.model ?? "u2netp";
   if (!MATTE_MODELS.includes(model)) throw new EditError(`unknown matte model '${model}'`, "bad_value", `models: ${MATTE_MODELS.join(", ")}`);
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
   const params = { cmd: "matte", kind: o.kind, fps: o.fps ?? null, w, h, model };
-  const out = join(cacheDir(o.root), `matte-${cacheKey(path, params)}${o.kind === "image" ? ".png" : ".mov"}`);
-  if (existsSync(out)) return { out, w, h, cached: true };
-  const tmp = out.replace(/(\.\w+)$/, ".part$1");
-  runHelper({ ...params, path, out: tmp }, REMBG, o.root);
-  renameSync(tmp, out);
-  return { out, w, h, cached: false };
+  return derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, o.kind === "image" ? 1 : (o.duration ?? 1) * (o.fps ?? 30), { w, h });
 }
 
 // ---------------------------------------------------------------- path smoothing (pure)

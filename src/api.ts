@@ -12,7 +12,9 @@ import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
-import { attachMattes } from "./ops-vision.ts";
+import { attachPrepared } from "./ops-vision.ts";
+import * as CACHE from "./cache.ts";
+import * as PREP from "./prepare.ts";
 import { analyzeSubject } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
@@ -21,8 +23,14 @@ const renderMod = async () => { await loadCanvas(); return import("./render.ts")
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
 
 export const openProject = (p?: string) => new Project(findProject(p));
-/** timeline ready to draw: absolute paths + cached background mattes */
-const drawable = (p: Project, tl: M.Timeline) => attachMattes(p.absolutized(tl), p.root);
+/** timeline ready to draw: absolute paths + prepared background mattes (EditError not_prepared if prepare is needed) */
+const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
+/** write an output file; files in previews/ keep that folder under its automatic size cap */
+function writeOut(p: Project | null, out: string, data: string | Uint8Array) {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, data);
+  if (p) CACHE.capPreviews(p, out);
+}
 
 function brief(issues: M.Issue[], limit = 15) {
   const errs = issues.filter((i) => i.level === "error"), warns = issues.filter((i) => i.level === "warning");
@@ -46,13 +54,14 @@ export function info(project?: string, fmt: "summary" | "json" | "both" = "summa
 }
 
 /** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
- *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (up to 3 tries). */
+ *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
+ *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock). */
 export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number } = {}) {
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
   const list: M.Dict[] = Array.isArray(ops) ? ops : ops.ops ?? [ops];
   const key = (i: M.Issue) => `${i.path.split("<")[0]}|${i.message}`;
-  for (let attempt = 1; ; attempt++) {
+  for (const until = Date.now() + 10_000; ;) {
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
     const before = new Set(p.validate(tl).filter((i) => i.level === "error").map(key));
@@ -64,9 +73,10 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
         added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
     if (!o.dryRun) {
       try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); }
-      catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && attempt < 3) continue; throw e; }
+      catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < until) continue; throw e; }
     }
-    return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues) };
+    const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
+    return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
   }
 }
 
@@ -98,8 +108,7 @@ export async function frame(project: string | undefined, t: number | string, o: 
   const tt = M.parseTime(t);
   const out = outPath(openProject(project), o.out, `previews/frame-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   const { data: png } = await frameImage(project, tt, { scale: o.scale, guides: o.guides, format: stillFmt(out) });
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, png);
+  writeOut(openProject(project), out, png);
   return { image: out, t: tt, bytes: png.length };
 }
 
@@ -113,7 +122,9 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   const png = await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, false, "png");
   mkdirSync(dirname(out), { recursive: true });
-  return { t: tt, ...frameScopes(png, out) };
+  const res = { t: tt, ...frameScopes(png, out) };
+  CACHE.capPreviews(p, out);
+  return res;
 }
 
 export async function sheet(project: string | undefined, o: { times?: (number | string)[] | string; every?: number; count?: number; cols?: number; out?: string; tileWidth?: number; guides?: boolean } = {}) {
@@ -128,8 +139,7 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   const { contactSheet } = await renderMod();
   const out = outPath(p, o.out, `previews/sheet-${Date.now()}.jpg`);
   const png = await contactSheet(drawable(p, tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides, stillFmt(out));
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, png);
+  writeOut(p, out, png);
   return { image: out, times: ts, duration: T };
 }
 
@@ -146,8 +156,7 @@ export async function audioCheck(project: string | undefined, o: { source?: stri
     source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence,
     start: o.start !== undefined ? M.parseTime(o.start) : undefined, end: o.end !== undefined ? M.parseTime(o.end) : undefined });
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p ? join(p.root, `previews/audio-${Date.now()}.png`) : presolve(`${o.source}.audio.png`);
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, res.image);
+  writeOut(p, out, res.image);
   const { image, ...rest } = res;
   return { image: out, ...rest };
 }
@@ -166,8 +175,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
   const base = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : join(p.root, `previews/motion-${Date.now()}.jpg`);
   const images = r.images.map((buf, i) => {
     const f = i ? base.replace(/(\.[^.]+)?$/, `-${i + 1}$1`) : base;
-    mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, buf);
+    writeOut(p, f, buf);
     return f;
   });
   return { images, strips: r.strips };
@@ -262,6 +270,7 @@ export async function render(project: string | undefined, o: {
     } catch (e: any) { res.contact_sheet_error = e.message; }
     res.loudness = await loud;
   }
+  CACHE.capPreviews(p, out); // UI play drafts are rendered into previews/
   return res;
 }
 
@@ -292,7 +301,7 @@ export function capabilities() {
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
 export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts,
-  subject: (p: string, fps?: number) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height }); } };
+  subject: async (p: string, fps?: number) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height }); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),
@@ -304,4 +313,13 @@ export const feedback = {
     return { markdown: md };
   },
   resolve: (id: string, status?: "resolved" | "wontfix" | "open", note?: string) => FB.resolveNote(id, status, note),
+};
+
+/** Compute the derived assets the timeline needs (mattes, vision analyses) and apply the pending vision requests. Slow:
+ *  MCP runs it as a background job (render_status); preview/render fail with not_prepared until it ran. */
+export const prepare = (project?: string, o: { progress?: (done: number, total: number) => void } = {}) => PREP.prepare(openProject(project), o);
+export const prepareStatus = (project?: string) => PREP.prepareStatus(openProject(project));
+export const cache = {
+  info: (project?: string) => CACHE.cacheInfo(openProject(project)),
+  prune: (project?: string, o: { maxMb?: number; olderThan?: string | number } = {}) => CACHE.prune(openProject(project), o),
 };

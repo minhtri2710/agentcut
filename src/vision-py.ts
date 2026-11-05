@@ -1,6 +1,6 @@
 // Python helper for the vision features, run through `uv run --with <pkgs>` (see vision.ts). Kept as a TS string so the
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
-// Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes.
+// Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
 import json, subprocess, sys
 
@@ -13,10 +13,13 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
     import numpy as np
+    i = 0
     while True:
         b = p.stdout.read(n)
         if len(b) < n: break
         yield np.frombuffer(b, np.uint8).reshape(h, w, -1)
+        i += 1
+        sys.stderr.write("AGENTCUT_PROGRESS %d\n" % i); sys.stderr.flush()  # frames done, read by vision.ts
     p.stdout.close(); err = p.stderr.read().decode("utf8", "replace"); p.wait()
     if p.returncode not in (0, None) and err.strip(): raise SystemExit("ffmpeg: " + err[:400])
 

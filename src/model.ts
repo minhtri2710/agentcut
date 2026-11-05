@@ -103,6 +103,7 @@ export const VISUAL_FIELDS: F = {
   border: [T("object"), "{color, width} outline around the layer box"],
   mask: [T("object", "string"), "{shape: " + MASKS.join("|") + ", x, y, width, height (0..1 of layer), feather px, invert, angle}"],
   effects: [T("array"), "list of {type, ...params, start?, duration?}: " + Object.keys(EFFECTS).join(",")],
+  pending: [T("object"), "{op: args} vision requests (auto_reframe, track_to) waiting for prepare; written by those ops, cleared when prepared"],
 };
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],

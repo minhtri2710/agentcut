@@ -104,6 +104,13 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
+These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
+  prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress): it computes the mattes /
+  tracks (seconds per clip; cached by file hash + params) and writes the keyframes. Until then preview/render fail fast with
+  code not_prepared (details list what is missing) - they never compute. A repeated op on cached analysis applies at once.
+Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: cache) covers .agentcut/cache + previews/;
+  prune deletes unreferenced files first (max_mb also referenced ones: prepare rebuilds them). previews/ is capped
+  automatically at AGENTCUT_PREVIEWS_MAX_MB (200; 0 = off), oldest first.
 
 ## Vocabulary
 - transitions: crossfade, dip_black, dip_white, flash, glitch, zoom, zoom_blur, spin, circle, blur, slide_*, push_*, wipe_*
