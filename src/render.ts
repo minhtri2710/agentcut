@@ -22,6 +22,13 @@ type GlobalCompositeOperation = string;
 
 const even = (v: number) => { const r = Math.round(v); return r + (r % 2); };
 
+/** Safe areas in canvas px: title = 5% inset rect; ui = social-app overlay zones on 9:16 (caption/buttons/top bar). */
+export function safeZones(W: number, H: number) {
+  const ui: [string, number, number, number, number][] = H > W
+    ? [["top bar", 0, 0, W, H * 0.1], ["bottom caption/UI", 0, H * 0.8, W, H * 0.2], ["right-side buttons", W * 0.86, H * 0.45, W * 0.14, H * 0.35]] : [];
+  return { title: [W * 0.05, H * 0.05, W * 0.9, H * 0.9] as [number, number, number, number], ui };
+}
+
 interface Frame { canvas?: Canvas; buf?: Buffer; w: number; h: number; under?: { img: Canvas; w: number; h: number }; static?: boolean }
 
 const toCanvas = (buf: Buffer, w: number, h: number) => {
@@ -391,11 +398,8 @@ export class Renderer {
       const fr = await L.frame(tl, m);
       if (!fr) { if (overlay) this.overlay(overlay); continue; }
       const base = P("scale", 1);
-      const bw = fr.under ? fr.under.w : fr.w, bh = fr.under ? fr.under.h : fr.h;
       const sx = base * P("scale_x", 1) * m.scale * m.sx / L.q, sy = base * P("scale_y", 1) * m.scale * m.sy / L.q;
-      let [cx, cy] = this.center(c, (bw * base * P("scale_x", 1)) / L.q, (bh * base * P("scale_y", 1)) / L.q);
-      if (kf.x) cx = A.kfValue(kf.x, tl) * this.k;
-      if (kf.y) cy = A.kfValue(kf.y, tl) * this.k;
+      let [cx, cy] = this.place(L, tl, fr);
       cx += m.dx; cy += m.dy;
       const rot = P("rotation", 0) + m.rotation;
       const blur = P("blur", 0) * this.k + m.blur;
@@ -433,6 +437,26 @@ export class Renderer {
     }
     if (guides) this.guides();
     return this.canvas;
+  }
+
+  /** layer centre + size in canvas px at clip-local tl from layout fields and keyframes (no enter/exit/motion/transition) */
+  private place(L: Layer, tl: number, fr: Frame): [number, number, number, number] {
+    const c = L.c, kf = c.keyframes || {};
+    const P = (p: string, d: number) => (kf[p] ? A.kfValue(kf[p], tl) : Number(c[p] ?? d));
+    const base = P("scale", 1);
+    const w = ((fr.under ? fr.under.w : fr.w) * base * P("scale_x", 1)) / L.q, h = ((fr.under ? fr.under.h : fr.h) * base * P("scale_y", 1)) / L.q;
+    let [cx, cy] = this.center(c, w, h);
+    if (kf.x) cx = A.kfValue(kf.x, tl) * this.k;
+    if (kf.y) cy = A.kfValue(kf.y, tl) * this.k;
+    return [cx, cy, w, h];
+  }
+
+  /** Layout box [x, y, w, h] in canvas px of layer L at clip-local time tl (as placed, before animation). */
+  async layoutBox(L: Layer, tl: number): Promise<[number, number, number, number] | null> {
+    const fr = await L.frame(tl, new A.Mods());
+    if (!fr) return null;
+    const [cx, cy, w, h] = this.place(L, tl, fr);
+    return [cx - w / 2, cy - h / 2, w, h];
   }
 
   private overlay([col, a]: [[number, number, number], number]) {
@@ -508,11 +532,12 @@ export class Renderer {
 
   private guides() {
     const { ctx, W, H } = this;
+    const z = safeZones(W, H);
     ctx.save();
     ctx.fillStyle = "rgba(255,0,80,0.25)";
-    if (H > W) { ctx.fillRect(0, 0, W, H * 0.1); ctx.fillRect(0, H * 0.8, W, H * 0.2); ctx.fillRect(W * 0.86, H * 0.45, W * 0.14, H * 0.35); }
+    for (const [, x, y, w, h] of z.ui) ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = "rgba(0,255,255,0.9)"; ctx.lineWidth = Math.max(1, W / 600);
-    ctx.strokeRect(W * 0.05, H * 0.05, W * 0.9, H * 0.9);
+    ctx.strokeRect(...z.title);
     ctx.restore();
   }
 
@@ -531,18 +556,18 @@ export async function renderFrame(tl: Timeline, root: string, t: number, scale =
   try { const cv = await r.frame(t, guides); return encodeStill(cv, fmt); } finally { r.close(); }
 }
 
-export async function contactSheet(tl: Timeline, root: string, times: number[], cols = 4, tileW = 360, guides = false, fmt = "jpeg"): Promise<Buffer> {
+/** One time-labelled tile per time (same order as `times`). */
+export async function renderTiles(tl: Timeline, root: string, times: number[], tileW = 360, guides = false): Promise<Canvas[]> {
   // tiles are far apart (every one is a seek), so a few renderers work on interleaved tiles concurrently:
   // FFmpeg decodes overlap while Skia composites
-  const sorted = [...times].sort((a, b) => a - b);
-  const R = Math.max(1, Math.min(4, Math.ceil(sorted.length / 2)));
+  const order = times.map((_, i) => i).sort((a, b) => times[a] - times[b]);
+  const R = Math.max(1, Math.min(4, Math.ceil(order.length / 2)));
   const rs = Array.from({ length: R }, () => new Renderer(structuredClone(tl), root, Math.min(1, tileW / tl.settings.width)));
-  const r = rs[0];
-  const tiles: Canvas[] = new Array(sorted.length);
+  const tiles: Canvas[] = new Array(times.length);
   try {
     await Promise.all(rs.map(async (rr, j) => {
-      for (let i = j; i < sorted.length; i += R) {
-        const t = sorted[i];
+      for (let i = j; i < order.length; i += R) {
+        const t = times[order[i]];
         const cv = await rr.frame(Math.min(t, Math.max(0, rr.duration - 1 / rr.fps)), guides);
         const tile = createCanvas(rr.W, rr.H);
         const tc = tile.getContext("2d");
@@ -551,16 +576,22 @@ export async function contactSheet(tl: Timeline, root: string, times: number[], 
         tc.font = "600 14px Menlo, Consolas, monospace";
         tc.fillStyle = "rgba(0,0,0,0.75)"; tc.fillRect(0, 0, tc.measureText(label).width + 12, 22);
         tc.fillStyle = "#fff"; tc.fillText(label, 6, 16);
-        tiles[i] = tile;
+        tiles[order[i]] = tile;
       }
     }));
   } finally { for (const rr of rs) rr.close(); }
   if (!tiles.length) throw new EditError("no frames", "empty");
+  return tiles;
+}
+
+export async function contactSheet(tl: Timeline, root: string, times: number[], cols = 4, tileW = 360, guides = false, fmt = "jpeg"): Promise<Buffer> {
+  const tiles = await renderTiles(tl, root, [...times].sort((a, b) => a - b), tileW, guides);
+  const { width: tw, height: th } = tiles[0];
   cols = Math.max(1, Math.min(cols, tiles.length));
   const rows = Math.ceil(tiles.length / cols), gap = 4;
-  const sheet = createCanvas(cols * r.W + (cols - 1) * gap, rows * r.H + (rows - 1) * gap);
+  const sheet = createCanvas(cols * tw + (cols - 1) * gap, rows * th + (rows - 1) * gap);
   const sc = sheet.getContext("2d");
   sc.fillStyle = "#1e1e1e"; sc.fillRect(0, 0, sheet.width, sheet.height);
-  tiles.forEach((tile, i) => sc.drawImage(tile, (i % cols) * (r.W + gap), Math.floor(i / cols) * (r.H + gap)));
+  tiles.forEach((tile, i) => sc.drawImage(tile, (i % cols) * (tw + gap), Math.floor(i / cols) * (th + gap)));
   return encodeStill(sheet, fmt);
 }
