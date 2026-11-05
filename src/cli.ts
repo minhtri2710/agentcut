@@ -113,7 +113,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
-        if (f.format === "srt" || f.format === "vtt" || /\.(srt|vtt)$/i.test(f.output ?? "")) { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
+        if (f.format === "srt" || f.format === "vtt") { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
         let last = 0;
         res = await api.render(P, {
           out: f.output, start: f.from, end: f.to, scale: num(f.scale), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],

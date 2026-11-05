@@ -85,7 +85,8 @@ export function gradeChain(color: Grade | undefined): string[] {
   const t = Number(g.tint ?? 0) * 0.15, lift: Rgb = g.lift ?? [0, 0, 0], gain: Rgb = g.gain ?? [0, 0, 0];
   const gam: Rgb = [(g.gamma?.[0] ?? 0) + t, (g.gamma?.[1] ?? 0) - t, (g.gamma?.[2] ?? 0) + t];
   if (nz(lift) || nz(gam) || nz(gain)) {
-    const kv = (p: string, v: Rgb) => ["r", "g", "b"].map((c, i) => (v[i] ? `${c}${p}=${f3(v[i])}` : "")).filter(Boolean);
+    // tint is added on top of gamma, so the sum can leave colorbalance's -1..1 (ffmpeg refuses the filter)
+    const kv = (p: string, v: Rgb) => ["r", "g", "b"].map((c, i) => (v[i] ? `${c}${p}=${f3(Math.max(-1, Math.min(1, v[i])))}` : "")).filter(Boolean);
     out.push("colorbalance=" + [...kv("s", lift), ...kv("m", gam), ...kv("h", gain)].join(":"));
   }
   if (g.curves) {

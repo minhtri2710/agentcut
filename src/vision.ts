@@ -5,13 +5,12 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { EditError } from "./model.ts";
+import { EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
 
 // pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
 const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
-export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
 
 export const cacheDir = (root?: string) =>
   root ? join(root, ".agentcut", "cache") : join(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"), "vision");

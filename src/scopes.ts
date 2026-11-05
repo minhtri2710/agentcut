@@ -5,7 +5,9 @@ import { EditError } from "./model.ts";
 
 const [PW, PH] = [480, 270];
 const GRAPH = [
-  "[0]split=3[a][y][d]", "[y]format=yuv444p,split=3[b][c][e]", // waveform/vectorscope/stats read YUV; histogram reads RGB
+  "[0]split=4[a][y][d][s0]", // waveform/vectorscope read broadcast YUV (graticule 16-235); histogram reads RGB
+  "[y]format=yuv444p,split=2[b][c]",
+  "[s0]scale=out_range=full,format=yuv444p[e]", // stats in full range: white = 255 (limited range caps it at 235 = 0.92)
   `[a]scale=${PW}:${PH}:force_original_aspect_ratio=decrease,pad=${PW}:${PH}:-1:-1[f]`,
   `[b]waveform=components=1:intensity=0.1:graticule=green:flags=numbers+dots:scale=digital,scale=${PW}:${PH}[w]`,
   `[c]vectorscope=mode=color3:graticule=green:flags=name,scale=${PH}:${PH},pad=${PW}:${PH}:-1:-1[v]`,

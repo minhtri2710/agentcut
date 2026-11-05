@@ -221,6 +221,7 @@ export async function render(project: string | undefined, o: {
   sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; progress?: (d: number, n: number) => void;
 } = {}) {
   if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
+  if (o.out && SUB.SUB_FORMATS[extname(o.out).toLowerCase()]) return exportCaptions(project, { out: o.out });
   const p = openProject(project);
   const tl = p.load();
   requireValid(p, tl);

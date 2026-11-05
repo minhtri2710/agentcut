@@ -1,6 +1,7 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
 import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, newId, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
+import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
 const MIN = 0.04, EPS = 1e-6;
@@ -23,7 +24,7 @@ function room(tl: Timeline, c: Clip, side: Side): number {
   const before = cin(c) / spd(c), after = (srcLen(tl, c) - cin(c) - clipDur(c) * spd(c)) / spd(c);
   return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
 }
-function shiftKfs(c: Clip, e: number) {
+export function shiftKfs(c: Clip, e: number) {
   if (!c.keyframes || !e) return;
   for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
     c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
@@ -90,7 +91,10 @@ export function registerEditOps(h: OpHelpers) {
     if (isNew && !tr.role) tr.role = "dialogue";
     if ((tr.kind ?? "video") !== "audio" || tr.magnetic) throw new EditError(`track '${tid}' must be a non-magnetic audio track`, "bad_track", "omit track (default 'dialogue') or add_track kind=audio");
     const aud: Clip = { id: newId(tl, h.PREFIX.audio), type: "audio", name: `audio of ${v.id}`, asset: v.asset, duration: round6(clipDur(v)), attach_to: v.id, offset: 0 };
-    for (const k of ["in", "speed", "volume", "fade_in", "fade_out", "reverse", "loop", "enabled"]) if (v[k] !== undefined) aud[k] = structuredClone(v[k]);
+    for (const k of ["in", "speed", "volume", "fade_in", "fade_out", "reverse", "loop", "enabled", ...AUDIO_FX_KEYS]) if (v[k] !== undefined) {
+      aud[k] = structuredClone(v[k]);
+      if ((AUDIO_FX_KEYS as readonly string[]).includes(k)) delete v[k]; // the sound now lives on aud; the muted video keeps no audio fields
+    }
     if (v.keyframes?.volume) aud.keyframes = { volume: structuredClone(v.keyframes.volume) };
     tr.clips.push(aud);
     v.muted = true;
@@ -108,7 +112,7 @@ export function registerEditOps(h: OpHelpers) {
   }
 
   h.op("detach_audio", "Split a video clip's sound into its own audio clip (on track 'dialogue', role dialogue, created if missing) connected to the video " +
-    "(attach_to, offset 0, same duration/in/speed/volume/fades/volume keyframes); the video becomes muted. Needed for J/L-cuts; j_cut/l_cut call it automatically. " +
+    "(attach_to, offset 0, same duration/in/speed/volume/fades/volume keyframes; audio processing fields move to it); the video becomes muted. Needed for J/L-cuts; j_cut/l_cut call it automatically. " +
     "split_clip/trim_clip on the video keep its detached audio in sync.",
     { id: "video clip id or ref ('main#1')", track: "audio track id (default 'dialogue')" }, (p, tl, a) => {
       const [, , v] = get(tl, a);

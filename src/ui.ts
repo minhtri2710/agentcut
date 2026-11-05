@@ -2,7 +2,7 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, watchFile } from "node:fs";
+import { createReadStream, existsSync, realpathSync, renameSync, rmSync, statSync, unwatchFile, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
@@ -15,7 +15,7 @@ const MIME: Record<string, string> = {
   ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
   ".fcpxml": "application/xml", ".otio": "application/json",
 };
-const STATUS: Record<string, number> = { conflict: 409, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
@@ -23,6 +23,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const root = p.root;
   const clients = new Set<ServerResponse>();
   const jobs = new Map<string, Dict>();
+  const playing = new Map<string, Dict>(); // play output path -> running job
   const thumbs = new Map<string, Promise<Buffer>>();
 
   const state = (): Dict => ({ ...api.info(root, "json"), history: api.history(root) });
@@ -77,7 +78,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     if (req.method === "GET" && path.startsWith("/api/thumb/")) {
       const a = asset(path.slice("/api/thumb/".length));
       if (a.kind === "image") return sendFile(req, res, a.abs);
-      const t = Math.max(0, Number(url.searchParams.get("t") ?? 0));
+      const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
       const key = `${a.abs}|${t.toFixed(2)}`;
       if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t).catch((e) => { thumbs.delete(key); throw e; })); }
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "max-age=3600" });
@@ -114,11 +115,19 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const out = body.play ? join(root, "previews", `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined }); broadcast("job", job); };
     if (out && existsSync(out)) { finish({ output: out }); return job; }
+    if (out && playing.has(out)) { jobs.delete(id); return playing.get(out)!; } // same range already rendering: share that job
+    // play renders go to a .part file and are renamed when complete, so the cache check above never serves a half-written file
+    const part = out?.replace(/\.mp4$/, ".part.mp4");
+    if (out) playing.set(out, job);
     let last = 0;
     api.render(root, {
-      out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined,
+      out: part, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined,
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
-    }).then((r: Dict) => finish(r), (e) => { Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); });
+    }).then((r: Dict) => {
+      if (out) { renameSync(part!, out); r.output = out; }
+      finish(r);
+    }).catch((e) => { if (part) rmSync(part, { force: true }); Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); })
+      .finally(() => { if (out) playing.delete(out); });
     return job;
   }
 

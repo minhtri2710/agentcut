@@ -1,6 +1,6 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { needFfmpeg, probe } from "./media.ts";
@@ -227,6 +227,9 @@ export function tts(text: string, outPath: string, voice?: string, rate?: number
 /** OS voice: macOS `say`, Windows SAPI, Linux espeak. Returns the raw audio path in tmp. */
 function systemSpeech(text: string, tmp: string, voice?: string, rate?: number): string {
   let raw = join(tmp, "tts.aiff");
+  // text goes in a file, never argv: a script starting with "-" would be parsed as an option
+  const txt = join(tmp, "tts.txt");
+  writeFileSync(txt, text);
   let r;
   if (process.platform === "darwin") {
     const args = ["-o", raw];
@@ -239,16 +242,16 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
       args.push("-v", voice);
     }
     if (rate) args.push("-r", String(rate));
-    r = spawnSync("say", [...args, text], { encoding: "utf8" });
+    r = spawnSync("say", [...args, "-f", txt], { encoding: "utf8" });
   } else if (process.platform === "win32") {
     raw = join(tmp, "tts.wav");
-    const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? `$s.SelectVoice('${voice.replace(/'/g, "''")}');` : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile('${raw}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
+    const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? `$s.SelectVoice('${voice.replace(/'/g, "''")}');` : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile('${raw.replace(/'/g, "''")}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
     r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8" });
   } else {
     raw = join(tmp, "tts.wav");
     const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
-    r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), text], { encoding: "utf8" });
+    r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { encoding: "utf8" });
   }
   if (r.status !== 0) throw new EditError(`tts failed: ${(r.stderr || "").slice(0, 300)}`, "tts_failed");
   return raw;

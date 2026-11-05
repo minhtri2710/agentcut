@@ -1,7 +1,7 @@
 // AI vision ops: auto_reframe (subject-following focus keyframes), remove_background (cached alpha matte),
 // track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python).
 import { fitBox } from "./media.ts";
-import { type Clip, clipDur, clipStart, type Dict, EditError, findClip, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
+import { type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -132,7 +132,7 @@ export function registerVisionOps(h: OpHelpers) {
     });
 
   h.op("remove_background", "AI background removal on a video/image clip (sets field remove_background): an alpha matte is computed once into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path. Needs uv (downloads rembg + onnxruntime + a ~5 MB model on first use). off=true removes it.",
-    { id: "video/image clip", model: V.MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
+    { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
       if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see agentcut info)");

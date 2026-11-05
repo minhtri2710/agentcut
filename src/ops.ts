@@ -12,7 +12,7 @@ import {
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
 import { captionWords, phrasesToWords } from "./captions.ts";
-import { registerEditOps } from "./ops-edit.ts";
+import { registerEditOps, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
 import { registerVisionOps } from "./ops-vision.ts";
@@ -342,6 +342,14 @@ export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip] | undefined {
   return undefined;
 }
 
+/** right half of a split: the same curves (focus pan, volume, ...) in its own clip-local time; a speed ramp can't be cut this way */
+function rightKfs(c: Clip, left: number) {
+  if (!c.keyframes) return;
+  delete c.keyframes.speed;
+  shiftKfs(c, -left);
+  if (!Object.keys(c.keyframes).length) delete c.keyframes;
+}
+
 function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, number] {
   const [tr, ci, c] = findClip(tl, id);
   resolve(tl);
@@ -357,7 +365,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
     else right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
   }
   delete right.transition; delete right.enter; delete c.exit; delete c.fade_out; delete right.fade_in;
-  if (c.keyframes) delete right.keyframes;
+  rightKfs(right, left);
   if (c.type === "captions" && c.words) {
     right.words = c.words.filter((w: any) => w.end > left).map((w: any) => ({ ...w, start: round6(w.start - left), end: round6(w.end - left) }));
     c.words = c.words.filter((w: any) => w.start < left);
@@ -376,7 +384,8 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
       ar.in = round6(parseTime(au.in ?? 0) + (t - as) * asp);
       ar.duration = round6(ae - t); au.duration = round6(t - as);
       ar.attach_to = right.id; ar.offset = 0; ar.name = `audio of ${right.id}`;
-      delete au.fade_out; delete ar.fade_in; delete ar.keyframes;
+      delete au.fade_out; delete ar.fade_in;
+      rightKfs(ar, t - as);
       atr.clips.splice(atr.clips.indexOf(au) + 1, 0, ar);
     } else if (as >= t - 1e-6) { au.attach_to = right.id; au.offset = round6(as - t); }
   }

@@ -62,6 +62,7 @@ export const FILTERS: Record<string, string> = {
   chromakey: "color (#00ff00), similarity (0.1), blend (0.05)", denoise: "strength (1..10, 4)",
   stabilize: "deshake (FFmpeg deshake filter)", ffmpeg: "value: raw FFmpeg -vf filter string (escape hatch)",
 };
+export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 
 type F = Record<string, [string[], string]>;
@@ -112,7 +113,7 @@ export const MEDIA_FIELDS: F = {
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
   focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
-  remove_background: [T("boolean", "object"), "true or {model}: AI alpha matte (cached; needs uv, see op remove_background)"],
+  remove_background: [T("boolean", "object"), `true or {model: ${MATTE_MODELS.join("|")}}: AI alpha matte (cached; needs uv, see op remove_background)`],
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
@@ -548,6 +549,10 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
         else if (ft === "lut" && o.exists && !o.exists(String(f.path ?? ""))) issues.push({ level: "error", path: `${p}.filters[${fi}].path`, message: "LUT file not found" });
       });
+      if ((c.type === "video" || c.type === "image") && c.remove_background && typeof c.remove_background === "object") {
+        checkFields(c.remove_background, { model: [T("string"), MATTE_MODELS.join("|")] }, `${p}.remove_background`, issues, "remove_background");
+        checkName(c.remove_background.model, MATTE_MODELS, `${p}.remove_background.model`, issues, "matte model");
+      }
       if ((c.type === "video" || c.type === "image") && c.color && typeof c.color === "object") {
         checkFields(c.color, GRADE_FIELDS, `${p}.color`, issues, "color grade");
         if ("look" in c.color) checkName(c.color.look, Object.keys(LOOKS), `${p}.color.look`, issues, "look");

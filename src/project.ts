@@ -24,6 +24,7 @@ function revisionOf(tl: Timeline): number {
 
 /** Optimistic concurrency: an edit based on revision `base` may only be written while the project is still at `base`. */
 export function checkRevision(base: number, current: number) {
+  if (!Number.isInteger(base) || base < 0) throw new EditError(`revision must be a non-negative integer (got ${JSON.stringify(base)})`, "bad_revision", "pass the revision from info / project_info, or omit it");
   if (base !== current) throw new EditError(`project changed since revision ${base} (now ${current}); nothing was changed`, "conflict",
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
 }
