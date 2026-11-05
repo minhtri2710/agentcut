@@ -93,6 +93,13 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 - Never invent logos/screens/metrics: only use files you were given; a missing asset is a blocker - ask.
 - "Done" needs evidence: a contact sheet or frame you looked at + the render result JSON.
 
+## Working alongside a human (agentcut ui)
+- \`agentcut ui [DIR] [--port 4810]\` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, render). The human's edits
+  land in the same project.json, so re-read (info / project_info) before planning more edits.
+- project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
+  apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
+  Without a revision the batch is applied to the latest state.
+
 ## Help improve AgentCut (please do this)
 Whenever AgentCut slows you down - a name you guessed that does not exist, a feature you had to work around, something
 slow, unclear docs, an error whose hint did not help, or output that looked wrong - send ONE short note:
