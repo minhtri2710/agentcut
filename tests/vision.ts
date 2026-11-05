@@ -98,20 +98,42 @@ async function fails(proj: string, ops: any[], code: string, name: string) {
   try { await apply(proj, ops); check(name, false, "no error"); }
   catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
 }
+/** apply, then prepare when the batch recorded vision requests; returns the op results after prepare */
+async function applyPrep(proj: string, ops: any[]) {
+  const r = await api.apply(proj, ops);
+  if (!r.results.some((x: any) => x.pending)) return r.results;
+  const pr = await api.prepare(proj);
+  return r.results.map((x: any) => (x.pending ? pr.applied.find((y: any) => y.op === x.op && y.id === x.id) ?? x : x));
+}
+async function prepFails(proj: string, ops: any[], code: string, name: string) {
+  await apply(proj, ops);
+  try { await api.prepare(proj); check(name, false, "no error"); }
+  catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
+  await api.undo(proj);
+}
 const clip = (proj: string, id: string) => api.info(proj, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply(P, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }]);
-const r1 = (await apply(P, [{ op: "auto_reframe", id: "vid1" }]))[0];
+const t1 = performance.now(), a1: any = await api.apply(P, [{ op: "auto_reframe", id: "vid1" }]);
+check("apply only records the request (no helper run, pending + hint)", a1.results[0].pending === true && a1.prepare_needed && nCalls() === 0 && clip(P, "vid1").pending?.auto_reframe && !clip(P, "vid1").keyframes, a1);
+check("apply stays fast", performance.now() - t1 < 1000, performance.now() - t1);
+const nf: any = await api.frame(P, 0.05, { scale: 0.25 }).catch((e) => e);
+check("preview before prepare -> not_prepared with prepare hint", nf.code === "not_prepared" && /prepare/.test(nf.hint) && nf.details?.pending?.[0] === "auto_reframe vid1", nf);
+check("prepare status lists the missing analysis", (api.prepareStatus(P) as any).missing[0]?.kind === "subject", api.prepareStatus(P));
+const prog: number[] = [], pr1: any = await api.prepare(P, { progress: (d, n) => prog.push(d / n) });
+const r1 = pr1.applied[0];
+check("prepare computes, applies and clears pending (progress reaches 1)", pr1.computed.length === 1 && pr1.computed[0].cached === false && !clip(P, "vid1").pending && prog.at(-1) === 1, { pr1, prog });
 const fx = clip(P, "vid1").keyframes?.focus_x;
 check("writes focus_x keyframes (9:16 pans horizontally only)", Array.isArray(fx) && fx.length >= 2 && !clip(P, "vid1").keyframes.focus_y, clip(P, "vid1"));
 check("focus within 0..1 and moves right", fx && fx.every((k: any) => k[1] >= 0 && k[1] <= 1) && fx.at(-1)[1] > fx[0][1] + 0.5, fx);
 // subject 0.1 -> 0.9 of a 3413 px wide cover frame (640x360 into 1080x1920) seen through a 1080 px window
 const steps = fx ? fx.slice(1).map((k: any, i: number) => (k[1] - fx[i][1]) / (k[0] - fx[i][0])) : [];
 check("smooth: no backwards steps (jitter gone)", steps.every((s: number) => s >= -1e-6), steps);
-check("result reports samples, not cached", r1.samples === 24 && r1.cached === false && nCalls("subject") === 1, r1);
+check("result reports samples", r1.samples === 24 && nCalls("subject") === 1, r1);
 const r2 = (await apply(P, [{ op: "auto_reframe", id: "vid1" }]))[0];
-check("second run hits the cache (same file+params)", r2.cached === true && nCalls("subject") === 1, r2);
-await apply(P, [{ op: "auto_reframe", id: "vid1", fps: 4 }]);
+check("cached analysis applies at once in apply_ops (no pending)", !r2.pending && r2.samples === 24 && nCalls("subject") === 1, r2);
+check("prepare with nothing pending is a no-op", (await api.prepare(P)).computed.length === 0 && nCalls("subject") === 1);
+await applyPrep(P, [{ op: "auto_reframe", id: "vid1", fps: 4 }]);
 check("other params -> new analysis", nCalls("subject") === 2);
 
 const f0 = await api.frame(P, 0.05, { scale: 0.25, out: join(tmp, "rf0.png") });
@@ -119,11 +141,11 @@ const f1 = await api.frame(P, 3.9, { scale: 0.25, out: join(tmp, "rf1.png") });
 check("render follows: start shows the left (red) side", isColor(px(f0.image, 135, 240), [255, 0, 0]), px(f0.image, 135, 240));
 check("render follows: end shows the right (blue) side", isColor(px(f1.image, 135, 240), [0, 0, 255]), px(f1.image, 135, 240));
 
-const ri = (await apply(P, [{ op: "add_clip", track: "main", src: join(m, "still.png"), duration: 1 }, { op: "auto_reframe", id: "img1" }]))[1];
+const ri = (await applyPrep(P, [{ op: "add_clip", track: "main", src: join(m, "still.png"), duration: 1 }, { op: "auto_reframe", id: "img1" }]))[1];
 // subject at 0.8 of 3413 px; window 1080 -> focus = (0.8 * 3413 - 540) / (3413 - 1080)
 check("image: one sample -> static focus, no keyframes", ri.samples === 1 && near(clip(P, "img1").focus[0], (0.8 * 3413 - 540) / 2333, 2e-3) && !clip(P, "img1").keyframes, { ri, c: clip(P, "img1") });
 await apply(P, [{ op: "remove_clip", id: "img1" }]);
-await fails(P, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 1 }, { op: "auto_reframe", id: "vid2" }], "vision_failed", "no decoded frames -> vision_failed");
+await prepFails(P, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 1 }, { op: "auto_reframe", id: "vid2" }], "vision_failed", "no decoded frames -> vision_failed at prepare");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { fit: "contain" } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "fit contain -> unsupported");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { motion: "ken_burns" } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "animated clip -> unsupported");
 await fails(P, [{ op: "add_clip", track: "text", text: "hi", at: 0, duration: 1 }, { op: "auto_reframe", id: "txt1" }], "bad_type", "text clip -> bad_type");
@@ -136,7 +158,7 @@ await fails(P, [{ op: "auto_reframe", id: "vid1", axis: "z" }], "bad_value", "ba
 // ---------------------------------------------------------------- track_to
 console.log("track_to");
 await apply(Y, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 1, duration: 2 }]);
-const tr = (await apply(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5, fps: 10 }]))[0];
+const tr = (await applyPrep(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5, fps: 10 }]))[0];
 const sh = clip(Y, "shp1");
 check("attached to the target at the same start", sh.attach_to === "vid1" && near(sh.offset, 1) && tr.lost === 1, { sh, tr });
 // fake track: centre x 0.25 -> 0.75 of the source over the follower's 2 s; 1920 px canvas shows the whole frame
@@ -149,9 +171,13 @@ await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 20
 await fails(Y, [{ op: "track_to", id: "shp1", target: "shp1" }], "bad_value", "self-tracking -> bad_value");
 
 // on a reframed (panning) target the follower must account for the moving crop window
-await apply(P, [{ op: "update_clip", id: "vid1", set: { motion: null } }, { op: "auto_reframe", id: "vid1" },
+// both pending in one batch (new reframe params): track_to waits for the reframe, prepare runs them in order
+const both: any = await api.apply(P, [{ op: "update_clip", id: "vid1", set: { motion: null } }, { op: "auto_reframe", id: "vid1", fps: 5 },
   { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [20, 20], fill: "white", at: 0, duration: 4 },
   { op: "track_to", id: "shp1", target: "vid1", box: [500, 900, 100, 100], at: 0 }]);
+check("track_to on a pending reframe waits for it", both.results[3].waiting_for === "auto_reframe vid1", both.results[3]);
+const pb: any = await api.prepare(P);
+check("prepare resolves the chain (reframe, then track)", pb.applied.map((x: any) => x.op).join() === "auto_reframe,track_to" && !clip(P, "shp1").pending, pb);
 {
   const v = clip(P, "vid1"), s = clip(P, "shp1"), A = await import("../src/anim.ts");
   const full = Math.round(640 * (1920 / 360)), k = s.keyframes.x[0], t = k[0];
@@ -170,7 +196,12 @@ await apply(B, [
 const before = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-before.png") });
 check("without matte the overlay covers the background", isColor(px(before.image, 40, 180), [255, 0, 0]));
 const rb = (await apply(B, [{ op: "remove_background", id: "vid2" }]))[0];
-check("matte cached in the project cache dir", rb.cached === false && rb.matte.startsWith(join(B, ".agentcut", "cache")) && existsSync(rb.matte), rb);
+check("remove_background only sets the field (pending, no helper run)", rb.pending === true && clip(B, "vid2").remove_background === true && nCalls("matte") === 0, rb);
+const nr: any = await api.render(B, { out: join(tmp, "bg0.mp4"), quality: "draft" }).catch((e) => e);
+check("render before prepare -> not_prepared", nr.code === "not_prepared" && nr.details?.mattes?.[0] === "vid2" && !existsSync(join(tmp, "bg0.mp4")), nr);
+const pm: any = await api.prepare(B);
+check("prepare writes the matte into the project cache dir", pm.computed[0]?.kind === "matte" && pm.computed[0].file.startsWith(join(B, ".agentcut", "cache")) && existsSync(pm.computed[0].file), pm);
+check("prepared matte is reported by a repeated op", (await apply(B, [{ op: "remove_background", id: "vid2" }]))[0].matte === pm.computed[0].file);
 const after = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-after.png") });
 check("matte: transparent half shows the background", isColor(px(after.image, 40, 180), [0, 255, 0]), px(after.image, 40, 180));
 check("matte: opaque half keeps the clip", isColor(px(after.image, 600, 180), [0, 0, 255]), px(after.image, 600, 180));
@@ -178,8 +209,10 @@ const mc = nCalls("matte");
 const rend: any = await api.render(B, { out: join(tmp, "bg.mp4"), quality: "draft" });
 check("render reuses the cached matte", nCalls("matte") === mc && rend.frames === 60, { calls: nCalls("matte"), rend });
 rmSync(join(B, ".agentcut", "cache"), { recursive: true });
-await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-again.png") });
-check("deleted cache is rebuilt on the next preview", nCalls("matte") === mc + 1 && readdirSync(join(B, ".agentcut", "cache")).some((f) => f.startsWith("matte-")));
+const gone: any = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-again.png") }).catch((e) => e);
+check("deleted cache -> preview fails fast, never computes", gone.code === "not_prepared" && nCalls("matte") === mc, gone);
+await api.prepare(B);
+check("prepare rebuilds a deleted matte", nCalls("matte") === mc + 1 && readdirSync(join(B, ".agentcut", "cache")).some((f) => f.startsWith("matte-")));
 await fails(B, [{ op: "remove_background", id: "vid2", model: "bogus" }], "bad_value", "unknown model -> bad_value");
 const off = (await apply(B, [{ op: "remove_background", id: "vid2", off: true }]))[0];
 check("off=true removes the field", off.remove_background === false && clip(B, "vid2").remove_background === undefined);
@@ -191,8 +224,8 @@ check("interchange export reports background removal as skipped", JSON.stringify
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
-await fails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint");
-await fails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "missing_dependency", "no uv (matte) -> missing_dependency");
+await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint (prepare)");
+await prepFails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "missing_dependency", "no uv (matte) -> missing_dependency (prepare)");
 check("core edits still work without uv", (await apply(B, [{ op: "update_clip", id: "vid2", set: { opacity: 0.5 } }]))[0].id === "vid2");
 
 // ---------------------------------------------------------------- real helper (opt-in: downloads opencv/rembg via uv)
@@ -204,7 +237,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   const R = join(tmp, "real");
   api.create(R, { preset: "reels" });
   await apply(R, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 }]);
-  const res = (await apply(R, [{ op: "auto_reframe", id: "vid1" }]))[0];
+  const res = (await applyPrep(R, [{ op: "auto_reframe", id: "vid1" }]))[0];
   const kx = clip(R, "vid1").keyframes.focus_x;
   check("real: subject found and followed left -> right", res.samples === 18 && kx[0][1] < 0.2 && kx.at(-1)[1] > 0.7, { res, kx });
   await apply(R, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
@@ -212,12 +245,12 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   api.create(Q, { preset: "youtube" });
   await apply(Q, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 },
     { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
-  const tk = (await apply(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0];
+  const tk = (await applyPrep(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0];
   const kxs = clip(Q, "shp1").keyframes.x, end = kxs.at(-1);
   check("real: CSRT follows the box (within 25 px)", tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end });
-  const mt = (await apply(Q, [{ op: "remove_background", id: "vid1" }]))[0];
-  const again = V.matte(join(m, "mover.mp4"), { kind: "video", fps: 30, srcW: 640, srcH: 360, root: Q });
-  check("real: matte produced and cached", existsSync(mt.matte) && again.cached === true, mt);
+  await apply(Q, [{ op: "remove_background", id: "vid1" }]);
+  const mt: any = await api.prepare(Q), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: Q }));
+  check("real: matte produced and cached", existsSync(mt.computed[0].file) && again.cached === true, mt);
 }
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

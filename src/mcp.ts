@@ -106,7 +106,17 @@ export function buildServer() {
     const until = Date.now() + secs * 1000;
     while (j.status === "running" && Date.now() < until) await new Promise((r) => setTimeout(r, 300));
     const { promise, ...pub } = j;
-    return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still rendering; call render_status(job_id='${id}')` } : {}) })] };
+    return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })] };
+  };
+  /** background job (render, prepare): progress 0..1, polled with render_status */
+  const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void) => Promise<unknown>) => {
+    const id = Math.random().toString(36).slice(2, 10);
+    const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project };
+    jobs.set(id, job);
+    job.promise = run((d, n) => { job.progress = +(d / n).toFixed(3); })
+      .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
+      .finally(() => { job.finished = Date.now(); });
+    return id;
   };
   s.registerTool("render", {
     description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes contact_sheet + loudness - check them. For a Final Cut / Resolve project file use export_timeline.",
@@ -114,14 +124,21 @@ export function buildServer() {
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
-    const id = Math.random().toString(36).slice(2, 10);
-    const job: any = { job_id: id, status: "running", progress: 0, started: Date.now(), project };
-    jobs.set(id, job);
-    job.promise = api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress: (d, n) => { job.progress = +(d / n).toFixed(3); } })
-      .then((r) => { job.status = "done"; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
-      .finally(() => { job.finished = Date.now(); });
+    const id = startJob("render", project, (progress) => api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress }));
     return waitJob(id, a.wait_seconds);
   });
+  s.registerTool("prepare", {
+    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview/render fail with code not_prepared until prepare is done. Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing.",
+    inputSchema: { project: P, status_only: z.boolean().default(false), wait_seconds: z.number().default(30) },
+  }, async (a) => {
+    let project: string;
+    try { project = proj(a.project); if (a.status_only) return ok(api.prepareStatus(project)); } catch (e) { return fail(e); }
+    return waitJob(startJob("prepare", project, (progress) => api.prepare(project, { progress })), a.wait_seconds);
+  });
+  s.registerTool("cache", {
+    description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes; action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'). previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",
+    inputSchema: { project: P, action: z.enum(["info", "prune"]).default("info"), max_mb: z.number().optional(), older_than: z.string().optional() },
+  }, wrap((a) => (a.action === "prune" ? api.cache.prune(proj(a.project), { maxMb: a.max_mb, olderThan: a.older_than }) : api.cache.info(proj(a.project)))));
   s.registerTool("export_timeline", {
     description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Lists what could not be represented (skipped).",
     inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).default("fcpxml"), output: z.string().optional() },
@@ -130,7 +147,7 @@ export function buildServer() {
     description: "Write the captions clips as a subtitle file (.srt or .vtt) in timeline time, same pages as the burned-in captions. For a soft subtitle track inside the video use render subtitles=true.",
     inputSchema: { project: P, output: z.string().optional().describe(".srt or .vtt path"), format: z.enum(["srt", "vtt"]).optional(), ids: z.array(z.string()).optional().describe("only these captions clips") },
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
-  s.registerTool("render_status", { description: "Status/result of a render job (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
+  s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("view_image", { description: "Return a local PNG/JPG (e.g. a render's contact_sheet) as an image.", inputSchema: { path: z.string() } },
     async (a) => { try { return { content: [image(a.path)] }; } catch (e) { return fail(e); } });
 

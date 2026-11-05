@@ -100,7 +100,7 @@ export class Layer {
       const c = this.c, a = this.asset!, r = this.r;
       const speed = Number(c.speed ?? 1) || 1;
       const fit = c.fit === "blur" ? "contain" : c.fit ?? "cover";
-      const mt = c._matte; // remove_background: the cached alpha matte replaces the source pixels (ops-vision attachMattes)
+      const mt = c._matte; // remove_background: the cached alpha matte replaces the source pixels (ops-vision attachPrepared)
       this.src = new FrameSource({
         path: mt ? mt.path : r.path(a.path), kind: a.kind, srcW: mt ? mt.w : a.width!, srcH: mt ? mt.h : a.height!, srcFps: a.fps,
         srcIn: parseTime(c.in ?? 0), segLen: this.dur * speed,

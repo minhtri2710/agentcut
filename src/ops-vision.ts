@@ -1,7 +1,9 @@
 // AI vision ops: auto_reframe (subject-following focus keyframes), remove_background (cached alpha matte),
-// track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python).
+// track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python), and
+// never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
+// sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
 import { fitBox } from "./media.ts";
-import { type Clip, clipDur, clipStart, type Dict, EditError, findClip, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -74,14 +76,37 @@ function srcRange(c: Clip) {
   return { in0, speed, len: clipDur(c) * speed };
 }
 
-/** Subject samples for a clip (cached), as [clip-local t, source fraction x, y | undefined]. */
-function subjectTrack(p: Project | null, tl: Timeline, c: Clip, fps: number) {
-  const a = asset(tl, c), { in0, speed, len } = srcRange(c);
-  const res = V.analyzeSubject(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
+/** Subject analysis job for a clip's source range. */
+function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
+  const a = asset(tl, c), { in0, len } = srcRange(c);
+  return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
     : { start: in0, duration: len, fps, srcW: a.width, srcH: a.height, root: root(p) });
-  const pts = res.samples.map((s) => ({ t: a.kind === "image" ? 0 : (s.t - in0) / speed, x: s.kind === "none" ? undefined : s.x, y: s.kind === "none" ? undefined : s.y }));
-  return { pts, cached: res.cached, faces: res.samples.filter((s) => s.kind === "face").length, n: res.samples.length };
 }
+/** Cached subject samples as [clip-local t, source fraction x, y | undefined]. */
+function subjectTrack(tl: Timeline, c: Clip, d: V.Derived) {
+  const a = asset(tl, c), { in0, speed } = srcRange(c), samples = V.subjectSamples(d);
+  const pts = samples.map((s) => ({ t: a.kind === "image" ? 0 : (s.t - in0) / speed, x: s.kind === "none" ? undefined : s.x, y: s.kind === "none" ? undefined : s.y }));
+  return { pts, faces: samples.filter((s) => s.kind === "face").length, n: samples.length };
+}
+
+export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
+let sink: V.Derived[] | null = null;
+/** Run f and collect the analyses that vision ops found missing (each recorded a pending request instead). */
+export function collectMissing<T>(f: () => T): [T, V.Derived[]] {
+  const prev = sink, got: V.Derived[] = [];
+  sink = got;
+  try { return [f(), got]; } finally { sink = prev; }
+}
+const clearPending = (c: Clip, op: string) => { if (c.pending) { delete c.pending[op]; if (!Object.keys(c.pending).length) delete c.pending; } };
+/** The analysis d is cached: clear the request. Otherwise record it in clip.pending (d null = waiting on another request). */
+function ready(c: Clip, op: string, req: Dict, d: V.Derived | null): d is V.Derived {
+  if (d && V.isReady(d)) { clearPending(c, op); return true; }
+  if (d) sink?.push(d);
+  (c.pending ??= {})[op] = req;
+  return false;
+}
+const pick = (a: Dict, keys: string[]) => Object.fromEntries(keys.filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
+const pendingResult = (id: string, extra: Dict = {}) => ({ id, pending: true, ...extra, hint: PREPARE_HINT });
 
 /** keyframes [t, v] from a dense path, simplified within tol */
 function toKfs(ts: number[], vs: number[], tol: number) {
@@ -94,7 +119,7 @@ export function registerVisionOps(h: OpHelpers) {
     return findClip(tl, h.resolveRef(tl, String(id)))[2];
   };
 
-  h.op("auto_reframe", "Follow the subject (largest face, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y so a 16:9 shot stays framed in 9:16 (or any crop). Needs uv (downloads opencv on first use); analysis is cached per file+range.",
+  h.op("auto_reframe", "Follow the subject (largest face, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y so a 16:9 shot stays framed in 9:16 (or any crop). Needs uv (downloads opencv on first use). The analysis is cached per file+range; when it is not cached yet the request is recorded (clip.pending, result pending=true) and prepare computes it and writes the keyframes.",
     { id: "video/image clip", fps: "analysis samples per second (6)", smooth: "smoothing sigma seconds (0.8; higher = calmer camera)", tolerance: "max focus error kept when thinning keyframes (0.01)", axis: "auto|x|y|both (auto = the axis that can pan)" },
     (p, tl, a) => {
       resolve(tl);
@@ -107,14 +132,16 @@ export function registerVisionOps(h: OpHelpers) {
       if (!["auto", "x", "y", "both"].includes(axis)) throw new EditError(`unknown axis '${axis}'`, "bad_value", "auto|x|y|both");
       const wantX = panX && axis !== "y", wantY = panY && axis !== "x";
       if (!wantX && !wantY) throw new EditError(`'${c.id}' fills its box exactly: there is nothing to pan`, "nothing_to_do", "auto_reframe helps when the source aspect differs from the clip box (e.g. 16:9 footage in a 9:16 canvas)");
-      const tr = subjectTrack(p, tl, c, num(a.fps, 6, "fps", 0.5));
-      const ts = tr.pts.map((q) => q.t), sigma = num(a.smooth, 0.8, "smooth"), tol = num(a.tolerance, 0.01, "tolerance");
+      const fps = num(a.fps, 6, "fps", 0.5), sigma = num(a.smooth, 0.8, "smooth"), tol = num(a.tolerance, 0.01, "tolerance");
+      const d = subjectJob(p, tl, c, fps);
+      if (!ready(c, "auto_reframe", pick(a, ["fps", "smooth", "tolerance", "axis"]), d)) return pendingResult(c.id);
+      const tr = subjectTrack(tl, c, d), ts = tr.pts.map((q) => q.t);
       // subject fraction -> focus that centres it in the visible window
       const toFocus = (u: number, src: number, crop0: number, scale: number, full: number, view: number) =>
         clamp01((((u * src - crop0 * src) * scale) - view / 2) / (full - view));
       const kf = (c.keyframes ??= {});
       delete kf.focus_x; delete kf.focus_y;
-      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, faces: tr.faces, cached: tr.cached };
+      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, faces: tr.faces };
       const axes: [boolean, "x" | "y", 0 | 1][] = [[wantX, "x", 0], [wantY, "y", 1]];
       for (const [want, ax, i] of axes) {
         if (!want) continue;
@@ -131,7 +158,7 @@ export function registerVisionOps(h: OpHelpers) {
       return out;
     });
 
-  h.op("remove_background", "AI background removal on a video/image clip (sets field remove_background): an alpha matte is computed once into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path. Needs uv (downloads rembg + onnxruntime + a ~5 MB model on first use). off=true removes it.",
+  h.op("remove_background", "AI background removal on a video/image clip (sets field remove_background; fast). The alpha matte is computed by prepare into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path; preview/render fail with code not_prepared until it exists. Needs uv (downloads rembg + onnxruntime + a ~5 MB model on first use). off=true removes it.",
     { id: "video/image clip", model: V.MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
@@ -139,10 +166,10 @@ export function registerVisionOps(h: OpHelpers) {
       if (a.off) { delete c.remove_background; return { id: c.id, remove_background: false }; }
       c.remove_background = a.model ? { model: a.model } : true;
       const m = matteFor(p?.root, tl, c, absPath(p, tl.assets[c.asset].path));
-      return { id: c.id, remove_background: c.remove_background, matte: m.out, cached: m.cached };
+      return V.isReady(m) ? { id: c.id, remove_background: c.remove_background, matte: m.file } : { remove_background: c.remove_background, ...pendingResult(c.id) };
     });
 
-  h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (face/saliency). Needs uv (downloads opencv on first use); cached.",
+  h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (face/saliency). Needs uv (downloads opencv on first use). Cached; when not cached yet the request is recorded (pending=true) and prepare tracks and writes the keyframes.",
     { id: "follower clip (text/shape/image/video overlay)", target: "video clip with the object", box: "[x, y, w, h] canvas px or % (top-left + size) at 'at'", at: "timeline seconds where box is drawn (default: follower start)", shift: "[dx, dy] px added to the object centre", tracker: "csrt|kcf", fps: "tracking samples/s (15)", smooth: "sigma seconds (0.15)" },
     (p, tl, a) => {
       resolve(tl);
@@ -156,7 +183,10 @@ export function registerVisionOps(h: OpHelpers) {
       if (s1 - s0 < 0.05) throw new EditError(`'${f.id}' (${fs0.toFixed(2)}-${(fs0 + clipDur(f)).toFixed(2)}s) does not overlap '${t.id}' in time`, "out_of_range", "move the follower over the target first");
       const fps = num(a.fps, 15, "fps", 0.5), W0 = tl.settings.width, H0 = tl.settings.height;
       const srcAt = (T: number) => in0 + (T - ts0) * speed;
-      let pts: { T: number; u?: number; v?: number }[], cached: boolean, lost = 0;
+      const req = { ...pick(a, ["box", "at", "shift", "tracker", "fps", "smooth"]), target: t.id };
+      // the box maps to source pixels through the target's focus: a pending reframe of the target must land first
+      if (t.pending?.auto_reframe) { ready(f, "track_to", req, null); return pendingResult(f.id, { waiting_for: `auto_reframe ${t.id}` }); }
+      let pts: { T: number; u?: number; v?: number }[], lost = 0;
       if (a.box !== undefined) {
         if (!Array.isArray(a.box) || a.box.length !== 4) throw new EditError("box must be [x, y, w, h]", "bad_value", "top-left corner + size in canvas px or %, e.g. [400, 600, 200, 200]");
         const [bx, by, bw, bh] = a.box.map((v: any, i: number) => parseLen(v, i % 2 ? H0 : W0));
@@ -166,13 +196,13 @@ export function registerVisionOps(h: OpHelpers) {
         const sb = [clamp01(u0), clamp01(v0), clamp01(u1) - clamp01(u0), clamp01(v1) - clamp01(v0)];
         if (sb[2] <= 0.002 || sb[3] <= 0.002) throw new EditError("box is outside the visible picture of the target", "out_of_range", "draw the box over the object as seen in preview_frame");
         if (a.tracker && !["csrt", "kcf"].includes(a.tracker)) throw new EditError(`unknown tracker '${a.tracker}'`, "bad_value", "csrt|kcf");
-        const res = V.trackBox(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
-        cached = res.cached;
-        pts = res.samples.map((s) => { if (!s.ok) lost++; return { T: ts0 + (s.t - in0) / speed, u: s.ok ? s.x : undefined, v: s.ok ? s.y : undefined }; });
+        const d = V.trackJob(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
+        if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
+        pts = V.readResult(d).samples.map((s) => { if (!s.ok) lost++; return { T: ts0 + (s.t - in0) / speed, u: s.ok ? s.x : undefined, v: s.ok ? s.y : undefined }; });
       } else {
-        const tr = subjectTrack(p, tl, t, Math.min(fps, 10));
-        cached = tr.cached;
-        pts = tr.pts.filter((q) => q.t + ts0 >= s0 - 1e-6 && q.t + ts0 <= s1 + 1e-6).map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
+        const d = subjectJob(p, tl, t, Math.min(fps, 10));
+        if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
+        pts = subjectTrack(tl, t, d).pts.filter((q) => q.t + ts0 >= s0 - 1e-6 && q.t + ts0 <= s1 + 1e-6).map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
         if (!pts.length) throw new EditError("no subject samples in the overlap", "vision_failed", "pass box to track a specific object");
       }
       const Ts = pts.map((q) => q.T), sigma = num(a.smooth, 0.15, "smooth");
@@ -184,27 +214,33 @@ export function registerVisionOps(h: OpHelpers) {
       f.keyframes = { ...(f.keyframes ?? {}), x: keep.map((i) => [round6(lt[i]), Math.round(X[i] * 10) / 10]), y: keep.map((i) => [round6(lt[i]), Math.round(Y[i] * 10) / 10]) };
       delete f.position;
       if (!f.attach_to) { f.attach_to = t.id; f.offset = round6(fs0 - ts0); delete f.start; }
-      return { id: f.id, target: t.id, samples: pts.length, lost, keyframes: keep.length, attached_to: f.attach_to, cached };
+      return { id: f.id, target: t.id, samples: pts.length, lost, keyframes: keep.length, attached_to: f.attach_to };
     });
 }
 
-/** Cached matte for a clip with remove_background (computes it on a cache miss). */
+/** Matte job for a clip with remove_background (path: the asset's absolute path). */
 export function matteFor(root: string | undefined, tl: Timeline, c: Clip, path: string) {
   const a = asset(tl, c), rb = c.remove_background;
-  return V.matte(path, { kind: a.kind, fps: a.fps, srcW: a.width, srcH: a.height, model: typeof rb === "object" ? rb.model : undefined, root });
+  return V.matteJob(path, { kind: a.kind, fps: a.fps, duration: a.duration, srcW: a.width, srcH: a.height, model: typeof rb === "object" ? rb.model : undefined, root });
 }
 
-/** Render prep on an absolutized copy: point every remove_background clip at its cached matte (`_matte`, never saved). */
-export function attachMattes(tl: Timeline, root: string) {
-  const walk = (tracks: any[]) => {
-    for (const tr of tracks) for (const c of tr.clips || []) {
-      if (c.type === "compound") walk(c.tracks || []);
-      else if (c.remove_background && c.enabled !== false && (c.type === "video" || c.type === "image")) {
-        const m = matteFor(root, tl, c, tl.assets[c.asset].path);
-        c._matte = { path: m.out, w: m.w, h: m.h };
-      }
-    }
-  };
-  walk(tl.tracks);
+/** Matte jobs of every enabled remove_background clip (compounds included) of an absolutized timeline. */
+export function mattesFor(tl: Timeline, root: string) {
+  return [...allClips(tl.tracks)].filter((c) => c.remove_background && c.enabled !== false && (c.type === "video" || c.type === "image"))
+    .map((c) => ({ clip: c, job: matteFor(root, tl, c, tl.assets[c.asset].path) }));
+}
+
+/** Render prep on an absolutized copy: point every remove_background clip at its matte (`_matte`, never saved). Fails fast
+ *  with not_prepared while a matte is missing or a vision request is pending, instead of computing inside a preview. */
+export function attachPrepared(tl: Timeline, root: string) {
+  const mattes = mattesFor(tl, root).filter(({ clip, job }) => {
+    if (!V.isReady(job)) return true;
+    clip._matte = { path: job.file, w: job.w, h: job.h };
+    return false;
+  }).map(({ clip }) => clip.id);
+  const pending = [...allClips(tl.tracks)].flatMap((c) => Object.keys(c.pending ?? {}).map((op) => `${op} ${c.id}`));
+  if (mattes.length || pending.length)
+    throw new EditError(`not prepared: ${[...mattes.map((id) => `remove_background ${id} (matte missing)`), ...pending.map((x) => `${x} (pending)`)].join(", ")}`,
+      "not_prepared", PREPARE_HINT, undefined, { mattes, pending });
   return tl;
 }
