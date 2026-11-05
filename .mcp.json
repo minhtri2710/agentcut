@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentcut": {
+      "command": "bun",
+      "args": ["src/mcp.ts"]
+    }
+  }
+}

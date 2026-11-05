@@ -1,0 +1,115 @@
+// Style presets (text + captions) and whole-video templates. Templates expand into ordinary ops, so the
+// result is a normal timeline the agent can keep editing.
+import { firstCovering } from "./fonts.ts";
+import { type Dict, EditError, suggest } from "./model.ts";
+
+const heavy = (text = "AÁÀẢÃẠ") => firstCovering(["Arial Black", "Helvetica Neue Condensed Black", "Avenir Next Heavy", "Arial Bold", "Helvetica Neue Bold", "DejaVu Sans Bold"], text);
+const bold = (text = "AÁ") => firstCovering(["Arial Bold", "Helvetica Neue Bold", "Segoe UI Bold", "Noto Sans Bold", "DejaVu Sans Bold"], text);
+
+export const TEXT_PRESETS: Record<string, { doc: string; make: (text: string) => Dict }> = {
+  title_bold: { doc: "huge white uppercase title, black outline, pop in", make: (t) => ({ font: heavy(t.toUpperCase()), font_size: 118, color: "white", stroke: { color: "black", width: 10 }, uppercase: true, enter: "pop", exit: "fade" }) },
+  subtitle_box: { doc: "dark text on a yellow rounded box, slides up", make: (t) => ({ font: bold(t), font_size: 64, color: "#111111", background: { color: "#FFD60A", padding: 26, radius: 22 }, enter: "slide_up", exit: "fade" }) },
+  neon: { doc: "white text with a cyan neon glow", make: (t) => ({ font: bold(t), font_size: 96, color: "#ffffff", glow: { color: "#00E5FF", blur: 32 }, enter: "fade", exit: "fade" }) },
+  gradient: { doc: "pink-purple-blue gradient fill, zooms in", make: (t) => ({ font: heavy(t), font_size: 112, gradient: { colors: ["#FF3CAC", "#784BA0", "#2B86C5"], angle: 90 }, shadow: { color: "#00000088", y: 6, blur: 16 }, enter: "zoom_in", exit: "fade" }) },
+  lower_third: { doc: "name/label bottom-left on a translucent bar", make: (t) => ({ font: bold(t), font_size: 54, color: "white", align: "left", position: "bottom_left", margin: "8%", background: { color: "#000000b0", padding: 22, radius: 10 }, enter: "slide_right", exit: "fade" }) },
+  quote: { doc: "italic quote, words appear one by one", make: (t) => ({ font: bold(t), italic: true, font_size: 76, color: "white", shadow: true, enter: "words", exit: "fade", line_height: 1.25 }) },
+  typewriter: { doc: "green monospace typewriter", make: () => ({ font: firstCovering(["Courier New Bold", "Menlo Bold", "DejaVu Sans Mono Bold", "Consolas Bold"], "Aa"), font_size: 70, color: "#00FF88", enter: "typewriter", align: "left" }) },
+  sticker: { doc: "black text on a white tilted pill, bounces in", make: (t) => ({ font: heavy(t), font_size: 84, color: "#111111", background: { color: "#ffffff", padding: 30, radius: 60 }, rotation: -6, shadow: { color: "#00000066", y: 10, blur: 24 }, enter: "bounce", exit: "pop" }) },
+  outline: { doc: "hollow outline text", make: (t) => ({ font: heavy(t), font_size: 120, color: "#00000000", stroke: { color: "white", width: 4 }, uppercase: true, enter: "fade" }) },
+  cinematic: { doc: "spaced-out thin caps, slow fade", make: (t) => ({ font: firstCovering(["Helvetica Neue Light", "Avenir Next Ultra Light", "Arial"], t), font_size: 64, color: "#f5f5f5", uppercase: true, letter_spacing: 14, enter: { type: "fade", duration: 1 }, exit: { type: "fade", duration: 1 } }) },
+};
+
+export const CAPTION_PRESETS: Record<string, { doc: string; make: (text: string) => Dict }> = {
+  tiktok: { doc: "uppercase heavy words, black outline, yellow active word (karaoke)", make: (t) => ({ font: heavy(t.toUpperCase()), uppercase: true, font_size: 84, stroke: { color: "#000000", width: 7 }, style: "karaoke", highlight_color: "#FFD60A", max_words: 3 }) },
+  bold_pop: { doc: "one big word at a time, pops", make: (t) => ({ font: heavy(t.toUpperCase()), uppercase: true, font_size: 120, stroke: { color: "#000000", width: 9 }, style: "word", highlight_color: "#FFD60A" }) },
+  pill: { doc: "active word on a purple pill", make: (t) => ({ font: bold(t), font_size: 70, color: "white", stroke: { color: "#000000", width: 4 }, style: "karaoke", highlight_bg: "#7C3AED", highlight_color: "#ffffff", max_words: 4 }) },
+  clean: { doc: "sentence-case subtitles on a dark box", make: (t) => ({ font: bold(t), font_size: 54, color: "white", background: { color: "#000000a0", padding: 16, radius: 12 }, style: "line", max_words: 7 }) },
+  reveal: { doc: "words appear as they are spoken", make: (t) => ({ font: heavy(t), font_size: 78, color: "white", stroke: { color: "#000", width: 6 }, style: "reveal", max_words: 5 }) },
+  neon: { doc: "glowing cyan karaoke", make: (t) => ({ font: bold(t), font_size: 76, color: "#ffffff", glow: { color: "#00E5FF", blur: 26 }, style: "karaoke", highlight_color: "#00E5FF", max_words: 3 }) },
+};
+
+export function expandPreset(kind: "text" | "captions", name: string, text: string, given: Dict): Dict {
+  const table = kind === "captions" ? CAPTION_PRESETS : TEXT_PRESETS;
+  const p = table[name];
+  if (!p) {
+    const s = suggest(name, Object.keys(table));
+    throw new EditError(`unknown ${kind} preset '${name}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(table).join(", ")}`);
+  }
+  const base = p.make(text);
+  if (!base.font) delete base.font;
+  return { ...base, ...given }; // explicit fields win
+}
+
+// ------------------------------------------------------------------ templates
+type Media = string | Dict;
+const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
+
+export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dict) => Dict[] }> = {
+  slideshow: {
+    doc: "photos/clips with Ken Burns + crossfades, optional title and music (cuts snap to beats)",
+    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", caption_preset: "for title (title_bold)" },
+    build: (a) => {
+      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold" });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 4 });
+      return ops;
+    },
+  },
+  promo: {
+    doc: "product promo: hook title, one proof point per clip, CTA end card, beat-synced",
+    args: { media: "clips/photos (required)", hook: "opening line", points: "list of short lines", cta: "end card text", music: "path", brand_color: "#FFD60A" },
+    build: (a) => {
+      const n = a.media.length, seg = a.seconds ?? 2;
+      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
+      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: "16%" });
+      (a.points || []).slice(0, Math.max(0, n - 1)).forEach((p: string, i: number) =>
+        ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
+      if (a.cta) ops.push({ op: "add_clip", track: "main", type: "color", gradient: { colors: [a.brand_color ?? "#111111", "#000000"], angle: 160 }, duration: 2.5, transition: "flash" },
+        { op: "add_clip", track: "text", text: a.cta, attach_to: "main#-1", offset: 0.3, match_duration: true, preset: "sticker" });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 2 });
+      return ops;
+    },
+  },
+  beat_montage: {
+    doc: "fast montage: a cut on every N beats, flash/glitch transitions, shake on drops",
+    args: { media: "clips/photos (required)", music: "path (required)", every: "beats per cut (1)", title: "optional" },
+    build: (a) => {
+      if (!a.music) throw new EditError("beat_montage needs music", "missing_arg");
+      const trs = ["flash", "glitch", "zoom_blur", "push_left", "spin"];
+      const items = a.media.map((m: Media, i: number) => ({ ...src(m), ...(i ? { transition: { type: trs[i % trs.length], duration: 0.2 } } : {}), effects: i % 3 === 2 ? [{ type: "rgb_split", amount: 8 }] : undefined }));
+      const ops: Dict[] = [{ op: "add_sequence", track: "main", items, defaults: { duration: 1, fit: "cover", motion: "zoom_slow" } },
+        { op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 0.8 },
+        { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 1 }];
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.1, match_duration: true, preset: "gradient" });
+      return ops;
+    },
+  },
+  quote: {
+    doc: "single quote card over a background clip/photo or gradient",
+    args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
+    build: (a) => {
+      const d = a.seconds ?? 6;
+      const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", filters: [{ type: "look", name: "moody" }], effects: [{ type: "vignette", intensity: 0.6 }] }
+        : { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#0f2027", "#203a43", "#2c5364"], angle: 135 }, duration: d }];
+      ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, at: 0.4, duration: d - 0.6, preset: "quote", max_width: "80%" });
+      if (a.author) ops.push({ op: "add_clip", track: "text", text: `— ${a.author}`, at: 1.6, duration: d - 1.8, font_size: 44, color: "#ffffffcc", y: "72%", enter: "fade" });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, duration: d, fade_in: 0.5, fade_out: 1.2 });
+      return ops;
+    },
+  },
+  listicle: {
+    doc: "numbered list: title card, then one clip per item with a numbered label",
+    args: { title: "headline (required)", items: "[{text, media}] (required)", seconds: "per item (3)", music: "path" },
+    build: (a) => {
+      const s = a.seconds ?? 3;
+      const ops: Dict[] = [{ op: "add_clip", track: "main", type: "color", gradient: { colors: ["#111827", "#1f2937"], angle: 180 }, duration: 2.2 },
+        { op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.2, match_duration: true, preset: "title_bold" }];
+      (a.items || []).forEach((it: Dict, i: number) => {
+        ops.push({ op: "add_clip", track: "main", ...src(it.media), duration: s, transition: { type: "slide_left", duration: 0.35 }, fit: "blur" });
+        ops.push({ op: "add_clip", track: "text", text: `${i + 1}. ${it.text}`, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third" });
+      });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 1 });
+      return ops;
+    },
+  },
+};

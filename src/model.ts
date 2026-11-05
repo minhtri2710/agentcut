@@ -1,0 +1,578 @@
+// Timeline data model: schema tables, parsing, validation, magnetic resolution.
+// Pure functions only (file existence checks are optional) so they are cheap to call often.
+
+export const SCHEMA_VERSION = 2;
+
+export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+export type Dict = Record<string, any>;
+export interface Clip extends Dict { id: string; type: string; start?: number | string; duration: number | string }
+export interface Track extends Dict { id: string; kind?: "video" | "audio"; magnetic?: boolean; clips: Clip[] }
+export interface Asset extends Dict { path: string; kind: "video" | "image" | "audio" | "lottie"; duration?: number; width?: number; height?: number }
+export interface Timeline { version: number; name: string; settings: Dict; assets: Record<string, Asset>; tracks: Track[]; markers: Dict[]; meta?: Dict }
+export interface Issue { level: "error" | "warning" | "info"; path: string; message: string; hint?: string }
+
+export const PRESETS: Record<string, [number, number]> = {
+  reels: [1080, 1920], tiktok: [1080, 1920], shorts: [1080, 1920], story: [1080, 1920],
+  youtube: [1920, 1080], landscape: [1920, 1080], "720p": [1280, 720], "4k": [3840, 2160],
+  square: [1080, 1080], portrait: [1080, 1350],
+};
+
+export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color", "audio", "lottie", "gap"];
+export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie"]);
+export const MEDIA_TYPES = new Set(["video", "image", "audio", "lottie"]);
+export const ENTER_EXIT = ["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop", "zoom_in", "zoom_out",
+  "wipe_left", "wipe_right", "wipe_up", "wipe_down", "blur", "drop", "spin", "typewriter", "words", "bounce", "flip"];
+export const TRANSITIONS = ["crossfade", "dip_black", "dip_white", "slide_left", "slide_right", "slide_up", "slide_down",
+  "push_left", "push_right", "push_up", "push_down", "wipe_left", "wipe_right", "wipe_up", "wipe_down", "zoom", "circle",
+  "blur", "flash", "glitch", "spin", "zoom_blur"];
+export const MOTIONS = ["ken_burns", "ken_burns_out", "pan_left", "pan_right", "pan_up", "pan_down", "pulse", "float",
+  "shake", "zoom_slow", "sway"];
+export const EASINGS = ["linear", "ease_in", "ease_out", "ease_in_out", "back_out", "bounce_out", "elastic_out", "hold"];
+export const FITS = ["cover", "contain", "fill", "none", "blur"];
+export const BLENDS = ["normal", "multiply", "screen", "add", "overlay", "darken", "lighten", "color_dodge", "soft_light", "difference"];
+export const POSITIONS = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
+export const CAPTION_STYLES = ["karaoke", "word", "reveal", "line"];
+export const SHAPES = ["rect", "circle", "ellipse", "line", "triangle", "star", "heart", "arrow"];
+export const MASKS = ["rect", "circle", "ellipse", "linear", "mirror", "heart", "star"];
+export const EFFECTS: Record<string, string> = {
+  glitch: "digital glitch slices + colour split; intensity 0..1",
+  rgb_split: "chromatic aberration; amount px (default 12)",
+  flash: "white flash; at (s, default 0), duration (0.25)",
+  grain: "film grain; intensity 0..1 (0.25)",
+  zoom_blur: "radial zoom blur; intensity 0..1",
+  vignette: "dark edges; intensity 0..1 (0.5)",
+  vhs: "scanlines + colour bleed + wobble; intensity 0..1",
+  letterbox: "cinematic bars; ratio (2.39)",
+  strobe: "on/off blink; freq Hz (8)",
+  blur: "gaussian blur; radius px",
+  bw: "black & white",
+  invert: "invert colours",
+  hue: "hue rotate; degrees",
+  brightness: "multiplier (1.2)",
+  contrast: "multiplier (1.2)",
+  saturate: "multiplier (1.4)",
+};
+export const FILTERS: Record<string, string> = {
+  eq: "brightness (-1..1, 0), contrast (0..3, 1), saturation (0..3, 1), gamma (0.1..10, 1)",
+  look: "name: warm|cool|vintage|bw|cinematic|vivid|fade|teal_orange|moody|pastel",
+  lut: "path to a .cube 3D LUT file",
+  blur: "radius px", sharpen: "amount (0..3, 1)", grayscale: "no params", vignette: "strength (0..1, 0.5)",
+  hflip: "mirror horizontally", vflip: "mirror vertically",
+  chromakey: "color (#00ff00), similarity (0.1), blend (0.05)", denoise: "strength (1..10, 4)",
+  stabilize: "deshake (FFmpeg deshake filter)", ffmpeg: "value: raw FFmpeg -vf filter string (escape hatch)",
+};
+export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed"];
+
+type F = Record<string, [string[], string]>;
+const T = (...t: string[]) => t; // allowed json types: number,string,boolean,object,array,null
+
+export const COMMON_FIELDS: F = {
+  id: [T("string"), "unique id (auto-assigned)"],
+  type: [T("string"), CLIP_TYPES.join("|")],
+  name: [T("string"), "free label"],
+  start: [T("number", "string"), "timeline start seconds (computed on magnetic tracks)"],
+  duration: [T("number", "string"), "seconds on the timeline"],
+  enabled: [T("boolean"), "false hides/mutes the clip"],
+  note: [T("string"), "free-form note, ignored by the renderer"],
+  preset: [T("string"), "style preset expanded when the clip is added (see capabilities.presets)"],
+  until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark)"],
+  attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
+  offset: [T("number", "string"), "seconds after the attach_to clip's start (default 0)"],
+  match_duration: [T("boolean"), "with attach_to: duration = target duration - offset - end_offset"],
+  end_offset: [T("number", "string"), "with match_duration: stop this many seconds before the target ends"],
+};
+export const VISUAL_FIELDS: F = {
+  x: [T("number", "string"), "centre x in px or '50%'"],
+  y: [T("number", "string"), "centre y in px or '50%'"],
+  position: [T("string"), POSITIONS.join("|") + " (anchor preset, with margin)"],
+  margin: [T("number", "string"), "distance from the edge for position presets (px or %)"],
+  scale: [T("number"), "uniform scale (1 = fitted size)"],
+  scale_x: [T("number"), "extra horizontal scale"], scale_y: [T("number"), "extra vertical scale"],
+  rotation: [T("number"), "degrees clockwise"],
+  opacity: [T("number"), "0..1"],
+  blend: [T("string"), BLENDS.join("|")],
+  keyframes: [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.join(",")],
+  enter: [T("string", "object"), "entrance animation: name or {type, duration, ease}: " + ENTER_EXIT.join(",")],
+  exit: [T("string", "object"), "exit animation: name or {type, duration, ease}"],
+  transition: [T("string", "object"), "transition FROM the previous clip on the same track: " + TRANSITIONS.join(",")],
+  motion: [T("string", "object"), "continuous motion: name or {type, amount}: " + MOTIONS.join(",")],
+  radius: [T("number"), "rounded corner radius px"],
+  shadow: [T("object", "boolean"), "{color, x, y, blur} drop shadow"],
+  border: [T("object"), "{color, width} outline around the layer box"],
+  mask: [T("object", "string"), "{shape: " + MASKS.join("|") + ", x, y, width, height (0..1 of layer), feather px, invert, angle}"],
+  effects: [T("array"), "list of {type, ...params, start?, duration?}: " + Object.keys(EFFECTS).join(",")],
+};
+export const MEDIA_FIELDS: F = {
+  asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
+  in: [T("number", "string"), "source in-point seconds"],
+  speed: [T("number"), "playback speed 0.1..8 (keyframes.speed for ramps)"],
+  volume: [T("number"), "linear gain 0..4"], muted: [T("boolean"), "drop audio"],
+  fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
+  fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
+  size: [T("array"), "[w, h] box px or % (default canvas)"],
+  focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16)"],
+  crop: [T("object"), "{left, right, top, bottom} fractions removed"],
+  filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
+  loop: [T("boolean"), "loop the source when the clip is longer"],
+  reverse: [T("boolean"), "play backwards (video+audio)"],
+  freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
+};
+export const TEXT_FIELDS: F = {
+  text: [T("string"), "the text; \\n for line breaks; emoji ok"],
+  font: [T("string"), "family + style e.g. 'Arial Bold', 'Avenir Next Heavy' or a .ttf/.otf path (see fonts)"],
+  font_size: [T("number"), "px (default 6.5% of the short side)"],
+  color: [T("string"), "fill colour"],
+  gradient: [T("object"), "{colors: [...], angle} gradient text fill"],
+  stroke: [T("object"), "{color, width}"],
+  glow: [T("object", "string"), "{color, blur} neon glow"],
+  background: [T("object", "string"), "box behind text: colour or {color, padding, radius}"],
+  align: [T("string"), "left|center|right"],
+  max_width: [T("number", "string"), "wrap width px or % (default 88%)"],
+  line_height: [T("number"), "multiplier (1.15)"],
+  uppercase: [T("boolean"), "force upper case"],
+  letter_spacing: [T("number"), "extra px between characters"],
+  italic: [T("boolean"), "italic style"],
+  weight: [T("number", "string"), "100..900 or bold/black"],
+};
+export const CAPTION_FIELDS: F = {
+  words: [T("array"), "[{text, start, end}] seconds relative to clip start"],
+  srt: [T("string"), "path to .srt/.vtt"],
+  style: [T("string"), CAPTION_STYLES.join("|")],
+  max_words: [T("number"), "words per page (3)"],
+  highlight_color: [T("string"), "active word colour"],
+  highlight_bg: [T("string"), "pill behind the active word"],
+};
+export const SHAPE_FIELDS: F = {
+  shape: [T("string"), SHAPES.join("|")], size: [T("array"), "[w, h] px or %"], fill: [T("string"), "fill colour"],
+  stroke: [T("object"), "{color, width}"], gradient: [T("object"), "{colors, angle} gradient fill"],
+};
+export const COLOR_FIELDS: F = {
+  color: [T("string"), "solid colour"], gradient: [T("object"), "{colors: [...], angle}"], size: [T("array"), "[w, h]"],
+};
+export const LOTTIE_FIELDS: F = {
+  asset: [T("string"), "lottie asset id"], src: [T("string"), "path to a Lottie .json"],
+  size: [T("array"), "[w, h] box"], speed: [T("number"), "playback speed"], loop: [T("boolean"), "loop (default true)"],
+  in: [T("number", "string"), "start offset seconds"],
+};
+
+export function fieldsFor(t: string): F {
+  const f: F = { ...COMMON_FIELDS };
+  if (VISUAL_TYPES.has(t)) Object.assign(f, VISUAL_FIELDS);
+  if (t === "video" || t === "image" || t === "audio") Object.assign(f, MEDIA_FIELDS);
+  if (t === "audio") {
+    for (const k of ["fit", "size", "focus", "crop", "filters", "freeze"]) delete f[k];
+    f.keyframes = [T("object"), "{volume: [[t, gain]], speed: [[t, s]]}"];
+  }
+  if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];
+  if (t === "text" || t === "captions") Object.assign(f, TEXT_FIELDS);
+  if (t === "captions") Object.assign(f, CAPTION_FIELDS);
+  if (t === "shape") Object.assign(f, SHAPE_FIELDS);
+  if (t === "color") Object.assign(f, COLOR_FIELDS);
+  if (t === "lottie") Object.assign(f, LOTTIE_FIELDS);
+  return f;
+}
+
+export const TRACK_FIELDS: F = {
+  id: [T("string"), "unique track id"], kind: [T("string"), "video|audio (audio tracks are not drawn)"],
+  name: [T("string"), "label"],
+  magnetic: [T("boolean"), "clips play back-to-back in list order; starts are computed (Final Cut primary storyline)"],
+  role: [T("string"), "dialogue|voice|music|sfx|titles|other (ducking/mixing)"],
+  duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -12)"],
+  volume: [T("number"), "track gain"], muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
+  clips: [T("array"), "clips (later ones draw on top within the track)"],
+};
+export const SETTINGS_FIELDS: F = {
+  width: [T("number"), "canvas width px"], height: [T("number"), "canvas height px"], fps: [T("number"), "frames per second"],
+  background: [T("string"), "canvas colour"], duration: [T("number", "null"), "force total duration"],
+  loudness: [T("number", "null"), "target LUFS (default -14, null = off)"], sample_rate: [T("number"), "48000"],
+  effects: [T("array"), "whole-frame effects, times relative to the timeline: " + Object.keys(EFFECTS).join(",")],
+};
+
+// ------------------------------------------------------------------ errors
+export class EditError extends Error {
+  constructor(message: string, public code = "invalid", public hint?: string, public path?: string, public details?: Dict) { super(message); }
+  toJSON() {
+    const d: Dict = { code: this.code, message: this.message };
+    if (this.hint) d.hint = this.hint;
+    if (this.path) d.path = this.path;
+    if (this.details) Object.assign(d, this.details);
+    return d;
+  }
+}
+
+export function suggest(word: unknown, options: Iterable<string>): string | undefined {
+  const w = String(word ?? "").toLowerCase();
+  let best: string | undefined, bestScore = 0;
+  for (const o of options) {
+    const s = similarity(w, o.toLowerCase());
+    if (s > bestScore) { bestScore = s; best = o; }
+  }
+  return bestScore >= 0.55 ? best : undefined;
+}
+function similarity(a: string, b: string) { // Ratcliff/Obershelp-like via LCS of bigrams + prefix bonus
+  if (a === b) return 1;
+  if (!a || !b) return 0;
+  const bg = (s: string) => { const m = new Map<string, number>(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
+  const A = bg(a), B = bg(b); let inter = 0;
+  for (const [g, n] of A) inter += Math.min(n, B.get(g) || 0);
+  const dice = (2 * inter) / Math.max(1, a.length - 1 + b.length - 1);
+  return b.startsWith(a) || a.startsWith(b) ? Math.max(dice, 0.7) : dice;
+}
+
+// ------------------------------------------------------------------ parsing
+const TIME_RE = /^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/;
+export function parseTime(v: unknown, field = "time"): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    let n = NaN;
+    if (s.endsWith("ms")) n = parseFloat(s) / 1000;
+    else if (s.endsWith("s")) n = parseFloat(s);
+    else { const m = TIME_RE.exec(s); n = m ? (+(m[1] || 0)) * 3600 + +m[2] * 60 + +m[3] : Number(s); }
+    if (Number.isFinite(n)) return n;
+  }
+  throw new EditError(`${field}: cannot parse time ${JSON.stringify(v)}`, "bad_time", "use seconds (2.5), '2.5s', '1500ms' or 'mm:ss.ms'");
+}
+
+export function parseLen(v: unknown, ref: number, dflt?: number): number {
+  if (v === undefined || v === null) {
+    if (dflt === undefined) throw new EditError("missing length", "bad_length");
+    return dflt;
+  }
+  if (typeof v === "number") return v;
+  const s = String(v).trim();
+  if (s.endsWith("%")) return (parseFloat(s) / 100) * ref;
+  const n = parseFloat(s.replace(/px$/, ""));
+  if (Number.isFinite(n)) return n;
+  throw new EditError(`cannot parse length ${JSON.stringify(v)}`, "bad_length", "use px (120) or percent ('10%')");
+}
+
+const NAMED: Record<string, string> = {
+  white: "#ffffff", black: "#000000", red: "#ff0000", green: "#008000", lime: "#00ff00", blue: "#0000ff", yellow: "#ffff00",
+  orange: "#ffa500", purple: "#800080", pink: "#ffc0cb", gray: "#808080", grey: "#808080", cyan: "#00ffff", magenta: "#ff00ff",
+  navy: "#000080", teal: "#008080", gold: "#ffd700", silver: "#c0c0c0", brown: "#a52a2a", transparent: "#00000000",
+};
+/** -> [r,g,b,a] 0..255 */
+export function parseColor(v: unknown, dflt: [number, number, number, number] = [255, 255, 255, 255]): [number, number, number, number] {
+  if (v === undefined || v === null) return dflt;
+  if (Array.isArray(v)) return [v[0] | 0, v[1] | 0, v[2] | 0, v.length > 3 ? v[3] | 0 : 255];
+  let s = String(v).trim().toLowerCase();
+  if (NAMED[s]) s = NAMED[s];
+  let m = /^#([0-9a-f]{3,8})$/.exec(s);
+  if (m) {
+    let h = m[1];
+    if (h.length === 3 || h.length === 4) h = [...h].map((c) => c + c).join("");
+    if (h.length === 6 || h.length === 8) {
+      const n = (i: number) => parseInt(h.slice(i, i + 2), 16);
+      return [n(0), n(2), n(4), h.length === 8 ? n(6) : 255];
+    }
+  }
+  m = /^rgba?\(([^)]+)\)$/.exec(s);
+  if (m) {
+    const p = m[1].split(",").map((x) => parseFloat(x));
+    return [p[0], p[1], p[2], p.length > 3 ? Math.round((p[3] <= 1 ? p[3] * 255 : p[3])) : 255];
+  }
+  throw new EditError(`unknown colour ${JSON.stringify(v)}`, "bad_color", "use #RRGGBB, #RRGGBBAA, rgba(r,g,b,a) or a basic name like 'white'");
+}
+export const css = (v: unknown, d?: [number, number, number, number]) => { const [r, g, b, a] = parseColor(v, d); return `rgba(${r},${g},${b},${(a / 255).toFixed(4)})`; };
+
+export interface Anim { type: string; duration: number; ease?: string; [k: string]: any }
+export function normAnim(v: unknown, dflt: number): Anim | null {
+  if (v === undefined || v === null || v === false || v === "none" || v === "") return null;
+  if (typeof v === "string") return { type: v, duration: dflt };
+  if (typeof v === "object") {
+    const d: any = { ...(v as Dict) };
+    d.duration = parseTime(d.duration ?? dflt, "duration");
+    return d;
+  }
+  throw new EditError(`bad animation spec ${JSON.stringify(v)}`, "bad_anim");
+}
+
+// ------------------------------------------------------------------ timeline helpers
+export function newTimeline(width = 1920, height = 1080, fps = 30, name = "untitled"): Timeline {
+  return {
+    version: SCHEMA_VERSION, name,
+    settings: { width, height, fps, background: "#000000", duration: null, loudness: -14, sample_rate: 48000 },
+    assets: {},
+    tracks: [
+      { id: "main", kind: "video", magnetic: true, clips: [] },
+      { id: "overlay", kind: "video", clips: [] },
+      { id: "text", kind: "video", role: "titles", clips: [] },
+      { id: "voice", kind: "audio", role: "voice", clips: [] },
+      { id: "music", kind: "audio", role: "music", duck: -12, clips: [] },
+    ],
+    markers: [],
+  };
+}
+
+export function* iterClips(tl: Timeline): Generator<[Track, number, number, Clip]> {
+  for (let ti = 0; ti < tl.tracks.length; ti++) {
+    const tr = tl.tracks[ti];
+    for (let ci = 0; ci < (tr.clips || []).length; ci++) yield [tr, ti, ci, tr.clips[ci]];
+  }
+}
+
+export function findClip(tl: Timeline, id: string): [Track, number, Clip] {
+  for (const [tr, , ci, c] of iterClips(tl)) if (c.id === id) return [tr, ci, c];
+  const ids = [...iterClips(tl)].map((x) => x[3].id);
+  const s = suggest(id, ids);
+  throw new EditError(`clip '${id}' not found`, "not_found", s ? `did you mean '${s}'?` : `existing clips: ${ids.slice(0, 30).join(", ") || "(none)"}`);
+}
+
+export function findTrack(tl: Timeline, id: string): Track {
+  const t = tl.tracks.find((x) => x.id === id);
+  if (t) return t;
+  const ids = tl.tracks.map((x) => x.id);
+  const s = suggest(id, ids);
+  throw new EditError(`track '${id}' not found`, "not_found", `${s ? `did you mean '${s}'? ` : ""}tracks: ${ids.join(", ")}; create one with add_track`);
+}
+
+export function newId(tl: Timeline, prefix: string): string {
+  const used = new Set<string>([...tl.tracks.map((t) => t.id), ...Object.keys(tl.assets)]);
+  for (const [, , , c] of iterClips(tl)) used.add(c.id);
+  let n = 1;
+  while (used.has(`${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
+
+export const clipStart = (c: Clip) => parseTime(c.start ?? 0);
+export const clipDur = (c: Clip) => parseTime(c.duration ?? 0);
+export const clipEnd = (c: Clip) => clipStart(c) + clipDur(c);
+export const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
+
+export function resolve(tl: Timeline): Timeline {
+  resolveMagnetic(tl);
+  resolveAttached(tl);
+  // until_end clips stretch to the end of everything else
+  let end = 0, any = false;
+  for (const [, , , c] of iterClips(tl)) { if (c.until_end) any = true; else if (c.enabled !== false) end = Math.max(end, clipEnd(c)); }
+  if (any) {
+    for (const [, , , c] of iterClips(tl)) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
+    resolveMagnetic(tl);
+    resolveAttached(tl);
+  }
+  return tl;
+}
+
+function resolveAttached(tl: Timeline) {
+  const byId = new Map<string, Clip>();
+  for (const [, , , c] of iterClips(tl)) byId.set(c.id, c);
+  for (let pass = 0; pass < 3; pass++) { // allows short chains (A attached to B attached to C)
+    for (const [, , , c] of iterClips(tl)) {
+      if (!c.attach_to) continue;
+      const t = byId.get(c.attach_to);
+      if (!t || t === c) continue;
+      const off = parseTime(c.offset ?? 0);
+      c.start = round6(Math.max(0, clipStart(t) + off));
+      if (c.match_duration) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
+    }
+  }
+  for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
+}
+
+function resolveMagnetic(tl: Timeline) {
+  for (const tr of tl.tracks) {
+    if (!tr.magnetic) continue;
+    let t = 0;
+    tr.clips.forEach((c, i) => {
+      const dur = clipDur(c);
+      let td = 0;
+      const spec = i > 0 ? normAnim(c.transition, 0.5) : null;
+      if (spec) td = Math.min(spec.duration, dur, clipDur(tr.clips[i - 1]));
+      const start = Math.max(0, t - td);
+      c.start = round6(start);
+      t = start + dur;
+    });
+  }
+}
+
+export function totalDuration(tl: Timeline): number {
+  if (tl.settings?.duration) return parseTime(tl.settings.duration);
+  let end = 0;
+  for (const [, , , c] of iterClips(tl)) if (c.enabled !== false) end = Math.max(end, clipEnd(c));
+  return round6(end);
+}
+
+// ------------------------------------------------------------------ validation
+const jtype = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
+
+function checkFields(obj: Dict, fields: F, path: string, issues: Issue[], what: string) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("_")) continue; // private/comment keys
+    const spec = fields[k];
+    if (!spec) {
+      const s = suggest(k, Object.keys(fields));
+      issues.push({ level: "error", path: `${path}.${k}`, message: `unknown ${what} field '${k}'`, hint: s ? `did you mean '${s}'?` : `allowed: ${Object.keys(fields).join(", ")}` });
+      continue;
+    }
+    const t = jtype(v);
+    if (v !== null && !spec[0].includes(t)) issues.push({ level: "error", path: `${path}.${k}`, message: `'${k}' is ${t}, expected ${spec[0].join("/")}` });
+  }
+}
+
+function checkName(v: unknown, opts: string[], path: string, issues: Issue[], what: string) {
+  const name = v && typeof v === "object" ? (v as Dict).type : v;
+  if (name === undefined || name === null || name === false || name === "none" || name === "") return;
+  if (!opts.includes(name as string)) {
+    const s = suggest(name, opts);
+    issues.push({ level: "error", path, message: `unknown ${what} '${name}'`, hint: s ? `did you mean '${s}'?` : `options: ${opts.join(", ")}` });
+  }
+}
+
+export interface ValidateOpts { exists?: (p: string) => boolean; fontCheck?: (font: string | undefined, text: string) => { error?: string; hint?: string; fallback?: string } }
+
+export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
+  const issues: Issue[] = [];
+  if (!tl || typeof tl !== "object") return [{ level: "error", path: "$", message: "timeline must be a JSON object" }];
+  for (const k of Object.keys(tl)) if (!["version", "name", "settings", "assets", "tracks", "markers", "meta"].includes(k))
+    issues.push({ level: "warning", path: `$.${k}`, message: `unknown top-level key '${k}' (ignored)` });
+  const st = tl.settings || {};
+  checkFields(st, SETTINGS_FIELDS, "$.settings", issues, "settings");
+  (st.effects || []).forEach((f: any, fi: number) => {
+    const ft = typeof f === "string" ? f : f?.type;
+    if (!(ft in EFFECTS)) issues.push({ level: "error", path: `$.settings.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
+  });
+  for (const k of ["width", "height"]) {
+    const v = st[k];
+    if (!Number.isInteger(v) || v < 16 || v > 8192) issues.push({ level: "error", path: `$.settings.${k}`, message: `${k} must be an integer 16..8192` });
+    else if (v % 2) issues.push({ level: "warning", path: `$.settings.${k}`, message: `${k} is odd; it is rounded to even on export` });
+  }
+  if (typeof st.fps !== "number" || st.fps < 1 || st.fps > 120) issues.push({ level: "error", path: "$.settings.fps", message: "fps must be 1..120" });
+  const assets = tl.assets || {};
+  for (const [aid, a] of Object.entries(assets))
+    if (o.exists && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `$.assets.${aid}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
+  const ids = new Map<string, string>();
+  if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
+  tl.tracks.forEach((tr, ti) => {
+    const tp = `$.tracks[${ti}]`;
+    checkFields(tr, TRACK_FIELDS, tp, issues, "track");
+    if (!tr.id) issues.push({ level: "error", path: `${tp}.id`, message: "track needs an id" });
+    else if (ids.has(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
+    ids.set(tr.id, tp);
+    const kind = tr.kind || "video";
+    let prevEnd: number | null = null;
+    (tr.clips || []).forEach((c, ci) => {
+      let p = `${tp}.clips[${ci}]`;
+      if (!c || typeof c !== "object") { issues.push({ level: "error", path: p, message: "clip must be an object" }); return; }
+      if (!CLIP_TYPES.includes(c.type)) {
+        const s = suggest(c.type, CLIP_TYPES);
+        issues.push({ level: "error", path: `${p}.type`, message: `unknown clip type ${JSON.stringify(c.type)}`, hint: s ? `did you mean '${s}'?` : `types: ${CLIP_TYPES.join(", ")}` });
+        return;
+      }
+      p = `${p}<${c.id ?? "?"}>`;
+      checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
+      else if (ids.has(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${ids.get(c.id)})` });
+      ids.set(c.id, p);
+      if (kind === "audio" && !["audio", "video", "gap"].includes(c.type)) issues.push({ level: "warning", path: p, message: `${c.type} clip on audio track '${tr.id}' will not be drawn` });
+      let start = 0, dur = 0;
+      try {
+        dur = clipDur(c); start = clipStart(c);
+        if (dur <= 0) issues.push({ level: "error", path: `${p}.duration`, message: "duration must be > 0" });
+        if (start < 0) issues.push({ level: "error", path: `${p}.start`, message: "start must be >= 0" });
+      } catch (e: any) { issues.push({ level: "error", path: p, message: e.message, hint: e.hint }); return; }
+      if (MEDIA_TYPES.has(c.type)) {
+        const aid = c.asset;
+        if (!aid) issues.push({ level: "error", path: `${p}.asset`, message: "media clip needs 'asset' (or 'src' when adding)" });
+        else if (!assets[aid]) {
+          const s = suggest(aid, Object.keys(assets));
+          issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
+        } else {
+          const a = assets[aid];
+          if ((c.type === "video" || c.type === "audio") && a.duration && !c.loop && !c.freeze && !(c.keyframes?.speed)) {
+            const need = parseTime(c.in ?? 0) + dur * Number(c.speed ?? 1);
+            if (need > a.duration + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration.toFixed(2)}s; the last frame is held`, hint: "shorten duration, lower 'in', or set loop: true" });
+          }
+          if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
+          if (c.type === "audio" && a.kind === "image") issues.push({ level: "error", path: `${p}.type`, message: "asset is an image, cannot be audio" });
+          if (c.type === "lottie" && a.kind !== "lottie") issues.push({ level: "error", path: `${p}.asset`, message: "asset is not a Lottie animation" });
+          if (c.reverse && dur * Number(c.speed ?? 1) > 60) issues.push({ level: "warning", path: `${p}.reverse`, message: "reversing more than 60 s of video uses a lot of memory" });
+        }
+      }
+      if (c.type === "text" && !String(c.text ?? "").trim()) issues.push({ level: "error", path: `${p}.text`, message: "text clip has empty text" });
+      if (c.type === "captions" && !(c.words?.length || c.srt)) issues.push({ level: "error", path: p, message: "captions need 'words' or 'srt'" });
+      if (c.type === "captions" && c.srt && o.exists && !o.exists(c.srt)) issues.push({ level: "error", path: `${p}.srt`, message: `file not found: ${c.srt}` });
+      for (const [key, opts, what] of [["enter", ENTER_EXIT, "animation"], ["exit", ENTER_EXIT, "animation"], ["transition", TRANSITIONS, "transition"], ["motion", MOTIONS, "motion"]] as const)
+        if (key in c) checkName(c[key], opts as unknown as string[], `${p}.${key}`, issues, what);
+      if (c.transition && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });
+      if (c.transition && ci > 0 && !tr.magnetic) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
+      for (const [key, opts] of [["fit", FITS], ["blend", BLENDS], ["position", POSITIONS], ["style", CAPTION_STYLES], ["shape", SHAPES]] as const)
+        if (key in c && c[key] != null && !(opts as readonly string[]).includes(c[key])) {
+          const s = suggest(c[key], opts);
+          issues.push({ level: "error", path: `${p}.${key}`, message: `invalid ${key} '${c[key]}'`, hint: s ? `did you mean '${s}'?` : `options: ${opts.join(", ")}` });
+        }
+      if (c.mask) checkName(typeof c.mask === "string" ? c.mask : c.mask.shape, MASKS, `${p}.mask`, issues, "mask shape");
+      (c.filters || []).forEach((f: any, fi: number) => {
+        const ft = typeof f === "string" ? f : f?.type;
+        if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
+        else if (ft === "lut" && o.exists && !o.exists(String(f.path ?? ""))) issues.push({ level: "error", path: `${p}.filters[${fi}].path`, message: "LUT file not found" });
+      });
+      (c.effects || []).forEach((f: any, fi: number) => {
+        const ft = typeof f === "string" ? f : f?.type;
+        if (!(ft in EFFECTS)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
+      });
+      for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
+        if (!ANIMATABLE.includes(prop)) { const s = suggest(prop, ANIMATABLE); issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `'${prop}' is not animatable`, hint: s ? `did you mean '${s}'?` : `animatable: ${ANIMATABLE.join(", ")}` }); continue; }
+        if (!Array.isArray(kfs) || !kfs.length) { issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: "keyframes must be a non-empty list of [t, value, easing?]" }); continue; }
+        for (const k of kfs as any[]) {
+          const kk = Array.isArray(k) ? k : k && typeof k === "object" ? [k.t, k.v ?? k.value, k.ease] : null;
+          if (!kk || kk.length < 2 || kk[1] === undefined) issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `bad keyframe ${JSON.stringify(k)}; use [t, value] or [t, value, 'ease_out']` });
+          else if (kk[2] && !EASINGS.includes(kk[2])) issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `unknown easing '${kk[2]}'`, hint: `easings: ${EASINGS.join(", ")}` });
+        }
+      }
+      if (o.fontCheck && (c.type === "text" || c.type === "captions")) {
+        let sample = c.text ?? (c.words || []).map((w: any) => w.text ?? "").join(" ");
+        if (c.uppercase) sample = String(sample).toUpperCase();
+        const r = o.fontCheck(c.font, String(sample));
+        if (r.error) issues.push({ level: "error", path: `${p}.font`, message: r.error, hint: r.hint });
+        else if (r.fallback) issues.push({ level: "info", path: `${p}.font`, message: `font '${c.font}' lacks some characters; '${r.fallback}' is used for them` });
+      }
+      if (c.attach_to) {
+        const exists = tl.tracks.some((t2) => t2.clips.some((x) => x.id === c.attach_to));
+        if (!exists) issues.push({ level: "error", path: `${p}.attach_to`, message: `attached to missing clip '${c.attach_to}'`, hint: "attach to an existing clip id, or remove attach_to" });
+        if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "attach_to is ignored on magnetic tracks (their starts are computed)" });
+      }
+      if (!tr.magnetic && kind !== "audio" && prevEnd !== null && start < prevEnd - 1e-6 && !c.transition)
+        issues.push({ level: "info", path: p, message: `overlaps the previous clip on '${tr.id}' (drawn on top)` });
+      prevEnd = Math.max(prevEnd ?? 0, start + dur);
+    });
+  });
+  if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
+  return issues;
+}
+
+export function schemaDoc() {
+  const f = (d: F) => Object.fromEntries(Object.entries(d).map(([k, v]) => [k, v[1]]));
+  return {
+    timeline: {
+      version: SCHEMA_VERSION, settings: f(SETTINGS_FIELDS),
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, width, height, fps, has_audio, alpha}} - filled by import_media",
+      tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
+      markers: "[{t, label}]",
+    },
+    track: f(TRACK_FIELDS),
+    clip_types: Object.fromEntries(CLIP_TYPES.map((t) => [t, f(Object.fromEntries(Object.entries(fieldsFor(t)).filter(([k]) => !(k in COMMON_FIELDS))))])),
+    common_clip_fields: f(COMMON_FIELDS),
+    units: { time: "seconds (2.5, '2.5s', '1500ms', '00:02.5')", length: "px or '10%' of canvas", color: "#RRGGBB / #RRGGBBAA / rgba() / basic names" },
+    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
+  };
+}
+
+export function deepMerge(dst: Dict, patch: Dict): Dict {
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete dst[k];
+    else if (v && typeof v === "object" && !Array.isArray(v) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k]) && k !== "keyframes") deepMerge(dst[k], v);
+    else dst[k] = structuredClone(v);
+  }
+  return dst;
+}
+
+export function setDotted(obj: Dict, key: string, value: unknown) {
+  const parts = key.split(".");
+  let o = obj;
+  for (const p of parts.slice(0, -1)) o = o[p] ??= {};
+  if (value === null) delete o[parts.at(-1)!];
+  else o[parts.at(-1)!] = value;
+}
+
+export const clone = <X>(x: X): X => structuredClone(x);

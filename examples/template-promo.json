@@ -1,0 +1,9 @@
+{
+  "_comment": "One-op promo. agentcut init promo --preset reels && cd promo && agentcut apply ../examples/template-promo.json",
+  "ops": [
+    {"op": "apply_template", "name": "promo",
+     "media": ["/ABS/hero.mp4", "/ABS/detail.jpg", "/ABS/usage.mp4"],
+     "hook": "Ra mắt sản phẩm mới", "points": ["Nhẹ hơn 30%", "Pin 2 ngày"], "cta": "Mua ngay",
+     "music": "/ABS/song.mp3", "brand_color": "#FFD60A"}
+  ]
+}

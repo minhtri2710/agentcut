@@ -1,0 +1,20 @@
+{
+  "_comment": "9:16 promo built by hand. Replace /ABS/... with real files: agentcut init promo --preset reels && cd promo && agentcut apply ../examples/reels-promo.ops.json",
+  "ops": [
+    {"op": "add_sequence", "track": "main",
+     "items": [
+       {"src": "/ABS/footage/hero.mp4", "in": 1.0, "duration": 2.0, "focus": [0.4, 0.5]},
+       {"src": "/ABS/footage/wide.mp4", "duration": 1.5, "fit": "blur"},
+       {"src": "/ABS/photos/product.jpg", "duration": 2.0, "motion": "ken_burns"},
+       {"src": "/ABS/footage/usage.mp4", "duration": 2.5, "filters": [{"type": "look", "name": "warm"}]}
+     ],
+     "defaults": {"transition": {"type": "zoom_blur", "duration": 0.3}}},
+    {"op": "add_clip", "track": "text", "text": "HOOK LINE", "attach_to": "main#0", "offset": 0.2, "match_duration": true, "preset": "title_bold", "position": "top", "margin": "14%"},
+    {"op": "add_clip", "track": "text", "text": "One proof point", "attach_to": "main#2", "offset": 0.3, "match_duration": true, "preset": "subtitle_box", "y": "62%"},
+    {"op": "add_clip", "track": "overlay", "src": "/ABS/assets/logo.png", "until_end": true, "size": ["22%", "10%"], "fit": "contain", "position": "bottom", "margin": "22%", "enter": "fade"},
+    {"op": "add_clip", "track": "music", "src": "/ABS/audio/track.mp3", "until_end": true, "fade_out": 1.0},
+    {"op": "snap_to_beats", "track": "main", "beats": "/ABS/audio/track.mp3", "every": 2},
+    {"op": "add_voiceover", "text": "Your script here", "voice": "Samantha", "at": 0.4, "captions": "tiktok"},
+    {"op": "add_effect", "type": "grain", "intensity": 0.2}
+  ]
+}

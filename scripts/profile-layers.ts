@@ -1,0 +1,20 @@
+import { Project } from "../src/project.ts";
+import { Layer, Renderer } from "../src/render.ts";
+import { FrameSource } from "../src/media.ts";
+const stats = new Map<string, number>();
+const add = (k: string, v: number) => stats.set(k, (stats.get(k) ?? 0) + v);
+const of = Layer.prototype.frame;
+Layer.prototype.frame = async function (tl, m) { const a = performance.now(); const r = await of.call(this, tl, m); add(`source:${this.c.id}`, performance.now() - a); return r; };
+const ra = FrameSource.prototype.readAt;
+FrameSource.prototype.readAt = async function (u) { const a = performance.now(); const r = await ra.call(this, u); add("  (decode wait)", performance.now() - a); return r; };
+const p = new Project(process.argv[2]);
+const r = new Renderer(p.absolutized(p.load()), p.root, 1);
+const od = (r as any).draw.bind(r);
+(r as any).draw = (img: any, c: any, ...rest: any[]) => { const a = performance.now(); od(img, c, ...rest); add(`draw:${c.id}`, performance.now() - a); };
+const n = Math.round(r.duration * r.fps);
+const t0 = performance.now();
+for (let i = 0; i < n; i++) { await r.frame(i / r.fps); const a = performance.now(); r.pixels(); add("pixels (flush)", performance.now() - a); }
+const tot = performance.now() - t0;
+console.log("total ms/frame", (tot / n).toFixed(1));
+for (const [k, v] of [...stats].sort((a, b) => b[1] - a[1])) console.log(k.padEnd(22), (v / n).toFixed(2), "ms/frame");
+r.close();

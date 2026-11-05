@@ -1,0 +1,3 @@
+#!/bin/sh
+# dev wrapper: run the CLI from source
+exec bun "$(dirname "$0")/../src/cli.ts" "$@"
