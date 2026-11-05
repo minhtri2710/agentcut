@@ -7,12 +7,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as api from "./api.ts";
 import { GUIDE } from "./docs.ts";
+import { FEEDBACK_GUIDE, KINDS, recordCall, SEVERITIES } from "./feedback.ts";
 import { EditError } from "./model.ts";
+import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `AgentCut: JSON-timeline video editor with CapCut/Final Cut features. Read \`guide\` once. Loop:
 create_project -> probe_media/analyze_* -> apply_ops (atomic; or apply_template) -> contact_sheet/preview_frame (LOOK) ->
 render (draft first) -> fix with apply_ops/undo -> final render. Times are seconds; tracks[0] is the bottom layer.
-After create_project/open_project the server remembers the project, so 'project' args are optional.`;
+After create_project/open_project the server remembers the project, so 'project' args are optional.
+Help improve AgentCut: when something is slow, confusing, missing or broken, call report_feedback (one short call).`;
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
@@ -21,7 +24,7 @@ const jobs = new Map<string, any>();
 const text = (o: unknown): Content => ({ type: "text", text: typeof o === "string" ? o : JSON.stringify(o) });
 const ok = (o: object) => ({ content: [text({ ok: true, ...o })] });
 function fail(e: any) {
-  const error = e instanceof EditError ? e.toJSON() : { code: "internal", message: `${e?.name}: ${e?.message}`, ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) };
+  const error = e instanceof EditError ? e.toJSON() : { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also call report_feedback(kind='bug') with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) };
   return { content: [text({ ok: false, error })], isError: true };
 }
 function proj(p?: string) {
@@ -33,7 +36,17 @@ const wrap = <A>(f: (a: A) => any) => async (a: A) => { try { return ok(await f(
 const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: "image/png" });
 
 export function buildServer() {
-  const s = new McpServer({ name: "agentcut", version: "0.2.0" }, { instructions: INSTRUCTIONS });
+  const s = new McpServer({ name: "agentcut", version: VERSION }, { instructions: INSTRUCTIONS });
+  // every tool call is timed and its outcome logged for the feedback summary (errors, guessed names, slow calls)
+  const register = s.registerTool.bind(s);
+  (s as any).registerTool = (name: string, cfg: any, handler: any) => (register as any)(name, cfg, async (a: any, extra: any) => {
+    const t0 = performance.now();
+    const r = await handler(a, extra);
+    let res: any = { ok: !r?.isError };
+    try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
+    recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
+    return r;
+  });
   const P = z.string().optional().describe("project folder (optional after create/open)");
 
   s.registerTool("guide", { description: "Read first: how AgentCut works (tracks, magnetic timeline, templates, ops cheat-sheet, vocabulary, rules)." },
@@ -103,6 +116,23 @@ export function buildServer() {
   s.registerTool("transcribe", { description: "Word-level transcript (needs whisper.cpp + AGENTCUT_WHISPER_MODEL, or openai-whisper).", inputSchema: { path: z.string(), language: z.string().optional() } }, wrap((a) => api.analyze.transcribe(a.path, a.language)));
   s.registerTool("list_fonts", { description: "Search installed fonts (use the name in a text clip's font).", inputSchema: { query: z.string().default("") } }, wrap((a) => api.fonts(a.query)));
   s.registerTool("list_voices", { description: "Installed text-to-speech voices (lang filter e.g. 'vi').", inputSchema: { lang: z.string().optional() } }, wrap((a) => api.voices(a.lang)));
+  s.registerTool("report_feedback", {
+    description: `Tell the AgentCut maintainers what to improve. ${FEEDBACK_GUIDE} Returns the note id (merged=true if someone reported it before).`,
+    inputSchema: {
+      kind: z.enum(KINDS).describe("bug | missing_feature | friction | performance | docs | idea | praise"),
+      title: z.string().describe("one line, e.g. 'no op to detach audio from a video clip'"),
+      details: z.string().optional().describe("what you tried, what happened, what you expected"),
+      area: z.string().optional().describe("op/tool/feature involved, e.g. add_captions, render, fonts"),
+      severity: z.enum(SEVERITIES).optional(),
+      suggestion: z.string().optional().describe("how it could work instead"),
+    },
+  }, wrap((a) => api.feedback.add({ ...a, source: "mcp" })));
+  s.registerTool("feedback_summary", {
+    description: "Ranked improvement backlog built from agent notes + automatically logged errors, guessed names, rejected batches, slow calls and render speed. markdown=true returns a report.",
+    inputSchema: { days: z.number().optional(), markdown: z.boolean().default(false) },
+  }, async (a) => { try { return a.markdown ? { content: [text(api.feedback.report(undefined, a.days).markdown!)] } : ok(api.feedback.summary(a.days)); } catch (e) { return fail(e); } });
+  s.registerTool("resolve_feedback", { description: "Mark a feedback note resolved/wontfix after improving AgentCut.", inputSchema: { id: z.string(), status: z.enum(["resolved", "wontfix", "open"]).default("resolved"), note: z.string().optional() } },
+    wrap((a) => api.feedback.resolve(a.id, a.status, a.note)));
   return s;
 }
 

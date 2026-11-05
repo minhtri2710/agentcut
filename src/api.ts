@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import { loadCanvas } from "./canvas.ts";
+import * as FB from "./feedback.ts";
 import { listFonts } from "./fonts.ts";
 import { LOOKS, probe as probeMedia } from "./media.ts";
 import * as M from "./model.ts";
@@ -113,6 +114,9 @@ export async function render(project: string | undefined, o: {
     start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
     hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress,
   });
+  FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
+    encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
+    effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
   if (o.sheet !== false && !out.endsWith(".gif")) {
     const loud = AN.loudnessAsync(out);
     try {
@@ -150,3 +154,15 @@ export function capabilities() {
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
 export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts };
+
+export const feedback = {
+  add: (a: M.Dict) => FB.addNote(a as any),
+  list: (status = "open", kind?: string) => ({ notes: FB.listNotes({ status, kind }) }),
+  summary: (sinceDays?: number, limit?: number) => FB.summary({ sinceDays, limit }),
+  report: (out?: string, sinceDays?: number) => {
+    const md = FB.summaryMarkdown(FB.summary({ sinceDays }));
+    if (out) { mkdirSync(dirname(presolve(out)), { recursive: true }); writeFileSync(presolve(out), md); return { report: presolve(out) }; }
+    return { markdown: md };
+  },
+  resolve: (id: string, status?: "resolved" | "wontfix" | "open", note?: string) => FB.resolveNote(id, status, note),
+};

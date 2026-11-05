@@ -26,6 +26,7 @@ function check(name: string, cond: unknown, info?: unknown) {
 }
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-smoke-"));
+process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store (inherited by every CLI call)
 const m = join(tmp, "media");
 mkdirSync(m);
 console.log("media ->", tmp);
@@ -133,6 +134,16 @@ const q = join(tmp, "quote");
 cli(["init", q, "--preset", "square"]);
 check("quote template", cli(["op", "apply_template", "name=quote", "text=Stay hungry, stay foolish", "author=Steve Jobs"], { cwd: q }).errors === 0);
 check("template renders", cli(["render", "--draft", "--quiet"], { cwd: T }).frames > 0);
+
+console.log("feedback");
+const n1 = cli(["feedback", "add", "kind=friction", "title=had to guess the fade animation name", "area=enter"]);
+const n2 = cli(["feedback", "add", "kind=friction", "title=Had to guess the fade animation name!"]);
+check("feedback note merged", n2.merged && n2.id === n1.id && n2.count === 2, n2);
+const fs = cli(["feedback", "summary"]);
+check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
+check("render speed logged", fs.render?.renders >= 1, fs.render);
+check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
+check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });

@@ -7,6 +7,9 @@ Agent-first video editor. Read [AGENTS.md](AGENTS.md) to *use* it; this file is 
 - Check: `npx tsc --noEmit -p .` then `bun tests/smoke.ts` and `bun tests/mcp.ts`. Run all three after changes.
 - Build: `bun run build` -> `dist/` (Node >= 20 bundles); `bun run build -- --compile` -> `bin/agentcut` (single binary).
 - Perf tools: `bun scripts/profile-frames.ts <project>`, `bun scripts/profile-layers.ts <project>`, `bun scripts/bench-ops.ts`.
+- Deciding what to improve: start from `agentcut feedback summary --md` (ranked backlog from agent notes + auto-logged
+  errors, guessed names, rejected batches, latency, render speed). Guessed names usually mean "add an alias" or "rename";
+  mark notes done with `agentcut feedback resolve <id>`. Tests use an isolated AGENTCUT_HOME - keep it that way.
 - `api.ts` is shared by `cli.ts` and `mcp.ts`: add features there once.
 - New op: `op(...)` in `ops.ts` (doc + args are surfaced to agents automatically); add clip fields to the tables in
   `model.ts` (validation + schema come from them); mention it in `docs.ts` GUIDE and regenerate AGENTS.md.

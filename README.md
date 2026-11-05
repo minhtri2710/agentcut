@@ -115,6 +115,28 @@ Chưa có (cần model AI): xoá phông, tự bám theo khuôn mặt khi reframe
 | Render trả về contact sheet và LUFS | Có bằng chứng để kiểm tra, không chỉ dựa vào exit code |
 | `guide` · `schema` · `ops` · `capabilities` · `fonts` · `voices` | Tự mô tả: agent không phải đoán tên field |
 
+## Vòng phản hồi từ agent (tự cải thiện)
+
+Agent là người dùng chính, nên app có sẵn hai kênh để biết cần cải thiện gì:
+
+1. **Agent chủ động ghi chú**: MCP `report_feedback` hoặc CLI `agentcut feedback add`. Dùng khi gặp lỗi, thiếu tính năng, phải làm vòng, thấy chậm, tài liệu khó hiểu, hay kết quả trông sai. Guide và hướng dẫn MCP đều nhắc agent làm việc này. Ghi chú trùng ý được **gộp và đếm**, nên càng nhiều agent gặp thì việc đó càng được đẩy lên đầu.
+2. **Tự động ghi nhận** mọi lời gọi CLI/MCP:
+   - lỗi theo mã;
+   - **tên agent đoán sai** (ví dụ `fade_in` trong khi đúng là `fade`), từ đó gợi ý nên thêm alias;
+   - batch bị từ chối và lý do;
+   - lệnh chậm (p50/p95);
+   - tốc độ render;
+   - lỗi nội bộ.
+
+```bash
+agentcut feedback summary            # JSON: backlog xếp hạng + số liệu
+agentcut feedback summary --md > IMPROVEMENTS.md   # báo cáo markdown cho dev/agent
+agentcut feedback list               # các ghi chú đang mở
+agentcut feedback resolve fb003      # đánh dấu đã xử lý
+```
+
+Dữ liệu chỉ lưu trên máy, tại `~/.agentcut/feedback`. Có thể đổi chỗ lưu bằng `AGENTCUT_HOME`. Đặt `AGENTCUT_TELEMETRY=0` để tắt phần tự động ghi nhận (ghi chú do agent viết vẫn hoạt động). Đường dẫn trong home được rút gọn thành `~`.
+
 ## Hiệu năng
 
 Đo trên Apple Silicon 10 core, video 1080×1920, 12s, 4 track, có transition, hiệu ứng, mask, chữ:
@@ -147,7 +169,8 @@ src/
   encode.ts     encoder + render song song (segment-worker.ts) · audio.ts: mixer + loudness
   analyze.ts    beat (FFT + DP), scene, silence, loudness, TTS, whisper
   fonts.ts      phân giải font + kiểm tra glyph · canvas.ts: nạp Skia lazy
-  api.ts        lớp dùng chung · cli.ts: `agentcut` · mcp.ts: `agentcut-mcp` (24 tool)
+  api.ts        lớp dùng chung · cli.ts: `agentcut` · mcp.ts: `agentcut-mcp` (27 tool)
+  feedback.ts   ghi chú của agent + tự động ghi nhận + backlog xếp hạng
 ```
 
 ## Kiểm thử

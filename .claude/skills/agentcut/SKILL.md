@@ -17,3 +17,5 @@ description: Make or edit videos (reels/shorts/youtube, slideshows, promos, capt
    every text moment and every transition. Fix what you see (readability, safe area, cropping, timing).
 6. `render` with draft=true, check the returned contact sheet + loudness (about -14 LUFS), then the final render.
 7. Report the output path and what you verified; list anything a human should still review.
+8. Before finishing, if anything was slow, confusing, missing or broken, send one `report_feedback` note per issue
+   (CLI: `agentcut feedback add kind=... title=...`). Duplicates are merged; it is how AgentCut improves.

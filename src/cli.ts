@@ -2,10 +2,10 @@
 // `agentcut` CLI. Prints exactly one JSON object on stdout; progress goes to stderr.
 // Exit codes: 0 ok · 1 edit/validation error · 2 usage error · 3 internal error.
 import { existsSync, readFileSync } from "node:fs";
+import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
-
-const VERSION = "0.2.0";
-const BOOL = new Set(["pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy"]);
+import { VERSION } from "./version.ts";
+const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -17,6 +17,8 @@ Export:      render [-o out.mp4|.mov|.webm|.gif] [--from S --to S] [--draft] [--
 Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
+Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|idea title="..." [details=... suggestion=... area=... severity=...]
+             feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
 Global:      -p/--project DIR (or $AGENTCUT_PROJECT, or nearest folder with project.json) · --pretty`;
 
 function parseArgs(argv: string[]) {
@@ -48,7 +50,9 @@ function kv(pairs: string[]) {
 }
 
 let pretty = false;
+const call = { cmd: "", t0: performance.now(), ops: undefined as string[] | undefined };
 function emit(obj: unknown, code = 0): never {
+  recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {});
   process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n");
   process.exit(code);
 }
@@ -71,6 +75,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { flags: f, pos } = parseArgs(argv);
   pretty = !!f.pretty || !!process.stdout.isTTY;
   const cmd = pos.shift();
+  call.cmd = cmd === "op" ? (pos[0] ?? "op") : cmd ?? "";
   if (!cmd || f.help || cmd === "help") { console.log(HELP); return; }
   if (cmd === "--version" || cmd === "version") { console.log(VERSION); return; }
   if (cmd === "guide" || cmd === "docs") { const { GUIDE } = await import("./docs.ts"); console.log(GUIDE.trim()); return; }
@@ -85,7 +90,7 @@ export async function main(argv = process.argv.slice(2)) {
         res = api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"] }); break;
+      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"] }); break;
       case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"] }); break;
       case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }]); break;
       case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }]); break;
@@ -122,13 +127,24 @@ export async function main(argv = process.argv.slice(2)) {
       case "schema": res = api.schema(); break;
       case "ops": res = api.opsDoc(); break;
       case "capabilities": case "caps": res = api.capabilities(); break;
+      case "feedback": {
+        const sub = pos.shift() ?? "summary";
+        if (sub === "add") res = api.feedback.add({ ...kv(pos), ...Object.fromEntries(["kind", "title", "details", "area", "severity", "suggestion"].filter((k) => f[k] !== undefined).map((k) => [k, f[k]])), source: "cli" });
+        else if (sub === "list") res = api.feedback.list(f.status ?? "open", f.kind);
+        else if (sub === "summary" || sub === "report") {
+          if (f.md !== undefined || sub === "report") { const r = api.feedback.report(typeof f.md === "string" ? f.md : undefined, num(f.days)); if (r.markdown && !f.pretty) { console.log(r.markdown); return; } res = r; }
+          else res = api.feedback.summary(num(f.days), num(f.limit));
+        } else if (sub === "resolve") res = api.feedback.resolve(pos[0], f.status, f.note);
+        else emit({ ok: false, error: { code: "usage", message: `unknown feedback command '${sub}'`, hint: "feedback add|list|summary|resolve" } }, 2);
+        break;
+      }
       default: emit({ ok: false, error: { code: "usage", message: `unknown command '${cmd}'`, hint: "run `agentcut help`" } }, 2);
     }
     emit({ ok: true, ...res });
   } catch (e: any) {
     if (e instanceof EditError) emit({ ok: false, error: e.toJSON() }, 1);
     if (e instanceof SyntaxError) emit({ ok: false, error: { code: "bad_json", message: e.message, hint: "ops must be valid JSON" } }, 2);
-    emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : { hint: "set AGENTCUT_DEBUG=1 for a stack trace" }) } }, 3);
+    emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
   }
 }
 

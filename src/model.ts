@@ -209,7 +209,7 @@ export function suggest(word: unknown, options: Iterable<string>): string | unde
   }
   return bestScore >= 0.55 ? best : undefined;
 }
-function similarity(a: string, b: string) { // Ratcliff/Obershelp-like via LCS of bigrams + prefix bonus
+export function similarity(a: string, b: string) { // Ratcliff/Obershelp-like via LCS of bigrams + prefix bonus
   if (a === b) return 1;
   if (!a || !b) return 0;
   const bg = (s: string) => { const m = new Map<string, number>(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };

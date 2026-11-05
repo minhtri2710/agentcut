@@ -74,6 +74,15 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 - Never invent logos/screens/metrics: only use files you were given; a missing asset is a blocker - ask.
 - "Done" needs evidence: a contact sheet or frame you looked at + the render result JSON.
 
+## Help improve AgentCut (please do this)
+Whenever AgentCut slows you down - a name you guessed that does not exist, a feature you had to work around, something
+slow, unclear docs, an error whose hint did not help, or output that looked wrong - send ONE short note:
+  MCP: report_feedback {kind, title, details?, area?, severity?, suggestion?}
+  CLI: agentcut feedback add kind=missing_feature title="no op to detach audio" suggestion="detach_audio op"
+kinds: bug, missing_feature, friction, performance, docs, idea, praise. Duplicates are merged and counted.
+Errors, guessed names, rejected batches and slow calls are logged automatically (locally, ~/.agentcut/feedback);
+your note adds the WHY. Maintainers read the ranked backlog with feedback_summary / agentcut feedback summary --md.
+
 ## Errors
 {"ok":false,"error":{"code","message","hint","path","issues?"}} - hints usually contain the fix ("did you mean 'crossfade'?").
 `;
