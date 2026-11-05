@@ -28,6 +28,8 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 3. Build in ONE apply_ops batch (atomic: a batch that would create validation errors is rejected, nothing changes).
 4. LOOK (previews are JPEG, ~0.1 s per frame): contact_sheet (whole video) + preview_frame at the hook, every text, every transition (guides=true for 9:16).
    Judge pixels, not intentions: readable? inside safe area? cropped? on the beat?
+   Colour: scopes t (CLI: agentcut scopes 2.5) = waveform + vectorscope + histogram + stats (luma avg ~0.4-0.6, p90 < 0.95 = no
+   clipping; cast u/v ~0 = neutral) - grade until the numbers agree with your eyes.
 5. render draft=true first, then final. The result has a contact sheet + loudness (~ -14 LUFS). Re-render a section with start/end.
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac. Check result.warnings.
@@ -51,6 +53,11 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 {"op":"add_sequence","track":"main","items":["/a.jpg","/b.jpg"],"defaults":{"duration":2,"transition":"crossfade","motion":"ken_burns"}}
 {"op":"add_captions","words":[{"text":"Hello","start":0,"end":0.4}],"preset":"tiktok"}       or "srt":"/abs/subs.srt" / "transcribe":"/abs/talk.mp4"
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
+   voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
+   "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default
+   provider env AGENTCUT_TTS_PROVIDER. list_voices shows which providers are available.
+{"op":"update_clip","id":"vid1","set":{"color":{"look":"teal_orange","exposure":0.3,"temperature":-0.2,"vibrance":0.4}}}
+{"op":"update_clip","id":"vid2","set":{"color":{"lift":[0,0,0.05],"gain":[0.05,0,-0.03],"curves":{"master":[[0,0.03],[0.5,0.55],[1,1]]},"hsl":{"blues":{"saturation":-0.3}}}}}
 {"op":"snap_to_beats","track":"main","beats":"/abs/song.mp3","every":2}
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
 {"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}
@@ -90,7 +97,10 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 - enter/exit: fade, pop, bounce, flip, slide_*, zoom_in, zoom_out, wipe_*, blur, drop, spin, typewriter (text), words (text)
 - motion: ken_burns, ken_burns_out, zoom_slow, pan_left/right/up/down, pulse, float, sway, shake
 - effects (clip or whole video, optional start/duration): glitch, rgb_split, flash, grain, zoom_blur, vignette, vhs, letterbox, strobe, blur, bw, invert, hue, brightness, contrast, saturate
-- filters (decode-time, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel), eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip, ffmpeg
+- color (grade, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel) as a base, exposure (stops),
+  contrast, saturation, vibrance, temperature/tint (-1..1), lift/gamma/gain [r,g,b] -1..1, curves {master|r|g|b: [[x,y],..]},
+  hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}
+- filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip, ffmpeg
 - masks: rect, circle, ellipse, heart, star, linear, mirror (+ feather, invert, x, y, width, height, angle)
 - layout: position+margin or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy]; radius; border; shadow; blend; opacity
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing

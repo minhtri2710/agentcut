@@ -486,8 +486,8 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
   { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
   addCaptions);
 
-op("add_voiceover", "Text-to-speech (macOS `say` - Vietnamese voice 'Linh'; Windows SAPI; Linux espeak) into media/, placed on the voice track. captions=true (or a caption preset name) adds timed captions.",
-  { text: "script", voice: "voice name", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
+op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions.",
+  { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const out = join(p.root, "media", `vo-${Date.now()}.wav`);
     const res = AN.tts(a.text, out, a.voice, a.rate);
     const tid = a.track ?? "voice";

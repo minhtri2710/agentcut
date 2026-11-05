@@ -89,7 +89,7 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
     args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
     build: (a) => {
       const d = a.seconds ?? 6;
-      const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", filters: [{ type: "look", name: "moody" }], effects: [{ type: "vignette", intensity: 0.6 }] }
+      const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", color: { look: "moody" }, effects: [{ type: "vignette", intensity: 0.6 }] }
         : { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#0f2027", "#203a43", "#2c5364"], angle: 135 }, duration: d }];
       ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, at: 0.4, duration: d - 0.6, preset: "quote", max_width: "80%" });
       if (a.author) ops.push({ op: "add_clip", track: "text", text: `— ${a.author}`, at: 1.6, duration: d - 1.8, font_size: 44, color: "#ffffffcc", y: "72%", enter: "fade" });

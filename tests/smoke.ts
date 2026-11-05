@@ -56,7 +56,7 @@ check("scenes", Array.isArray(cli(["scenes", join(m, "a.mp4")]).shots));
 
 console.log("edit ops");
 const ops = [
-  { op: "add_clip", track: "main", src: join(m, "a.mp4"), in: 0.5, duration: 2.5, filters: [{ type: "look", name: "cinematic" }] },
+  { op: "add_clip", track: "main", src: join(m, "a.mp4"), in: 0.5, duration: 2.5, color: { look: "cinematic" } },
   { op: "add_clip", track: "main", src: join(m, "p.png"), duration: 2, transition: "dip_black", motion: "pan_right" },
   { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#ff0080", "#00e0ff"], angle: 45 }, duration: 2, transition: "wipe_up" },
   { op: "add_clip", track: "main", src: join(m, "talk.mp4"), transition: { type: "zoom_blur", duration: 0.4 }, fit: "blur" },

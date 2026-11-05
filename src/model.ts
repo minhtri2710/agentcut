@@ -1,6 +1,7 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
+import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 
 export const SCHEMA_VERSION = 2;
 
@@ -55,7 +56,6 @@ export const EFFECTS: Record<string, string> = {
 };
 export const FILTERS: Record<string, string> = {
   eq: "brightness (-1..1, 0), contrast (0..3, 1), saturation (0..3, 1), gamma (0.1..10, 1)",
-  look: "name: warm|cool|vintage|bw|cinematic|vivid|fade|teal_orange|moody|pastel",
   lut: "path to a .cube 3D LUT file",
   blur: "radius px", sharpen: "amount (0..3, 1)", grayscale: "no params", vignette: "strength (0..1, 0.5)",
   hflip: "mirror horizontally", vflip: "mirror vertically",
@@ -114,6 +114,7 @@ export const MEDIA_FIELDS: F = {
   focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16)"],
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
+  color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
   loop: [T("boolean"), "loop the source when the clip is longer"],
   reverse: [T("boolean"), "play backwards (video+audio)"],
   freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
@@ -174,7 +175,7 @@ export function fieldsFor(t: string): F {
   if (t === "video" || t === "image" || t === "audio") Object.assign(f, MEDIA_FIELDS);
   if (t === "video" || t === "audio") Object.assign(f, AUDIO_FX_FIELDS);
   if (t === "audio") {
-    for (const k of ["fit", "size", "focus", "crop", "filters", "freeze"]) delete f[k];
+    for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze"]) delete f[k];
     f.keyframes = [T("object"), "{volume: [[t, gain]], speed: [[t, s]]}"];
   }
   if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];
@@ -546,6 +547,11 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
         else if (ft === "lut" && o.exists && !o.exists(String(f.path ?? ""))) issues.push({ level: "error", path: `${p}.filters[${fi}].path`, message: "LUT file not found" });
       });
+      if ((c.type === "video" || c.type === "image") && c.color && typeof c.color === "object") {
+        checkFields(c.color, GRADE_FIELDS, `${p}.color`, issues, "color grade");
+        if ("look" in c.color) checkName(c.color.look, Object.keys(LOOKS), `${p}.color.look`, issues, "look");
+        for (const [k, message] of gradeIssues(c.color)) issues.push({ level: "error", path: `${p}.color.${k}`, message });
+      }
       (c.effects || []).forEach((f: any, fi: number) => {
         const ft = typeof f === "string" ? f : f?.type;
         if (!(ft in EFFECTS)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
@@ -599,7 +605,7 @@ export function schemaDoc() {
     clip_types: Object.fromEntries(CLIP_TYPES.map((t) => [t, f(Object.fromEntries(Object.entries(fieldsFor(t)).filter(([k]) => !(k in COMMON_FIELDS))))])),
     common_clip_fields: f(COMMON_FIELDS),
     units: { time: "seconds (2.5, '2.5s', '1500ms', '00:02.5')", length: "px or '10%' of canvas", color: "#RRGGBB / #RRGGBBAA / rgba() / basic names" },
-    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
+    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, color_grade: f(GRADE_FIELDS), looks: Object.keys(LOOKS), presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
   };
 }
 

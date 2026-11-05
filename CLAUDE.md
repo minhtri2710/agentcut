@@ -4,7 +4,7 @@ Agent-first video editor. Read [AGENTS.md](AGENTS.md) to *use* it; this file is 
 `legacy/python/` is the first prototype - do not edit or use it.
 
 - Setup: `bun install`. Run from source: `bun src/cli.ts …`, `bun src/mcp.ts` (or `scripts/ac …`).
-- Check: `npx tsc --noEmit -p .` then `bun run test` (smoke, mcp, edit-ops, compound, codecs, export, audio). Export roundtrip
+- Check: `npx tsc --noEmit -p .` then `bun run test` (smoke, mcp, edit-ops, compound, codecs, export, ui, audio, color-tts, verify, vision). Export roundtrip
   checks run when `AGENTCUT_OTIO_PY` (python with opentimelineio) / `AGENTCUT_FCPXML_DTD` are set.
 - Build: `bun run build` -> `dist/` (Node >= 20 bundles); `bun run build -- --compile` -> `bin/agentcut` (single binary).
 - Perf tools: `bun scripts/profile-frames.ts <project>`, `bun scripts/profile-layers.ts <project>`, `bun scripts/bench-ops.ts`.

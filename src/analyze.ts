@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
+import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
 function decodeMono(path: string, sr = 22050): Float32Array {
   needFfmpeg();
@@ -181,59 +182,76 @@ export function loudnessAsync(path: string): Promise<ReturnType<typeof loudness>
 }
 
 // ------------------------------------------------------------------ TTS
-const has = (bin: string) => !spawnSync(bin, ["--version"], { stdio: "ignore" }).error || !spawnSync("which", [bin], { stdio: "ignore" }).status;
-
-export function ttsVoices(): { name: string; full_name?: string; lang: string; sample: string }[] {
+type Voice = { name: string; provider: string; full_name?: string; lang: string; sample: string };
+function systemVoices(): Voice[] {
   if (process.platform === "darwin") {
     const r = spawnSync("say", ["-v", "?"], { encoding: "utf8" });
-    const out: { name: string; full_name?: string; lang: string; sample: string }[] = [], seen = new Set<string>();
+    const out: Voice[] = [], seen = new Set<string>();
     for (const line of (r.stdout || "").split("\n")) {
       const m = /^(.+?)\s+([a-z]{2,3}_[A-Za-z0-9]+)\s+#\s*(.*)$/.exec(line);
       if (!m || seen.has(m[1])) continue;
       seen.add(m[1]);
-      out.push({ name: m[1].trim().replace(/\s*\(.*\)$/, ""), full_name: m[1].trim(), lang: m[2], sample: m[3] });
+      out.push({ name: m[1].trim().replace(/\s*\(.*\)$/, ""), provider: "system", full_name: m[1].trim(), lang: m[2], sample: m[3] });
     }
     return out;
   }
-  if (process.platform === "win32") return [{ name: "default", lang: "system", sample: "Windows SAPI (PowerShell System.Speech)" }];
-  if (has("espeak-ng") || has("espeak")) return [{ name: "default", lang: "en", sample: "espeak" }, { name: "vi", lang: "vi", sample: "espeak Vietnamese" }];
+  if (process.platform === "win32") return [{ name: "default", provider: "system", lang: "system", sample: "Windows SAPI (PowerShell System.Speech)" }];
+  if (has("espeak-ng") || has("espeak")) return [{ name: "default", provider: "system", lang: "en", sample: "espeak" }, { name: "vi", provider: "system", lang: "vi", sample: "espeak Vietnamese" }];
   return [];
 }
 
+/** Every TTS provider (available or not, with a setup hint) and the voices usable now. */
+export function ttsVoices() {
+  const sys = systemVoices(), extra = providerInfo();
+  return {
+    default_provider: pickProvider().provider,
+    providers: [{ name: "system", available: sys.length > 0, engine: process.platform === "darwin" ? "say" : process.platform === "win32" ? "sapi" : "espeak" }, ...extra.providers],
+    voices: [...sys, ...extra.voices],
+  };
+}
+
+/** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system). */
 export function tts(text: string, outPath: string, voice?: string, rate?: number) {
   needFfmpeg();
   mkdirSync(dirname(outPath), { recursive: true });
+  const { provider, voice: v } = pickProvider(voice);
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
   try {
-    let raw = join(tmp, "tts.aiff");
-    let r;
-    if (process.platform === "darwin") {
-      const args = ["-o", raw];
-      if (voice) {
-        const vs = ttsVoices();
-        if (!vs.some((v) => v.name === voice || v.full_name === voice)) {
-          const s = suggest(voice, vs.map((v) => v.name));
-          throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list voices with \`agentcut voices\` (Vietnamese: 'Linh')`);
-        }
-        args.push("-v", voice);
-      }
-      if (rate) args.push("-r", String(rate));
-      r = spawnSync("say", [...args, text], { encoding: "utf8" });
-    } else if (process.platform === "win32") {
-      raw = join(tmp, "tts.wav");
-      const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? `$s.SelectVoice('${voice.replace(/'/g, "''")}');` : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile('${raw}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
-      r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8" });
-    } else {
-      raw = join(tmp, "tts.wav");
-      const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
-      if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
-      r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), text], { encoding: "utf8" });
-    }
-    if (r.status !== 0) throw new EditError(`tts failed: ${(r.stderr || "").slice(0, 300)}`, "tts_failed");
+    const raw = provider === "piper" ? piperSpeech(text, tmp, v, rate) : provider === "openai" ? httpSpeech(text, tmp, v, rate) : systemSpeech(text, tmp, v, rate);
     const c = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", raw, "-ar", "48000", "-ac", "2", outPath], { encoding: "utf8" });
     if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
   } finally { rmSync(tmp, { recursive: true, force: true }); }
-  return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null };
+  return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider };
+}
+
+/** OS voice: macOS `say`, Windows SAPI, Linux espeak. Returns the raw audio path in tmp. */
+function systemSpeech(text: string, tmp: string, voice?: string, rate?: number): string {
+  let raw = join(tmp, "tts.aiff");
+  let r;
+  if (process.platform === "darwin") {
+    const args = ["-o", raw];
+    if (voice) {
+      const vs = systemVoices();
+      if (!vs.some((v) => v.name === voice || v.full_name === voice)) {
+        const s = suggest(voice, vs.map((v) => v.name));
+        throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list voices with \`agentcut voices\` (Vietnamese: 'Linh')`);
+      }
+      args.push("-v", voice);
+    }
+    if (rate) args.push("-r", String(rate));
+    r = spawnSync("say", [...args, text], { encoding: "utf8" });
+  } else if (process.platform === "win32") {
+    raw = join(tmp, "tts.wav");
+    const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? `$s.SelectVoice('${voice.replace(/'/g, "''")}');` : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile('${raw}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
+    r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8" });
+  } else {
+    raw = join(tmp, "tts.wav");
+    const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
+    if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
+    r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), text], { encoding: "utf8" });
+  }
+  if (r.status !== 0) throw new EditError(`tts failed: ${(r.stderr || "").slice(0, 300)}`, "tts_failed");
+  return raw;
 }
 
 /** Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed. */
