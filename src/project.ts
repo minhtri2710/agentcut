@@ -1,5 +1,6 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
 import {
@@ -28,11 +29,42 @@ export function checkRevision(base: number, current: number) {
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
 }
 
-function lockHolderDead(lock: string) {
-  let pid: number;
-  try { pid = Number(readFileSync(lock, "utf8")); } catch { return false; } // released meanwhile
-  if (!pid) return false; // holder is still writing its pid
-  try { process.kill(pid, 0); return false; } catch (e: any) { return e.code === "ESRCH"; }
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code === "EPERM"; } };
+const readOr = (f: string) => { try { return readFileSync(f, "utf8"); } catch (e: any) { if (e.code === "ENOENT") return null; throw e; } };
+/** O_EXCL create with the full content already in place (link of a temp file), so readers never see a half-written lock. */
+function createExcl(file: string, body: string): boolean {
+  const tmp = `${file}.tmp-${randomBytes(6).toString("hex")}`;
+  writeFileSync(tmp, body);
+  try { linkSync(tmp, file); return true; }
+  catch (e: any) { if (e.code === "EEXIST") return false; throw e; }
+  finally { rmSync(tmp, { force: true }); }
+}
+/** `file` (content `held`) belongs to a dead process. Only the one process that creates `<file>.reclaim-<token>` may delete it,
+ *  after re-reading that it still carries that token, so a slow reclaimer can never delete a newer lock (the old
+ *  check-then-unlink race). A claim left by a reclaimer that crashed is itself reclaimed the same way. */
+export function reclaim(file: string, held: string, token: string) {
+  const claim = `${file}.reclaim-${held.split(" ")[1]}`;
+  if (createExcl(claim, token)) {
+    try { if (readOr(file) === held) rmSync(file); } finally { rmSync(claim, { force: true }); }
+    return;
+  }
+  const c = readOr(claim);
+  if (c !== null && !alive(Number(c.split(" ")[0]))) reclaim(claim, c, token);
+}
+
+/** Cross-process mutex on `file`, whose content is "<pid> <token>" (token unique per acquisition). */
+export function withLock<T>(file: string, fn: () => T, waitMs = LOCK_WAIT_MS): T {
+  mkdirSync(dirname(file), { recursive: true });
+  const token = `${process.pid} ${randomBytes(8).toString("hex")}`, until = Date.now() + waitMs;
+  while (!createExcl(file, token)) {
+    const held = readOr(file);
+    if (held === null) continue; // released meanwhile
+    if (!alive(Number(held.split(" ")[0]))) { reclaim(file, held, token); continue; }
+    if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${file}`);
+    Atomics.wait(SLEEP, 0, 0, 5);
+  }
+  try { return fn(); }
+  finally { if (readOr(file) === token) rmSync(file, { force: true }); }
 }
 
 export function findProject(start?: string): string {
@@ -93,23 +125,7 @@ export class Project {
     renameSync(tmp, this.file);
   }
 
-  /** Cross-process mutex (.agentcut/lock, O_EXCL) around read-check-write so two processes cannot interleave. */
-  private locked<T>(fn: () => T): T {
-    const lock = join(this.root, ".agentcut", "lock");
-    mkdirSync(dirname(lock), { recursive: true });
-    const until = Date.now() + LOCK_WAIT_MS;
-    for (;;) {
-      try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
-      catch (e: any) {
-        if (e.code !== "EEXIST") throw e;
-        // ponytail: stale-lock steal is check-then-unlink (tiny race, only after a crash mid-save); use lockfile rename+verify if it ever bites
-        if (lockHolderDead(lock)) { rmSync(lock, { force: true }); continue; }
-        if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${lock}`);
-        Atomics.wait(SLEEP, 0, 0, 10);
-      }
-    }
-    try { return fn(); } finally { rmSync(lock, { force: true }); }
-  }
+  private locked<T>(fn: () => T): T { return withLock(join(this.root, ".agentcut", "lock"), fn); }
 
   // ---------------------------------------------------------------- history
   private stack(name: string) { const d = join(this.hist, name); mkdirSync(d, { recursive: true }); return d; }
@@ -210,6 +226,8 @@ export function summarize(tl: Timeline): string {
       if ((c.speed ?? 1) !== 1) x.push(`speed=${c.speed}`);
       if ((c.volume ?? 1) !== 1) x.push(`vol=${c.volume}`);
       for (const k of ["reverse", "freeze", "loop", "until_end"]) if (c[k]) x.push(k);
+      if (c.pending) x.push(`pending=${Object.keys(c.pending).join(",")}`);
+      if (c.remove_background) x.push("remove_background");
       if (c.attach_to) x.push(`attached→${c.attach_to}${c.offset ? `+${c.offset}` : ""}`);
       if (c.enabled === false) x.push("DISABLED");
       L.push(`      ${s.toFixed(2).padStart(7)}–${(s + d).toFixed(2).padStart(7)}  ${c.id.padEnd(8)} ${desc}${x.length ? `  [${x.join(" ")}]` : ""}`);
