@@ -9,6 +9,31 @@ import {
 
 export const PROJECT_FILE = "project.json";
 const MAX_HISTORY = 100;
+const LOCK_WAIT_MS = 10_000;
+const SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+function parse(text: string): Timeline {
+  try { return JSON.parse(text); }
+  catch (e: any) { throw new EditError(`project.json is not valid JSON: ${e.message}`, "bad_json", "fix the file or run `agentcut undo` to restore the last good version"); }
+}
+
+function revisionOf(tl: Timeline): number {
+  if (!Number.isInteger(tl.revision) || tl.revision < 0) throw new EditError(`project.json has no valid 'revision' (got ${JSON.stringify(tl.revision)})`, "bad_revision", 'set "revision": 0 at the top level of project.json');
+  return tl.revision;
+}
+
+/** Optimistic concurrency: an edit based on revision `base` may only be written while the project is still at `base`. */
+export function checkRevision(base: number, current: number) {
+  if (base !== current) throw new EditError(`project changed since revision ${base} (now ${current}); nothing was changed`, "conflict",
+    "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
+}
+
+function lockHolderDead(lock: string) {
+  let pid: number;
+  try { pid = Number(readFileSync(lock, "utf8")); } catch { return false; } // released meanwhile
+  if (!pid) return false; // holder is still writing its pid
+  try { process.kill(pid, 0); return false; } catch (e: any) { return e.code === "ESRCH"; }
+}
 
 export function findProject(start?: string): string {
   const env = process.env.AGENTCUT_PROJECT;
@@ -46,17 +71,44 @@ export class Project {
     return new Project(root);
   }
 
-  load(): Timeline {
-    try { return JSON.parse(readFileSync(this.file, "utf8")); }
-    catch (e: any) { throw new EditError(`project.json is not valid JSON: ${e.message}`, "bad_json", "fix the file or run `agentcut undo` to restore the last good version"); }
+  load(): Timeline { return parse(readFileSync(this.file, "utf8")); }
+
+  /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. */
+  save(tl: Timeline, label = "edit", snapshot = true): number {
+    resolve(tl);
+    return this.locked(() => {
+      const cur = readFileSync(this.file, "utf8");
+      const disk = revisionOf(parse(cur));
+      checkRevision(revisionOf(tl), disk);
+      if (snapshot) { this.push("undo", cur, label); this.clear("redo"); }
+      tl.revision = disk + 1;
+      this.write(tl);
+      return tl.revision;
+    });
   }
 
-  save(tl: Timeline, label = "edit", snapshot = true) {
-    resolve(tl);
-    if (snapshot) { this.push("undo", readFileSync(this.file, "utf8"), label); this.clear("redo"); }
+  private write(tl: Timeline) {
     const tmp = this.file + ".tmp";
     writeFileSync(tmp, JSON.stringify(tl, null, 2));
     renameSync(tmp, this.file);
+  }
+
+  /** Cross-process mutex (.agentcut/lock, O_EXCL) around read-check-write so two processes cannot interleave. */
+  private locked<T>(fn: () => T): T {
+    const lock = join(this.root, ".agentcut", "lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    const until = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
+      catch (e: any) {
+        if (e.code !== "EEXIST") throw e;
+        // ponytail: stale-lock steal is check-then-unlink (tiny race, only after a crash mid-save); use lockfile rename+verify if it ever bites
+        if (lockHolderDead(lock)) { rmSync(lock, { force: true }); continue; }
+        if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${lock}`);
+        Atomics.wait(SLEEP, 0, 0, 10);
+      }
+    }
+    try { return fn(); } finally { rmSync(lock, { force: true }); }
   }
 
   // ---------------------------------------------------------------- history
@@ -76,20 +128,29 @@ export class Project {
     unlinkSync(e[e.length - 1]);
     return d;
   }
-  private step(from: string, to: string, steps: number) {
-    const labels: string[] = [];
-    for (let i = 0; i < steps; i++) {
-      const d = this.pop(from);
-      if (!d) break;
-      this.push(to, readFileSync(this.file, "utf8"), d.label);
-      writeFileSync(this.file, d.timeline);
-      labels.push(d.label);
-    }
-    if (!labels.length) throw new EditError(`nothing to ${from}`, "empty_history");
-    return labels;
+  // restored snapshots get a fresh revision, so the revision only ever increases
+  private step(from: string, to: string, steps: number, base?: number) {
+    return this.locked(() => {
+      let cur = readFileSync(this.file, "utf8"), rev = revisionOf(parse(cur));
+      if (base !== undefined) checkRevision(base, rev);
+      const labels: string[] = [];
+      for (let i = 0; i < steps; i++) {
+        const d = this.pop(from);
+        if (!d) break;
+        this.push(to, cur, d.label);
+        const tl = parse(d.timeline);
+        tl.revision = ++rev;
+        this.write(tl);
+        cur = readFileSync(this.file, "utf8");
+        labels.push(d.label);
+      }
+      if (!labels.length) throw new EditError(`nothing to ${from}`, "empty_history");
+      return { labels, revision: rev };
+    });
   }
-  undo(steps = 1) { return this.step("undo", "redo", steps); }
-  redo(steps = 1) { return this.step("redo", "undo", steps); }
+  /** base: the revision the caller saw; a newer revision on disk is a conflict. */
+  undo(steps = 1, base?: number) { return this.step("undo", "redo", steps, base); }
+  redo(steps = 1, base?: number) { return this.step("redo", "undo", steps, base); }
   history() {
     const lab = (n: string) => this.entries(n).slice(-20).map((p) => JSON.parse(readFileSync(p, "utf8")).label);
     return { undo: lab("undo"), redo: lab("redo") };

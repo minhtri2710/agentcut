@@ -9,7 +9,7 @@ import { LOOKS, probe as probeMedia } from "./media.ts";
 import * as M from "./model.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
-import { findProject, Project, summarize } from "./project.ts";
+import { checkRevision, findProject, Project, summarize } from "./project.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
@@ -31,27 +31,35 @@ export function create(path: string, o: { preset?: string; width?: number; heigh
 export function info(project?: string, fmt: "summary" | "json" | "both" = "summary") {
   const p = openProject(project);
   const tl = p.load();
-  const out: M.Dict = { project: p.root, duration: M.totalDuration(M.resolve(tl)), ...brief(p.validate(tl)) };
+  const out: M.Dict = { project: p.root, revision: tl.revision, duration: M.totalDuration(M.resolve(tl)), ...brief(p.validate(tl)) };
   if (fmt !== "json") out.summary = summarize(tl);
   if (fmt !== "summary") out.timeline = tl;
   return out;
 }
 
-export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string } = {}) {
+/** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
+ *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (up to 3 tries). */
+export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number } = {}) {
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
-  const tl = p.load();
   const list: M.Dict[] = Array.isArray(ops) ? ops : ops.ops ?? [ops];
   const key = (i: M.Issue) => `${i.path.split("<")[0]}|${i.message}`;
-  const before = new Set(p.validate(tl).filter((i) => i.level === "error").map(key));
-  const [next, results] = applyOps(p, tl, list);
-  const issues = p.validate(next);
-  const added = issues.filter((i) => i.level === "error" && !before.has(key(i)));
-  if (added.length && !o.allowInvalid)
-    throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
-      added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
-  if (!o.dryRun) p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120));
-  return { ok: true, dry_run: !!o.dryRun, results, duration: M.totalDuration(next), ...brief(issues) };
+  for (let attempt = 1; ; attempt++) {
+    const tl = p.load();
+    if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
+    const before = new Set(p.validate(tl).filter((i) => i.level === "error").map(key));
+    const [next, results] = applyOps(p, tl, list);
+    const issues = p.validate(next);
+    const added = issues.filter((i) => i.level === "error" && !before.has(key(i)));
+    if (added.length && !o.allowInvalid)
+      throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
+        added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
+    if (!o.dryRun) {
+      try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); }
+      catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && attempt < 3) continue; throw e; }
+    }
+    return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues) };
+  }
 }
 
 export function validate(project?: string) {
@@ -68,14 +76,20 @@ function requireValid(p: Project, tl: M.Timeline) {
 const stillFmt = (out: string) => (/\.png$/i.test(out) ? "png" : "jpeg");
 const outPath = (p: Project, out: string | undefined, dflt: string) => (out ? (isAbsolute(out) ? out : presolve(out)) : join(p.root, dflt));
 
-export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
+/** One rendered frame as encoded bytes (no file written). */
+export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg" } = {}) {
   const p = openProject(project);
   const tl = p.load();
   requireValid(p, tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
-  const out = outPath(p, o.out, `previews/frame-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
-  const png = await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, !!o.guides, stillFmt(out));
+  return { t: tt, revision: tl.revision, data: await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, !!o.guides, o.format ?? "jpeg") };
+}
+
+export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
+  const tt = M.parseTime(t);
+  const out = outPath(openProject(project), o.out, `previews/frame-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
+  const { data: png } = await frameImage(project, tt, { scale: o.scale, guides: o.guides, format: stillFmt(out) });
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return { image: out, t: tt, bytes: png.length };
@@ -150,8 +164,8 @@ export async function render(project: string | undefined, o: {
   return res;
 }
 
-export const undo = (project?: string, steps = 1) => { const p = openProject(project); return { undone: p.undo(steps), duration: M.totalDuration(M.resolve(p.load())) }; };
-export const redo = (project?: string, steps = 1) => { const p = openProject(project); return { redone: p.redo(steps), duration: M.totalDuration(M.resolve(p.load())) }; };
+export const undo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.undo(steps, revision); return { undone: r.labels, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+export const redo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.redo(steps, revision); return { redone: r.labels, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const history = (project?: string) => openProject(project).history();
 export const probe = (path: string) => probeMedia(presolve(path));
 export const fonts = async (q = "", limit = 60) => { await loadCanvas(); return { fonts: listFonts(q, limit) }; };

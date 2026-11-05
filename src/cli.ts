@@ -12,12 +12,14 @@ const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · C
 Start here:  agentcut guide
 Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--text|--json] · validate · undo [n] · redo [n] · history
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
+             [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides]
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--workers N]
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
 Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
+Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits)
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
 Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|idea title="..." [details=... suggestion=... area=... severity=...]
              feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
@@ -92,11 +94,11 @@ export async function main(argv = process.argv.slice(2)) {
         res = api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"] }); break;
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"] }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }]); break;
-      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }]); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple }]); break;
+      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision) }); break;
+      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision) }); break;
+      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision) }); break;
+      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision) }); break;
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple }], { revision: num(f.revision) }); break;
       case "validate": { const v = api.validate(P); emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale), guides: f.guides }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
@@ -111,8 +113,14 @@ export async function main(argv = process.argv.slice(2)) {
         });
         break;
       }
-      case "undo": res = api.undo(P, num(pos[0]) ?? 1); break;
-      case "redo": res = api.redo(P, num(pos[0]) ?? 1); break;
+      case "undo": res = api.undo(P, num(pos[0]) ?? 1, num(f.revision)); break;
+      case "redo": res = api.redo(P, num(pos[0]) ?? 1, num(f.revision)); break;
+      case "ui": {
+        const { startUi } = await import("./ui.ts");
+        const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port) });
+        process.stdout.write(JSON.stringify({ ok: true, ...r }) + "\n"); // server keeps running; Ctrl-C to stop
+        return;
+      }
       case "history": res = api.history(P); break;
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {

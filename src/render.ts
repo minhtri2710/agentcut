@@ -105,7 +105,7 @@ export class Layer {
   private sub(): Renderer {
     if (!this.child) {
       const r = this.r, { effects, ...st } = r.tl.settings;
-      const ch = new Renderer({ version: r.tl.version, name: this.c.id, settings: { ...st, background: "#00000000", duration: null },
+      const ch = new Renderer({ version: r.tl.version, revision: r.tl.revision, name: this.c.id, settings: { ...st, background: "#00000000", duration: null },
         assets: r.tl.assets, tracks: this.c.tracks ?? [], markers: [] }, r.root, r.k);
       ch.path = (p) => r.path(p);
       this.child = ch;

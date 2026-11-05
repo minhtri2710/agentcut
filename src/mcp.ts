@@ -49,6 +49,7 @@ export function buildServer() {
     return r;
   });
   const P = z.string().optional().describe("project folder (optional after create/open)");
+  const REV = z.number().int().optional().describe("revision you based this on (project_info); if a human/another agent saved since, fails with code 'conflict'");
 
   s.registerTool("guide", { description: "Read first: how AgentCut works (tracks, magnetic timeline, templates, ops cheat-sheet, vocabulary, rules)." },
     async () => ({ content: [text(GUIDE.trim())] }));
@@ -67,11 +68,12 @@ export function buildServer() {
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {
     description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Returns new clip ids.`,
-    inputSchema: { ops: z.array(z.record(z.string(), z.any())), project: P, dry_run: z.boolean().default(false), allow_invalid: z.boolean().default(false) },
-  }, wrap((a) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid })));
+    inputSchema: { ops: z.array(z.record(z.string(), z.any())), project: P, dry_run: z.boolean().default(false), allow_invalid: z.boolean().default(false),
+      revision: REV },
+  }, wrap((a) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid, revision: a.revision })));
   s.registerTool("validate", { description: "Check the timeline: issues with level, JSON path, message, hint.", inputSchema: { project: P } }, wrap((a) => api.validate(proj(a.project))));
-  s.registerTool("undo", { description: "Undo the last N edit batches.", inputSchema: { steps: z.number().int().default(1), project: P } }, wrap((a) => api.undo(proj(a.project), a.steps)));
-  s.registerTool("redo", { description: "Redo N undone batches.", inputSchema: { steps: z.number().int().default(1), project: P } }, wrap((a) => api.redo(proj(a.project), a.steps)));
+  s.registerTool("undo", { description: "Undo the last N edit batches.", inputSchema: { steps: z.number().int().default(1), project: P, revision: REV } }, wrap((a) => api.undo(proj(a.project), a.steps, a.revision)));
+  s.registerTool("redo", { description: "Redo N undone batches.", inputSchema: { steps: z.number().int().default(1), project: P, revision: REV } }, wrap((a) => api.redo(proj(a.project), a.steps, a.revision)));
 
   s.registerTool("preview_frame", {
     description: "Render ONE frame at time t (seconds) and return it as an image. guides=true overlays safe areas (red = social UI zones on 9:16).",

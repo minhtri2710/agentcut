@@ -8,7 +8,7 @@ export type Dict = Record<string, any>;
 export interface Clip extends Dict { id: string; type: string; start?: number | string; duration: number | string }
 export interface Track extends Dict { id: string; kind?: "video" | "audio"; magnetic?: boolean; clips: Clip[] }
 export interface Asset extends Dict { path: string; kind: "video" | "image" | "audio" | "lottie"; duration?: number; width?: number; height?: number }
-export interface Timeline { version: number; name: string; settings: Dict; assets: Record<string, Asset>; tracks: Track[]; markers: Dict[]; meta?: Dict }
+export interface Timeline { version: number; revision: number; name: string; settings: Dict; assets: Record<string, Asset>; tracks: Track[]; markers: Dict[]; meta?: Dict }
 export interface Issue { level: "error" | "warning" | "info"; path: string; message: string; hint?: string }
 
 export const PRESETS: Record<string, [number, number]> = {
@@ -298,7 +298,7 @@ export function normAnim(v: unknown, dflt: number): Anim | null {
 // ------------------------------------------------------------------ timeline helpers
 export function newTimeline(width = 1920, height = 1080, fps = 30, name = "untitled"): Timeline {
   return {
-    version: SCHEMA_VERSION, name,
+    version: SCHEMA_VERSION, revision: 0, name,
     settings: { width, height, fps, background: "#000000", duration: null, loudness: -14, sample_rate: 48000 },
     assets: {},
     tracks: [
@@ -326,7 +326,7 @@ export function* allClips(tracks: Track[]): Generator<Clip> {
 
 /** The nested timeline of a compound clip (shares settings/assets with the parent). */
 export const subTimeline = (tl: Timeline, c: Clip): Timeline =>
-  ({ version: tl.version, name: c.name ?? c.id, settings: { ...tl.settings, duration: null }, assets: tl.assets, tracks: c.tracks ?? [], markers: [] });
+  ({ version: tl.version, revision: tl.revision, name: c.name ?? c.id, settings: { ...tl.settings, duration: null }, assets: tl.assets, tracks: c.tracks ?? [], markers: [] });
 
 export function findClip(tl: Timeline, id: string): [Track, number, Clip] {
   for (const [tr, , ci, c] of iterClips(tl)) if (c.id === id) return [tr, ci, c];
@@ -443,7 +443,7 @@ export interface ValidateOpts { exists?: (p: string) => boolean; fontCheck?: (fo
 export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   const issues: Issue[] = [];
   if (!tl || typeof tl !== "object") return [{ level: "error", path: "$", message: "timeline must be a JSON object" }];
-  for (const k of Object.keys(tl)) if (!["version", "name", "settings", "assets", "tracks", "markers", "meta"].includes(k))
+  for (const k of Object.keys(tl)) if (!["version", "revision", "name", "settings", "assets", "tracks", "markers", "meta"].includes(k))
     issues.push({ level: "warning", path: `$.${k}`, message: `unknown top-level key '${k}' (ignored)` });
   const st = tl.settings || {};
   checkFields(st, SETTINGS_FIELDS, "$.settings", issues, "settings");
@@ -578,7 +578,8 @@ export function schemaDoc() {
   const f = (d: F) => Object.fromEntries(Object.entries(d).map(([k, v]) => [k, v[1]]));
   return {
     timeline: {
-      version: SCHEMA_VERSION, settings: f(SETTINGS_FIELDS),
+      version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
+      settings: f(SETTINGS_FIELDS),
       assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, width, height, fps, has_audio, alpha}} - filled by import_media",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
