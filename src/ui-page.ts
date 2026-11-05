@@ -1,5 +1,7 @@
 // The single-page UI served by `agentcut ui` (plain HTML/CSS/JS, no build step). The client code avoids backticks and
-// "${" so it can live in this template string.
+// "${" so it can live in this template string (the one interpolation below injects the keyframe enums).
+import { ANIMATABLE, EASINGS } from "./model.ts";
+
 export const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>AgentCut</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -15,6 +17,7 @@ button:hover{background:#3a404c}button:disabled{opacity:.4;cursor:default}
 #viewer img,#viewer video{max-width:100%;max-height:calc(100% - 30px);object-fit:contain;background:#000}
 #vbar{display:flex;gap:8px;align-items:center;height:30px}
 #side{border-left:1px solid #333;display:flex;flex-direction:column;min-height:0;overflow:auto;padding:8px;gap:6px}
+#side>*{flex:none}
 textarea{width:100%;background:#0f1115;color:#cfe;border:1px solid #333;border-radius:4px;font:12px ui-monospace,monospace;padding:6px}
 #insp{height:300px}#ops{height:70px}
 #msg{white-space:pre-wrap;font-size:12px;padding:6px;border-radius:4px;display:none}
@@ -39,6 +42,12 @@ progress{width:100%}
 #links{position:absolute;left:90px;top:20px;pointer-events:none;z-index:1}
 #ph{position:absolute;top:0;width:2px;background:#f44;z-index:4;pointer-events:none}
 .mut{color:#889}
+.kf{position:absolute;bottom:1px;width:9px;height:9px;margin-left:-4px;background:#fc3;border:1px solid #000;transform:rotate(45deg);cursor:ew-resize;z-index:2}
+#crumbs a{color:#8cf;cursor:pointer}#crumbs .cur{color:#fc3}
+#kfbox{display:flex;flex-direction:column;gap:3px}#kfbox .row{display:flex;gap:4px;align-items:center}
+#kfbox input{width:64px;background:#0f1115;color:#cfe;border:1px solid #333;border-radius:3px;font:12px ui-monospace,monospace;padding:2px 4px}
+#kfbox select{background:#0f1115;color:#cfe;border:1px solid #333;border-radius:3px;font:inherit}#kfbox b{min-width:64px}
+.clip.pick{outline:2px dashed #fc3}
 </style></head>
 <body>
 <header>
@@ -55,6 +64,9 @@ progress{width:100%}
     <div class="mut" id="selinfo">Select a clip on the timeline.</div>
     <textarea id="insp" spellcheck="false" placeholder="clip JSON"></textarea>
     <div><button id="applyc" disabled>Apply clip</button> <button id="delc" disabled>Delete clip</button></div>
+    <div id="cbtns"><button id="openc" style="display:none">Open compound</button> <button id="expc" style="display:none">Expand</button>
+      <button id="group" style="display:none">Group</button> <button id="regroup" style="display:none">Regroup</button></div>
+    <div id="kfbox"></div>
     <div id="msg"></div>
     <div class="mut">Ops batch (JSON list), applied atomically:</div>
     <textarea id="ops" spellcheck="false" placeholder='[{"op":"add_clip","track":"text","text":"Hi","at":0,"duration":2}]'></textarea>
@@ -64,13 +76,15 @@ progress{width:100%}
 </div>
 <div id="tl">
   <div id="tbar"><span class="mut">zoom</span><input type="range" id="zoom" min="10" max="400" value="80"><span class="mut" id="dur"></span>
-    <span class="mut">drag = move, edges = trim, click ruler = seek</span></div>
+    <span id="crumbs"></span>
+    <span class="mut">drag = move, edges = trim, shift-click = multi-select, double-click compound = open, click ruler = seek</span></div>
   <div id="scroll"><div id="inner"><div id="ruler"></div><div id="lanes"></div><svg id="links"></svg><div id="ph"></div></div></div>
 </div>
 <script>
 "use strict";
 var $ = function (id) { return document.getElementById(id); };
-var S = null, sel = null, inspBase = "", t = 0, pps = 80, LABEL = 90, LANE = 44;
+var ENUM = ${JSON.stringify({ animatable: ANIMATABLE, easings: EASINGS })};
+var S = null, V = null, kfProp = "opacity", path = [], picked = [], regroup = null, sel = null, inspBase = "", t = 0, pps = 80, LABEL = 90, LANE = 44;
 var COL = { video: "#3b6fb6", image: "#2f8f83", text: "#a35bb8", captions: "#b8865b", shape: "#7b8f2f", color: "#8f2f5a",
   lottie: "#2f5a8f", audio: "#2f8f4a", gap: "#444", compound: "#b85b5b" };
 
@@ -107,13 +121,38 @@ function setState(s) {
   $("undo").disabled = !s.history.undo.length; $("undo").title = "undo: " + (s.history.undo.slice(-1)[0] || "");
   $("redo").disabled = !s.history.redo.length; $("redo").title = "redo: " + (s.history.redo.slice(-1)[0] || "");
   $("dur").textContent = total().toFixed(2) + " s";
+  V = view();
+  picked = picked.filter(function (id) { return findClip(id); });
   var c = sel && findClip(sel);
   if (!c) select(null);
   else if ($("insp").value === inspBase) select(sel); // refresh unless the user is editing
   drawTimeline(); requestFrame();
 }
-function findClip(id) { var r = null; S.timeline.tracks.forEach(function (tr) { tr.clips.forEach(function (c) { if (c.id === id) r = c; }); }); return r; }
-function trackOf(id) { var r = null; S.timeline.tracks.forEach(function (tr) { tr.clips.forEach(function (c) { if (c.id === id) r = tr; }); }); return r; }
+function findIn(tracks, id) { var r = null; tracks.forEach(function (tr) { tr.clips.forEach(function (c) { if (c.id === id) r = { c: c, tr: tr }; }); }); return r; }
+function findClip(id) { var r = findIn(V.tracks, id); return r && r.c; }
+function trackOf(id) { var r = findIn(V.tracks, id); return r && r.tr; }
+/** the tracks shown: the timeline, or the nested tracks of the opened compound (path) drawn at their timeline time.
+ *  shortcut: assumes opened compounds play at speed 1 (expand_compound requires it too). */
+function view() {
+  var tracks = S.timeline.tracks, off = 0;
+  for (var i = 0; i < path.length; i++) {
+    var f = findIn(tracks, path[i]);
+    if (!f || f.c.type !== "compound") { path = path.slice(0, i); break; }
+    off += start(f.c) - num(f.c.in || 0); tracks = f.c.tracks || [];
+  }
+  return { tracks: tracks, off: off, nested: path.length > 0 };
+}
+function openPath(p) { path = p; sel = null; picked = []; V = view(); select(null); drawTimeline(); }
+function drawCrumbs() {
+  var b = $("crumbs"); b.innerHTML = "";
+  ["timeline"].concat(path).forEach(function (name, i) {
+    if (i) b.appendChild(document.createTextNode(" › "));
+    var a = document.createElement(i === path.length ? "span" : "a"); a.textContent = name;
+    if (i === path.length) a.className = "cur"; else a.onclick = function () { openPath(path.slice(0, i)); };
+    b.appendChild(a);
+  });
+  if (path.length) b.appendChild(document.createTextNode(" (read-only: expand to edit) "));
+}
 var es = new EventSource("/api/events");
 es.addEventListener("state", function (e) { setState(JSON.parse(e.data)); });
 es.addEventListener("job", function (e) { onJob(JSON.parse(e.data)); });
@@ -127,8 +166,8 @@ function drawTimeline() {
   var step = pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : 10;
   for (var x = 0; x * pps < W; x += step) { var d = document.createElement("div"); d.className = "tick"; d.style.left = x * pps + "px"; d.textContent = x + "s"; r.appendChild(d); }
   (tl.markers || []).forEach(function (m) { var d = document.createElement("div"); d.className = "marker"; d.style.left = num(m.t) * pps + "px"; d.textContent = m.label || ""; d.title = m.t + "s " + (m.label || ""); r.appendChild(d); });
-  lanes.innerHTML = "";
-  var rows = tl.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
+  lanes.innerHTML = ""; drawCrumbs();
+  var rows = V.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
   rows.forEach(function (tr) {
     var lane = document.createElement("div"); lane.className = "lane"; lane.dataset.track = tr.id;
     var nm = document.createElement("div"); nm.className = "lname";
@@ -144,7 +183,7 @@ function drawTimeline() {
   rows.forEach(function (tr, i) { tr.clips.forEach(function (c) {
     if (!c.attach_to) return;
     var pid = resolveRef(c.attach_to); if (pid === null || laneOf[pid] === undefined) return;
-    var x = start(c) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
+    var x = (V.off + start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
     var ln = document.createElementNS("http://www.w3.org/2000/svg", "path");
     ln.setAttribute("d", "M" + x + " " + y1 + " L" + x + " " + y2); ln.setAttribute("stroke", "#fc3"); ln.setAttribute("stroke-dasharray", "3 3");
     var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -156,13 +195,13 @@ function drawTimeline() {
 function resolveRef(ref) {
   var m = /^(.+)#(-?\\d+)$/.exec(ref);
   if (!m) return ref;
-  var tr = S.timeline.tracks.filter(function (x) { return x.id === m[1]; })[0]; if (!tr) return null;
+  var tr = V.tracks.filter(function (x) { return x.id === m[1]; })[0]; if (!tr) return null;
   var i = +m[2]; if (i < 0) i += tr.clips.length; var c = tr.clips[i]; return c ? c.id : null;
 }
 function clipEl(tr, c, i) {
-  var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (c.enabled === false ? " off" : "");
+  var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (picked.indexOf(c.id) >= 0 ? " pick" : "") + (c.enabled === false ? " off" : "");
   e.dataset.id = c.id;
-  e.style.left = start(c) * pps + "px"; e.style.width = Math.max(4, dur(c) * pps) + "px";
+  e.style.left = (V.off + start(c)) * pps + "px"; e.style.width = Math.max(4, dur(c) * pps) + "px";
   e.style.backgroundColor = COL[c.type] || "#555";
   var a = c.asset && S.timeline.assets[c.asset];
   if (a && (a.kind === "video" || a.kind === "image")) e.style.backgroundImage = "url(/api/thumb/" + encodeURIComponent(c.asset) + "?t=" + num(c.in || 0).toFixed(2) + ")";
@@ -172,8 +211,19 @@ function clipEl(tr, c, i) {
   var trn = c.transition && i > 0 ? c.transition : null;
   if (trn) { var td = typeof trn === "object" ? num(trn.duration || 0.5) : 0.5; var o = document.createElement("div"); o.className = "tr";
     o.style.width = td * pps + "px"; o.title = "transition " + (trn.type || trn); e.appendChild(o); }
-  ["l", "r"].forEach(function (s) { var h = document.createElement("div"); h.className = "h " + s; h.dataset.edge = s; e.appendChild(h); });
-  e.addEventListener("mousedown", function (ev) { drag(ev, tr, c, ev.target.dataset.edge || "move"); });
+  if (!V.nested) ["l", "r"].forEach(function (s) { var h = document.createElement("div"); h.className = "h " + s; h.dataset.edge = s; e.appendChild(h); });
+  kfTimes(c).forEach(function (kt) {
+    var k = document.createElement("div"); k.className = "kf"; k.style.left = kt * pps + "px"; k.dataset.t = kt;
+    k.title = "keyframe " + kt + "s: " + Object.keys(c.keyframes).filter(function (p) { return pts(c.keyframes[p]).some(function (q) { return near(q[0], kt); }); }).join(", ");
+    e.appendChild(k);
+  });
+  e.addEventListener("mousedown", function (ev) {
+    if (ev.shiftKey) { ev.preventDefault(); if (!picked.length && sel && sel !== c.id) picked.push(sel); var i = picked.indexOf(c.id); if (i >= 0) picked.splice(i, 1); else picked.push(c.id); select(sel); return; }
+    if (ev.target.dataset.t !== undefined) return kfDrag(ev, c, +ev.target.dataset.t);
+    if (ev.detail === 2 && c.type === "compound") { ev.preventDefault(); openPath(path.concat([c.id])); return; } // the first click redraws, so no dblclick
+    if (V.nested) { select(c.id); return; }
+    drag(ev, tr, c, ev.target.dataset.edge || "move");
+  });
   return e;
 }
 /** drag a clip: move (other lane = other track; magnetic = new index) or trim an edge; one op on release */
@@ -194,7 +244,7 @@ function drag(ev, tr, c, mode) {
     else if (mode === "r") op = { op: "trim_clip", id: c.id, duration: +Math.max(0.04, d0 + dt).toFixed(3) };
     else {
       var lane = document.elementsFromPoint(e.clientX, e.clientY).filter(function (n) { return n.classList && n.classList.contains("lane"); })[0];
-      var dest = lane ? lane.dataset.track : tr.id, dtr = S.timeline.tracks.filter(function (x) { return x.id === dest; })[0] || tr;
+      var dest = lane ? lane.dataset.track : tr.id, dtr = V.tracks.filter(function (x) { return x.id === dest; })[0] || tr;
       op = { op: "move_clip", id: c.id };
       if (dest !== tr.id) op.track = dest;
       if (c.attach_to) { // a connected clip's start follows its parent: dragging changes its offset
@@ -254,10 +304,115 @@ $("video").addEventListener("ended", stopPlay);
 // ------------------------------------------------------------ inspector
 function select(id) {
   sel = id; var c = id && findClip(id);
-  $("applyc").disabled = $("delc").disabled = !c;
+  $("applyc").disabled = $("delc").disabled = !c || V.nested; $("insp").readOnly = V.nested;
   if (!c) { $("selinfo").textContent = "Select a clip on the timeline."; $("insp").value = inspBase = ""; }
-  else { $("selinfo").textContent = c.id + " on " + trackOf(id).id + " (" + c.type + ")"; $("insp").value = inspBase = JSON.stringify(c, null, 2); }
-  document.querySelectorAll(".clip").forEach(function (n) { n.classList.toggle("sel", n.dataset.id === id); });
+  else { $("selinfo").textContent = c.id + " on " + trackOf(id).id + " (" + c.type + ")" + (V.nested ? " inside " + path[path.length - 1] + ": expand it to edit" : "");
+    $("insp").value = inspBase = JSON.stringify(c, null, 2); }
+  document.querySelectorAll(".clip").forEach(function (n) { n.classList.toggle("sel", n.dataset.id === id); n.classList.toggle("pick", picked.indexOf(n.dataset.id) >= 0); });
+  var cmp = c && c.type === "compound";
+  $("openc").style.display = cmp ? "" : "none";
+  $("expc").style.display = cmp && !V.nested ? "" : "none";
+  var g = groupIds(); $("group").style.display = g.length && !V.nested ? "" : "none"; $("group").textContent = "Group " + g.length + " clip(s)";
+  var rg = regroupIds(); $("regroup").style.display = rg ? "" : "none"; if (rg) $("regroup").textContent = "Regroup " + regroup.id;
+  drawKf(c);
+}
+
+// ------------------------------------------------------------ compound clips (nested edits: expand, edit, regroup)
+function groupIds() { return picked.length ? picked.slice() : sel && findClip(sel) && !V.nested ? [sel] : []; }
+/** ids of the last expanded compound still on the timeline, the ones on its home track first (make_compound: first id picks the track) */
+function regroupIds() {
+  if (!regroup || V.nested) return null;
+  var ids = regroup.ids.filter(function (id) { return findIn(S.timeline.tracks, id); });
+  if (!ids.length || findIn(S.timeline.tracks, regroup.id)) return null;
+  var home = function (id) { return findIn(S.timeline.tracks, id).tr.id === regroup.track ? 0 : 1; };
+  return ids.sort(function (a, b) { return home(a) - home(b); });
+}
+$("openc").addEventListener("click", function () { openPath(path.concat([sel])); });
+$("expc").addEventListener("click", function () {
+  var c = findClip(sel), home = trackOf(sel).id;
+  ops([{ op: "expand_compound", id: c.id }], "expand " + c.id).then(function (r) {
+    if (!r) return; var x = r.results[0];
+    regroup = { id: c.id, name: c.name, track: home, ids: x.ids.concat(x.gaps) }; picked = []; select(null);
+  });
+});
+$("group").addEventListener("click", function () {
+  var ids = groupIds();
+  ops([{ op: "make_compound", ids: ids }], "group " + ids.join(",")).then(function (r) { if (r) { picked = []; select(r.results[0].id); } });
+});
+$("regroup").addEventListener("click", function () {
+  var o = { op: "make_compound", ids: regroupIds(), id: regroup.id }; if (regroup.name) o.name = regroup.name;
+  ops([o], "regroup " + regroup.id).then(function (r) { if (r) { regroup = null; select(r.results[0].id); } });
+});
+
+// ------------------------------------------------------------ keyframes (every edit = one set_keyframes op per prop)
+function near(a, b) { return Math.abs(a - b) < 0.0005; }
+function pts(list) { return (list || []).map(function (k) { return Array.isArray(k) ? [num(k[0]), +k[1], k[2]] : [num(k.t || 0), +(k.v !== undefined ? k.v : k.value), k.ease]; })
+  .sort(function (a, b) { return a[0] - b[0]; }); }
+function kfTimes(c) {
+  var r = []; Object.keys(c.keyframes || {}).forEach(function (p) { pts(c.keyframes[p]).forEach(function (q) { if (!r.some(function (x) { return near(x, q[0]); })) r.push(q[0]); }); });
+  return r;
+}
+function packKf(list) { return list.length ? list.slice().sort(function (a, b) { return a[0] - b[0]; }).map(function (q) { return q[2] && q[2] !== "linear" ? [+q[0].toFixed(3), q[1], q[2]] : [+q[0].toFixed(3), q[1]]; }) : null; }
+function setKf(c, prop, list) { return ops([{ op: "set_keyframes", id: c.id, prop: prop, keyframes: packKf(list) }], "keyframes " + c.id + "." + prop); }
+function kfBase(c, prop) {
+  var st = S.timeline.settings, d = { x: st.width / 2, y: st.height / 2, scale: 1, scale_x: 1, scale_y: 1, opacity: 1, volume: 1, speed: 1, focus_x: 0.5, focus_y: 0.5 };
+  return typeof c[prop] === "number" ? c[prop] : d[prop] !== undefined ? d[prop] : 0;
+}
+/** value at local time lt, linear between neighbours (a starting point for the new key; the renderer applies the easing) */
+function kfAt(list, lt) {
+  if (lt <= list[0][0]) return list[0][1];
+  for (var i = 1; i < list.length; i++) if (lt <= list[i][0]) { var a = list[i - 1], b = list[i]; return +(a[1] + (b[1] - a[1]) * (lt - a[0]) / Math.max(1e-9, b[0] - a[0])).toFixed(4); }
+  return list[list.length - 1][1];
+}
+function el(tag, props, kids) { var e = document.createElement(tag); Object.keys(props || {}).forEach(function (k) { e[k] = props[k]; }); (kids || []).forEach(function (k) { e.appendChild(k); }); return e; }
+function drawKf(c) {
+  var box = $("kfbox"); box.innerHTML = "";
+  if (!c || c.type === "gap") return;
+  var ro = V.nested, kf = c.keyframes || {};
+  var prop = el("select", { id: "kfprop", disabled: ro, onchange: function () { kfProp = prop.value; } },
+    ENUM.animatable.map(function (p) { return el("option", { value: p, textContent: p, selected: p === kfProp }); }));
+  var add = el("button", { id: "kfadd", textContent: "+ key at playhead", disabled: ro });
+  add.onclick = function () {
+    var p = prop.value, lt = +Math.max(0, Math.min(dur(c), t - V.off - start(c))).toFixed(3), list = pts(kf[p]);
+    var v = list.length ? kfAt(list, lt) : kfBase(c, p);
+    setKf(c, p, list.filter(function (q) { return !near(q[0], lt); }).concat([[lt, v, undefined]]));
+  };
+  box.appendChild(el("div", { className: "row" }, [el("span", { className: "mut", textContent: "Keyframes" }), prop, add]));
+  Object.keys(kf).forEach(function (p) {
+    var list = pts(kf[p]);
+    var rm = el("button", { textContent: "clear", title: "remove all " + p + " keyframes", disabled: ro }); rm.onclick = function () { setKf(c, p, []); };
+    box.appendChild(el("div", { className: "row" }, [el("b", { textContent: p }), el("span", { className: "mut", textContent: "t (s) · value · easing into it" }), rm]));
+    list.forEach(function (q, i) {
+      var commit = function () {
+        var nt = parseFloat(ti.value), nv = parseFloat(vi.value);
+        if (!isFinite(nt) || !isFinite(nv)) return fail({ code: "bad_value", message: p + ": t and value must be numbers" });
+        var next = list.slice(); next[i] = [nt, nv, es.value]; setKf(c, p, next);
+      };
+      var ti = el("input", { type: "number", step: "0.05", value: q[0], title: "time from clip start", disabled: ro, onchange: commit });
+      var vi = el("input", { type: "number", step: "0.05", value: q[1], disabled: ro, onchange: commit });
+      var es = el("select", { disabled: ro, onchange: commit }, ENUM.easings.map(function (n) { return el("option", { value: n, textContent: n, selected: (q[2] || "linear") === n }); }));
+      var del = el("button", { textContent: "×", title: "delete this keyframe", disabled: ro }); del.onclick = function () { setKf(c, p, list.filter(function (_, j) { return j !== i; })); };
+      box.appendChild(el("div", { className: "row kfrow" }, [ti, vi, es, del]));
+    });
+  });
+}
+/** drag a keyframe tick: moves every prop's point at that time; one batch of set_keyframes on release */
+function kfDrag(ev, c, kt) {
+  ev.preventDefault(); ev.stopPropagation(); select(c.id);
+  var k = ev.target, x0 = ev.clientX, moved = false;
+  function mm(e) { if (Math.abs(e.clientX - x0) > 2) moved = true; if (!V.nested) k.style.left = (kt * pps + e.clientX - x0) + "px"; }
+  function mu(e) {
+    document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu);
+    if (!moved || V.nested) { seek(V.off + start(c) + kt); return; }
+    var nt = +Math.max(0, Math.min(dur(c), kt + (e.clientX - x0) / pps)).toFixed(3), batch = [];
+    Object.keys(c.keyframes).forEach(function (p) {
+      var list = pts(c.keyframes[p]); if (!list.some(function (q) { return near(q[0], kt); })) return;
+      list = list.filter(function (q) { return !near(q[0], nt); }).map(function (q) { return near(q[0], kt) ? [nt, q[1], q[2]] : q; });
+      batch.push({ op: "set_keyframes", id: c.id, prop: p, keyframes: packKf(list) });
+    });
+    ops(batch, "move keyframe " + c.id).then(function (r) { if (!r) drawTimeline(); });
+  }
+  document.addEventListener("mousemove", mm); document.addEventListener("mouseup", mu);
 }
 $("applyc").addEventListener("click", function () {
   var now; try { now = JSON.parse($("insp").value); } catch (e) { return fail({ code: "bad_json", message: e.message }); }
