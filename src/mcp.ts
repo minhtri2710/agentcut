@@ -87,6 +87,18 @@ export function buildServer() {
     description: "Grid of timestamped frames across the timeline (no full render). Default 12 evenly spaced; or times=[...] / every=1.",
     inputSchema: { project: P, times: z.array(z.number()).optional(), every: z.number().optional(), count: z.number().int().default(12), cols: z.number().int().default(4), guides: z.boolean().default(false) },
   }, async (a) => { try { const r = await api.sheet(proj(a.project), { times: a.times, every: a.every, count: a.count, cols: a.cols, guides: a.guides, tileWidth: 300 }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  s.registerTool("audio_check", {
+    description: "SEE the sound: image of each audible track's waveform + the rendered mix (time ruler, clip boundaries, main-track cuts, markers; spectrogram=true adds one) and findings with times: clipping/overs, true peak, long silences, audio cut off at clip ends without a fade, music not ducked under voice. source=<file> inspects a media file instead.",
+    inputSchema: { project: P, source: z.string().optional(), spectrogram: z.boolean().default(false), start: z.number().optional(), end: z.number().optional(), min_silence: z.number().default(1) },
+  }, async (a) => { try { const r = await api.audioCheck(a.source ? undefined : proj(a.project), { source: a.source, spectrogram: a.spectrogram, start: a.start, end: a.end, minSilence: a.min_silence }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  s.registerTool("motion_strip", {
+    description: "Judge transitions/animations: rows of `frames` consecutive timestamped frames. Default one row per transition (with pad s either side); start/end inspect any range instead (e.g. a text's enter animation).",
+    inputSchema: { project: P, start: z.number().optional(), end: z.number().optional(), frames: z.number().int().default(10), pad: z.number().default(0.15) },
+  }, async (a) => { try { const r = await api.motion(proj(a.project), { start: a.start, end: a.end, frames: a.frames, pad: a.pad }); return { content: [...r.images.map(image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  s.registerTool("review", {
+    description: "Editorial lint before rendering: findings with times for text outside the safe area / under 9:16 app UI, text too short to read (chars/s), shots too short/long, cuts off the beat (beats='music' analyses music tracks, or a list of seconds; default: markers named 'beat*'), black frames, plus validation warnings (e.g. clips past their media). Fix, then run again.",
+    inputSchema: { project: P, beats: z.union([z.literal("music"), z.array(z.number())]).optional(), min_shot: z.number().default(0.4), max_shot: z.number().optional(), cps: z.number().default(15), black_frames: z.boolean().default(true) },
+  }, wrap((a) => api.review(proj(a.project), { beats: a.beats, minShot: a.min_shot, maxShot: a.max_shot, cps: a.cps, black: a.black_frames })));
 
   const waitJob = async (id: string, secs: number) => {
     const j = jobs.get(id);

@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
 import { VERSION } from "./version.ts";
-const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles"]);
+const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles", "spectrogram", "no-black"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -14,6 +14,8 @@ Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--tex
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
+Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black]
+             audio [--source F] [--spectrogram] [--from S --to S] [-o a.png] · motion [--from S --to S] [--frames 10] [-o m.jpg]
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N]
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
@@ -105,6 +107,9 @@ export async function main(argv = process.argv.slice(2)) {
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale) }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
       case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
+      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"]), maxShot: num(f["max-shot"]), cps: num(f.cps), black: !f["no-black"] }); break;
+      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.from, end: f.to, width: num(f.width), minSilence: num(f["min-silence"]), out: f.output }); break;
+      case "motion": res = await api.motion(P, { start: f.from, end: f.to, frames: num(f.frames), pad: num(f.pad), out: f.output, tileWidth: num(f["tile-width"]) }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }

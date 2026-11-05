@@ -1,0 +1,252 @@
+// Audio inspection for agents that can only see stills: one image (time ruler, per-track waveforms, the rendered mix,
+// optional spectrogram, clip boundaries, markers, findings) + numeric findings (clipping/overs, silences, cut-offs, ducking).
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
+import * as AN from "./analyze.ts";
+import { audioSources, buildAudio } from "./audio.ts";
+import { needFfmpeg } from "./media.ts";
+import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Timeline, totalDuration } from "./model.ts";
+
+const WIN = 0.02; // analysis window (s)
+const db = (x: number) => (x > 1e-9 ? 20 * Math.log10(x) : -180);
+const r3 = (x: number) => +x.toFixed(3), r1 = (x: number) => +x.toFixed(1);
+
+interface Pcm { ch: Float32Array[]; sr: number; dur: number }
+interface Lane { id: string; role?: string; clips: Clip[]; pcm: Pcm; rms: Float64Array; peak: Float64Array }
+
+/** 16-bit PCM WAV (what buildAudio / our ffmpeg calls write) -> per-channel floats. */
+export function readWav(path: string): Pcm {
+  const b = readFileSync(path);
+  if (b.toString("ascii", 0, 4) !== "RIFF" || b.toString("ascii", 8, 12) !== "WAVE") throw new EditError(`not a WAV file: ${path}`, "decode_failed");
+  let o = 12, nch = 0, sr = 0, bits = 0;
+  while (o + 8 <= b.length) {
+    const id = b.toString("ascii", o, o + 4), n = b.readUInt32LE(o + 4);
+    if (id === "fmt ") { nch = b.readUInt16LE(o + 10); sr = b.readUInt32LE(o + 12); bits = b.readUInt16LE(o + 22); }
+    if (id === "data") {
+      if (bits !== 16 || !nch) throw new EditError(`unsupported WAV (${bits}-bit, ${nch} ch): ${path}`, "decode_failed");
+      const frames = Math.floor(Math.min(n, b.length - o - 8) / (2 * nch));
+      const ch = Array.from({ length: nch }, () => new Float32Array(frames));
+      for (let i = 0, p = o + 8; i < frames; i++) for (let c = 0; c < nch; c++, p += 2) ch[c][i] = b.readInt16LE(p) / 32768;
+      return { ch, sr, dur: frames / sr };
+    }
+    o += 8 + n + (n % 2);
+  }
+  throw new EditError(`WAV has no data chunk: ${path}`, "decode_failed");
+}
+
+/** per-WIN rms (channel mean power) and sample peak (max over channels), linear */
+function windows(p: Pcm): { rms: Float64Array; peak: Float64Array } {
+  const n = Math.ceil(p.dur / WIN), w = Math.max(1, Math.round(WIN * p.sr));
+  const rms = new Float64Array(n), peak = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    let s = 0, pk = 0, cnt = 0;
+    const a = k * w, e = Math.min(p.ch[0].length, a + w);
+    for (const c of p.ch) for (let i = a; i < e; i++) { const v = c[i]; s += v * v; cnt++; const av = v < 0 ? -v : v; if (av > pk) pk = av; }
+    rms[k] = cnt ? Math.sqrt(s / cnt) : 0; peak[k] = pk;
+  }
+  return { rms, peak };
+}
+
+/** rms (dBFS) over the windows lying fully inside [t0, t1); outside the signal counts as silence */
+function levelDb(rms: Float64Array, t0: number, t1: number) {
+  const a0 = Math.ceil(t0 / WIN - 1e-6), e0 = Math.floor(t1 / WIN + 1e-6);
+  let s = 0;
+  for (let k = Math.max(0, a0); k < Math.min(rms.length, e0); k++) s += rms[k] * rms[k];
+  return db(Math.sqrt(s / Math.max(1, e0 - a0)));
+}
+
+/** runs of windows where pred holds, merged across gaps < gap s, kept when >= min s */
+function runs(n: number, pred: (k: number) => boolean, min = 0, gap = 0): [number, number][] {
+  const out: [number, number][] = [];
+  for (let k = 0; k < n; k++) {
+    if (!pred(k)) continue;
+    let e = k;
+    while (e + 1 < n && pred(e + 1)) e++;
+    const s0 = k * WIN, e0 = (e + 1) * WIN, l = out[out.length - 1];
+    if (l && s0 - l[1] <= gap) l[1] = e0; else out.push([s0, e0]);
+    k = e;
+  }
+  return out.filter(([s, e]) => e - s >= min - 1e-9);
+}
+
+function toWav(src: string, out: string, sr: number) {
+  needFfmpeg();
+  // keep the channel layout: upmixing mono to stereo pans it down 3 dB and would hide clipping
+  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", src, "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { encoding: "utf8" });
+  if (r.status !== 0) throw new EditError(`cannot decode audio from ${src}: ${(r.stderr || "").slice(-300)}`, "decode_failed", "is it a media file with an audio stream?");
+}
+
+export interface AudioCheckOpts { source?: string; spectrogram?: boolean; start?: number; end?: number; width?: number; minSilence?: number }
+
+/** tl must be absolutized. Returns the encoded image (PNG) + findings. */
+export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) {
+  const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
+  try {
+    const lanes: Lane[] = [];
+    let mixPath: string;
+    let markers: Dict[] = [], cuts: number[] = [];
+    if (o.source) {
+      mixPath = join(tmp, "mix.wav");
+      toWav(o.source, mixPath, 48000);
+    } else {
+      if (!tl) throw new EditError("no project or source", "no_project");
+      resolve(tl);
+      markers = tl.markers ?? [];
+      const main = tl.tracks.find((t) => t.magnetic && (t.kind ?? "video") !== "audio");
+      cuts = (main?.clips ?? []).slice(1).map(clipStart);
+      tl.tracks.forEach((tr, j) => {
+        // stem: every other track at volume 0 (still feeds ducking), raw gain stage, low rate (fast)
+        const stem: Timeline = { ...tl, settings: { ...tl.settings, loudness: null, sample_rate: 16000 },
+          tracks: tl.tracks.map((t, i) => (i === j ? t : { ...t, volume: 0 })) };
+        const srcs = audioSources(stem);
+        if (!srcs.length) return;
+        const wav = join(tmp, `stem${j}.wav`);
+        buildAudio(stem, wav);
+        const pcm = readWav(wav);
+        lanes.push({ id: tr.id, role: tr.role, clips: tr.clips.filter((c) => srcs.some((s) => s.clip.id === c.id) || c.type === "compound"), pcm, ...windows(pcm) });
+      });
+      mixPath = join(tmp, "mix.wav");
+      buildAudio(structuredClone(tl), mixPath);
+    }
+    const mix = readWav(mixPath);
+    const mw = windows(mix);
+    const T = o.source ? mix.dur : Math.max(mix.dur, totalDuration(tl!));
+    const findings: Dict[] = [];
+    const loud = AN.loudness(mixPath);
+
+    // 1. clipping (sample peak >= -0.1 dBFS) and overs (> -1 dBFS, the usual true-peak ceiling)
+    for (const [s, e] of runs(mw.peak.length, (k) => mw.peak[k] >= 0.9886, 0, 0.1))
+      findings.push({ type: "clipping", start: r3(s), end: r3(e), peak_dbfs: r1(db(Math.max(...mw.peak.subarray(Math.floor(s / WIN), Math.ceil(e / WIN))))),
+        hint: "lower the loud clip's volume (or the track's) until the peak stays below -1 dBFS" });
+    for (const [s, e] of runs(mw.peak.length, (k) => mw.peak[k] > 0.891 && mw.peak[k] < 0.9886, 0, 0.1))
+      findings.push({ type: "over", start: r3(s), end: r3(e), peak_dbfs: r1(db(Math.max(...mw.peak.subarray(Math.floor(s / WIN), Math.ceil(e / WIN))))),
+        hint: "peaks above -1 dBFS may distort after lossy encoding; lower the volume there" });
+    if (loud.true_peak_dbfs !== null && loud.true_peak_dbfs > -1)
+      findings.push({ type: "true_peak", value_dbfs: loud.true_peak_dbfs, hint: "true peak above -1 dBTP; lower the loudest source" });
+
+    // 2. long silences in the mix (dead air)
+    const minSil = o.minSilence ?? 1;
+    if (!o.source && !lanes.length) findings.push({ type: "no_audio", hint: "the project has no audible clip; add music or a voiceover" });
+    else for (const [s, e] of runs(mw.rms.length, (k) => db(mw.rms[k]) < -50, minSil))
+      findings.push({ type: "silence", start: r3(s), end: r3(Math.min(e, T)), hint: "dead air: add music/room tone, or cut the gap (remove_silence)" });
+
+    // 3. audio that stops abruptly at a clip end (no fade, still loud)
+    for (const L of lanes) for (const c of L.clips) {
+      if (c.type === "compound") continue;
+      const e = clipEnd(c), before = levelDb(L.rms, e - 0.05, e), after = levelDb(L.rms, e, e + 0.05);
+      if (before > -30 && after < before - 15)
+        findings.push({ type: "cut_off", t: r3(e), id: c.id, track: L.id, level_db: r1(before),
+          hint: `audio stops abruptly at ${r3(e)}s: update_clip ${c.id} set fade_out=0.3 (or end it on a quieter moment)` });
+    }
+
+    // 4. music not ducked under voice: music within 6 dB of the voice while someone is speaking
+    const voice = lanes.filter((l) => l.role === "voice" || l.role === "dialogue"), music = lanes.filter((l) => l.role === "music");
+    if (voice.length && music.length) {
+      const n = Math.min(...[...voice, ...music].map((l) => l.rms.length));
+      // combined rms per window, smoothed over 200 ms so syllable gaps do not split the runs (dB)
+      const sm = (ls: Lane[]) => {
+        const comb = Float64Array.from({ length: n }, (_, k) => Math.sqrt(ls.reduce((s, l) => s + l.rms[k] ** 2, 0)));
+        return Float64Array.from({ length: n }, (_, k) => levelDb(comb, (k - 5) * WIN, (k + 5) * WIN));
+      };
+      const v = sm(voice), m = sm(music);
+      for (const [s, e] of runs(n, (k) => v[k] > -40 && m[k] > v[k] - 6, 0.5, 0.3)) {
+        const a = Math.floor(s / WIN), b = Math.ceil(e / WIN);
+        const avg = (x: Float64Array) => r1(x.subarray(a, b).reduce((p, q) => p + q, 0) / Math.max(1, b - a));
+        findings.push({ type: "music_not_ducked", start: r3(s), end: r3(e), music_db: avg(m), voice_db: avg(v), tracks: music.map((l) => l.id),
+          hint: `music is within 6 dB of the voice: lower its volume or duck harder (update_track ${music[0].id} set duck=-18)` });
+      }
+    }
+    findings.sort((a, b) => (a.start ?? a.t ?? 0) - (b.start ?? b.t ?? 0));
+
+    const spec = o.spectrogram ? join(tmp, "spec.png") : null;
+    const t0 = Math.max(0, o.start ?? 0), t1 = Math.min(T, o.end ?? T);
+    if (!(t1 > t0)) throw new EditError(`empty range ${t0}-${t1}`, "bad_range", `use start/end inside 0-${r3(T)}`);
+    const img = await draw({ lanes, mix: { pcm: mix, ...mw }, findings, markers, cuts, t0, t1, width: o.width ?? 1400, spec, mixPath, source: o.source });
+    return {
+      image: img, duration: r3(T), range: [r3(t0), r3(t1)],
+      lanes: [...lanes.map((l) => ({ track: l.id, role: l.role, peak_dbfs: r1(db(Math.max(...l.peak))), rms_dbfs: r1(levelDb(l.rms, 0, l.pcm.dur)) })),
+        { track: "mix", peak_dbfs: r1(db(Math.max(0, ...mw.peak))), rms_dbfs: r1(levelDb(mw.rms, 0, mix.dur)) }],
+      loudness: { integrated_lufs: loud.integrated_lufs, range_lu: loud.range_lu, true_peak_dbfs: loud.true_peak_dbfs },
+      findings,
+    };
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+const COL: Record<string, string> = { voice: "#4fc3f7", dialogue: "#4fc3f7", music: "#ba68c8", sfx: "#ffb74d" };
+const FIND: Record<string, string> = { clipping: "#ff1744", over: "#ff9100", silence: "#9e9e9e", cut_off: "#ff9100", music_not_ducked: "#e040fb" };
+
+async function draw(a: { lanes: Lane[]; mix: { pcm: Pcm; rms: Float64Array; peak: Float64Array }; findings: Dict[]; markers: Dict[]; cuts: number[];
+  t0: number; t1: number; width: number; spec: string | null; mixPath: string; source?: string }): Promise<Buffer> {
+  const G = 120, RH = 26, LH = 76, MH = 120, SH = 170, W = Math.max(400, Math.round(a.width)), PW = W - G - 8;
+  const H = RH + a.lanes.length * (LH + 4) + MH + (a.spec ? SH + 4 : 0) + 6;
+  const cv = createCanvas(W, H), ctx = cv.getContext("2d");
+  const X = (t: number) => G + ((t - a.t0) / (a.t1 - a.t0)) * PW;
+  ctx.fillStyle = "#151515"; ctx.fillRect(0, 0, W, H);
+  ctx.font = "12px Menlo, Consolas, monospace";
+
+  // ruler
+  const step = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => (s / (a.t1 - a.t0)) * PW >= 70) ?? 600;
+  ctx.strokeStyle = "#555"; ctx.fillStyle = "#ccc"; ctx.lineWidth = 1;
+  for (let t = Math.ceil(a.t0 / step) * step; t <= a.t1 + 1e-9; t += step) {
+    const x = Math.round(X(t)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, RH - 8); ctx.lineTo(x, H); ctx.strokeStyle = "#2a2a2a"; ctx.stroke();
+    ctx.fillText(`${+t.toFixed(2)}s`, x + 3, 13);
+  }
+  const rows: { label: string; y: number; h: number; color: string; w: { rms: Float64Array; peak: Float64Array }; clips?: Clip[]; id?: string }[] = [];
+  let y = RH;
+  for (const L of a.lanes) { rows.push({ label: L.role ? `${L.id} (${L.role})` : L.id, y, h: LH, color: COL[L.role ?? ""] ?? "#81c784", w: L, clips: L.clips, id: L.id }); y += LH + 4; }
+  rows.push({ label: a.source ? "file" : "mix (rendered)", y, h: MH, color: "#e0e0e0", w: a.mix, id: "mix" }); y += MH + 4;
+
+  for (const r of rows) {
+    ctx.fillStyle = "#1d1d1d"; ctx.fillRect(G, r.y, PW, r.h);
+    for (const c of r.clips ?? []) { // clip boxes + boundaries
+      const x0 = Math.max(G, X(clipStart(c))), x1 = Math.min(G + PW, X(clipEnd(c)));
+      if (x1 <= x0) continue;
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(x0, r.y, x1 - x0, r.h);
+      ctx.fillStyle = "#777"; ctx.fillRect(x0, r.y, 1, r.h); ctx.fillRect(x1 - 1, r.y, 1, r.h);
+    }
+    const mid = r.y + r.h / 2, amp = r.h / 2 - 2, n = r.w.rms.length;
+    const hgt = (x: number) => Math.max(0, (db(x) + 60) / 60) * amp; // dB scale: -60 dBFS = centre line, 0 dBFS = lane edge
+    for (const d of [-6, -20, -40]) { ctx.fillStyle = "#2c2c2c"; ctx.fillRect(G, Math.round(mid - hgt(10 ** (d / 20))), PW, 1); ctx.fillRect(G, Math.round(mid + hgt(10 ** (d / 20))), PW, 1); }
+    for (let px = 0; px < PW; px++) { // waveform: sample peak (dim) + rms (bright)
+      const ka = Math.floor((a.t0 + (px / PW) * (a.t1 - a.t0)) / WIN), kb = Math.max(ka + 1, Math.floor((a.t0 + ((px + 1) / PW) * (a.t1 - a.t0)) / WIN));
+      let pk = 0, rs = 0;
+      for (let k = ka; k < kb && k < n; k++) { if (r.w.peak[k] > pk) pk = r.w.peak[k]; if (r.w.rms[k] > rs) rs = r.w.rms[k]; }
+      if (!pk) continue;
+      ctx.globalAlpha = 0.45; ctx.fillStyle = r.color; ctx.fillRect(G + px, mid - hgt(pk), 1, Math.max(1, 2 * hgt(pk)));
+      ctx.globalAlpha = 1; ctx.fillRect(G + px, mid - hgt(rs), 1, Math.max(1, 2 * hgt(rs)));
+      if (pk >= 0.9886) { ctx.fillStyle = FIND.clipping; ctx.fillRect(G + px, r.y, 1, 4); ctx.fillRect(G + px, r.y + r.h - 4, 1, 4); }
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#333"; ctx.fillRect(G, mid, PW, 1);
+    ctx.fillStyle = r.color; ctx.fillText(r.label, 6, r.y + 16);
+    ctx.fillStyle = "#888"; ctx.fillText(`pk ${r1(db(Math.max(0, ...r.w.peak)))} dB`, 6, r.y + 32);
+    for (const c of r.clips ?? []) { const x0 = Math.max(G, X(clipStart(c))); if (x0 < Math.min(G + PW, X(clipEnd(c)))) { ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(x0 + 1, r.y + 1, ctx.measureText(c.id).width + 5, 14); ctx.fillStyle = "#ddd"; ctx.fillText(c.id, x0 + 3, r.y + 12); } }
+    for (const f of a.findings) { // findings on the lane they belong to
+      const on = f.track === r.id || (r.id === "mix" && ["clipping", "over", "silence"].includes(f.type)) || (f.tracks ?? []).includes(r.id);
+      if (!on || !FIND[f.type]) continue;
+      ctx.fillStyle = FIND[f.type];
+      if (f.t !== undefined) { const x = X(f.t); ctx.beginPath(); ctx.moveTo(x, r.y + r.h); ctx.lineTo(x - 6, r.y + r.h - 12); ctx.lineTo(x, r.y + r.h - 12); ctx.fill(); }
+      else { const x0 = Math.max(G, X(f.start)); ctx.globalAlpha = f.type === "silence" ? 0.5 : 0.85; ctx.fillRect(x0, r.y + r.h - 6, Math.max(2, Math.min(G + PW, X(f.end)) - x0), 6); ctx.globalAlpha = 1; }
+    }
+  }
+  if (a.spec) {
+    const ss = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-ss", String(a.t0), "-t", String(a.t1 - a.t0), "-i", a.mixPath,
+      "-lavfi", `aformat=channel_layouts=mono,showspectrumpic=s=${PW}x${SH}:legend=0:fscale=log:color=intensity`, a.spec], { encoding: "utf8" });
+    if (ss.status === 0) { ctx.drawImage(await loadImage(a.spec), G, y, PW, SH); ctx.fillStyle = "#ccc"; ctx.fillText("spectrogram", 6, y + 16); ctx.fillStyle = "#888"; ctx.fillText("(log freq)", 6, y + 32); }
+    else { ctx.fillStyle = "#f55"; ctx.fillText(`spectrogram failed: ${(ss.stderr || "").slice(-80)}`, G + 6, y + 20); }
+  }
+  // cuts on the main track (faint) + markers (yellow, labelled) across every lane
+  ctx.fillStyle = "rgba(255,255,255,0.22)";
+  for (const t of a.cuts) if (t >= a.t0 && t <= a.t1) ctx.fillRect(Math.round(X(t)), RH, 1, H - RH);
+  for (const m of a.markers) {
+    const t = Number(m.t);
+    if (!(t >= a.t0 && t <= a.t1)) continue;
+    ctx.fillStyle = "rgba(255,214,0,0.7)"; ctx.fillRect(Math.round(X(t)), RH - 8, 1, H - RH + 8);
+    if (m.label) { ctx.fillStyle = "#ffd600"; ctx.fillText(String(m.label).slice(0, 18), X(t) + 3, RH - 1); }
+  }
+  return cv.encodeSync("png");
+}

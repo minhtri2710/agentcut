@@ -30,6 +30,12 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
    Judge pixels, not intentions: readable? inside safe area? cropped? on the beat?
    Colour: scopes t (CLI: agentcut scopes 2.5) = waveform + vectorscope + histogram + stats (luma avg ~0.4-0.6, p90 < 0.95 = no
    clipping; cast u/v ~0 = neutral) - grade until the numbers agree with your eyes.
+   CHECK what stills can't show (CLI: agentcut review | audio | motion):
+   review        editorial lint with times: text outside the safe area / under 9:16 app UI, text too short to read,
+                 shots too short/long, cuts off the beat (beats='music' or a list), black frames, validation warnings
+   audio_check   image of every track's waveform + the rendered mix (+ spectrogram) with clip boundaries and markers;
+                 findings: clipping/overs, true peak, long silences, audio cut off without fade, music not ducked under voice
+   motion_strip  10 consecutive frames per transition (or start/end for any animation) to judge motion
 5. render draft=true first, then final. The result has a contact sheet + loudness (~ -14 LUFS). Re-render a section with start/end.
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac. Check result.warnings.
