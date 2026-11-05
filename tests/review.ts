@@ -123,7 +123,7 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
     const post = (body: unknown) => fetch(`${ui.url}api/render`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json() as any);
     const [a, b] = await Promise.all([post({ play: true, start: 0, end: 1 }), post({ play: true, start: 0, end: 1 })]);
     const rev = api.info(P).revision;
-    const final = join(P, "previews", `play-r${rev}-0.00-1.00.mp4`);
+    const final = join(P, "previews", "ui", `play-r${rev}-0.00-1.00.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
     let done: any = null;
