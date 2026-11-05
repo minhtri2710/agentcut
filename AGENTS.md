@@ -135,8 +135,9 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - "Done" needs evidence: a contact sheet or frame you looked at + the render result JSON.
 
 ## Working alongside a human (agentcut ui)
-- `agentcut ui [DIR] [--port 4810]` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, render). The human's edits
-  land in the same project.json, so re-read (info / project_info) before planning more edits.
+- `agentcut ui [DIR] [--port 4810]` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
+  editor, compound open/expand/regroup, render). The human's edits land in the same project.json, so re-read (info /
+  project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
 - project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
   apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
   Without a revision the batch is applied to the latest state.

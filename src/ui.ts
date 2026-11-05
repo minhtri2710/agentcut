@@ -2,7 +2,7 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, realpathSync, renameSync, rmSync, statSync, unwatchFile, watchFile } from "node:fs";
+import { createReadStream, existsSync, realpathSync, renameSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
@@ -25,6 +25,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const jobs = new Map<string, Dict>();
   const playing = new Map<string, Dict>(); // play output path -> running job
   const thumbs = new Map<string, Promise<Buffer>>();
+  const cacheDir = join(root, "previews", "ui");
 
   const state = (): Dict => ({ ...api.info(root, "json"), history: api.history(root) });
   const send = (res: ServerResponse, event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -98,7 +99,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev) });
       if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev) });
       if (path === "/api/sheet") {
-        const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(root, "previews", `ui-sheet-${Date.now()}.jpg`) });
+        const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
       }
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
@@ -106,15 +107,15 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
 
-  /** play=true: draft of [start,end) into previews/ (cached per revision+range) for the viewer; else a normal render into renders/. */
+  /** play=true: draft of [start,end) into previews/ui/ (cached per revision+range) for the viewer; else a normal render into renders/. */
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
     jobs.set(id, job);
     const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
-    const out = body.play ? join(root, "previews", `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
-    const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined }); broadcast("job", job); };
-    if (out && existsSync(out)) { finish({ output: out }); return job; }
+    const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
+    const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
+    if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); return job; }
     if (out && playing.has(out)) { jobs.delete(id); return playing.get(out)!; } // same range already rendering: share that job
     // play renders go to a .part file and are renamed when complete, so the cache check above never serves a half-written file
     const part = out?.replace(/\.mp4$/, ".part.mp4");
