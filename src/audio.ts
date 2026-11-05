@@ -24,17 +24,47 @@ function kfExpr(kfs: any[], v = "t"): string {
   return `if(lt(${v},${pts[0][0]}),${pts[0][1]},${e})`;
 }
 
+interface Win { base: number; w0: number; w1: number; gain: number; track: Track }
+/** clip c of a compound's nested timeline -> parent time, trimmed to the compound's visible window [w0, w1] */
+function mapClip(c: Clip, w?: Win): Clip | null {
+  if (!w) return c;
+  const s = parseTime(c.start ?? 0), e = s + parseTime(c.duration), a = Math.max(s, w.w0), b = Math.min(e, w.w1);
+  if (b - a < 1e-3) return null;
+  const head = a - s, tail = e - b, speed = Number(c.speed ?? 1) || 1;
+  const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + (c.reverse ? tail : head) * speed };
+  if (head > 1e-6) {
+    delete m.fade_in;
+    if (c.keyframes?.volume) m.keyframes = { ...c.keyframes, volume: parseKfs(c.keyframes.volume).map(([t, v]) => [t - head, v]) };
+  }
+  if (tail > 1e-6) delete m.fade_out;
+  return m;
+}
+
+/** Every enabled clip on an unmuted track, compound clips flattened into parent-time clips (audio needs speed 1). */
+function* flatClips(tracks: Track[], w?: Win): Generator<{ track: Track; clip: Clip; gain: number }> {
+  for (const t of tracks) {
+    if (t.muted) continue;
+    const track = w ? { ...w.track, ...t } : t, gain = (w?.gain ?? 1) * Number(t.volume ?? 1);
+    for (const c0 of t.clips) {
+      if (c0.enabled === false) continue;
+      const c = mapClip(c0, w);
+      if (!c) continue;
+      if (c.type !== "compound") { yield { track, clip: c, gain }; continue; }
+      if (c.muted || Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6 || !Array.isArray(c.tracks)) continue; // retimed compounds: no nested audio
+      const w0 = parseTime(c.in ?? 0);
+      yield* flatClips(c.tracks, { base: parseTime(c.start ?? 0), w0, w1: w0 + parseTime(c.duration), gain: gain * Number(c.volume ?? 1), track });
+    }
+  }
+}
+
 export function audioSources(tl: Timeline) {
   const out: { track: Track; clip: Clip; path: string; volume: number }[] = [];
-  for (const tr of tl.tracks) {
-    if (tr.muted) continue;
-    for (const c of tr.clips) {
-      if (c.enabled === false || c.muted || (c.type !== "video" && c.type !== "audio") || c.freeze || c.keyframes?.speed) continue;
-      const a = tl.assets[c.asset];
-      if (!a || (!a.has_audio && a.kind !== "audio")) continue;
-      const vol = Number(c.volume ?? 1) * Number(tr.volume ?? 1);
-      if (vol > 0) out.push({ track: tr, clip: c, path: a.path, volume: vol });
-    }
+  for (const { track, clip: c, gain } of flatClips(tl.tracks)) {
+    if (c.muted || (c.type !== "video" && c.type !== "audio") || c.freeze || c.keyframes?.speed) continue;
+    const a = tl.assets[c.asset];
+    if (!a || (!a.has_audio && a.kind !== "audio")) continue;
+    const vol = Number(c.volume ?? 1) * gain;
+    if (vol > 0) out.push({ track, clip: c, path: a.path, volume: vol });
   }
   return out;
 }
@@ -48,8 +78,8 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   const srcs = audioSources(tl);
   // voice intervals for ducking
   const voice: [number, number][] = [];
-  for (const tr of tl.tracks) if ((tr.role === "voice" || tr.role === "dialogue") && !tr.muted)
-    for (const c of tr.clips) if (c.enabled !== false && (c.type === "audio" || c.type === "video")) { const s = parseTime(c.start ?? 0); voice.push([s, s + parseTime(c.duration)]); }
+  for (const { track: tr, clip: c } of flatClips(tl.tracks))
+    if ((tr.role === "voice" || tr.role === "dialogue") && (c.type === "audio" || c.type === "video")) { const s = parseTime(c.start ?? 0); voice.push([s, s + parseTime(c.duration)]); }
   voice.sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
   for (const [s, e] of voice) { const l = merged[merged.length - 1]; if (l && s - l[1] < 0.5) l[1] = Math.max(l[1], e); else merged.push([s, e]); }

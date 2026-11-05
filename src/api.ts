@@ -65,6 +65,7 @@ function requireValid(p: Project, tl: M.Timeline) {
   if (errs.length) throw new M.EditError(`timeline has ${errs.length} error(s); first: ${errs[0].path}: ${errs[0].message}`, "invalid_timeline", errs[0].hint ?? "run validate for the full list");
 }
 
+const stillFmt = (out: string) => (/\.png$/i.test(out) ? "png" : "jpeg");
 const outPath = (p: Project, out: string | undefined, dflt: string) => (out ? (isAbsolute(out) ? out : presolve(out)) : join(p.root, dflt));
 
 export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
@@ -73,8 +74,8 @@ export async function frame(project: string | undefined, t: number | string, o: 
   requireValid(p, tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
-  const png = await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, !!o.guides);
-  const out = outPath(p, o.out, `previews/frame-${tt.toFixed(2).padStart(7, "0")}s.png`);
+  const out = outPath(p, o.out, `previews/frame-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
+  const png = await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, !!o.guides, stillFmt(out));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return { image: out, t: tt, bytes: png.length };
@@ -90,17 +91,34 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
   const { contactSheet } = await renderMod();
-  const png = await contactSheet(p.absolutized(tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides);
-  const out = outPath(p, o.out, `previews/sheet-${Date.now()}.png`);
+  const out = outPath(p, o.out, `previews/sheet-${Date.now()}.jpg`);
+  const png = await contactSheet(p.absolutized(tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides, stillFmt(out));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return { image: out, times: ts, duration: T };
 }
 
+const INTERCHANGE: Record<string, "fcpxml" | "otio"> = { ".fcpxml": "fcpxml", ".otio": "otio" };
+
+/** Hand the edit to a human editor: FCPXML (Final Cut Pro) or OpenTimelineIO (DaVinci Resolve, Premiere, Avid...). */
+export async function exportTimeline(project: string | undefined, o: { format?: string; out?: string } = {}) {
+  const p = openProject(project);
+  const tl = p.load();
+  requireValid(p, tl);
+  const ext = o.out ? o.out.slice(o.out.lastIndexOf(".")).toLowerCase() : "";
+  const format = (o.format ?? INTERCHANGE[ext] ?? "fcpxml").toLowerCase();
+  if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
+  const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(`.${format}`);
+  mkdirSync(dirname(out), { recursive: true });
+  const { exportTimeline: ex } = await import("./export.ts");
+  return ex(p.absolutized(M.resolve(tl)), format, out);
+}
+
 export async function render(project: string | undefined, o: {
   out?: string; start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean;
-  sheet?: boolean; workers?: number; fast?: boolean; progress?: (d: number, n: number) => void;
+  sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; progress?: (d: number, n: number) => void;
 } = {}) {
+  if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
   const p = openProject(project);
   const tl = p.load();
   requireValid(p, tl);
@@ -112,8 +130,9 @@ export async function render(project: string | undefined, o: {
   const { renderVideo } = await import("./encode.ts");
   const res: M.Dict = await renderVideo(p.absolutized(tl), p.root, out, {
     start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
-    hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress,
+    hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha,
   });
+  if (res.audio_only) return res;
   FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
     encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
     effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
@@ -122,7 +141,7 @@ export async function render(project: string | undefined, o: {
     try {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
       const png = await contactSheet(p.absolutized(tl), p.root, ts, 4, 300);
-      const sp = out.replace(/\.[^.]+$/, ".sheet.png");
+      const sp = out.replace(/\.[^.]+$/, ".sheet.jpg");
       writeFileSync(sp, png);
       res.contact_sheet = sp;
     } catch (e: any) { res.contact_sheet_error = e.message; }
@@ -147,7 +166,9 @@ export function capabilities() {
     text_presets: pick(TEXT_PRESETS), caption_presets: pick(CAPTION_PRESETS),
     templates: Object.fromEntries(Object.entries(TEMPLATES).map(([k, v]) => [k, { doc: v.doc, args: v.args }])),
     canvas_presets: Object.fromEntries(Object.entries(M.PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])),
-    output_formats: [".mp4 (H.264)", ".mov (ProRes 422)", ".webm (VP9)", ".mkv", ".gif"],
+    output_formats: [".mp4 (H.264; codec=hevc for H.265)", ".mov (ProRes 422; codec=prores_4444 keeps alpha)", ".webm (VP9, alpha ok)", ".mkv", ".gif",
+      ".wav/.mp3/.m4a/.aac/.flac (audio only)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
+    render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     ops: Object.keys(OPS),
   };
 }

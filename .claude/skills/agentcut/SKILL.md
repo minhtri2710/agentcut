@@ -16,6 +16,8 @@ description: Make or edit videos (reels/shorts/youtube, slideshows, promos, capt
 5. LOOK before rendering: `contact_sheet` for the whole piece, `preview_frame` (guides=true for 9:16) at the hook,
    every text moment and every transition. Fix what you see (readability, safe area, cropping, timing).
 6. `render` with draft=true, check the returned contact sheet + loudness (about -14 LUFS), then the final render.
-7. Report the output path and what you verified; list anything a human should still review.
-8. Before finishing, if anything was slow, confusing, missing or broken, send one `report_feedback` note per issue
+7. If a human will finish the edit, also `export_timeline` (.fcpxml for Final Cut, .otio for Resolve/Premiere) and pass on
+   its `skipped` list. Audio-only deliverables: render to .mp3/.wav; transparent overlays: background "#00000000" + .mov.
+8. Report the output path and what you verified; list anything a human should still review.
+9. Before finishing, if anything was slow, confusing, missing or broken, send one `report_feedback` note per issue
    (CLI: `agentcut feedback add kind=... title=...`). Duplicates are merged; it is how AgentCut improves.

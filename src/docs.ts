@@ -1,4 +1,4 @@
-export const GUIDE = String.raw`
+export const GUIDE = `
 # AgentCut — guide for AI agents
 
 AgentCut is a video editor you drive with JSON (CapCut/Final Cut feature set, no GUI). A project is a folder with
@@ -12,7 +12,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Magnetic track (Final Cut primary storyline): clips play back-to-back in list order, start is computed; a clip's
   transition overlaps it with the previous clip. Reorder with move_clip index. gap clips = pauses.
 - Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine (later on top).
-- Clip types: video · image · text · captions · shape · color (solid/gradient) · lottie · audio · gap.
+- Clip types: video · image · text · captions · shape · color (solid/gradient) · lottie · audio · gap · compound (nested tracks).
 - Times: 2.5, "2.5s", "1500ms", "00:02.5". Lengths: px or "10%". Colours: "#RRGGBB[AA]", rgba(), basic names.
 - until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits.
 - Connected clips (Final Cut): attach_to "vid3" (or "main#2" = 3rd clip of main, "main#-1" = last) + offset (+ match_duration,
@@ -27,9 +27,15 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 1. create_project (CLI: agentcut init DIR --preset reels).
 2. probe_media / analyze_beats / analyze_scenes / analyze_silence your inputs - know durations first.
 3. Build in ONE apply_ops batch (atomic: a batch that would create validation errors is rejected, nothing changes).
-4. LOOK: contact_sheet (whole video) + preview_frame at the hook, every text, every transition (guides=true for 9:16).
+4. LOOK (previews are JPEG, ~0.1 s per frame): contact_sheet (whole video) + preview_frame at the hook, every text, every transition (guides=true for 9:16).
    Judge pixels, not intentions: readable? inside safe area? cropped? on the beat?
 5. render draft=true first, then final. The result has a contact sheet + loudness (~ -14 LUFS). Re-render a section with start/end.
+   Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
+   .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac. Check result.warnings.
+   Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio):
+   cuts, in-points, crossfades,
+   constant speed, volume, titles and connected clips carry over (media linked by absolute path); effects, looks, keyframes,
+   masks, captions, shapes are listed in result.skipped - tell the human what is left to finish.
 6. Fix with update_clip / trim_clip / undo.
 
 ## Ops cheat-sheet
@@ -54,6 +60,19 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 {"op":"add_effect","id":"vid1","type":"glitch","start":0,"duration":0.5}    {"op":"add_effect","type":"letterbox"}  (no id = whole video)
 {"op":"trim_clip","id":"vid1","trim_start":0.5}  {"op":"split_clip","id":"vid1","at":4.2}  {"op":"move_clip","id":"vid3","index":0}
 {"op":"add_transition","to":"vid2","type":"dip_black","duration":0.6}  {"op":"set_settings","preset":"reels"}
+
+## Pro editing (Final Cut style)
+{"op":"detach_audio","id":"vid2"}                  video audio -> its own clip on the 'dialogue' track, connected (stays in sync)
+{"op":"j_cut","id":"main#1","seconds":0.8}         B's audio starts 0.8 s before its picture (auto-detaches)
+{"op":"l_cut","id":"main#0","seconds":1,"crossfade":0.3}   A's audio runs 1 s over B
+  -> check result.under (clips still audible underneath) and fade/lower them. split_clip/trim_clip keep detached audio in sync.
+{"op":"slip_clip","id":"vid2","by":0.5}            different part of the source, same place on the timeline
+{"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
+{"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
+{"op":"make_compound","ids":["main#1","main#2","txt1"],"name":"intro"}   group clips into ONE compound clip (move/trim/fade/mask/effects as a unit)
+{"op":"expand_compound","id":"cmp1"}                put the clips back
+  -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
+     regroup. Nested audio is mixed (compound volume/muted apply) at compound speed 1.
 
 ## Vocabulary
 - transitions: crossfade, dip_black, dip_white, flash, glitch, zoom, zoom_blur, spin, circle, blur, slide_*, push_*, wipe_*

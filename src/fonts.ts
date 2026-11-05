@@ -120,8 +120,16 @@ export function missingChars(family: string, text: string): string {
 }
 
 /** Validation helper: error if the font is unknown; info naming the fallback if glyphs are missing. */
+const checkMemo = new Map<string, { error?: string; hint?: string; fallback?: string }>();
+/** Memoized: validation runs before and after every batch with mostly the same texts. */
 export function fontCheck(font: string | undefined, text: string) {
   if (!fontsKnown()) return {};
+  const key = `${font ?? ""}\u0000${text}`;
+  let r = checkMemo.get(key);
+  if (!r) { r = fontCheckRaw(font, text); if (checkMemo.size > 5000) checkMemo.clear(); checkMemo.set(key, r); }
+  return r;
+}
+function fontCheckRaw(font: string | undefined, text: string): { error?: string; hint?: string; fallback?: string } {
   try {
     const f = resolveFont(font);
     const miss = missingChars(f.family, text.replace(/\p{Extended_Pictographic}/gu, ""));

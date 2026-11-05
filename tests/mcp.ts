@@ -1,6 +1,6 @@
 // MCP end-to-end: spawns the server over stdio, exercises the main tools like an agent would.
 // Run: bun tests/mcp.ts
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -35,11 +35,13 @@ check("apply_ops", ap.json.ok && ap.json.results[0].added.length === 2, ap.json)
 const bad = await call("apply_ops", { ops: [{ op: "add_clip", text: "x", enter: "fly_in" }] });
 check("bad batch rejected + hint", !bad.json.ok && bad.json.error.code === "validation_failed", bad.json);
 const fr = await call("preview_frame", { t: 1 });
-check("preview_frame returns image", fr.images.length === 1 && fr.images[0].data.length > 1000);
+check("preview_frame returns image (jpeg)", fr.images.length === 1 && fr.images[0].data.length > 1000 && fr.images[0].mimeType === "image/jpeg");
 const sh = await call("contact_sheet", { count: 6 });
 check("contact_sheet returns image", sh.images.length === 1);
 const rd = await call("render", { draft: true, wait_seconds: 60 });
 check("render draft", rd.json.ok && rd.json.status === "done" && rd.json.result.frames > 0, rd.json);
+const ex = await call("export_timeline", { format: "otio", output: join(tmp, "edit.otio") });
+check("export_timeline otio", ex.json.ok && ex.json.format === "otio" && JSON.parse(readFileSync(join(tmp, "edit.otio"), "utf8")).OTIO_SCHEMA === "Timeline.1", ex.json);
 const info = await call("project_info", {});
 check("project_info summary", String(info.json.summary).includes("attached→vid1"), info.json.summary);
 check("undo", (await call("undo", {})).json.ok);

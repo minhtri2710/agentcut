@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve as presolve } fr
 import { fontCheck, registerFontDir } from "./fonts.ts";
 import {
   clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, PRESETS, resolve, suggest, type Timeline,
-  totalDuration, validate,
+  totalDuration, type Track, validate,
 } from "./model.ts";
 
 export const PROJECT_FILE = "project.json";
@@ -138,6 +138,7 @@ export function summarize(tl: Timeline): string {
       if (c.text) { const t = String(c.text).replace(/\n/g, " / "); desc += ` "${t.slice(0, 40)}${t.length > 40 ? "…" : ""}"`; }
       if (c.type === "captions") desc += ` style=${c.style ?? "karaoke"} words=${(c.words || []).length}${c.srt ? " srt" : ""}`;
       if (c.type === "shape") desc += ` ${c.shape ?? "rect"}`;
+      if (c.type === "compound") { const ts = (c.tracks || []) as Track[]; desc += ` ${ts.reduce((n, t) => n + (t.clips?.length ?? 0), 0)} nested clips on ${ts.map((t) => t.id).join(",") || "-"}${c.in ? ` in=${c.in}` : ""}`; }
       const x: string[] = [];
       for (const k of ["enter", "exit", "transition", "motion"]) { const v = k === "motion" ? c[k] : normAnim(c[k], 0.5); if (v) x.push(`${k}=${typeof v === "object" ? v.type : v}`); }
       if (c.keyframes) x.push(`kf=${Object.keys(c.keyframes).join(",")}`);

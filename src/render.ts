@@ -22,7 +22,13 @@ type GlobalCompositeOperation = string;
 
 const even = (v: number) => { const r = Math.round(v); return r + (r % 2); };
 
-interface Frame { canvas?: Canvas; buf?: Buffer; w: number; h: number; under?: { img: Canvas; w: number; h: number } }
+interface Frame { canvas?: Canvas; buf?: Buffer; w: number; h: number; under?: { img: Canvas; w: number; h: number }; static?: boolean }
+
+const toCanvas = (buf: Buffer, w: number, h: number) => {
+  const cv = createCanvas(w, h);
+  cv.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(buf.buffer, buf.byteOffset, w * h * 4), w, h), 0, 0);
+  return cv;
+};
 
 class LRU<V> extends Map<string, V> {
   constructor(private n = 24) { super(); }
@@ -43,7 +49,7 @@ export class Layer {
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = [];
   private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle;
-  private ramp?: any[]; private rampT = 0; private rampU = 0;
+  private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
     this.type = c.type; this.start = parseTime(c.start ?? 0); this.dur = parseTime(c.duration ?? 0); this.end = this.start + this.dur;
     const k = r.k;
@@ -64,6 +70,7 @@ export class Layer {
       this.words = captionWords(c);
       this.pages = captionPages(this.words, Number(c.max_words ?? 3));
     }
+    if (this.type === "compound") this.box = [r.W, r.H];
     if (this.type === "color") this.opaque = !c.size && (c.gradient ? (c.gradient.colors || []).every((x: any) => parseColor(x)[3] === 255) : parseColor(c.color ?? "black")[3] === 255);
   }
 
@@ -94,6 +101,28 @@ export class Layer {
     return this.src;
   }
 
+  /** compound: lazily built child compositor over the nested tracks (transparent, no global effects, same scale) */
+  private sub(): Renderer {
+    if (!this.child) {
+      const r = this.r, { effects, ...st } = r.tl.settings;
+      const ch = new Renderer({ version: r.tl.version, name: this.c.id, settings: { ...st, background: "#00000000", duration: null },
+        assets: r.tl.assets, tracks: this.c.tracks ?? [], markers: [] }, r.root, r.k);
+      ch.path = (p) => r.path(p);
+      this.child = ch;
+    }
+    return this.child;
+  }
+  /** nested-timeline time at clip-local time tl */
+  private subT(tl: number) { return parseTime(this.c.in ?? 0) + tl * (Number(this.c.speed ?? 1) || 1); }
+
+  /** Start decoding the frame for clip-local time tl (lets several layers decode concurrently). */
+  async warm(tl: number) {
+    if (this.type === "compound") return this.sub().warm(this.subT(tl));
+    if (this.type !== "video" && this.type !== "image") return;
+    if (this.type === "image" || this.c.freeze) { if (!this.staticFr) await this.frame(tl, new A.Mods()); return; }
+    await this.media().readAt(this.srcOffset(tl));
+  }
+
   textStyle(): TextStyle {
     if (!this.style) {
       this.style = new TextStyle(this.c, this.r.k, Math.min(this.r.W0, this.r.H0));
@@ -106,6 +135,15 @@ export class Layer {
     switch (this.type) {
       case "video": case "image": {
         const s = this.media();
+        if (this.type === "image" || c.freeze) { // still: decode + upload once, then reuse the canvas every frame
+          if (!this.staticFr) {
+            const buf = await s.readAt(0);
+            this.staticFr = c.fit === "blur" ? this.blurFill(buf, s.w, s.h, true) : { canvas: toCanvas(buf, s.w, s.h), w: s.w, h: s.h };
+            this.staticFr.static = true;
+            s.close();
+          }
+          return this.staticFr;
+        }
         const buf = await s.readAt(this.srcOffset(tl));
         if (c.fit !== "blur") return { buf, w: s.w, h: s.h };
         return this.blurFill(buf, s.w, s.h);
@@ -138,17 +176,22 @@ export class Layer {
       case "captions": { const cv = this.captionFrame(tl, m); return cv ? { canvas: cv, w: cv.width, h: cv.height } : null; }
       case "shape": { const cv = this.cache.getOr("shape", () => this.drawShape()); return { canvas: cv, w: cv.width, h: cv.height }; }
       case "color": { const cv = this.cache.getOr("color", () => this.drawColor()); return { canvas: cv, w: cv.width, h: cv.height }; }
+      case "compound": { // the child's canvas is reused every frame: never static/mutable, so effects copy it
+        const ch = this.sub(), t = this.subT(tl);
+        if (!ch.live(t).length) return null;
+        return { canvas: await ch.frame(t), w: ch.W, h: ch.H };
+      }
     }
     return null;
   }
 
   /** fit "blur": the contained frame + a tiny blurred cover copy that draw() stretches underneath (no full-res temp). */
-  private blurFill(buf: Buffer, w: number, h: number): Frame {
+  private blurFill(buf: Buffer, w: number, h: number, fresh = false): Frame {
     const bw = Math.round(this.box[0] * this.q), bh = Math.round(this.box[1] * this.q);
-    const fg = (this.canvasBuf ??= createCanvas(w, h));
+    const fg = fresh ? createCanvas(w, h) : (this.canvasBuf ??= createCanvas(w, h));
     fg.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(buf.buffer, buf.byteOffset, w * h * 4), w, h), 0, 0);
     const tw = Math.max(8, Math.round(bw / 16)), th = Math.max(8, Math.round(bh / 16));
-    const tiny = (this.tinyBuf ??= createCanvas(tw, th));
+    const tiny = fresh ? createCanvas(tw, th) : (this.tinyBuf ??= createCanvas(tw, th));
     const tc = tiny.getContext("2d");
     const s = Math.max(tw / w, th / h);
     tc.filter = "blur(1.5px)";
@@ -221,7 +264,27 @@ export class Layer {
     return cv;
   }
 
-  close() { this.src?.close(); this.src = undefined; }
+  close() { this.src?.close(); this.src = undefined; this.staticFr = undefined; this.child?.close(); this.child = undefined; }
+}
+
+const shadowCache = new WeakMap<Canvas, { key: string; canvas: Canvas; pad: number }>();
+/** Blurred, tinted silhouette of `img` (drawn at layer size + 2*pad). Rendered at reduced resolution: blur hides it. */
+function shadowSprite(img: Canvas, color: string, blurPx: number, cacheable: boolean) {
+  const key = `${color}|${blurPx.toFixed(1)}|${img.width}x${img.height}`;
+  const hit = cacheable ? shadowCache.get(img) : undefined;
+  if (hit && hit.key === key) return hit;
+  const sigma = blurPx / 2, pad = Math.ceil(sigma * 3);
+  const d = Math.max(1, Math.min(4, sigma / 3)); // downscale factor
+  const w = Math.max(2, Math.ceil((img.width + 2 * pad) / d)), h = Math.max(2, Math.ceil((img.height + 2 * pad) / d));
+  const cv = createCanvas(w, h), ctx = cv.getContext("2d");
+  if (sigma > 0.3) ctx.filter = `blur(${(sigma / d).toFixed(2)}px)`;
+  ctx.drawImage(img, pad / d, pad / d, img.width / d, img.height / d);
+  ctx.filter = "none";
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+  const out = { key, canvas: cv, pad };
+  if (cacheable) shadowCache.set(img, out);
+  return out;
 }
 
 function gradient(ctx: SKRSContext2D, g: Dict, w: number, h: number) {
@@ -238,7 +301,7 @@ function gradient(ctx: SKRSContext2D, g: Dict, w: number, h: number) {
 export class Renderer {
   W0: number; H0: number; W: number; H: number; k: number; fps: number; duration: number;
   layers: Layer[] = [];
-  canvas: Canvas; ctx: SKRSContext2D; bg: string;
+  canvas: Canvas; ctx: SKRSContext2D; bg: string; transparent: boolean;
   private layerCanvases = new Map<Layer, Canvas>();
   constructor(public tl: Timeline, public root: string, scale = 1) {
     resolve(tl);
@@ -248,6 +311,7 @@ export class Renderer {
     this.k = this.W / this.W0;
     this.fps = Number(st.fps);
     this.bg = css(st.background ?? "#000000");
+    this.transparent = parseColor(st.background ?? "#000000")[3] === 0;
     this.duration = totalDuration(tl);
     this.canvas = createCanvas(this.W, this.H);
     this.ctx = this.canvas.getContext("2d");
@@ -265,6 +329,14 @@ export class Renderer {
   }
 
   path(p: string) { return p; }
+
+  /** layers visible at time t */
+  live(t: number) { return this.layers.filter((L) => L.start - 1e-9 <= t && t < L.end - 1e-9); }
+  /** start decoding every visible media layer at t in parallel (FFmpeg processes); compounds warm their children */
+  async warm(t: number) {
+    const live = this.live(t).filter((L) => L.type === "video" || L.type === "image" || L.type === "compound");
+    if (live.length > 1 || live.some((L) => L.type === "compound")) await Promise.all(live.map((L) => L.warm(t - L.start)));
+  }
 
   close() { for (const L of this.layers) L.close(); }
 
@@ -297,7 +369,8 @@ export class Renderer {
     const { ctx, W, H } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
-    ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H);
+    if (this.transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); }
+    await this.warm(t); // decode visible media in parallel before compositing in order
     for (const L of this.layers) {
       if (!(L.start - 1e-9 <= t && t < L.end - 1e-9)) { if (t > L.end + 1) L.close(); continue; }
       const c = L.c, tl = t - L.start;
@@ -344,17 +417,18 @@ export class Renderer {
         lc.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(fr.buf!.buffer, fr.buf!.byteOffset, fr.w * fr.h * 4), fr.w, fr.h), 0, 0);
         img = lc;
       }
-      const mutable = !!fr.buf || L.type === "video"; // per-frame canvases may be modified in place
+      const mutable = !fr.static && (!!fr.buf || L.type === "video"); // per-frame canvases may be modified in place
       if (fx.length) { const r = applyEffects(img, fx, tl, this.fps, this.k * L.q, 2, mutable); img = r.canvas; opacity *= r.opacity; }
       if (c.mask) img = applyMask(img, c.mask, this.k * L.q, 20);
-      this.draw(img, c, cx, cy, sx, sy, rot, opacity, blend, blur, m.masks, L.q, fr.under);
+      const stable = !fx.length && !c.mask && (!!fr.static || ["text", "captions", "shape", "color"].includes(L.type)); // canvas content fixed -> cacheable
+      this.draw(img, c, cx, cy, sx, sy, rot, opacity, blend, blur, m.masks, L.q, fr.under, L.opaque && !c.mask, stable);
       if (overlay) this.overlay(overlay);
     }
     const gfx = this.tl.settings.effects;
     if (gfx?.length) {
       ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
       const r = applyEffects(this.canvas, gfx, t, this.fps, this.k, 41, true);
-      if (r.opacity < 1) { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); }
+      if (r.opacity < 1) { if (this.transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); } }
       else if (r.canvas !== this.canvas) ctx.drawImage(r.canvas, 0, 0);
     }
     if (guides) this.guides();
@@ -370,7 +444,7 @@ export class Renderer {
   }
 
   private draw(img: Canvas, c: Clip, cx: number, cy: number, sx: number, sy: number, rot: number, opacity: number, blend: string,
-    blur: number, masks: any[], q: number, under?: { img: Canvas; w: number; h: number }) {
+    blur: number, masks: any[], q: number, under?: { img: Canvas; w: number; h: number }, opaque = false, stable = false) {
     const ctx = this.ctx;
     const lw = under ? under.w : img.width, lh = under ? under.h : img.height;
     if (Math.abs(sx) < 1e-4 || Math.abs(sy) < 1e-4) return;
@@ -400,10 +474,17 @@ export class Renderer {
     const radius = c.radius ? Number(c.radius) * this.k * q : 0;
     const sh = c.shadow === true ? {} : c.shadow;
     if (sh) {
-      ctx.shadowColor = css(sh.color ?? "#00000099");
-      ctx.shadowBlur = Number(sh.blur ?? 30) * this.k;
-      ctx.shadowOffsetX = Number(sh.x ?? 0) * this.k; ctx.shadowOffsetY = Number(sh.y ?? 12) * this.k;
-      if (radius) { ctx.fillStyle = "#000"; ctx.beginPath(); ctx.roundRect(-lw / 2, -lh / 2, lw, lh, radius); ctx.fill(); ctx.shadowColor = "transparent"; }
+      // Skia blurs a drawImage shadow at full resolution every frame (~50 ms at 1080p). Opaque boxes use the analytic
+      // rounded-rect shadow; everything else draws a low-res blurred silhouette, cached per source canvas.
+      const sb = Number(sh.blur ?? 30) * this.k, ox = Number(sh.x ?? 0) * this.k / sx, oy = Number(sh.y ?? 12) * this.k / sy;
+      if (opaque || radius) {
+        ctx.shadowColor = css(sh.color ?? "#00000099"); ctx.shadowBlur = sb;
+        ctx.shadowOffsetX = Number(sh.x ?? 0) * this.k; ctx.shadowOffsetY = Number(sh.y ?? 12) * this.k;
+        ctx.fillStyle = "#000"; ctx.beginPath(); ctx.roundRect(-lw / 2, -lh / 2, lw, lh, radius); ctx.fill(); ctx.shadowColor = "transparent";
+      } else {
+        const sp = shadowSprite(img, css(sh.color ?? "#00000099"), sb / Math.max(1e-3, Math.abs(sx)), stable);
+        ctx.drawImage(sp.canvas, -lw / 2 - sp.pad + ox, -lh / 2 - sp.pad + oy, lw + 2 * sp.pad, lh + 2 * sp.pad);
+      }
     }
     if (radius) { ctx.beginPath(); ctx.roundRect(-lw / 2, -lh / 2, lw, lh, radius); ctx.clip(); }
     if (under) {
@@ -442,27 +523,38 @@ export class Renderer {
   }
 }
 
-export async function renderFrame(tl: Timeline, root: string, t: number, scale = 1, guides = false): Promise<Buffer> {
+/** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. */
+export const encodeStill = (cv: Canvas, fmt: string) => (fmt === "png" ? cv.encodeSync("png") : cv.encodeSync("jpeg", 88));
+
+export async function renderFrame(tl: Timeline, root: string, t: number, scale = 1, guides = false, fmt = "jpeg"): Promise<Buffer> {
   const r = new Renderer(tl, root, scale);
-  try { const cv = await r.frame(t, guides); return cv.encodeSync("png"); } finally { r.close(); }
+  try { const cv = await r.frame(t, guides); return encodeStill(cv, fmt); } finally { r.close(); }
 }
 
-export async function contactSheet(tl: Timeline, root: string, times: number[], cols = 4, tileW = 360, guides = false): Promise<Buffer> {
-  const r = new Renderer(tl, root, Math.min(1, tileW / tl.settings.width));
-  const tiles: Canvas[] = [];
+export async function contactSheet(tl: Timeline, root: string, times: number[], cols = 4, tileW = 360, guides = false, fmt = "jpeg"): Promise<Buffer> {
+  // tiles are far apart (every one is a seek), so a few renderers work on interleaved tiles concurrently:
+  // FFmpeg decodes overlap while Skia composites
+  const sorted = [...times].sort((a, b) => a - b);
+  const R = Math.max(1, Math.min(4, Math.ceil(sorted.length / 2)));
+  const rs = Array.from({ length: R }, () => new Renderer(structuredClone(tl), root, Math.min(1, tileW / tl.settings.width)));
+  const r = rs[0];
+  const tiles: Canvas[] = new Array(sorted.length);
   try {
-    for (const t of [...times].sort((a, b) => a - b)) {
-      const cv = await r.frame(Math.min(t, Math.max(0, r.duration - 1 / r.fps)), guides);
-      const tile = createCanvas(r.W, r.H);
-      const tc = tile.getContext("2d");
-      tc.drawImage(cv, 0, 0);
-      const label = `${t.toFixed(2)}s`;
-      tc.font = "600 14px Menlo, Consolas, monospace";
-      tc.fillStyle = "rgba(0,0,0,0.75)"; tc.fillRect(0, 0, tc.measureText(label).width + 12, 22);
-      tc.fillStyle = "#fff"; tc.fillText(label, 6, 16);
-      tiles.push(tile);
-    }
-  } finally { r.close(); }
+    await Promise.all(rs.map(async (rr, j) => {
+      for (let i = j; i < sorted.length; i += R) {
+        const t = sorted[i];
+        const cv = await rr.frame(Math.min(t, Math.max(0, rr.duration - 1 / rr.fps)), guides);
+        const tile = createCanvas(rr.W, rr.H);
+        const tc = tile.getContext("2d");
+        tc.drawImage(cv, 0, 0);
+        const label = `${t.toFixed(2)}s`;
+        tc.font = "600 14px Menlo, Consolas, monospace";
+        tc.fillStyle = "rgba(0,0,0,0.75)"; tc.fillRect(0, 0, tc.measureText(label).width + 12, 22);
+        tc.fillStyle = "#fff"; tc.fillText(label, 6, 16);
+        tiles[i] = tile;
+      }
+    }));
+  } finally { for (const rr of rs) rr.close(); }
   if (!tiles.length) throw new EditError("no frames", "empty");
   cols = Math.max(1, Math.min(cols, tiles.length));
   const rows = Math.ceil(tiles.length / cols), gap = 4;
@@ -470,5 +562,5 @@ export async function contactSheet(tl: Timeline, root: string, times: number[], 
   const sc = sheet.getContext("2d");
   sc.fillStyle = "#1e1e1e"; sc.fillRect(0, 0, sheet.width, sheet.height);
   tiles.forEach((tile, i) => sc.drawImage(tile, (i % cols) * (r.W + gap), Math.floor(i / cols) * (r.H + gap)));
-  return sheet.encodeSync("png");
+  return encodeStill(sheet, fmt);
 }

@@ -233,10 +233,18 @@ export class FrameSource {
     const o = this.o;
     const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), "-i", o.path, "-frames:v", "1",
       "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
-    const r = spawnSync("ffmpeg", a, { maxBuffer: this.w * this.h * 4 + 4096 });
     const n = this.w * this.h * 4;
-    if (r.status !== 0 || !r.stdout || r.stdout.length < n) throw new EditError(`cannot decode ${o.path}: ${String(r.stderr || "").slice(0, 300)}`, "decode_failed");
-    return r.stdout.subarray(0, n);
+    // async so several layers / contact-sheet tiles decode concurrently
+    const r = await new Promise<{ status: number | null; out: Buffer; err: string }>((res) => {
+      const p = spawn("ffmpeg", a, { stdio: ["ignore", "pipe", "pipe"] });
+      const chunks: Buffer[] = []; let err = "";
+      p.stdout!.on("data", (d: Buffer) => chunks.push(d));
+      p.stderr!.on("data", (d) => { if (err.length < 2000) err += d; });
+      p.on("error", (e) => res({ status: -1, out: Buffer.alloc(0), err: String(e) }));
+      p.on("close", (status) => res({ status, out: Buffer.concat(chunks), err }));
+    });
+    if (r.status !== 0 || r.out.length < n) throw new EditError(`cannot decode ${o.path}: ${r.err.slice(0, 300)}`, "decode_failed");
+    return r.out.subarray(0, n);
   }
 
   /** u: source seconds since the in-point (>= 0). */

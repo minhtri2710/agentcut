@@ -103,7 +103,7 @@ check("undo restores", cli(["info"], C).duration === d0);
 cli(["redo"], C); cli(["undo"], C);
 
 console.log("look");
-check("frame png", existsSync(cli(["frame", "1.5", "--guides"], C).image));
+check("frame jpg", existsSync(cli(["frame", "1.5", "--guides"], C).image));
 check("contact sheet", existsSync(cli(["sheet", "--every", "1"], C).image));
 
 console.log("render");

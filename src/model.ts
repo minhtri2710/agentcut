@@ -17,8 +17,8 @@ export const PRESETS: Record<string, [number, number]> = {
   square: [1080, 1080], portrait: [1080, 1350],
 };
 
-export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color", "audio", "lottie", "gap"];
-export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie"]);
+export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color", "audio", "lottie", "compound", "gap"];
+export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]);
 export const MEDIA_TYPES = new Set(["video", "image", "audio", "lottie"]);
 export const ENTER_EXIT = ["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop", "zoom_in", "zoom_out",
   "wipe_left", "wipe_right", "wipe_up", "wipe_down", "blur", "drop", "spin", "typewriter", "words", "bounce", "flip"];
@@ -154,6 +154,12 @@ export const LOTTIE_FIELDS: F = {
   size: [T("array"), "[w, h] box"], speed: [T("number"), "playback speed"], loop: [T("boolean"), "loop (default true)"],
   in: [T("number", "string"), "start offset seconds"],
 };
+export const COMPOUND_FIELDS: F = {
+  tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
+  in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
+  speed: [T("number"), "playback speed of the nested timeline (nested audio is only mixed at speed 1)"],
+  volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
+};
 
 export function fieldsFor(t: string): F {
   const f: F = { ...COMMON_FIELDS };
@@ -169,6 +175,7 @@ export function fieldsFor(t: string): F {
   if (t === "shape") Object.assign(f, SHAPE_FIELDS);
   if (t === "color") Object.assign(f, COLOR_FIELDS);
   if (t === "lottie") Object.assign(f, LOTTIE_FIELDS);
+  if (t === "compound") Object.assign(f, COMPOUND_FIELDS);
   return f;
 }
 
@@ -312,8 +319,19 @@ export function* iterClips(tl: Timeline): Generator<[Track, number, number, Clip
   }
 }
 
+/** Every clip, including clips nested inside compound clips (depth-first). */
+export function* allClips(tracks: Track[]): Generator<Clip> {
+  for (const tr of tracks) for (const c of tr.clips || []) { yield c; if (c.type === "compound" && Array.isArray(c.tracks)) yield* allClips(c.tracks); }
+}
+
+/** The nested timeline of a compound clip (shares settings/assets with the parent). */
+export const subTimeline = (tl: Timeline, c: Clip): Timeline =>
+  ({ version: tl.version, name: c.name ?? c.id, settings: { ...tl.settings, duration: null }, assets: tl.assets, tracks: c.tracks ?? [], markers: [] });
+
 export function findClip(tl: Timeline, id: string): [Track, number, Clip] {
   for (const [tr, , ci, c] of iterClips(tl)) if (c.id === id) return [tr, ci, c];
+  for (const [, , , c] of iterClips(tl)) if (c.type === "compound" && [...allClips(c.tracks ?? [])].some((x) => x.id === id))
+    throw new EditError(`clip '${id}' is inside compound clip '${c.id}'`, "nested", `edit the compound as a whole, or expand_compound id=${c.id} first`);
   const ids = [...iterClips(tl)].map((x) => x[3].id);
   const s = suggest(id, ids);
   throw new EditError(`clip '${id}' not found`, "not_found", s ? `did you mean '${s}'?` : `existing clips: ${ids.slice(0, 30).join(", ") || "(none)"}`);
@@ -329,7 +347,7 @@ export function findTrack(tl: Timeline, id: string): Track {
 
 export function newId(tl: Timeline, prefix: string): string {
   const used = new Set<string>([...tl.tracks.map((t) => t.id), ...Object.keys(tl.assets)]);
-  for (const [, , , c] of iterClips(tl)) used.add(c.id);
+  for (const c of allClips(tl.tracks)) used.add(c.id);
   let n = 1;
   while (used.has(`${prefix}${n}`)) n++;
   return `${prefix}${n}`;
@@ -341,6 +359,7 @@ export const clipEnd = (c: Clip) => clipStart(c) + clipDur(c);
 export const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
 
 export function resolve(tl: Timeline): Timeline {
+  for (const [, , , c] of iterClips(tl)) if (c.type === "compound" && Array.isArray(c.tracks)) resolve(subTimeline(tl, c));
   resolveMagnetic(tl);
   resolveAttached(tl);
   // until_end clips stretch to the end of everything else
@@ -441,13 +460,23 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   const assets = tl.assets || {};
   for (const [aid, a] of Object.entries(assets))
     if (o.exists && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `$.assets.${aid}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
-  const ids = new Map<string, string>();
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
+  validateTracks(tl, o, issues, new Map(), "$");
+  if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
+  return issues;
+}
+
+/** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
+function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string) {
+  const assets = tl.assets || {};
+  const ids = new Map<string, string>(); // track ids: unique per level
+  const dup = (id: string) => ids.get(id) ?? clipIds.get(id);
   tl.tracks.forEach((tr, ti) => {
-    const tp = `$.tracks[${ti}]`;
+    const tp = `${root}.tracks[${ti}]`;
+    if (!tr || typeof tr !== "object" || !Array.isArray(tr.clips ?? [])) { issues.push({ level: "error", path: tp, message: "track must be an object with a clips list" }); return; }
     checkFields(tr, TRACK_FIELDS, tp, issues, "track");
     if (!tr.id) issues.push({ level: "error", path: `${tp}.id`, message: "track needs an id" });
-    else if (ids.has(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
+    else if (dup(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
     ids.set(tr.id, tp);
     const kind = tr.kind || "video";
     let prevEnd: number | null = null;
@@ -462,8 +491,8 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
       if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
-      else if (ids.has(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${ids.get(c.id)})` });
-      ids.set(c.id, p);
+      else if (dup(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${dup(c.id)})`, hint: "clip ids must be unique across the project, including inside compound clips" });
+      clipIds.set(c.id, p);
       if (kind === "audio" && !["audio", "video", "gap"].includes(c.type)) issues.push({ level: "warning", path: p, message: `${c.type} clip on audio track '${tr.id}' will not be drawn` });
       let start = 0, dur = 0;
       try {
@@ -495,7 +524,6 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
       for (const [key, opts, what] of [["enter", ENTER_EXIT, "animation"], ["exit", ENTER_EXIT, "animation"], ["transition", TRANSITIONS, "transition"], ["motion", MOTIONS, "motion"]] as const)
         if (key in c) checkName(c[key], opts as unknown as string[], `${p}.${key}`, issues, what);
       if (c.transition && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });
-      if (c.transition && ci > 0 && !tr.magnetic) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
       for (const [key, opts] of [["fit", FITS], ["blend", BLENDS], ["position", POSITIONS], ["style", CAPTION_STYLES], ["shape", SHAPES]] as const)
         if (key in c && c[key] != null && !(opts as readonly string[]).includes(c[key])) {
           const s = suggest(c[key], opts);
@@ -532,13 +560,18 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
         if (!exists) issues.push({ level: "error", path: `${p}.attach_to`, message: `attached to missing clip '${c.attach_to}'`, hint: "attach to an existing clip id, or remove attach_to" });
         if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "attach_to is ignored on magnetic tracks (their starts are computed)" });
       }
+      if (c.transition && ci > 0 && !tr.magnetic && !(prevEnd !== null && start < prevEnd - 1e-6)) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
       if (!tr.magnetic && kind !== "audio" && prevEnd !== null && start < prevEnd - 1e-6 && !c.transition)
         issues.push({ level: "info", path: p, message: `overlaps the previous clip on '${tr.id}' (drawn on top)` });
       prevEnd = Math.max(prevEnd ?? 0, start + dur);
+      if (c.type === "compound") {
+        if (!Array.isArray(c.tracks)) { issues.push({ level: "error", path: `${p}.tracks`, message: "compound clip needs 'tracks' (a list of nested tracks)", hint: "create one with make_compound" }); return; }
+        if (Number(c.speed ?? 1) <= 0) issues.push({ level: "error", path: `${p}.speed`, message: "speed must be > 0" });
+        try { if (parseTime(c.in ?? 0) < 0) issues.push({ level: "error", path: `${p}.in`, message: "in must be >= 0" }); } catch (e: any) { issues.push({ level: "error", path: `${p}.in`, message: e.message, hint: e.hint }); }
+        validateTracks(subTimeline(tl, c), o, issues, clipIds, p);
+      }
     });
   });
-  if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
-  return issues;
 }
 
 export function schemaDoc() {

@@ -1,0 +1,227 @@
+// Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
+// Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
+import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, newId, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
+import type { OpHelpers } from "./ops.ts";
+
+const MIN = 0.04, EPS = 1e-6;
+type Side = "head" | "tail";
+type Edge = [Clip, Side, 1 | -1]; // clip side that grows by sign * by
+const spd = (c: Clip) => Number(c.speed ?? 1) || 1;
+const cin = (c: Clip) => parseTime(c.in ?? 0, "in");
+const isAV = (c: Clip) => c.type === "video" || c.type === "audio";
+const fmt = (x: number) => (Number.isFinite(x) ? +x.toFixed(3) : "unlimited");
+const allClips = (tl: Timeline) => tl.tracks.flatMap((t) => t.clips);
+
+/** source seconds available (Infinity when looping / unknown / speed-ramped) */
+function srcLen(tl: Timeline, c: Clip): number {
+  const d = Number(tl.assets[c.asset]?.duration);
+  return isAV(c) && d > 0 && !c.loop && !c.keyframes?.speed ? d : Infinity;
+}
+/** timeline seconds a side can grow before running out of source media */
+function room(tl: Timeline, c: Clip, side: Side): number {
+  if (!isAV(c) || c.freeze) return Infinity;
+  const before = cin(c) / spd(c), after = (srcLen(tl, c) - cin(c) - clipDur(c) * spd(c)) / spd(c);
+  return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
+}
+function shiftKfs(c: Clip, e: number) {
+  if (!c.keyframes || !e) return;
+  for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
+    c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
+}
+/** grow one side of a clip by e seconds (negative shrinks), keeping its content in place */
+function extend(c: Clip, side: Side, e: number) {
+  const src = isAV(c) && !c.freeze;
+  if (side === "head") { if (src && !c.reverse) c.in = round6(Math.max(0, cin(c) - e * spd(c))); shiftKfs(c, e); }
+  else if (src && c.reverse) c.in = round6(Math.max(0, cin(c) - e * spd(c)));
+  c.duration = round6(clipDur(c) + e);
+}
+function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
+  for (const [c, side, sg] of edges) {
+    const r = room(tl, c, side), d = clipDur(c);
+    if (sg > 0) { lo = Math.max(lo, MIN - d); hi = Math.min(hi, r); } else { lo = Math.max(lo, -r); hi = Math.min(hi, d - MIN); }
+  }
+  if (by < lo - EPS || by > hi + EPS)
+    throw new EditError(`${what}: by=${by} is out of range`, "out_of_range",
+      `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (clips must stay >= ${MIN}s and within their source media)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+  for (const [c, side, sg] of edges) extend(c, side, sg * by);
+}
+
+function amount(a: Dict, keys: string[], positive: boolean): number {
+  const k = keys.find((x) => a[x] !== undefined && a[x] !== null);
+  if (!k) throw new EditError(`missing '${keys[0]}'`, "missing_arg", positive ? `${keys[0]}: seconds > 0, e.g. 0.5` : `${keys[0]}: +/- seconds, e.g. 0.25 (later) or -0.5 (earlier)`);
+  const v = parseTime(a[k], k);
+  if (positive ? v <= 0 : Math.abs(v) < EPS) throw new EditError(`${k} must be ${positive ? "> 0" : "non-zero"} (got ${v})`, "bad_amount", positive ? "pass seconds > 0; use undo to revert an earlier cut" : "positive = later, negative = earlier");
+  return v;
+}
+
+/** the audio clip created by detach_audio for video clip v */
+const linked = (tl: Timeline, v?: Clip) => (v?.type === "video" ? allClips(tl).find((x) => x.type === "audio" && x.attach_to === v.id && x.asset === v.asset) : undefined);
+const withAudio = (tl: Timeline, edges: Edge[]): Edge[] => [...edges, ...edges.flatMap(([c, s, g]) => { const l = linked(tl, c); return l ? [[l, s, g] as Edge] : []; })];
+
+/** other audible (non-music) clips overlapping [t0, t1] - they keep playing under a J/L-cut */
+function audibleUnder(tl: Timeline, t0: number, t1: number, skip: string[]): string[] {
+  const out: string[] = [];
+  for (const tr of tl.tracks) {
+    if (tr.muted || tr.role === "music") continue;
+    for (const c of tr.clips) {
+      if (skip.includes(c.id) || c.enabled === false || c.muted || !isAV(c) || c.freeze) continue;
+      const as = tl.assets[c.asset];
+      if (as && (as.has_audio || as.kind === "audio") && clipStart(c) < t1 - 1e-3 && clipEnd(c) > t0 + 1e-3) out.push(c.id);
+    }
+  }
+  return out;
+}
+
+export function registerEditOps(h: OpHelpers) {
+  const get = (tl: Timeline, a: Dict): [Track, number, Clip] => {
+    if (a.id === undefined || a.id === null || a.id === "") throw new EditError("missing 'id'", "missing_arg", "pass a clip id or a ref like 'main#1' (track#index, -1 = last)");
+    return findClip(tl, h.resolveRef(tl, String(a.id)));
+  };
+
+  function detach(tl: Timeline, v: Clip, trackId?: string): Clip {
+    if (v.type !== "video") throw new EditError(`detach_audio needs a video clip; '${v.id}' is ${v.type}`, "bad_type", v.type === "audio" ? "it is already an audio clip: edit it directly" : "pass the id of a video clip that has sound");
+    const ex = linked(tl, v);
+    if (ex) throw new EditError(`audio of '${v.id}' is already detached as '${ex.id}'`, "already_detached", `nothing to do: edit '${ex.id}' directly, or use j_cut/l_cut/slip_clip on '${v.id}'`, undefined, { audio: ex.id });
+    if (v.muted) throw new EditError(`'${v.id}' is muted, so there is no audio to detach`, "muted", `unmute first: update_clip id=${v.id} muted=false`);
+    if (!tl.assets[v.asset]?.has_audio) throw new EditError(`'${v.id}' (asset '${v.asset}') has no audio stream`, "no_audio", "add sound with add_clip type=audio instead");
+    if (v.freeze || v.keyframes?.speed) throw new EditError(`'${v.id}' is a freeze frame or speed ramp, which plays no audio`, "no_audio");
+    const tid = trackId ?? "dialogue", isNew = !tl.tracks.some((t) => t.id === tid);
+    const tr = h.ensureTrack(tl, tid, "audio");
+    if (isNew && !tr.role) tr.role = "dialogue";
+    if ((tr.kind ?? "video") !== "audio" || tr.magnetic) throw new EditError(`track '${tid}' must be a non-magnetic audio track`, "bad_track", "omit track (default 'dialogue') or add_track kind=audio");
+    const aud: Clip = { id: newId(tl, h.PREFIX.audio), type: "audio", name: `audio of ${v.id}`, asset: v.asset, duration: round6(clipDur(v)), attach_to: v.id, offset: 0 };
+    for (const k of ["in", "speed", "volume", "fade_in", "fade_out", "reverse", "loop", "enabled"]) if (v[k] !== undefined) aud[k] = structuredClone(v[k]);
+    if (v.keyframes?.volume) aud.keyframes = { volume: structuredClone(v.keyframes.volume) };
+    tr.clips.push(aud);
+    v.muted = true;
+    resolve(tl);
+    return aud;
+  }
+
+  /** [video, its detached audio, whether we detached it now]; accepts the audio clip itself too */
+  function audioOf(tl: Timeline, c: Clip, trackId?: string): [Clip, Clip, boolean] {
+    if (c.type === "audio" && c.attach_to) return [findClip(tl, c.attach_to)[2], c, false];
+    const l = linked(tl, c);
+    if (l) return [c, l, false];
+    if (c.type === "video" && c.muted) throw new EditError(`'${c.id}' is muted and has no detached audio clip`, "muted", `unmute it (update_clip id=${c.id} muted=false) and retry`);
+    return [c, detach(tl, c, trackId), true];
+  }
+
+  h.op("detach_audio", "Split a video clip's sound into its own audio clip (on track 'dialogue', role dialogue, created if missing) connected to the video " +
+    "(attach_to, offset 0, same duration/in/speed/volume/fades/volume keyframes); the video becomes muted. Needed for J/L-cuts; j_cut/l_cut call it automatically. " +
+    "split_clip/trim_clip on the video keep its detached audio in sync.",
+    { id: "video clip id or ref ('main#1')", track: "audio track id (default 'dialogue')" }, (p, tl, a) => {
+      const [, , v] = get(tl, a);
+      const aud = detach(tl, v, a.track);
+      return { id: v.id, audio: aud.id, track: tl.tracks.find((t) => t.clips.includes(aud))!.id, start: aud.start, duration: aud.duration };
+    });
+
+  const cutDoc = (lead: boolean) => (lead
+    ? "J-cut: this (incoming) clip's audio starts `seconds` BEFORE its picture, e.g. hear B's voice over the end of A: j_cut id='main#1' seconds=0.8. "
+    : "L-cut: this (outgoing) clip's audio keeps playing `seconds` AFTER its picture ends, e.g. A's voice continues over the start of B: l_cut id='main#0' seconds=1. ") +
+    "Detaches the audio first if needed (detach_audio) and extends that audio clip; repeated calls add up. Clamped to the available source media" +
+    (lead ? " and to timeline 0" : "") + " (result.clamped). The neighbouring clip's own audio still plays underneath (result.under lists it): " +
+    "pair with " + (lead ? "l_cut/fade_out/volume keyframes on the previous clip" : "fade_in/volume keyframes on the next clip") + " if it should not, and use crossfade for a smooth blend.";
+  for (const lead of [true, false]) {
+    h.op(lead ? "j_cut" : "l_cut", cutDoc(lead),
+      { id: "video clip id or ref ('main#1'), or its detached audio clip", seconds: "s > 0", crossfade: `s: sets fade_${lead ? "in" : "out"} on the extended audio`, track: "audio track if detaching (default 'dialogue')" },
+      (p, tl, a) => {
+        const [, , c] = get(tl, a);
+        const req = amount(a, ["seconds", "by", "lead", "duration"], true);
+        const [v, aud, detached] = audioOf(tl, c, a.track);
+        resolve(tl);
+        const side: Side = lead ? "head" : "tail";
+        const limit = Math.min(room(tl, aud, side), lead ? clipStart(aud) : Infinity);
+        let s = req;
+        const out: Dict = { id: v.id, audio: aud.id, detached };
+        if (s > limit + EPS) {
+          if (limit < 0.01) throw new EditError(`cannot ${lead ? "lead" : "extend"} the audio of '${v.id}': ${lead && clipStart(aud) < 0.01 ? "it already starts at 0" : "no more source media"}`, "out_of_range",
+            lead ? "a J-cut needs source before the clip's in-point and a clip that does not start at 0; trim_clip trim_start on it first" : "an L-cut needs source after the clip's out-point; trim_clip trim_end first or set loop");
+          s = round6(limit);
+          out.clamped = { requested: req, applied: s, reason: lead && clipStart(aud) <= room(tl, aud, side) ? "timeline start" : "source media" };
+        }
+        extend(aud, side, s);
+        if (lead) aud.offset = round6(parseTime(aud.offset ?? 0, "offset") - s);
+        if (a.crossfade !== undefined) aud[lead ? "fade_in" : "fade_out"] = round6(Math.min(parseTime(a.crossfade, "crossfade"), clipDur(aud)));
+        resolve(tl);
+        const t0 = lead ? clipStart(aud) : clipEnd(v), t1 = lead ? clipStart(v) : clipEnd(aud);
+        Object.assign(out, { seconds: s, audio_start: aud.start, audio_in: aud.in ?? 0, audio_duration: aud.duration, offset: aud.offset });
+        const under = audibleUnder(tl, t0, t1, [v.id, aud.id]);
+        if (under.length) out.under = under;
+        return out;
+      });
+  }
+
+  h.op("slip_clip", "Slip: show a different part of the source without moving the clip (in += by*speed; start/duration unchanged). " +
+    "Its detached audio (detach_audio/j_cut/l_cut) slips too, keeping sync. Positive by = later source material.",
+    { id: "video/audio clip id or ref", by: "+/- seconds of source" }, (p, tl, a) => {
+      const [, , c] = get(tl, a);
+      if (!isAV(c)) throw new EditError(`slip_clip needs a video or audio clip; '${c.id}' is ${c.type}`, "bad_type", "images/text have no source in-point; use move_clip to move them");
+      const by = amount(a, ["by", "seconds", "shift"], false);
+      const list = [c, ...[linked(tl, c)].filter((x): x is Clip => !!x)];
+      let lo = -Infinity, hi = Infinity;
+      for (const x of list) {
+        lo = Math.max(lo, -cin(x) / spd(x));
+        hi = Math.min(hi, (srcLen(tl, x) - cin(x) - (x.freeze ? 0 : clipDur(x) * spd(x))) / spd(x));
+      }
+      if (by < lo - EPS || by > hi + EPS) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
+        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source; or set loop: true)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+      for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
+      resolve(tl);
+      const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };
+      if (list[1]) out.audio = { id: list[1].id, in: list[1].in };
+      return out;
+    });
+
+  h.op("roll_edit", "Roll: move the cut between this clip and the NEXT clip on its track by `by` seconds; total length is unchanged " +
+    "(this.duration += by; next.in += by*speed, next.duration -= by). Both need spare source media. Detached audio rolls with the picture.",
+    { id: "outgoing (left) clip id or ref", by: "+/- seconds (positive = cut later)" }, (p, tl, a) => {
+      const [tr, ci, l] = get(tl, a);
+      const r = tr.clips[ci + 1];
+      if (!r) throw new EditError(`'${l.id}' is the last clip on '${tr.id}'; there is no cut after it to roll`, "no_next", "pass the clip BEFORE the cut; to change only this clip's end use trim_clip");
+      const by = amount(a, ["by", "seconds", "shift"], false);
+      resolve(tl);
+      if (!tr.magnetic && (Math.abs(clipEnd(l) - clipStart(r)) > 1e-3 || r.attach_to))
+        throw new EditError(`'${l.id}' and '${r.id}' do not touch (${clipEnd(l).toFixed(3)} vs ${clipStart(r).toFixed(3)})`, "not_adjacent", "roll_edit needs two adjacent clips; use trim_clip / move_clip for separate clips");
+      applyEdges(tl, withAudio(tl, [[l, "tail", 1], [r, "head", -1]]), by, "roll_edit");
+      if (!tr.magnetic) r.start = round6(clipStart(r) + by);
+      resolve(tl);
+      return { left: { id: l.id, in: l.in ?? 0, duration: l.duration }, right: { id: r.id, start: r.start, in: r.in ?? 0, duration: r.duration }, cut: round6(clipStart(r)) };
+    });
+
+  h.op("slide_clip", "Slide: move a clip along its track keeping its content and length; the previous clip grows/shrinks by `by` and the next one " +
+    "gives/takes the same time from its head (next.in += by*speed). Magnetic tracks need a clip before and after. On other tracks start += by and only " +
+    "touching neighbours are adjusted (others are left alone; result.overlaps warns). Detached audio follows.",
+    { id: "clip id or ref", by: "+/- seconds (positive = later)" }, (p, tl, a) => {
+      const [tr, ci, c] = get(tl, a);
+      const by = amount(a, ["by", "seconds", "shift"], false);
+      if (c.attach_to) throw new EditError(`'${c.id}' is attached to '${c.attach_to}'`, "attached", `change its offset instead: update_clip id=${c.id} offset=...`);
+      resolve(tl);
+      let prev: Clip | undefined = tr.clips[ci - 1], next: Clip | undefined = tr.clips[ci + 1];
+      if (tr.magnetic) {
+        if (!prev || !next) throw new EditError(`slide on magnetic track '${tr.id}' needs a clip before and after '${c.id}'`, "no_neighbour", "for the first/last clip use roll_edit on the cut, trim_clip, or move_clip index=...");
+      } else {
+        const s = clipStart(c), e = clipEnd(c);
+        if (prev && (Math.abs(clipEnd(prev) - s) > 1e-3 || prev.attach_to)) prev = undefined;
+        if (next && (Math.abs(clipStart(next) - e) > 1e-3 || next.attach_to)) next = undefined;
+      }
+      const edges: Edge[] = [];
+      if (prev) edges.push([prev, "tail", 1]);
+      if (next) edges.push([next, "head", -1]);
+      applyEdges(tl, withAudio(tl, edges), by, "slide_clip", tr.magnetic ? -Infinity : -clipStart(c));
+      if (!tr.magnetic) {
+        c.start = round6(clipStart(c) + by);
+        if (next) next.start = round6(clipStart(next) + by);
+        tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+      }
+      resolve(tl);
+      const out: Dict = { id: c.id, start: c.start, duration: c.duration };
+      if (prev) out.prev = { id: prev.id, duration: prev.duration };
+      if (next) out.next = { id: next.id, start: next.start, in: next.in ?? 0, duration: next.duration };
+      if (!tr.magnetic) {
+        const ov = tr.clips.filter((x) => x !== c && x !== prev && x !== next && clipStart(x) < clipEnd(c) - 1e-3 && clipEnd(x) > clipStart(c) + 1e-3).map((x) => x.id);
+        if (ov.length) out.overlaps = ov;
+      }
+      return out;
+    });
+}

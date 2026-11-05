@@ -33,7 +33,8 @@ function proj(p?: string) {
   throw new EditError("no project selected", "no_project", "call create_project or open_project first, or pass project=<folder>");
 }
 const wrap = <A>(f: (a: A) => any) => async (a: A) => { try { return ok(await f(a)); } catch (e) { return fail(e); } };
-const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: "image/png" });
+const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: MIME[path.split(".").pop()!.toLowerCase()] ?? "image/png" });
 
 export function buildServer() {
   const s = new McpServer({ name: "agentcut", version: VERSION }, { instructions: INSTRUCTIONS });
@@ -65,7 +66,7 @@ export function buildServer() {
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {
-    description: "Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: add_clip, add_sequence, apply_template, update_clip, remove_clip, move_clip, trim_clip, split_clip, freeze_frame, duplicate_clip, set_keyframes, add_transition, add_effect, add_captions, add_voiceover, snap_to_beats, remove_silence, import_media, add_track, update_track, set_settings, add_marker, replace_timeline. A batch that would add validation errors is rejected with issues+hints. Returns new clip ids.",
+    description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Returns new clip ids.`,
     inputSchema: { ops: z.array(z.record(z.string(), z.any())), project: P, dry_run: z.boolean().default(false), allow_invalid: z.boolean().default(false) },
   }, wrap((a) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid })));
   s.registerTool("validate", { description: "Check the timeline: issues with level, JSON path, message, hint.", inputSchema: { project: P } }, wrap((a) => api.validate(proj(a.project))));
@@ -90,19 +91,23 @@ export function buildServer() {
     return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still rendering; call render_status(job_id='${id}')` } : {}) })] };
   };
   s.registerTool("render", {
-    description: "Export (.mp4 default; .mov ProRes, .webm, .mkv, .gif by extension). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes contact_sheet + loudness - check them.",
-    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: z.number().default(1), fast: z.boolean().default(false), wait_seconds: z.number().default(55) },
+    description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes contact_sheet + loudness - check them. For a Final Cut / Resolve project file use export_timeline.",
+    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: z.number().default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), wait_seconds: z.number().default(55) },
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
     const id = Math.random().toString(36).slice(2, 10);
     const job: any = { job_id: id, status: "running", progress: 0, started: Date.now(), project };
     jobs.set(id, job);
-    job.promise = api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, progress: (d, n) => { job.progress = +(d / n).toFixed(3); } })
+    job.promise = api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, progress: (d, n) => { job.progress = +(d / n).toFixed(3); } })
       .then((r) => { job.status = "done"; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
       .finally(() => { job.finished = Date.now(); });
     return waitJob(id, a.wait_seconds);
   });
+  s.registerTool("export_timeline", {
+    description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Lists what could not be represented (skipped).",
+    inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).default("fcpxml"), output: z.string().optional() },
+  }, wrap((a) => api.exportTimeline(proj(a.project), { format: a.format, out: a.output })));
   s.registerTool("render_status", { description: "Status/result of a render job (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("view_image", { description: "Return a local PNG/JPG (e.g. a render's contact_sheet) as an image.", inputSchema: { path: z.string() } },
     async (a) => { try { return { content: [image(a.path)] }; } catch (e) { return fail(e); } });

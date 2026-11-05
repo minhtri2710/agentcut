@@ -15,7 +15,7 @@ agent ──(MCP / CLI · JSON)──▶ ops / templates (add_clip, apply_templa
               ┌────────────────┼────────────────────┐
               ▼                ▼                    ▼
        preview_frame     contact_sheet         render (N process song song, nối không mất chất lượng)
-        (PNG ~0.4s)      (lưới frame)          mp4 · mov · webm · gif + contact sheet + LUFS
+        (JPEG ~0.1s)      (lưới frame)          mp4 · mov · webm · gif + contact sheet + LUFS
 ```
 
 ## Cài đặt
@@ -86,6 +86,7 @@ Template sinh ra các clip bình thường, nên agent sửa tiếp được: đ
 | Nhóm | AgentCut |
 |---|---|
 | Dựng | magnetic timeline (Final Cut), **connected clips** (`attach_to`), gap, split, trim, freeze frame, reverse, speed, **speed ramp** (keyframe tốc độ), duplicate, nhiều track, undo/redo |
+| Dựng chuyên nghiệp | **tách tiếng** (`detach_audio`), **J-cut / L-cut**, **slip / roll / slide**, **compound clip** (`make_compound` / `expand_compound`); split/trim giữ tiếng đã tách luôn khớp hình |
 | Transition (22) | crossfade, dip đen/trắng, **flash, glitch, zoom blur, spin**, zoom, circle, blur, slide/push/wipe theo 4 hướng |
 | Chữ | **10 mẫu chữ** (title_bold, subtitle_box, neon, gradient, lower_third, quote, typewriter, sticker, outline, cinematic), font hệ thống bất kỳ, tự lấy glyph từ font khác khi thiếu dấu tiếng Việt, emoji, stroke, glow, gradient, nền bo góc |
 | Hiệu ứng vào/ra (19) | pop, bounce, flip, typewriter, hiện từng từ, slide, zoom, wipe, blur, drop, spin… |
@@ -97,7 +98,8 @@ Template sinh ra các clip bình thường, nên agent sửa tiếp được: đ
 | Âm thanh | trộn nhiều track, ducking theo role, fade, automation volume, speed giữ cao độ, đảo ngược, chuẩn loudness 2-pass về -14 LUFS, TTS |
 | Tự động | 5 template (promo, slideshow, beat_montage, quote, listicle), `snap_to_beats`, `remove_silence`, `add_voiceover` kèm phụ đề, `until_end` |
 | Phân tích | beat/tempo/bar (FFT viết bằng TS), cắt cảnh, khoảng lặng, loudness, transcript |
-| Xuất file | mp4/H.264 (libx264 hoặc VideoToolbox), mov/ProRes, webm/VP9, mkv, gif · render một đoạn |
+| Xuất file | mp4 H.264 / **HEVC**, mov ProRes 422 / **ProRes 4444 có alpha**, webm VP9 (có alpha), mkv, gif, **chỉ audio** (wav/mp3/m4a/aac/flac) · render một đoạn |
+| Chuyển cho người dựng | **FCPXML 1.10** (Final Cut Pro, khớp DTD chính thức) và **OpenTimelineIO** (DaVinci Resolve, Premiere, Avid): cắt, in-point, crossfade, speed, volume, title, connected clip; phần không chuyển được liệt kê trong `skipped` |
 
 Chưa có (cần model AI): xoá phông, tự bám theo khuôn mặt khi reframe.
 
@@ -144,8 +146,11 @@ Dữ liệu chỉ lưu trên máy, tại `~/.agentcut/feedback`. Có thể đổ
 | | Bản Python (cũ) | Bản TypeScript |
 |---|---|---|
 | Lệnh edit (`apply`, `info`, `undo`) | ~400 ms | **~33 ms** |
-| Ghép frame, 1 luồng | ~20 fps | **~59 fps** |
-| Render cả video (song song) | 13.7 s | **5.7 s** (2× realtime) |
+| Ghép frame, 1 luồng | ~20 fps | **~63 fps** |
+| Render cả video (song song) | 13.7 s | **5.8 s** (2× realtime) |
+
+Video template 7s (chữ có đổ bóng, 5 transition): ghép frame 39 → **116 fps**, render 6.4 s → **2.7 s**.
+Preview qua MCP: một frame **~75 ms** (trước ~400 ms), contact sheet 12 ô **~0.6 s** (trước 1.4 s), ảnh nhẹ hơn ~6 lần (JPEG).
 
 Các tối ưu chính:
 - Skia chỉ được nạp khi cần vẽ.
@@ -156,20 +161,24 @@ Các tối ưu chính:
 - Render chia đoạn chạy song song nhiều process rồi nối bằng concat không mã hoá lại.
 - Âm thanh được mix song song với hình.
 - Bước kiểm tra sau render (contact sheet, LUFS) chạy song song.
+- Đổ bóng: hình bóng mờ độ phân giải thấp được cache (Skia blur bóng toàn khung mỗi frame tốn ~50 ms), hộp đục dùng bóng giải tích.
+- Ảnh tĩnh và freeze frame: decode và upload lên canvas một lần.
+- Các layer video/ảnh decode song song; contact sheet dùng nhiều renderer cùng lúc; preview là JPEG; kiểm tra font được memo.
 
 ## Kiến trúc
 
 ```
 src/
   model.ts      schema, parse, validate (path + hint), magnetic/attach/until_end resolve
-  ops.ts        27 op chỉnh sửa (batch nguyên tử) · presets.ts: mẫu chữ, phụ đề, template
+  ops.ts        op chỉnh sửa (batch nguyên tử) · ops-edit.ts: tách tiếng, J/L-cut, slip/roll/slide · ops-compound.ts
+  presets.ts    mẫu chữ, phụ đề, template · export.ts: FCPXML / OTIO
   project.ts    thư mục project, lưu atomic, undo/redo, tóm tắt timeline
   render.ts     compositor Skia · effects.ts: hiệu ứng + mask · text.ts: layout chữ · anim.ts: easing/keyframe/transition
   media.ts      ffprobe + đọc frame từ FFmpeg (seek, speed, reverse, freeze, fit, filter)
   encode.ts     encoder + render song song (segment-worker.ts) · audio.ts: mixer + loudness
   analyze.ts    beat (FFT + DP), scene, silence, loudness, TTS, whisper
   fonts.ts      phân giải font + kiểm tra glyph · canvas.ts: nạp Skia lazy
-  api.ts        lớp dùng chung · cli.ts: `agentcut` · mcp.ts: `agentcut-mcp` (27 tool)
+  api.ts        lớp dùng chung · cli.ts: `agentcut` · mcp.ts: `agentcut-mcp` (28 tool)
   feedback.ts   ghi chú của agent + tự động ghi nhận + backlog xếp hạng
 ```
 
@@ -178,6 +187,9 @@ src/
 ```bash
 bun tests/smoke.ts     # tự tạo media, chạy qua mọi op, template và định dạng xuất
 bun tests/mcp.ts       # MCP client thật qua stdio
+bun run test           # tất cả: smoke, mcp, edit-ops, compound, codecs, export
+# kiểm chứng file xuất bằng OpenTimelineIO + DTD FCPXML (tuỳ chọn):
+AGENTCUT_OTIO_PY=/path/venv/bin/python AGENTCUT_FCPXML_DTD=/path/FCPXMLv1_10.dtd bun tests/export.ts
 AGENTCUT_BIN=$PWD/dist/cli.js bun tests/smoke.ts    # test bản build cho Node
 AGENTCUT_BIN=$PWD/bin/agentcut bun tests/smoke.ts   # test file binary
 ```

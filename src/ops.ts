@@ -5,12 +5,14 @@ import * as AN from "./analyze.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
+  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
   normAnim, parseTime, PRESETS, resolve, round6, suggest, type Timeline, totalDuration, type Track, TRANSITIONS,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
 import { captionWords, phrasesToWords } from "./captions.ts";
+import { registerEditOps } from "./ops-edit.ts";
+import { registerCompoundOps } from "./ops-compound.ts";
 
 const PREFIX: Record<string, string> = { video: "vid", image: "img", text: "txt", captions: "cap", shape: "shp", color: "col", audio: "aud", gap: "gap", lottie: "lot" };
 type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict;
@@ -57,9 +59,10 @@ op("import_media", "Import a media file (video/image/audio/Lottie .json) as an a
 
 op("remove_asset", "Remove an asset (force=true also removes clips using it).", { id: "asset id", force: "bool" }, (p, tl, a) => {
   if (!tl.assets[a.id]) throw new EditError(`asset '${a.id}' not found`, "not_found");
-  const users = tl.tracks.flatMap((t) => t.clips.filter((c) => c.asset === a.id).map((c) => c.id));
+  const users = [...allClips(tl.tracks)].filter((c) => c.asset === a.id).map((c) => c.id); // incl. clips inside compounds
   if (users.length && !a.force) throw new EditError(`asset '${a.id}' is used by ${users.join(", ")}`, "in_use", "remove those clips or pass force=true");
-  for (const t of tl.tracks) t.clips = t.clips.filter((c) => c.asset !== a.id);
+  const strip = (tracks: Track[]) => { for (const t of tracks) { t.clips = t.clips.filter((c) => c.asset !== a.id); for (const c of t.clips) if (c.type === "compound") strip(c.tracks ?? []); } };
+  strip(tl.tracks);
   delete tl.assets[a.id];
   return { removed: a.id, removed_clips: users };
 });
@@ -291,6 +294,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
   { id: "clip id", trim_start: "s", trim_end: "s", in: "source in", duration: "s", end: "timeline end" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
     const speed = Number(c.speed ?? 1) || 1;
+    const in0 = parseTime(c.in ?? 0), d0 = clipDur(c);
     if (a.in !== undefined) c.in = round6(parseTime(a.in));
     if (a.duration !== undefined) c.duration = round6(parseTime(a.duration));
     if (a.end !== undefined) c.duration = round6(parseAt(tl, a.end) - clipStart(c));
@@ -302,9 +306,38 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
     }
     if (a.trim_end) c.duration = round6(clipDur(c) - parseTime(a.trim_end));
     if (clipDur(c) <= 0) throw new EditError("trim leaves a non-positive duration", "bad_trim");
+    const out: Dict = { id: c.id, in: c.in ?? 0, start: c.start, duration: c.duration };
+    // detached audio follows: same source in-point change, same amount cut from the head/tail
+    const la = linkedAudio(tl, c);
+    if (la && !c.reverse) {
+      const au = la[1], head = a.trim_start ? parseTime(a.trim_start) : 0, tail = d0 - head - clipDur(c);
+      const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0) * ((Number(au.speed ?? 1) || 1) / speed);
+      if (nd > 0.04 && ni >= 0) { au.in = round6(ni); au.duration = round6(nd); out.audio = au.id; }
+      else out.warning = `detached audio '${au.id}' was not trimmed (it would become empty); trim it yourself`;
+    }
     resolve(tl);
-    return { id: c.id, in: c.in ?? 0, start: c.start, duration: c.duration };
+    return { ...out, start: c.start };
   });
+
+/** Give every clip nested in a copied compound a fresh id (ids are unique project-wide); fixes nested attach_to. */
+function renameNested(tl: Timeline, c: Clip) {
+  if (c.type !== "compound") return;
+  const map = new Map<string, string>();
+  const walk = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) {
+    const nid = newId(tl, PREFIX[x.type] ?? "clip"); map.set(x.id, nid); x.id = nid; // newId sees x's new id from now on
+    if (x.type === "compound") walk(x.tracks ?? []);
+  } };
+  walk(c.tracks ?? []);
+  const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (x.type === "compound") fix(x.tracks ?? []); } };
+  fix(c.tracks ?? []);
+}
+
+/** Audio clip created by detach_audio/j_cut/l_cut for video clip v (same asset, connected to it). */
+export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip] | undefined {
+  if (v.type !== "video") return undefined;
+  for (const tr of tl.tracks) for (const x of tr.clips) if (x.type === "audio" && x.attach_to === v.id && x.asset === v.asset) return [tr, x];
+  return undefined;
+}
 
 function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, number] {
   const [tr, ci, c] = findClip(tl, id);
@@ -315,6 +348,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   const right: Clip = structuredClone(c);
   right.id = newId(tl, PREFIX[c.type]);
   c.duration = round6(left); right.duration = round6(d - left);
+  if (c.type === "compound") right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
   if (c.type === "video" || c.type === "audio") {
     if (c.reverse) c.in = round6(parseTime(c.in ?? 0) + (d - left) * (Number(c.speed ?? 1) || 1)), right.in = round6(parseTime(right.in ?? 0));
     else right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
@@ -327,6 +361,22 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   }
   if (!tr.magnetic) right.start = round6(t);
   tr.clips.splice(ci + 1, 0, right);
+  renameNested(tl, right);
+  // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
+  const la = linkedAudio(tl, c);
+  if (la && !la[1].reverse) {
+    const [atr, au] = la;
+    const as = clipStart(au), ae = as + clipDur(au), asp = Number(au.speed ?? 1) || 1;
+    if (as < t - 1e-6 && t < ae - 1e-6) {
+      const ar: Clip = structuredClone(au);
+      ar.id = newId(tl, "aud");
+      ar.in = round6(parseTime(au.in ?? 0) + (t - as) * asp);
+      ar.duration = round6(ae - t); au.duration = round6(t - as);
+      ar.attach_to = right.id; ar.offset = 0; ar.name = `audio of ${right.id}`;
+      delete au.fade_out; delete ar.fade_in; delete ar.keyframes;
+      atr.clips.splice(atr.clips.indexOf(au) + 1, 0, ar);
+    } else if (as >= t - 1e-6) { au.attach_to = right.id; au.offset = round6(as - t); }
+  }
   resolve(tl);
   return [c, right, tr, ci];
 }
@@ -362,6 +412,7 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time).", { id: "c
   const dup: Clip = { ...structuredClone(c), id: newId(tl, PREFIX[c.type]) };
   const dest = a.track ? findTrack(tl, a.track) : tr;
   place(tl, dest, dup, dest.magnetic ? (dest === tr ? { after: c.id } : {}) : { at: a.at ?? clipEnd(c) });
+  renameNested(tl, dup);
   resolve(tl);
   return { id: dup.id, track: dest.id, start: dup.start };
 });
@@ -536,6 +587,15 @@ op("replace_timeline", "Replace the whole timeline JSON (validated, undoable).",
   Object.assign(tl, structuredClone(n));
   return { tracks: tl.tracks.length, duration: totalDuration(resolve(tl)) };
 });
+
+// ---------------------------------------------------------------- pro editing ops (separate modules, registered here)
+export interface OpHelpers {
+  op: typeof op; PREFIX: typeof PREFIX; parseAt: typeof parseAt; place: typeof place; resolveRef: typeof resolveRef;
+  ensureTrack: typeof ensureTrack; splitAt: typeof splitAt; trackEnd: typeof trackEnd; addClip: typeof addClip; importAsset: typeof importAsset;
+}
+const helpers: OpHelpers = { op, PREFIX, parseAt, place, resolveRef, ensureTrack, splitAt, trackEnd, addClip, importAsset };
+registerEditOps(helpers);
+registerCompoundOps(helpers);
 
 // ---------------------------------------------------------------- runner
 export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict[]] {
