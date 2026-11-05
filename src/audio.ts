@@ -1,18 +1,12 @@
-// Audio mix: one FFmpeg filter graph (trim, tempo, reverse, fades, automation, ducking) + 2-pass loudness.
+// Audio mix: one FFmpeg filter graph (trim, tempo, reverse, processing, fades, automation, ducking) + 2-pass loudness.
 import { spawnSync } from "node:child_process";
 import { unlinkSync } from "node:fs";
 import { parseKfs } from "./anim.ts";
+import * as FX from "./audiofx.ts";
 import { needFfmpeg } from "./media.ts";
 import { type Clip, EditError, parseTime, resolve, type Timeline, totalDuration, type Track } from "./model.ts";
 
-function atempo(speed: number): string[] {
-  const out: string[] = [];
-  let s = speed;
-  while (s > 2) { out.push("atempo=2.0"); s /= 2; }
-  while (s < 0.5) { out.push("atempo=0.5"); s /= 0.5; }
-  if (Math.abs(s - 1) > 1e-4) out.push(`atempo=${s.toFixed(5)}`);
-  return out;
-}
+const { atempo } = FX;
 
 function kfExpr(kfs: any[], v = "t"): string {
   const pts = parseKfs(kfs);
@@ -85,26 +79,50 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   for (const [s, e] of voice) { const l = merged[merged.length - 1]; if (l && s - l[1] < 0.5) l[1] = Math.max(l[1], e); else merged.push([s, e]); }
   const args = ["-v", "error", "-y", "-nostdin"];
   const graph: string[] = [], labels: string[] = [];
+  const duck = (track: Track) => {
+    if (!track.duck || !merged.length || track.role === "voice" || track.role === "dialogue") return [];
+    const g = 10 ** (Number(track.duck) / 20), r = 0.25;
+    const terms = merged.map(([a0, a1]) => `clip(min((t-${(a0 - r).toFixed(3)})/${r},(${(a1 + r).toFixed(3)}-t)/${r}),0,1)`);
+    return [`volume='1-${(1 - g).toFixed(4)}*${terms.reduce((acc, x) => `max(${acc},${x})`)}':eval=frame`];
+  };
+  const bus = (track: Track) => [...FX.eqFilters(track.eq), ...FX.compressorFilter(track.compressor), ...FX.panFilter(track.pan)];
+  const buses = new Map<Track, string[]>(); // tracks with bus processing -> their clip labels
   srcs.forEach((s, i) => {
-    const c = s.clip;
-    if (c.loop) args.push("-stream_loop", "-1");
-    args.push("-i", s.path);
+    const c = s.clip, tr = s.track;
+    const fx = (k: (typeof FX.PER_CLIP_KEYS)[number]) => c[k] ?? tr[k];
+    const input = [...(c.loop ? ["-stream_loop", "-1"] : []), "-i", s.path];
+    args.push(...input);
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
     const ch = [`atrim=start=${cin}:duration=${dur * speed}`, "asetpts=PTS-STARTPTS"];
     if (c.reverse) ch.push("areverse");
-    ch.push(...atempo(speed), `aresample=${sr}`, "aformat=sample_fmts=fltp:channel_layouts=stereo", `volume=${s.volume.toFixed(4)}`);
+    ch.push(...atempo(speed), `aresample=${sr}`, "aformat=sample_fmts=fltp:channel_layouts=stereo");
+    if (fx("pitch")) ch.push(...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`);
+    const dn = FX.denoiseStrength(fx("denoise"));
+    if (dn) {
+      const floor = FX.noiseFloor(s.path, cin, dur * speed);
+      if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor));
+    }
+    ch.push(...FX.eqFilters(c.eq), ...FX.compressorFilter(c.compressor), ...FX.panFilter(c.pan));
+    const target = FX.normalizeTarget(fx("normalize"));
+    if (target !== null) {
+      const lufs = FX.loudness(input, ch.join(","));
+      if (lufs !== null) ch.push(`volume=${(target - lufs).toFixed(2)}dB`);
+    }
+    ch.push(`volume=${s.volume.toFixed(4)}`);
     if (c.keyframes?.volume) ch.push(`volume='${kfExpr(c.keyframes.volume)}':eval=frame`);
     if (c.fade_in) ch.push(`afade=t=in:st=0:d=${Number(c.fade_in)}`);
     if (c.fade_out) ch.push(`afade=t=out:st=${Math.max(0, dur - Number(c.fade_out))}:d=${Number(c.fade_out)}`);
     ch.push(`adelay=${Math.round(start * 1000)}:all=1`);
-    if (s.track.duck && merged.length && s.track.role !== "voice" && s.track.role !== "dialogue") {
-      const g = 10 ** (Number(s.track.duck) / 20), r = 0.25;
-      const terms = merged.map(([a0, a1]) => `clip(min((t-${(a0 - r).toFixed(3)})/${r},(${(a1 + r).toFixed(3)}-t)/${r}),0,1)`);
-      const e = terms.reduce((acc, x) => `max(${acc},${x})`);
-      ch.push(`volume='1-${(1 - g).toFixed(4)}*${e}':eval=frame`);
-    }
+    const onBus = bus(tr).length > 0;
+    if (!onBus) ch.push(...duck(tr));
     graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
-    labels.push(`[a${i}]`);
+    if (onBus) buses.set(tr, [...(buses.get(tr) ?? []), `[a${i}]`]);
+    else labels.push(`[a${i}]`);
+  });
+  [...buses].forEach(([tr, ls], k) => {
+    // ducking after the bus chain so a track compressor does not pull the ducked level back up
+    graph.push(`${ls.join("")}amix=inputs=${ls.length}:duration=longest:normalize=0,${[...bus(tr), ...duck(tr)].join(",")}[b${k}]`);
+    labels.push(`[b${k}]`);
   });
   if (labels.length) graph.push(`${labels.join("")}amix=inputs=${labels.length}:duration=longest:normalize=0,apad=whole_dur=${T},atrim=0:${T}[out]`);
   else { args.push("-f", "lavfi", "-i", `anullsrc=r=${sr}:cl=stereo`); graph.push(`[0:a]atrim=0:${T}[out]`); }

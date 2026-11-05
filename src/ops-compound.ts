@@ -4,9 +4,10 @@ import {
   type Timeline, type Track,
 } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
+import { AUDIO_FX_KEYS } from "./audiofx.ts";
 
 const EPS = 1e-6;
-const TRACK_PROPS = ["name", "role", "duck", "volume", "muted", "hidden"];
+const TRACK_PROPS = ["name", "role", "duck", "volume", "muted", "hidden", ...AUDIO_FX_KEYS];
 const detach = (c: Clip) => { for (const k of ["attach_to", "offset", "match_duration", "end_offset"]) delete c[k]; };
 const gap = (d: number): Clip => ({ id: "", type: "gap", duration: round6(Math.max(0.001, d)) });
 

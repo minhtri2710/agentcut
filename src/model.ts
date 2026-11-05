@@ -1,5 +1,6 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
+import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 
 export const SCHEMA_VERSION = 2;
 
@@ -117,6 +118,12 @@ export const MEDIA_FIELDS: F = {
   reverse: [T("boolean"), "play backwards (video+audio)"],
   freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
 };
+/** Audio processing on video/audio clips and on tracks (see audiofx.ts). */
+export const AUDIO_FX_FIELDS: F = {
+  denoise: [T("boolean", "number"), AUDIO_FX_DOC.denoise], eq: [T("string", "array", "object"), AUDIO_FX_DOC.eq],
+  compressor: [T("string", "object"), AUDIO_FX_DOC.compressor], pan: [T("number"), AUDIO_FX_DOC.pan],
+  pitch: [T("number"), AUDIO_FX_DOC.pitch], normalize: [T("boolean", "number"), AUDIO_FX_DOC.normalize],
+};
 export const TEXT_FIELDS: F = {
   text: [T("string"), "the text; \\n for line breaks; emoji ok"],
   font: [T("string"), "family + style e.g. 'Arial Bold', 'Avenir Next Heavy' or a .ttf/.otf path (see fonts)"],
@@ -165,6 +172,7 @@ export function fieldsFor(t: string): F {
   const f: F = { ...COMMON_FIELDS };
   if (VISUAL_TYPES.has(t)) Object.assign(f, VISUAL_FIELDS);
   if (t === "video" || t === "image" || t === "audio") Object.assign(f, MEDIA_FIELDS);
+  if (t === "video" || t === "audio") Object.assign(f, AUDIO_FX_FIELDS);
   if (t === "audio") {
     for (const k of ["fit", "size", "focus", "crop", "filters", "freeze"]) delete f[k];
     f.keyframes = [T("object"), "{volume: [[t, gain]], speed: [[t, s]]}"];
@@ -187,6 +195,7 @@ export const TRACK_FIELDS: F = {
   duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -12)"],
   volume: [T("number"), "track gain"], muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
   clips: [T("array"), "clips (later ones draw on top within the track)"],
+  ...Object.fromEntries(Object.entries(AUDIO_FX_FIELDS).map(([k, [t, d]]) => [k, [t, `${d} (${(PER_CLIP_KEYS as readonly string[]).includes(k) ? "applied to each clip without its own" : "applied to the track mix"})`]])),
 };
 export const SETTINGS_FIELDS: F = {
   width: [T("number"), "canvas width px"], height: [T("number"), "canvas height px"], fps: [T("number"), "frames per second"],
@@ -475,6 +484,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
     const tp = `${root}.tracks[${ti}]`;
     if (!tr || typeof tr !== "object" || !Array.isArray(tr.clips ?? [])) { issues.push({ level: "error", path: tp, message: "track must be an object with a clips list" }); return; }
     checkFields(tr, TRACK_FIELDS, tp, issues, "track");
+    for (const x of audioFxIssues(tr, tp)) issues.push({ level: "error", ...x });
     if (!tr.id) issues.push({ level: "error", path: `${tp}.id`, message: "track needs an id" });
     else if (dup(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
     ids.set(tr.id, tp);
@@ -490,6 +500,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
       if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
       else if (dup(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${dup(c.id)})`, hint: "clip ids must be unique across the project, including inside compound clips" });
       clipIds.set(c.id, p);

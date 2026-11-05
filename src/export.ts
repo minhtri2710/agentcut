@@ -6,6 +6,7 @@
 // Transitions: AgentCut overlaps clip B onto clip A by d. NLEs keep clips contiguous and let the transition borrow media
 // handles, so the cut goes to the overlap midpoint: A loses ceil(d/2) at its end, B starts floor(d/2) later in its
 // source (in += floor(d/2) * speed), and a transition of duration d is centred on the cut.
+import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -61,6 +62,7 @@ const DROPPED: Record<string, string> = {
   effects: "effects", filters: "filters/looks", keyframes: "keyframes", mask: "mask", motion: "motion", enter: "enter animation",
   exit: "exit animation", border: "border", shadow: "shadow", radius: "rounded corners", reverse: "reverse", freeze: "freeze",
   loop: "loop", gradient: "gradient", glow: "glow", background: "text background",
+  denoise: "denoise", eq: "audio eq", compressor: "compressor", pan: "pan", pitch: "pitch", normalize: "normalize",
 };
 
 function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
@@ -229,6 +231,10 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   for (const [k, v] of Object.entries(tl.settings || {}))
     if (k === "effects" && Array.isArray(v) && v.length) skipped.push({ id: "settings", type: "effects", reason: "whole-frame effects are not exported" });
   for (const tr of tracks) if (tr.duck) skipped.push({ id: tr.id, type: "duck", reason: "auto-ducking is not exported (set volume keyframes in the NLE)" });
+  for (const tr of tracks) {
+    const fx = AUDIO_FX_KEYS.filter((k) => tr[k] !== undefined && tr[k] !== null && tr[k] !== false);
+    if (fx.length) skipped.push({ id: tr.id, type: "audio_fx", reason: `track audio processing not exported: ${fx.join(", ")}` });
+  }
   return { rate, total, main, spine, above, below, videoLanes, audioLanes, skipped, exported };
 
   function gapEntry(tr: Track | null, s: number, e: number): Placed {

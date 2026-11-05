@@ -92,14 +92,14 @@ export function buildServer() {
   };
   s.registerTool("render", {
     description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes contact_sheet + loudness - check them. For a Final Cut / Resolve project file use export_timeline.",
-    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: z.number().default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), wait_seconds: z.number().default(55) },
+    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: z.number().default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), subtitles: z.boolean().default(false).describe("also embed the captions clips as a soft subtitle track (.mp4/.mov mov_text, .mkv srt, .webm webvtt)"), wait_seconds: z.number().default(55) },
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
     const id = Math.random().toString(36).slice(2, 10);
     const job: any = { job_id: id, status: "running", progress: 0, started: Date.now(), project };
     jobs.set(id, job);
-    job.promise = api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, progress: (d, n) => { job.progress = +(d / n).toFixed(3); } })
+    job.promise = api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress: (d, n) => { job.progress = +(d / n).toFixed(3); } })
       .then((r) => { job.status = "done"; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
       .finally(() => { job.finished = Date.now(); });
     return waitJob(id, a.wait_seconds);
@@ -108,6 +108,10 @@ export function buildServer() {
     description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Lists what could not be represented (skipped).",
     inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).default("fcpxml"), output: z.string().optional() },
   }, wrap((a) => api.exportTimeline(proj(a.project), { format: a.format, out: a.output })));
+  s.registerTool("export_captions", {
+    description: "Write the captions clips as a subtitle file (.srt or .vtt) in timeline time, same pages as the burned-in captions. For a soft subtitle track inside the video use render subtitles=true.",
+    inputSchema: { project: P, output: z.string().optional().describe(".srt or .vtt path"), format: z.enum(["srt", "vtt"]).optional(), ids: z.array(z.string()).optional().describe("only these captions clips") },
+  }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
   s.registerTool("render_status", { description: "Status/result of a render job (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("view_image", { description: "Return a local PNG/JPG (e.g. a render's contact_sheet) as an image.", inputSchema: { path: z.string() } },
     async (a) => { try { return { content: [image(a.path)] }; } catch (e) { return fail(e); } });

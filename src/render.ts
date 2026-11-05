@@ -10,7 +10,7 @@ import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, type Timeline, totalDuration,
   type Track, VISUAL_TYPES,
 } from "./model.ts";
-import { captionPages, captionWords, type CWord, maxWidthPx, renderText, TextStyle } from "./text.ts";
+import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, TextStyle } from "./text.ts";
 
 setCanvas(Skia);
 
@@ -47,7 +47,7 @@ export class Layer {
   prev: Layer | null = null; next: Layer | null = null;
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
-  words: CWord[] = []; pages: number[][] = [];
+  words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
   private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle;
   private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
@@ -69,6 +69,7 @@ export class Layer {
     if (this.type === "captions") {
       this.words = captionWords(c);
       this.pages = captionPages(this.words, Number(c.max_words ?? 3));
+      this.spans = pageSpans(this.words, this.pages);
     }
     if (this.type === "compound") this.box = [r.W, r.H];
     if (this.type === "color") this.opaque = !c.size && (c.gradient ? (c.gradient.colors || []).every((x: any) => parseColor(x)[3] === 255) : parseColor(c.color ?? "black")[3] === 255);
@@ -204,14 +205,7 @@ export class Layer {
   private captionFrame(tl: number, m: A.Mods): Canvas | null {
     const c = this.c, r = this.r, words = this.words, pages = this.pages;
     if (!words.length) return null;
-    let cur = -1;
-    for (let pi = 0; pi < pages.length; pi++) {
-      const pg = pages[pi];
-      const s = words[pg[0]].start, e = words[pg[pg.length - 1]].end;
-      const nxt = pi + 1 < pages.length ? words[pages[pi + 1][0]].start : null;
-      const hold = nxt !== null ? Math.min(nxt, e + 0.6) : e + 0.3;
-      if (s <= tl && tl < Math.max(e, hold)) { cur = pi; break; }
-    }
+    const cur = this.spans.findIndex(([s, e]) => s <= tl && tl < e);
     if (cur < 0) return null;
     const pg = pages[cur];
     let active: number | null = null;

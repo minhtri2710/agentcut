@@ -6,7 +6,7 @@ import { cssFont, type FontSpec, resolveFont } from "./fonts.ts";
 import { css, type Dict, parseColor, parseLen } from "./model.ts";
 
 setCanvas(Skia);
-export { captionPages, captionWords, type CWord, parseSrt, phrasesToWords } from "./captions.ts";
+export { captionPages, captionWords, type CWord, pageSpans, parseSrt, phrasesToWords } from "./captions.ts";
 
 export class TextStyle {
   font: FontSpec; size: number; fill: string; gradient?: Dict; strokeW: number; strokeC?: string;
