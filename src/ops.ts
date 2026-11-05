@@ -11,7 +11,7 @@ import {
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
-import { captionWords, phrasesToWords } from "./captions.ts";
+import { captionWords, scriptToWords } from "./captions.ts";
 import { registerEditOps, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
@@ -509,7 +509,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     if (a.captions) {
       const sil = AN.silence(out, -40, 0.15);
       const speech = sil.speech.length ? sil.speech : [[0, res.duration]];
-      const words = phrasesToWords([{ text: a.text, start: speech[0][0], end: speech[speech.length - 1][1] }]);
+      const words = scriptToWords(a.text, speech);
       const extra = typeof a.captions === "object" ? a.captions : typeof a.captions === "string" ? { preset: a.captions } : {};
       result.captions = addCaptions(p, tl, { words, at, ...extra });
     }
