@@ -77,6 +77,10 @@ export function buildServer() {
     description: "Render ONE frame at time t (seconds) and return it as an image. guides=true overlays safe areas (red = social UI zones on 9:16).",
     inputSchema: { t: z.number(), project: P, scale: z.number().default(0.4), guides: z.boolean().default(false) },
   }, async (a) => { try { const r = await api.frame(proj(a.project), a.t, { scale: a.scale, guides: a.guides }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  s.registerTool("scopes", {
+    description: "Colour scopes of the frame at t: image (frame | luma waveform / vectorscope | RGB histogram) + stats (luma 0..1 min/p10/avg/p90/max, saturation_avg, cast u/v: 0 = neutral, +u blue, +v red). Use to judge exposure and colour objectively before/after a color grade.",
+    inputSchema: { t: z.number(), project: P },
+  }, async (a) => { try { const r = await api.scopes(proj(a.project), a.t); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("contact_sheet", {
     description: "Grid of timestamped frames across the timeline (no full render). Default 12 evenly spaced; or times=[...] / every=1.",
     inputSchema: { project: P, times: z.array(z.number()).optional(), every: z.number().optional(), count: z.number().int().default(12), cols: z.number().int().default(4), guides: z.boolean().default(false) },

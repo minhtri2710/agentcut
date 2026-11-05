@@ -2,6 +2,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
+import { gradeChain, type Grade } from "./color.ts";
 import { EditError } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
@@ -63,19 +64,6 @@ export function probe(path: string): any {
   return { ...info };
 }
 
-export const LOOKS: Record<string, string> = {
-  warm: "colorbalance=rs=0.08:gs=0.02:bs=-0.08:rm=0.05:bm=-0.05,eq=saturation=1.1",
-  cool: "colorbalance=rs=-0.06:bs=0.08:rm=-0.04:bm=0.06",
-  vintage: "curves=preset=vintage,eq=saturation=0.85",
-  bw: "hue=s=0,eq=contrast=1.15",
-  cinematic: "eq=contrast=1.12:saturation=0.9,colorbalance=rs=-0.05:bs=0.06:rh=0.06:bh=-0.04",
-  teal_orange: "colorbalance=rs=-0.1:bs=0.1:rh=0.1:bh=-0.1,eq=saturation=1.15",
-  vivid: "eq=saturation=1.35:contrast=1.08",
-  fade: "curves=all='0/0.08 1/0.92',eq=saturation=0.85",
-  moody: "eq=contrast=1.15:brightness=-0.04:saturation=0.75,colorbalance=bs=0.05:bm=0.03",
-  pastel: "eq=saturation=0.7:brightness=0.05,curves=all='0/0.1 1/1'",
-};
-
 export function filterChain(filters: any[] | undefined): string[] {
   const out: string[] = [];
   for (let f of filters || []) {
@@ -86,9 +74,6 @@ export function filterChain(filters: any[] | undefined): string[] {
         if (ks.length) out.push("eq=" + ks.map((k) => `${k}=${f[k]}`).join(":"));
         break;
       }
-      case "look":
-        if (!LOOKS[f.name ?? "cinematic"]) throw new EditError(`unknown look '${f.name}'`, "bad_filter", `looks: ${Object.keys(LOOKS).join(", ")}`);
-        out.push(LOOKS[f.name ?? "cinematic"]); break;
       case "lut": out.push(`lut3d=file='${String(f.path).replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'")}'`); break;
       case "blur": out.push(`gblur=sigma=${(Number(f.radius ?? 5) / 2).toFixed(2)}`); break;
       case "sharpen": out.push(`unsharp=5:5:${Number(f.amount ?? 1).toFixed(2)}`); break;
@@ -165,7 +150,7 @@ export interface SourceOpts {
   path: string; kind: string; srcW: number; srcH: number; srcFps?: number | null;
   srcIn?: number; segLen?: number; // source seconds used by the clip (for reverse)
   rate: number; // output frames per SOURCE second
-  fit: string; box: [number, number]; focus?: [number, number]; crop?: any; filters?: any[];
+  fit: string; box: [number, number]; focus?: [number, number]; crop?: any; filters?: any[]; color?: Grade;
   loop?: boolean; srcDuration?: number; reverse?: boolean; freeze?: boolean;
 }
 
@@ -186,7 +171,7 @@ export class FrameSource {
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
     const vf: string[] = [];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
-    vf.push(...filterChain(o.filters));
+    vf.push(...filterChain(o.filters), ...gradeChain(o.color));
     const fb = fitBox(cw, ch, Math.max(1, Math.round(o.box[0])), Math.max(1, Math.round(o.box[1])), o.fit);
     vf.push(`scale=${fb.w}:${fb.h}:flags=bicubic`);
     if (fb.crop && (fb.w > fb.ow || fb.h > fb.oh)) {

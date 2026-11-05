@@ -5,7 +5,9 @@ import * as AN from "./analyze.ts";
 import { loadCanvas } from "./canvas.ts";
 import * as FB from "./feedback.ts";
 import { listFonts } from "./fonts.ts";
-import { LOOKS, probe as probeMedia } from "./media.ts";
+import { LOOKS } from "./color.ts";
+import { probe as probeMedia } from "./media.ts";
+import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
@@ -79,6 +81,19 @@ export async function frame(project: string | undefined, t: number | string, o: 
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return { image: out, t: tt, bytes: png.length };
+}
+
+/** Objective exposure/colour check of the composited frame at t: waveform + vectorscope + histogram image and luma/chroma stats. */
+export async function scopes(project: string | undefined, t: number | string, o: { out?: string; scale?: number } = {}) {
+  const p = openProject(project);
+  const tl = p.load();
+  requireValid(p, tl);
+  const tt = M.parseTime(t);
+  const { renderFrame } = await renderMod();
+  const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
+  const png = await renderFrame(p.absolutized(tl), p.root, tt, o.scale ?? 0.5, false, "png");
+  mkdirSync(dirname(out), { recursive: true });
+  return { t: tt, ...frameScopes(png, out) };
 }
 
 export async function sheet(project: string | undefined, o: { times?: (number | string)[] | string; every?: number; count?: number; cols?: number; out?: string; tileWidth?: number; guides?: boolean } = {}) {
@@ -155,7 +170,7 @@ export const redo = (project?: string, steps = 1) => { const p = openProject(pro
 export const history = (project?: string) => openProject(project).history();
 export const probe = (path: string) => probeMedia(presolve(path));
 export const fonts = async (q = "", limit = 60) => { await loadCanvas(); return { fonts: listFonts(q, limit) }; };
-export const voices = (lang?: string) => ({ voices: AN.ttsVoices().filter((v) => !lang || v.lang.toLowerCase().startsWith(lang.toLowerCase())) });
+export const voices = (lang?: string) => { const r = AN.ttsVoices(); return { ...r, voices: r.voices.filter((v) => !lang || v.lang.toLowerCase().startsWith(lang.toLowerCase())) }; };
 
 export function capabilities() {
   const pick = (t: Record<string, { doc: string }>) => Object.fromEntries(Object.entries(t).map(([k, v]) => [k, v.doc]));

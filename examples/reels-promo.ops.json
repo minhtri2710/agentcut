@@ -6,7 +6,7 @@
        {"src": "/ABS/footage/hero.mp4", "in": 1.0, "duration": 2.0, "focus": [0.4, 0.5]},
        {"src": "/ABS/footage/wide.mp4", "duration": 1.5, "fit": "blur"},
        {"src": "/ABS/photos/product.jpg", "duration": 2.0, "motion": "ken_burns"},
-       {"src": "/ABS/footage/usage.mp4", "duration": 2.5, "filters": [{"type": "look", "name": "warm"}]}
+       {"src": "/ABS/footage/usage.mp4", "duration": 2.5, "color": {"look": "warm"}}
      ],
      "defaults": {"transition": {"type": "zoom_blur", "duration": 0.3}}},
     {"op": "add_clip", "track": "text", "text": "HOOK LINE", "attach_to": "main#0", "offset": 0.2, "match_duration": true, "preset": "title_bold", "position": "top", "margin": "14%"},

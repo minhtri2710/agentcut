@@ -58,7 +58,7 @@ interface Plan {
 
 const LAYOUT = ["x", "y", "position", "size", "scale", "scale_x", "scale_y", "rotation", "crop", "focus", "margin"];
 const DROPPED: Record<string, string> = {
-  effects: "effects", filters: "filters/looks", keyframes: "keyframes", mask: "mask", motion: "motion", enter: "enter animation",
+  effects: "effects", filters: "filters", color: "colour grade", keyframes: "keyframes", mask: "mask", motion: "motion", enter: "enter animation",
   exit: "exit animation", border: "border", shadow: "shadow", radius: "rounded corners", reverse: "reverse", freeze: "freeze",
   loop: "loop", gradient: "gradient", glow: "glow", background: "text background",
 };
