@@ -5,12 +5,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import * as api from "../src/api.ts";
-import { startUi } from "../src/ui.ts";
+import { delimiter, join } from "node:path";
 
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-if (!existsSync(CHROME)) { console.log(`skipped: Chrome not found at ${CHROME} (set CHROME=/path/to/chrome)`); process.exit(0); }
+const MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const LINUX_CHROME = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+const CHROME = [process.env.CHROME, MAC_CHROME, ...(process.env.PATH ?? "").split(delimiter).filter(Boolean).flatMap((d) => LINUX_CHROME.map((n) => join(d, n)))]
+  .find((p) => p && existsSync(p));
+if (!CHROME) { console.log(`skipped: Chrome not found (looked at $CHROME, ${MAC_CHROME}, and ${LINUX_CHROME.join(", ")} on PATH; set CHROME=/path/to/chrome)`); process.exit(0); }
 
 let failures = 0;
 const check = (name: string, cond: unknown, info?: unknown) => {
@@ -21,6 +22,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-uib-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
+const api = await import("../src/api.ts");
+const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
@@ -41,31 +45,16 @@ const cmpId = load().tracks.find((t: any) => t.id === "main").clips[1].id as str
 
 // ---------------------------------------------------------------- browser
 const ui = await startUi(dir, { port: 0 });
-const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run",
+const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run", "--use-mock-keychain", "--password-store=basic",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1440,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
-const wsUrl = await new Promise<string>((ok, fail) => {
-  let err = "";
-  const to = setTimeout(() => fail(new Error(`Chrome did not start: ${err}`)), 20_000);
-  chrome.stderr!.on("data", (c) => { err += c; const m = /DevTools listening on (ws:\/\/\S+)/.exec(err); if (m) { clearTimeout(to); ok(m[1]); } });
-});
-const ws = new WebSocket(wsUrl);
-await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
-let seq = 0;
+const exited = new Promise<void>((ok) => chrome.once("close", () => ok()));
+let ws: WebSocket | undefined, sessionId = "", seq = 0;
 const pending = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
 const consoleErrors: string[] = [];
-ws.onmessage = (m) => {
-  const msg = JSON.parse(String(m.data));
-  if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id)!; pending.delete(msg.id); msg.error ? p.fail(new Error(JSON.stringify(msg.error))) : p.ok(msg.result); }
-  else if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails?.exception?.description ?? msg.params.exceptionDetails?.text);
-};
-const cdp = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((ok, fail) => {
-  const id = ++seq; pending.set(id, { ok, fail }); ws.send(JSON.stringify({ id, method, params, sessionId }));
+const cdp = (method: string, params: object = {}, session?: string) => new Promise<any>((ok, fail) => {
+  const id = ++seq; pending.set(id, { ok, fail }); ws!.send(JSON.stringify({ id, method, params, sessionId: session }));
 });
-const { targetId } = await cdp("Target.createTarget", { url: "about:blank" });
-const { sessionId } = await cdp("Target.attachToTarget", { targetId, flatten: true });
 const page = (method: string, params: object = {}) => cdp(method, params, sessionId);
-await page("Runtime.enable");
-await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 const js = async (expr: string) => {
   const r = await page("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error(`${expr}: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
@@ -99,6 +88,24 @@ const shot = async (name: string) => {
 };
 
 try {
+  const wsUrl = await new Promise<string>((ok, fail) => {
+    let err = "";
+    const to = setTimeout(() => fail(new Error(`Chrome did not start: ${err}`)), 20_000);
+    chrome.once("error", (e) => { clearTimeout(to); fail(e); });
+    chrome.stderr!.on("data", (c) => { err += c; const m = /DevTools listening on (ws:\/\/\S+)/.exec(err); if (m) { clearTimeout(to); ok(m[1]); } });
+  });
+  ws = new WebSocket(wsUrl);
+  await new Promise((ok, fail) => { ws!.onopen = ok; ws!.onerror = fail; });
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(String(m.data));
+    if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id)!; pending.delete(msg.id); msg.error ? p.fail(new Error(JSON.stringify(msg.error))) : p.ok(msg.result); }
+    else if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails?.exception?.description ?? msg.params.exceptionDetails?.text);
+  };
+  const { targetId } = await cdp("Target.createTarget", { url: "about:blank" });
+  sessionId = (await cdp("Target.attachToTarget", { targetId, flatten: true })).sessionId;
+  await page("Runtime.enable");
+  await page("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+
   console.log("page");
   await page("Page.navigate", { url: ui.url });
   check("timeline renders every top-level clip", await until("clips", `document.querySelectorAll("#lanes .clip").length === 3`),
@@ -182,11 +189,13 @@ try {
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {
-  ws.close();
+  ws?.close();
   chrome.kill();
+  const gone = await Promise.race([exited.then(() => true), sleep(5000).then(() => false)]);
+  if (!gone) { chrome.kill("SIGKILL"); await Promise.race([exited, sleep(5000)]); }
   ui.server.closeAllConnections?.();
   await new Promise((ok) => ui.server.close(ok));
+  if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
-if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILED` : "\nall ui-browser checks passed");
 process.exit(failures ? 1 : 0);

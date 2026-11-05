@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-export-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { resolve } = await import("../src/model.ts");
 const { Project } = await import("../src/project.ts");

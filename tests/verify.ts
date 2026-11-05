@@ -9,7 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-verify-"));
-const env = { ...(process.env as Record<string, string>), AGENTCUT_HOME: join(tmp, "home") };
+const env = { ...(process.env as Record<string, string>), AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") };
 let fails = 0;
 const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c ? "" : JSON.stringify(info).slice(0, 600)); if (!c) fails++; };
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };

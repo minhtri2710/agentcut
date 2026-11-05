@@ -27,6 +27,7 @@ function check(name: string, cond: unknown, info?: unknown) {
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-smoke-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store (inherited by every CLI call)
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const m = join(tmp, "media");
 mkdirSync(m);
 console.log("media ->", tmp);

@@ -6,8 +6,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import * as api from "../src/api.ts";
-import { startUi } from "../src/ui.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -24,6 +22,9 @@ const cliAsync = (args: (string | number)[]) => new Promise<any>((ok) => {
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-ui-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
+const api = await import("../src/api.ts");
+const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };

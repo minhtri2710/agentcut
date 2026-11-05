@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-review-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY"]) delete process.env[k];
 const api = await import("../src/api.ts");
 const AN = await import("../src/analyze.ts");
@@ -121,21 +122,23 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
   const ui = await startUi(P, { port: 0 });
   try {
     const post = (body: unknown) => fetch(`${ui.url}api/render`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json() as any);
-    const [a, b] = await Promise.all([post({ play: true, start: 0, end: 1 }), post({ play: true, start: 0, end: 1 })]);
+    const T = Math.min(4, api.info(P).duration as number); // a long range keeps the draft alive while it is polled and pruned
+    const [a, b] = await Promise.all([post({ play: true, start: 0, end: T }), post({ play: true, start: 0, end: T })]);
     const rev = api.info(P).revision;
-    const final = join(P, "previews", "ui", `play-r${rev}-0.00-1.00.mp4`);
+    const final = join(P, "previews", "ui", `play-r${rev}-0.00-${T.toFixed(2)}.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
     const uiDir = join(P, "previews", "ui"), parts = () => existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.includes(".part")) : [];
-    let part: string[] = [], pruned = false;
+    let part: string[] = [];
     for (let i = 0; i < 3000 && !part.length; i++) { part = parts(); if (!part.length) await new Promise((ok) => setTimeout(ok, 5)); }
-    if (part.length) { api.cache.prune(P); pruned = true; } // a prune while the render runs must not take its draft
-    check("draft is named .part-<pid>- (protected as in flight) and survives a prune", pruned && part.every((f) => f.includes(`.part-${process.pid}-`)) && parts().length > 0, { part, now: parts() });
+    const seen = part.length ? join(uiDir, part[0]) : "";
+    if (seen) api.cache.prune(P); // a prune while the render runs must not take its draft
+    check("draft is named .part-<pid>- (protected as in flight) and survives a prune", !!seen && part.every((f) => f.includes(`.part-${process.pid}-`)) && existsSync(seen), { part, now: parts() });
     let done: any = null;
     for (let i = 0; i < 300 && !done; i++) { const s: any = await fetch(`${ui.url}api/jobs/${a.id}`).then((r) => r.json()); if (s.status !== "running") done = s; else await new Promise((ok) => setTimeout(ok, 100)); }
     const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", final], { encoding: "utf8" });
-    check("finished preview is complete and renamed into place", done?.status === "done" && Math.abs(Number(probe.stdout) - 1) < 0.1 && parts().length === 0, { done, d: probe.stdout, left: parts() });
-    const again = await post({ play: true, start: 0, end: 1 });
+    check("finished preview is complete and renamed into place", done?.status === "done" && Math.abs(Number(probe.stdout) - T) < 0.1 && parts().length === 0, { done, d: probe.stdout, left: parts() });
+    const again = await post({ play: true, start: 0, end: T });
     check("next request is a cache hit", again.status === "done" && again.url === done.url);
   } finally { ui.server.closeAllConnections?.(); await new Promise((ok) => ui.server.close(ok)); }
 }

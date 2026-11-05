@@ -10,6 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-jobs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 let failures = 0;
 const t0 = performance.now();
 function check(name: string, cond: unknown, info?: unknown) {
@@ -80,8 +81,7 @@ console.log("project lock (concurrent processes)");
     await new Promise((r) => child.on("close", r));
     clearTimeout(timer);
     const r = out ? JSON.parse(out) : {};
-    check("claim held by a live non-reclaimer: waiter gets `locked` within a bound (no spin)", !killed && r.code === "locked" && r.ms >= 250 && r.ms < 5000, { killed, out });
-    check("...and the lock and claim are left alone", existsSync(L4) && existsSync(`${L4}.reclaim-${id}`));
+    check("claim held by a live non-reclaimer: waiter gets `locked` within a bound (no spin), and the lock and claim are left alone", !killed && r.code === "locked" && r.ms >= 250 && r.ms < 5000 && existsSync(L4) && existsSync(`${L4}.reclaim-${id}`), { killed, out });
   }
 
   // locks AgentCut did not write in this format, or whose holder cannot be judged (other host), are never reclaimed
@@ -302,8 +302,7 @@ console.log("cache containment (symlinks)");
   let swapCode: string | undefined;
   try { api.cache.prune(P); } catch (e: any) { swapCode = e.code; } finally { process.kill = kill; }
   check("dir swapped for a symlink after the walk: prune refuses, the outside file survives", swapped && swapCode === "unsafe_cache_dir" && intact() && existsSync(join(outside, name)) && existsSync(join(swapReal, name)), { swapped, swapCode });
-  unlinkSync(swap);
-  rmSync(swapReal, { recursive: true, force: true });
+  if (swapped) { unlinkSync(swap); rmSync(swapReal, { recursive: true, force: true }); }
   rmSync(join(outside, name), { force: true });
 }
 

@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-editops-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
+process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { applyOps } = await import("../src/ops.ts");
 const { newTimeline } = await import("../src/model.ts");
