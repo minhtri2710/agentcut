@@ -1,8 +1,8 @@
 // Project cache management: .agentcut/cache (vision analyses, mattes, helper script) and previews/ (frames, sheets, strips,
 // UI play drafts). "Referenced" = still needed by the current timeline (mattes of remove_background clips, analyses of
 // pending vision requests, the current helper script); everything else can be rebuilt and is pruned first.
-import { readdirSync, rmSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { mattesFor } from "./ops-vision.ts";
@@ -11,16 +11,28 @@ import { cacheDir, helperScript } from "./vision.ts";
 
 const MB = 1 << 20;
 export const PREVIEWS_MAX_MB = () => Number(process.env.AGENTCUT_PREVIEWS_MAX_MB ?? 200);
-interface Entry { area: "cache" | "previews"; path: string; bytes: number; mtime: number; referenced: boolean }
+interface Entry { area: "cache" | "previews"; root: string; path: string; bytes: number; mtime: number; referenced: boolean }
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code === "EPERM"; } };
 /** temp output of a compute/render that is still running (pid in the name: vision.ts `.part-<pid>-`, `.<pid>.tmp`) */
 const inFlight = (f: string) => { const m = /\.part-(\d+)-|\.(\d+)\.tmp$/.exec(f); return !!m && alive(Number(m[1] ?? m[2])); };
 
+/** regular files under dir; symlinks (files or directories) are never followed, counted or deleted */
 function files(dir: string): string[] {
-  let names: string[];
-  try { names = readdirSync(dir); } catch (e: any) { if (e.code === "ENOENT") return []; throw e; }
-  return names.flatMap((n) => { const f = join(dir, n), st = statSync(f, { throwIfNoEntry: false }); return st?.isDirectory() ? files(f) : st ? [f] : []; });
+  let ents;
+  try { ents = readdirSync(dir, { withFileTypes: true }); } catch (e: any) { if (e.code === "ENOENT") return []; throw e; }
+  return ents.flatMap((d) => { const f = join(dir, d.name); return d.isDirectory() ? files(f) : d.isFile() ? [f] : []; });
+}
+
+/** realpath of an area directory (null if absent). Fails closed unless it is exactly where it claims to be under the real
+ *  project root: a symlinked area (or symlinked parent) would make prune delete files outside the project. */
+function areaRoot(p: Project, dir: string): string | null {
+  let real = "";
+  try { real = realpathSync(dir); } catch (e: any) { if (e.code === "ENOENT") return null; if (e.code !== "ELOOP") throw e; }
+  const rel = relative(p.root, dir);
+  if (real !== join(realpathSync(p.root), rel))
+    throw new EditError(`${rel} is not a plain directory inside the project (symlink?)`, "unsafe_cache_dir", `AgentCut never deletes through symlinks: replace ${rel} with a real directory`);
+  return real;
 }
 
 /** analyses the pending vision requests still need (none if a request no longer applies: prepare reports that) */
@@ -37,9 +49,10 @@ function entries(p: Project, area?: "cache" | "previews"): Entry[] {
   const out: Entry[] = [];
   for (const [a, dir] of [["cache", cacheDir(p.root)], ["previews", join(p.root, "previews")]] as const) {
     if (area && a !== area) continue;
-    for (const f of files(dir)) {
-      const st = statSync(f, { throwIfNoEntry: false });
-      if (st && !inFlight(f)) out.push({ area: a, path: f, bytes: st.size, mtime: st.mtimeMs, referenced: ref.has(f) });
+    const root = areaRoot(p, dir);
+    if (root) for (const f of files(dir)) {
+      const st = lstatSync(f, { throwIfNoEntry: false });
+      if (st?.isFile() && !inFlight(f)) out.push({ area: a, root, path: f, bytes: st.size, mtime: st.mtimeMs, referenced: ref.has(f) });
     }
   }
   return out;
@@ -61,6 +74,14 @@ export function parseAge(v: string | number): number {
   return Number(m[1]) * { d: 864e5, h: 36e5, m: 6e4, s: 1e3 }[(m[2] ?? "s") as "d"];
 }
 
+/** the file's parent still resolves under its area root (a directory swapped for a symlink since the walk would not); false if already gone */
+function contained(e: Entry) {
+  let dir: string;
+  try { dir = realpathSync(dirname(e.path)); } catch (err: any) { if (err.code === "ENOENT") return false; throw err; }
+  if (dir !== e.root && !dir.startsWith(e.root + sep)) throw new EditError(`${relative(e.root, e.path)} resolves outside its cache area`, "unsafe_cache_dir", "AgentCut never deletes through symlinks");
+  return true;
+}
+
 /** Delete cache/preview files. Only files older than olderThan (if given) are eligible. Without maxMb: every eligible
  *  unreferenced file. With maxMb: eligible files until the total is <= maxMb - unreferenced first, oldest first, and
  *  referenced ones (rebuilt by prepare) only if that is not enough. */
@@ -72,6 +93,7 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
   const removed: Entry[] = [];
   for (const e of eligible) {
     if (o.maxMb !== undefined ? total <= o.maxMb * MB : e.referenced) break;
+    if (!contained(e)) continue;
     rmSync(e.path, { force: true });
     total -= e.bytes;
     removed.push(e);

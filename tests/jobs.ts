@@ -2,7 +2,7 @@
 // prepare as an MCP background job with progress (render_status), not_prepared fail-fast, cache info/prune, previews cap.
 // The vision helper is a fake `uv` (AGENTCUT_UV) so this runs offline. Run: bun tests/jobs.ts [--keep]   (needs ffmpeg)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -177,6 +177,62 @@ delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
 const cli = (...a: string[]) => JSON.parse(spawnSync(process.execPath, [resolve(import.meta.dir, "../src/cli.ts"), ...a, "-p", P], { encoding: "utf8", env: { ...process.env, AGENTCUT_UV: fake } }).stdout);
 const ci = cli("cache", "info"), cp = cli("cache", "prune", "--older-than", "30d"), ps = cli("prepare", "--status");
 check("CLI cache info / prune / prepare --status print one JSON object", ci.ok && ci.total.files > 0 && cp.ok && cp.removed.files === 0 && ps.ok && ps.ready === true, { ci, cp, ps });
+
+// containment: symlinks inside or in place of an area are never walked, counted or deleted
+console.log("cache containment (symlinks)");
+{
+  const outside = join(tmp, "outside"), sentinels = ["a.bin", "b.bin", "c.bin"].map((n) => join(outside, n));
+  mkdirSync(outside);
+  const plant = () => sentinels.forEach((f, i) => { writeFileSync(f, Buffer.alloc(100_000)); utimesSync(f, week + i, week + i); });
+  const intact = () => sentinels.every((f) => existsSync(f));
+  const errCode = (fn: () => unknown) => { try { fn(); } catch (e: any) { return e.code; } };
+  plant();
+  symlinkSync(outside, join(prev, "linkdir"));
+  symlinkSync(sentinels[0], join(prev, "linkfile.bin"));
+  const info: any = api.cache.info(P);
+  check("symlinked file and dir are not counted", info.previews.files === readdirSync(prev, { withFileTypes: true }).filter((d) => d.isFile()).length, info.previews);
+  process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.3";
+  for (let i = 0; i < 4; i++) { const f = join(prev, `contained-${i}.bin`); writeFileSync(f, Buffer.alloc(100_000)); utimesSync(f, week + i, week + i); }
+  await api.frame(P, 1.5, { scale: 0.5 });
+  check("cap evicts previews but not what a symlink points at", intact() && !existsSync(join(prev, "contained-0.bin")), readdirSync(prev));
+  delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
+  api.cache.prune(P);
+  api.cache.prune(P, { maxMb: 0 });
+  await api.prepare(P); // max_mb=0 also dropped the matte
+  check("prune (default and max_mb=0) leaves symlink targets alone", intact() && !existsSync(join(prev, "contained-3.bin")), readdirSync(prev));
+  for (const n of ["linkdir", "linkfile.bin"]) rmSync(join(prev, n), { force: true });
+
+  // symlink loops inside an area: a preview write and cache info/prune still work
+  symlinkSync(prev, join(prev, "loop"));
+  symlinkSync(join(prev, "loopb"), join(prev, "loopa")); symlinkSync(join(prev, "loopa"), join(prev, "loopb"));
+  process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.3";
+  const lf: any = await api.frame(P, 1, { scale: 0.5 }).catch((e) => e);
+  delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
+  check("preview write succeeds next to symlink loops", !!lf.image && existsSync(lf.image), lf?.code ?? lf);
+  check("cache info/prune do not throw on symlink loops", errCode(() => { api.cache.info(P); api.cache.prune(P); }) === undefined);
+  for (const n of ["loop", "loopa", "loopb"]) rmSync(join(prev, n), { force: true });
+
+  // an area that is itself a symlink to somewhere outside: fail closed
+  for (const [name, real, link] of [["previews", prev + ".real", prev], ["cache", cache + ".real", cache]] as const) {
+    plant();
+    renameSync(link, real);
+    symlinkSync(outside, link);
+    const codes = [errCode(() => api.cache.prune(P)), errCode(() => api.cache.prune(P, { maxMb: 0 })), errCode(() => api.cache.info(P))];
+    check(`${name}/ symlinked outside: prune and info fail closed, sentinels survive`, codes.every((c) => c === "unsafe_cache_dir") && intact(), codes);
+    unlinkSync(link);
+    renameSync(real, link);
+  }
+
+  // a UI play draft in flight (this pid in the .part-<pid>- name) survives a cap and a prune
+  mkdirSync(join(prev, "ui"), { recursive: true });
+  const draft = join(prev, "ui", `play-r1-0.00-1.00.part-${process.pid}-abcd1234.mp4`);
+  writeFileSync(draft, Buffer.alloc(100_000)); utimesSync(draft, week - 5, week - 5);
+  process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.05";
+  await api.frame(P, 1.5, { scale: 0.5 });
+  delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
+  api.cache.prune(P, { maxMb: 0 });
+  check("in-flight draft survives the cap and prune", existsSync(draft));
+}
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all jobs checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });

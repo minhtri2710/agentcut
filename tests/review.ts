@@ -1,7 +1,7 @@
 // Regression checks for the review of the colour/audio/vision/ui/verify round: one block per fixed bug.
 // Run: bun tests/review.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -126,10 +126,15 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
     const final = join(P, "previews", "ui", `play-r${rev}-0.00-1.00.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
+    const uiDir = join(P, "previews", "ui"), parts = () => existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.includes(".part")) : [];
+    let part: string[] = [], pruned = false;
+    for (let i = 0; i < 3000 && !part.length; i++) { part = parts(); if (!part.length) await new Promise((ok) => setTimeout(ok, 5)); }
+    if (part.length) { api.cache.prune(P); pruned = true; } // a prune while the render runs must not take its draft
+    check("draft is named .part-<pid>- (protected as in flight) and survives a prune", pruned && part.every((f) => f.includes(`.part-${process.pid}-`)) && parts().length > 0, { part, now: parts() });
     let done: any = null;
     for (let i = 0; i < 300 && !done; i++) { const s: any = await fetch(`${ui.url}api/jobs/${a.id}`).then((r) => r.json()); if (s.status !== "running") done = s; else await new Promise((ok) => setTimeout(ok, 100)); }
     const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", final], { encoding: "utf8" });
-    check("finished preview is complete and renamed into place", done?.status === "done" && Math.abs(Number(probe.stdout) - 1) < 0.1 && !existsSync(final.replace(/\.mp4$/, ".part.mp4")), { done, d: probe.stdout });
+    check("finished preview is complete and renamed into place", done?.status === "done" && Math.abs(Number(probe.stdout) - 1) < 0.1 && parts().length === 0, { done, d: probe.stdout, left: parts() });
     const again = await post({ play: true, start: 0, end: 1 });
     check("next request is a cache hit", again.status === "done" && again.url === done.url);
   } finally { ui.server.closeAllConnections?.(); await new Promise((ok) => ui.server.close(ok)); }

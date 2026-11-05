@@ -117,8 +117,8 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); return job; }
     if (out && playing.has(out)) { jobs.delete(id); return playing.get(out)!; } // same range already rendering: share that job
-    // play renders go to a .part file and are renamed when complete, so the cache check above never serves a half-written file
-    const part = out?.replace(/\.mp4$/, ".part.mp4");
+    // play renders go to a .part-<pid>- file (the name cache.ts treats as in flight) and are renamed when complete, so the cache check above never serves a half-written file
+    const part = out?.replace(/\.mp4$/, `.part-${process.pid}-${id}.mp4`);
     if (out) playing.set(out, job);
     let last = 0;
     api.render(root, {
