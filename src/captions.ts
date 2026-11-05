@@ -36,6 +36,16 @@ export function phrasesToWords(phrases: CWord[]): CWord[] {
   return words;
 }
 
+/** Word timings for a script read aloud: sentences (else clauses) map 1:1 onto detected speech segments when the counts
+ * agree, so captions pause with the voice; otherwise the words spread over first..last speech. */
+export function scriptToWords(text: string, speech: number[][]): CWord[] {
+  for (const re of [/(?<=[.!?…])\s+/, /(?<=[.!?…,;:])\s+/]) {
+    const parts = text.trim().split(re).filter(Boolean);
+    if (parts.length > 1 && parts.length === speech.length) return phrasesToWords(parts.map((p, i) => ({ text: p, start: speech[i][0], end: speech[i][1] })));
+  }
+  return phrasesToWords([{ text, start: speech[0][0], end: speech[speech.length - 1][1] }]);
+}
+
 export function captionWords(c: Dict): CWord[] {
   if (c.words?.length)
     return c.words.map((w: any) => ({ text: String(w.text ?? w.word ?? w.w ?? "").trim(), start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) }))

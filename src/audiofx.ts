@@ -33,11 +33,11 @@ export const NORMALIZE_LUFS = -16;
 export const DENOISE_STRENGTH = 0.5;
 
 export const AUDIO_FX_DOC = {
-  denoise: "true or strength 0..1 (0.5): FFT noise reduction; the noise floor is measured per clip",
+  denoise: "true or strength 0..1 (0.5): FFT noise reduction + soft expander in pauses; the noise floor is measured per clip",
   eq: `preset or list of presets/bands: ${Object.keys(EQ_PRESETS).join("|")} | {type: ${Object.keys(EQ_BANDS).join("|")}, f, gain, q, intensity}`,
   compressor: `${Object.keys(COMPRESSORS).join("|")} or {type: preset (gentle), threshold dB, ratio, attack ms, release ms, makeup dB, knee}`,
   pan: "-1 (left) .. 0 .. 1 (right) stereo balance",
-  pitch: "semitones -12..12; duration unchanged",
+  pitch: "semitones -12..12; duration unchanged (resample + time-stretch: formants shift with it: large shifts sound chipmunk/giant)",
   normalize: `true (${NORMALIZE_LUFS} LUFS) or target LUFS -40..-5: loudness gain before volume`,
 };
 
@@ -128,10 +128,12 @@ export function pitchFilters(semitones: unknown, sr: number): string[] {
   return [`asetrate=${rate}`, `aresample=${sr}`, ...atempo(sr / rate)];
 }
 
-/** Two afftdn stages (white-noise model, then a model that follows coloured noise) with the floor set just above the measured noise. */
+/** Two afftdn stages (white-noise model, then a model that follows coloured noise) with the floor set just above the measured noise,
+ * then a soft expander 6 dB above the measured floor: pauses lose the residual (musical) noise, speech passes untouched. */
 export function denoiseFilters(strength: number, floorDb: number): string[] {
-  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)).toFixed(1);
-  return [`afftdn=nr=${(6 + 24 * strength).toFixed(1)}:nf=${nf}`, `afftdn=nt=v:nr=${(12 + 12 * strength).toFixed(1)}:nf=${nf}`];
+  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)), lin = (db: number) => (10 ** (db / 20)).toFixed(5);
+  return [`afftdn=nr=${(6 + 24 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`, `afftdn=nt=v:nr=${(12 + 12 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`,
+    `agate=threshold=${lin(Math.min(-20, floorDb + 6))}:ratio=2:range=${lin(-6 - 12 * strength)}:attack=10:release=250`];
 }
 
 export const denoiseStrength = (v: unknown) => (v === true ? DENOISE_STRENGTH : isNum(v) && v > 0 ? v : 0);

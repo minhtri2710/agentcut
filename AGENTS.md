@@ -89,7 +89,7 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 ## Audio (pro)
 Clip fields (video/audio): denoise true|0..1 · eq "voice_clarity"|"low_cut"|"de_ess" or bands [{type:"high_pass",f:80},{type:"peak",f:3000,gain:3,q:1},
 low_pass, low_shelf, high_shelf, de_ess] · compressor "voice"|"music"|"gentle" or {type,threshold,ratio,attack,release,makeup,knee}
-· pan -1..1 · pitch semitones -12..12 (duration unchanged) · normalize true (-16 LUFS) | LUFS. The final mix is still loudness-normalised
+· pan -1..1 · pitch semitones -12..12 (duration unchanged; formants shift with it: large shifts sound chipmunk/giant) · normalize true (-16 LUFS) | LUFS. The final mix is still loudness-normalised
 (settings.loudness, -14) after all of this.
 {"op":"enhance_voice","track":"voice"}             denoise + high-pass + voice EQ + de-ess + compressor + normalize for every clip on the track
 {"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip)

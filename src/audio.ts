@@ -96,7 +96,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
     const ch = [`atrim=start=${cin}:duration=${dur * speed}`, "asetpts=PTS-STARTPTS"];
     if (c.reverse) ch.push("areverse");
     ch.push(...atempo(speed), `aresample=${sr}`, "aformat=sample_fmts=fltp:channel_layouts=stereo");
-    if (fx("pitch")) ch.push(...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`);
+    if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples
     const dn = FX.denoiseStrength(fx("denoise"));
     if (dn) {
       const floor = FX.noiseFloor(s.path, cin, dur * speed);
