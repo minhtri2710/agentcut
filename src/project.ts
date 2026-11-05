@@ -1,6 +1,7 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
 import { randomBytes } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
 import {
@@ -40,27 +41,40 @@ function createExcl(file: string, body: string): boolean {
   catch (e: any) { if (e.code === "EEXIST") return false; throw e; }
   finally { rmSync(tmp, { force: true }); }
 }
-/** `file` (content `held`) belongs to a dead process. Only the one process that creates `<file>.reclaim-<token>` may delete it,
- *  after re-reading that it still carries that token, so a slow reclaimer can never delete a newer lock (the old
- *  check-then-unlink race). A claim left by a reclaimer that crashed is itself reclaimed the same way. */
+/** Lock and claim files hold "<pid> <id> <host>": id is 16 hex chars, unique per acquisition; the host goes last because a
+ *  hostname may contain spaces. Anything else is not something AgentCut wrote and is never reclaimed. */
+const LOCK_FORMAT = /^(\d+) ([0-9a-f]{16}) (.+)$/;
+const HOST = hostname();
+/** the holder is provably dead: same host and no such pid. Malformed content and other hosts (pids of another pid
+ *  namespace or machine mean nothing here) are never stale: fail closed, the waiter gets `locked`. */
+function staleHolder(content: string) {
+  const m = LOCK_FORMAT.exec(content);
+  return m && m[3] === HOST && !alive(Number(m[1])) ? { id: m[2] } : null;
+}
+/** `file` (content `held`) belongs to a dead process. Only the one process that creates `<file>.reclaim-<id>` may delete it,
+ *  after re-reading that it still carries that content, so a slow reclaimer can never delete a newer lock (the old
+ *  check-then-unlink race). The claim path is built from the validated id only. A claim left by a reclaimer that crashed is
+ *  itself reclaimed the same way; a claim whose owner is alive (or unjudgeable) blocks, and the caller times out. */
 export function reclaim(file: string, held: string, token: string) {
-  const claim = `${file}.reclaim-${held.split(" ")[1]}`;
+  const stale = staleHolder(held);
+  if (!stale) return;
+  const claim = `${file}.reclaim-${stale.id}`;
   if (createExcl(claim, token)) {
     try { if (readOr(file) === held) rmSync(file); } finally { rmSync(claim, { force: true }); }
     return;
   }
   const c = readOr(claim);
-  if (c !== null && !alive(Number(c.split(" ")[0]))) reclaim(claim, c, token);
+  if (c !== null) reclaim(claim, c, token);
 }
 
-/** Cross-process mutex on `file`, whose content is "<pid> <token>" (token unique per acquisition). */
+/** Cross-process mutex on `file`, whose content is "<pid> <id> <host>" (id unique per acquisition). Every iteration that
+ *  does not acquire the lock checks the deadline and sleeps, so a reclaim that cannot progress never spins. */
 export function withLock<T>(file: string, fn: () => T, waitMs = LOCK_WAIT_MS): T {
   mkdirSync(dirname(file), { recursive: true });
-  const token = `${process.pid} ${randomBytes(8).toString("hex")}`, until = Date.now() + waitMs;
+  const token = `${process.pid} ${randomBytes(8).toString("hex")} ${HOST}`, until = Date.now() + waitMs;
   while (!createExcl(file, token)) {
     const held = readOr(file);
-    if (held === null) continue; // released meanwhile
-    if (!alive(Number(held.split(" ")[0]))) { reclaim(file, held, token); continue; }
+    if (held !== null) reclaim(file, held, token);
     if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${file}`);
     Atomics.wait(SLEEP, 0, 0, 5);
   }

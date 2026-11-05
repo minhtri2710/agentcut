@@ -3,7 +3,7 @@
 // The vision helper is a fake `uv` (AGENTCUT_UV) so this runs offline. Run: bun tests/jobs.ts [--keep]   (needs ffmpeg)
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -21,6 +21,9 @@ const worker = resolve(import.meta.dir, "lock-worker.ts");
 const run = (...a: string[]) => new Promise<number>((res) => spawn(process.execPath, [worker, ...a], { stdio: "inherit" }).on("close", (c) => res(c ?? 1)));
 /** pid of a process that has exited */
 const deadPid = () => { const r = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }); return Number(r.stdout); };
+
+/** a lock body as AgentCut writes it: "<pid> <16 hex> <host>" */
+const lockBody = (pid: number, id = "a".repeat(16), host = hostname()) => `${pid} ${id} ${host}`;
 
 // ---------------------------------------------------------------- lock
 console.log("project lock (concurrent processes)");
@@ -45,7 +48,7 @@ console.log("project lock (concurrent processes)");
   check("no lock or reclaim tokens left over", readdirSync(D2).join() === "counter", readdirSync(D2));
 
   // a reclaimer that itself crashed mid-reclaim (token left, lock still stale) must not wedge the project
-  writeFileSync(join(D2, "lock"), `${deadPid()} stale-token`);
+  writeFileSync(join(D2, "lock"), lockBody(deadPid()));
   await run("claim", join(D2, "lock"));
   const before = readdirSync(D2).length;
   const codes3 = await Promise.all(Array.from({ length: 4 }, () => run("count", D2, "5")));
@@ -54,14 +57,63 @@ console.log("project lock (concurrent processes)");
   // the old race: reclaimer B read lock L (dead holder) and stalls; A reclaims L and takes a NEW lock; B then resumes its
   // reclaim with the stale view. The old check-then-unlink deleted A's live lock here.
   const { reclaim, withLock } = await import("../src/project.ts");
-  const L = join(tmp, "lock3", "lock"), stale = `${deadPid()} old`;
+  const L = join(tmp, "lock3", "lock"), stale = lockBody(deadPid());
   mkdirSync(join(tmp, "lock3"));
   writeFileSync(L, stale);
   withLock(L, () => {
     const mine = readFileSync(L, "utf8");
-    reclaim(L, stale, `${process.pid} late`);
+    reclaim(L, stale, lockBody(process.pid, "b".repeat(16)));
     check("a late reclaimer with a stale view cannot delete a live lock", readFileSync(L, "utf8") === mine && mine !== stale && readdirSync(join(tmp, "lock3")).join() === "lock");
   });
+  // reclaim that cannot make progress (claim held by a live process that is not reclaiming: pid reuse, another user's
+  // pid, a stopped reclaimer) must still give up after waitMs with `locked` instead of spinning. Run in a child under a
+  // wall-clock kill so a regression fails this check instead of hanging the suite.
+  {
+    const D4 = join(tmp, "lock4"), L4 = join(D4, "lock"), id = "d".repeat(16);
+    mkdirSync(D4);
+    writeFileSync(L4, lockBody(deadPid(), id));
+    writeFileSync(`${L4}.reclaim-${id}`, lockBody(process.pid, "e".repeat(16)));
+    const child = spawn(process.execPath, [worker, "wait", L4, "300"], { stdio: ["ignore", "pipe", "inherit"] });
+    let out = "", killed = false;
+    child.stdout.on("data", (d) => (out += d));
+    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, 8000);
+    await new Promise((r) => child.on("close", r));
+    clearTimeout(timer);
+    const r = out ? JSON.parse(out) : {};
+    check("claim held by a live non-reclaimer: waiter gets `locked` within a bound (no spin)", !killed && r.code === "locked" && r.ms >= 250 && r.ms < 5000, { killed, out });
+    check("...and the lock and claim are left alone", existsSync(L4) && existsSync(`${L4}.reclaim-${id}`));
+  }
+
+  // locks AgentCut did not write in this format, or whose holder cannot be judged (other host), are never reclaimed
+  {
+    const D5 = join(tmp, "lock5"), L5 = join(D5, "lock"), code = (fn: () => unknown) => { try { fn(); } catch (e: any) { return e.code; } };
+    mkdirSync(D5);
+    const dead = deadPid();
+    const cases: Record<string, string> = {
+      garbage: "garbage",
+      "pid only": String(dead),
+      "old <pid> <token> format": `${dead} ${"a".repeat(16)}`,
+      "path-like id": `${dead} ../../escape ${hostname()}`,
+      "non-hex id": `${dead} ${"z".repeat(16)} ${hostname()}`,
+      "trailing newline": `${lockBody(dead)}\n`,
+      "dead pid on another host": lockBody(dead, "a".repeat(16), `${hostname()}-other host`),
+    };
+    for (const [name, body] of Object.entries(cases)) {
+      writeFileSync(L5, body);
+      const c = code(() => withLock(L5, () => {}, 200));
+      check(`lock '${name}': locked, file kept, nothing created beside it`, c === "locked" && readFileSync(L5, "utf8") === body && readdirSync(D5).join() === "lock", { c, files: readdirSync(D5) });
+    }
+    // a stale lock whose reclaim claim is malformed / from another host is not reclaimed either
+    const id = "f".repeat(16);
+    for (const [name, body] of [["malformed", "crashed"], ["other host", lockBody(deadPid(), "c".repeat(16), "elsewhere")]] as const) {
+      writeFileSync(L5, lockBody(deadPid(), id));
+      writeFileSync(`${L5}.reclaim-${id}`, body);
+      const c = code(() => withLock(L5, () => {}, 200));
+      check(`stale lock with a ${name} claim: locked, both files kept`, c === "locked" && existsSync(L5) && readFileSync(`${L5}.reclaim-${id}`, "utf8") === body, c);
+      rmSync(`${L5}.reclaim-${id}`, { force: true });
+    }
+    rmSync(L5, { force: true });
+  }
 }
 
 // ---------------------------------------------------------------- media + fake uv
@@ -232,6 +284,27 @@ console.log("cache containment (symlinks)");
   delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
   api.cache.prune(P, { maxMb: 0 });
   check("in-flight draft survives the cap and prune", existsSync(draft));
+
+  // a directory swapped for a symlink after the walk, before the delete: the per-delete realpath recheck refuses it.
+  // The walk has no hook, so the swap runs from inside the in-flight probe (process.kill(pid, 0)) that prune makes for
+  // this `.part-<dead pid>-` file right after listing it.
+  plant();
+  const swap = join(prev, "swap"), swapReal = swap + ".real", name = `x.part-${deadPid()}-1.bin`;
+  mkdirSync(swap);
+  writeFileSync(join(swap, name), Buffer.alloc(1000));
+  writeFileSync(join(outside, name), Buffer.alloc(1000));
+  const kill = process.kill;
+  let swapped = false;
+  process.kill = ((pid: number, sig?: any) => {
+    if (!swapped) { swapped = true; renameSync(swap, swapReal); symlinkSync(outside, swap); }
+    return kill.call(process, pid, sig);
+  }) as typeof process.kill;
+  let swapCode: string | undefined;
+  try { api.cache.prune(P); } catch (e: any) { swapCode = e.code; } finally { process.kill = kill; }
+  check("dir swapped for a symlink after the walk: prune refuses, the outside file survives", swapped && swapCode === "unsafe_cache_dir" && intact() && existsSync(join(outside, name)) && existsSync(join(swapReal, name)), { swapped, swapCode });
+  unlinkSync(swap);
+  rmSync(swapReal, { recursive: true, force: true });
+  rmSync(join(outside, name), { force: true });
 }
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all jobs checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
