@@ -98,6 +98,57 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   return { image: out, times: ts, duration: T };
 }
 
+const inspectMod = async () => { await loadCanvas(); return import("./inspect.ts"); };
+
+/** Audio as an image (waveform per track + rendered mix, ruler, clip boundaries, markers, optional spectrogram) + findings. */
+export async function audioCheck(project: string | undefined, o: { source?: string; spectrogram?: boolean; start?: number | string; end?: number | string; width?: number; minSilence?: number; out?: string } = {}) {
+  const p = o.source ? null : openProject(project);
+  const tl = p ? p.load() : null;
+  if (p && tl) requireValid(p, tl);
+  await loadCanvas();
+  const { inspectAudio } = await import("./inspect-audio.ts");
+  const res = await inspectAudio(p && tl ? p.absolutized(tl) : null, {
+    source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence,
+    start: o.start !== undefined ? M.parseTime(o.start) : undefined, end: o.end !== undefined ? M.parseTime(o.end) : undefined });
+  const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p ? join(p.root, `previews/audio-${Date.now()}.png`) : presolve(`${o.source}.audio.png`);
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, res.image);
+  const { image, ...rest } = res;
+  return { image: out, ...rest };
+}
+
+/** Dense frame strips: one row per transition (default) or per given window, so motion can be judged from stills. */
+export async function motion(project: string | undefined, o: { start?: number | string; end?: number | string; frames?: number; pad?: number; out?: string; tileWidth?: number } = {}) {
+  const p = openProject(project);
+  const tl = p.load();
+  requireValid(p, tl);
+  const { motionStrips, transitionWindows } = await inspectMod();
+  const at = p.absolutized(M.resolve(tl));
+  const windows = o.start !== undefined || o.end !== undefined
+    ? [{ label: "range", start: M.parseTime(o.start ?? 0), end: o.end !== undefined ? M.parseTime(o.end) : M.totalDuration(at) }]
+    : transitionWindows(at, o.pad ?? 0.15);
+  const r = await motionStrips(at, p.root, windows, { frames: o.frames, tileWidth: o.tileWidth });
+  const base = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : join(p.root, `previews/motion-${Date.now()}.jpg`);
+  const images = r.images.map((buf, i) => {
+    const f = i ? base.replace(/(\.[^.]+)?$/, `-${i + 1}$1`) : base;
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, buf);
+    return f;
+  });
+  return { images, strips: r.strips };
+}
+
+/** Editorial lint with times: unsafe/short text, shot lengths, off-beat cuts, black frames + validation warnings. */
+export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean } = {}) {
+  const p = openProject(project);
+  const tl = p.load();
+  const issues = p.validate(tl);
+  requireValid(p, tl);
+  const { review: rv } = await inspectMod();
+  const beats = typeof o.beats === "string" && o.beats !== "music" ? o.beats.split(",").map((x) => M.parseTime(x)) : o.beats as number[] | "music" | undefined;
+  return rv(p.absolutized(M.resolve(tl)), p.root, { ...o, beats, issues });
+}
+
 const INTERCHANGE: Record<string, "fcpxml" | "otio"> = { ".fcpxml": "fcpxml", ".otio": "otio" };
 
 /** Hand the edit to a human editor: FCPXML (Final Cut Pro) or OpenTimelineIO (DaVinci Resolve, Premiere, Avid...). */
