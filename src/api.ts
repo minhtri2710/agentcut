@@ -1,12 +1,14 @@
 // High-level API shared by the CLI and the MCP server. Every function returns JSON-able objects.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve as presolve } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
+import * as AFX from "./audiofx.ts";
 import { loadCanvas } from "./canvas.ts";
 import * as FB from "./feedback.ts";
 import { listFonts } from "./fonts.ts";
 import { LOOKS, probe as probeMedia } from "./media.ts";
 import * as M from "./model.ts";
+import * as SUB from "./subtitles.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
@@ -128,9 +130,25 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
   return ex(p.absolutized(M.resolve(tl)), format, out);
 }
 
+/** Write the captions clips (timeline times, the pages the renderer shows) as .srt or .vtt. ids limits it to some clips. */
+export function exportCaptions(project: string | undefined, o: { out?: string; format?: string; ids?: string[] } = {}) {
+  const p = openProject(project);
+  const tl = p.load();
+  requireValid(p, tl);
+  const ext = o.out ? extname(o.out).toLowerCase() : "";
+  const format = (o.format ?? SUB.SUB_FORMATS[ext] ?? "srt").toLowerCase();
+  if (format !== "srt" && format !== "vtt") throw new M.EditError(`unknown subtitle format '${o.format ?? ext}'`, "bad_format", "use .srt or .vtt");
+  const cues = SUB.captionCues(p.absolutized(M.resolve(tl)), o.ids);
+  if (!cues.length) throw new M.EditError(o.ids ? `no caption cues in ${o.ids.join(", ")}` : "the timeline has no captions clips", "empty", "add captions first: add_captions words=[...] | srt=... | transcribe=...");
+  const out = o.out ? presolve(o.out) : p.defaultOutput(`.${format}`);
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, SUB.formatCues(cues, format));
+  return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
+}
+
 export async function render(project: string | undefined, o: {
   out?: string; start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean;
-  sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; progress?: (d: number, n: number) => void;
+  sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; progress?: (d: number, n: number) => void;
 } = {}) {
   if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
   const p = openProject(project);
@@ -140,6 +158,12 @@ export async function render(project: string | undefined, o: {
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(".mp4", o.draft ? "draft" : "");
   const start = M.parseTime(o.start ?? 0);
+  let cues: SUB.Cue[] = [];
+  if (o.subtitles) { // checked before rendering: wrong container or no captions fails fast
+    SUB.embedCodec(out);
+    cues = SUB.captionCues(p.absolutized(M.resolve(M.clone(tl))));
+    if (!cues.length) throw new M.EditError("subtitles=true but the timeline has no captions clips", "empty", "add captions first, or drop subtitles");
+  }
   const { contactSheet } = await renderMod();
   const { renderVideo } = await import("./encode.ts");
   const res: M.Dict = await renderVideo(p.absolutized(tl), p.root, out, {
@@ -147,6 +171,12 @@ export async function render(project: string | undefined, o: {
     hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha,
   });
   if (res.audio_only) return res;
+  if (o.subtitles) {
+    const [t0, t1] = res.range as [number, number];
+    const inRange = SUB.cuesInRange(cues, t0, t1);
+    SUB.embedSubtitles(out, inRange);
+    res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
+  }
   FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
     encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
     effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
@@ -183,6 +213,8 @@ export function capabilities() {
     output_formats: [".mp4 (H.264; codec=hevc for H.265)", ".mov (ProRes 422; codec=prores_4444 keeps alpha)", ".webm (VP9, alpha ok)", ".mkv", ".gif",
       ".wav/.mp3/.m4a/.aac/.flac (audio only)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
+    subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
+    audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
     ops: Object.keys(OPS),
   };
 }

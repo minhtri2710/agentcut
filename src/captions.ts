@@ -56,3 +56,12 @@ export function captionPages(words: CWord[], maxWords = 3, maxGap = 0.6): number
   return pages;
 }
 
+
+/** [start, end] (clip-local seconds) each page is on screen: until the next page starts, at most 0.6 s past its last word (0.3 s for the last page). */
+export function pageSpans(words: CWord[], pages: number[][]): [number, number][] {
+  return pages.map((pg, pi) => {
+    const s = words[pg[0]].start, e = words[pg[pg.length - 1]].end;
+    const nxt = pi + 1 < pages.length ? words[pages[pi + 1][0]].start : null;
+    return [s, Math.max(e, nxt !== null ? Math.min(nxt, e + 0.6) : e + 0.3)];
+  });
+}

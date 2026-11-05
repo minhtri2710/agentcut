@@ -2,6 +2,7 @@
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
+import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
@@ -13,6 +14,7 @@ import type { Project } from "./project.ts";
 import { captionWords, phrasesToWords } from "./captions.ts";
 import { registerEditOps } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
+import { registerAudioOps } from "./ops-audio.ts";
 
 const PREFIX: Record<string, string> = { video: "vid", image: "img", text: "txt", captions: "cap", shape: "shp", color: "col", audio: "aud", gap: "gap", lottie: "lot" };
 type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict;
@@ -87,7 +89,7 @@ op("add_track", "Add a track. Later tracks draw on top.",
     const id = a.id || newId(tl, "track");
     if (tl.tracks.some((t) => t.id === id)) throw new EditError(`track '${id}' already exists`, "exists");
     const tr: Track = { id, kind: a.kind ?? "video", clips: [] };
-    for (const k of ["magnetic", "role", "duck", "volume", "muted", "hidden", "name"]) if (k in a) tr[k] = a[k];
+    for (const k of ["magnetic", "role", "duck", "volume", "muted", "hidden", "name", ...AUDIO_FX_KEYS]) if (k in a) tr[k] = a[k];
     let idx: number;
     if (a.above) idx = tl.tracks.indexOf(findTrack(tl, a.above)) + 1;
     else if (a.below) idx = tl.tracks.indexOf(findTrack(tl, a.below));
@@ -596,6 +598,7 @@ export interface OpHelpers {
 const helpers: OpHelpers = { op, PREFIX, parseAt, place, resolveRef, ensureTrack, splitAt, trackEnd, addClip, importAsset };
 registerEditOps(helpers);
 registerCompoundOps(helpers);
+registerAudioOps(helpers);
 
 // ---------------------------------------------------------------- runner
 export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict[]] {

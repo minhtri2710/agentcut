@@ -74,6 +74,18 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
      regroup. Nested audio is mixed (compound volume/muted apply) at compound speed 1.
 
+## Audio (pro)
+Clip fields (video/audio): denoise true|0..1 · eq "voice_clarity"|"low_cut"|"de_ess" or bands [{type:"high_pass",f:80},{type:"peak",f:3000,gain:3,q:1},
+low_pass, low_shelf, high_shelf, de_ess] · compressor "voice"|"music"|"gentle" or {type,threshold,ratio,attack,release,makeup,knee}
+· pan -1..1 · pitch semitones -12..12 (duration unchanged) · normalize true (-16 LUFS) | LUFS. The final mix is still loudness-normalised
+(settings.loudness, -14) after all of this.
+{"op":"enhance_voice","track":"voice"}             denoise + high-pass + voice EQ + de-ess + compressor + normalize for every clip on the track
+{"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip)
+{"op":"update_track","id":"music","set":{"eq":"low_cut","compressor":"music","pan":-0.2}}   track = bus: eq/compressor/pan process the
+  track mix once; denoise/normalize/pitch on a track apply to each of its clips that does not set its own.
+Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) writes the captions clips in timeline time;
+  render subtitles=true (CLI --subtitles) adds a soft subtitle track to .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt).
+
 ## Vocabulary
 - transitions: crossfade, dip_black, dip_white, flash, glitch, zoom, zoom_blur, spin, circle, blur, slide_*, push_*, wipe_*
 - enter/exit: fade, pop, bounce, flip, slide_*, zoom_in, zoom_out, wipe_*, blur, drop, spin, typewriter (text), words (text)

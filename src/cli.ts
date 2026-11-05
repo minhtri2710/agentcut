@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
 import { VERSION } from "./version.ts";
-const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached"]);
+const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -15,7 +15,8 @@ Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · ad
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides]
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
-                    [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--workers N]
+                    [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N]
+             captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
 Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
@@ -102,13 +103,15 @@ export async function main(argv = process.argv.slice(2)) {
       case "validate": { const v = api.validate(P); emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale), guides: f.guides }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
+      case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
+        if (f.format === "srt" || f.format === "vtt" || /\.(srt|vtt)$/i.test(f.output ?? "")) { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
         let last = 0;
         res = await api.render(P, {
           out: f.output, start: f.from, end: f.to, scale: num(f.scale), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
-          workers: num(f.workers), fast: f.fast, codec: f.codec, alpha: f.alpha,
+          workers: num(f.workers), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles,
           progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } },
         });
         break;
