@@ -59,7 +59,7 @@ progress{width:100%}
 </header>
 <div id="main">
   <div id="viewer"><img id="frame" alt="preview"><video id="video" style="display:none" controls></video>
-    <div id="vbar"><button id="play">Play</button><span id="time">0.00 s</span><span class="mut" id="vstat"></span></div></div>
+    <div id="vbar"><button id="play">Play</button><button id="prepare" style="display:none">Prepare</button><span id="time">0.00 s</span><span class="mut" id="vstat"></span></div></div>
   <div id="side">
     <div class="mut" id="selinfo">Select a clip on the timeline.</div>
     <textarea id="insp" spellcheck="false" placeholder="clip JSON"></textarea>
@@ -100,6 +100,7 @@ function api(path, body) {
 }
 function show(kind, text) { var m = $("msg"); m.className = kind; m.textContent = text; if (kind === "ok") setTimeout(function () { if (m.textContent === text) m.className = ""; }, 2500); }
 function fail(e) {
+  if (e && e.code === "not_prepared") $("prepare").style.display = "";
   var s = (e.code ? "[" + e.code + "] " : "") + (e.message || e) + (e.hint ? "\\nhint: " + e.hint : "");
   (e.issues || []).forEach(function (i) { s += "\\n- " + i.path + ": " + i.message + (i.hint ? " (" + i.hint + ")" : ""); });
   show("err", s);
@@ -286,8 +287,11 @@ function pump() {
   var t0 = performance.now();
   fetch(url).then(function (r) { if (!r.ok) return r.json().then(function (j) { throw j.error; }); return r.blob(); }).then(function (b) {
     var old = $("frame").src; $("frame").src = URL.createObjectURL(b); if (old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
-    $("vstat").textContent = Math.round(performance.now() - t0) + " ms/frame";
-  }, function (e) { $("vstat").textContent = e && e.message ? e.message : "frame failed"; }).then(function () { busy = false; pump(); });
+    $("vstat").textContent = Math.round(performance.now() - t0) + " ms/frame"; if (!prepJob) $("prepare").style.display = "none";
+  }, function (e) {
+    $("vstat").textContent = e && e.message ? e.message + (e.hint ? " (" + e.hint + ")" : "") : "frame failed";
+    if (e && e.code === "not_prepared") $("prepare").style.display = "";
+  }).then(function () { busy = false; pump(); });
 }
 var playJob = null, playStart = 0;
 /** play = draft-render [playhead, end of the visible range] once per revision, then play it in <video> */
@@ -296,6 +300,12 @@ $("play").addEventListener("click", function () {
   var sc = $("scroll"), end = Math.min(total(), Math.max(t + 1, (sc.scrollLeft + sc.clientWidth - LABEL) / pps));
   playStart = t; $("play").textContent = "Preparing…";
   api("/api/render", { play: true, start: t, end: end }).then(function (j) { playJob = j.id; onJob(j); }, function (e) { $("play").textContent = "Play"; fail(e); });
+});
+var prepJob = null;
+/** run prepare (mattes, vision analyses, pending requests) as a server job; the viewer redraws when it is done */
+$("prepare").addEventListener("click", function () {
+  $("prepare").disabled = true; $("prepare").textContent = "Preparing…";
+  api("/api/prepare", {}).then(function (j) { prepJob = j.id; onJob(j); }, function (e) { $("prepare").disabled = false; $("prepare").textContent = "Prepare"; fail(e); });
 });
 function stopPlay() { var v = $("video"); if (v.style.display === "none") return; v.pause(); v.style.display = "none"; $("frame").style.display = ""; $("play").textContent = "Play"; requestFrame(); }
 $("video").addEventListener("timeupdate", function () { t = playStart + $("video").currentTime; movePlayhead(); });
@@ -444,7 +454,11 @@ $("render").addEventListener("click", function () {
   api("/api/render", { draft: $("draft").checked }).then(function (j) { renderJob = j.id; onJob(j); }, function (e) { $("render").disabled = false; $("out").innerHTML = ""; fail(e); });
 });
 function onJob(j) {
-  if (j.id === playJob) {
+  if (j.id === prepJob) {
+    if (j.status === "running") { $("prepare").textContent = "Preparing " + Math.round(j.progress * 100) + "%"; return; }
+    prepJob = null; $("prepare").disabled = false; $("prepare").textContent = "Prepare";
+    if (j.status === "failed") fail(j.error); else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
+  } else if (j.id === playJob) {
     if (j.status === "running") $("play").textContent = "Preparing " + Math.round(j.progress * 100) + "%";
     else if (j.status === "failed") { playJob = null; $("play").textContent = "Play"; fail(j.error); }
     else { playJob = null; var v = $("video"); v.src = j.url; v.style.display = ""; $("frame").style.display = "none"; $("play").textContent = "Stop"; v.play(); }

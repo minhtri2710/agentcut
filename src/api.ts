@@ -244,8 +244,9 @@ export async function render(project: string | undefined, o: {
     if (!cues.length) throw new M.EditError("subtitles=true but the timeline has no captions clips", "empty", "add captions first, or drop subtitles");
   }
   const { contactSheet } = await renderMod();
-  const { renderVideo } = await import("./encode.ts");
-  const res: M.Dict = await renderVideo(drawable(p, tl), p.root, out, {
+  const { renderVideo, AUDIO_FORMATS } = await import("./encode.ts");
+  // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
+  const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
     start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
     hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha,
   });

@@ -10,7 +10,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
+import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
 
 export interface Skipped { id: string; type: string; reason: string }
 export type InterchangeFormat = "fcpxml" | "otio";
@@ -227,6 +227,10 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     const tr = tracks[ti];
     if (ti === mi) { videoLanes.push({ track: tr, lane: 0, items: spine.entries }); continue; }
     for (const [k, items] of (lanesOf.get(ti) ?? []).entries()) ((tr.kind ?? "video") === "audio" ? audioLanes : videoLanes).push({ track: tr, lane: k, items });
+  }
+  for (const c of allClips(tracks)) {
+    const ops = Object.keys(c.pending ?? {});
+    if (ops.length) skipped.push({ id: c.id, type: "pending", reason: `${ops.join(", ")} requested but prepare has not run: its keyframes are not in the export (run prepare, then export again)` });
   }
   for (const [k, v] of Object.entries(tl.settings || {}))
     if (k === "effects" && Array.isArray(v) && v.length) skipped.push({ id: "settings", type: "effects", reason: "whole-frame effects are not exported" });

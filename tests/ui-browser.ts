@@ -3,7 +3,7 @@
 // edit landed in project.json. Skips (exit 0) when Chrome is not installed.
 // Run: bun tests/ui-browser.ts [--keep]   (needs ffmpeg; CHROME=/path/to/chrome overrides the binary)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -186,6 +186,25 @@ try {
   await js(`$("sheet").click()`);
   check("contact sheet lands in previews/ui/", await until("sheet", `document.querySelector("#out img") && document.querySelector("#out img").src.indexOf("/files/previews/ui/") > 0`, 30_000));
   check("sheet image loads", await until("sheet img", `document.querySelector("#out img").naturalWidth > 0`));
+
+  console.log("not_prepared");
+  const fake = join(tmp, "fake-uv.mjs");
+  writeFileSync(fake, `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const job = JSON.parse(process.argv.at(-1));
+const vf = "scale=" + job.w + ":" + job.h + ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,W/2),0,255)'";
+const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", job.path, "-an", "-vf", vf, "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov", job.out], { encoding: "utf8" });
+if (r.status) { process.stderr.write(r.stderr); process.exit(1); }
+process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
+`);
+  chmodSync(fake, 0o755);
+  process.env.AGENTCUT_UV = fake;
+  await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb1" }, { op: "remove_background", id: "rb1" }]);
+  check("viewer shows not_prepared with its hint and a Prepare action", await until("not_prepared", `$("vstat").textContent.indexOf("not prepared") >= 0 && $("vstat").textContent.indexOf("render_status") > 0 && $("prepare").style.display === ""`),
+    await js(`[$("vstat").textContent, $("prepare") && $("prepare").style.display]`));
+  await click("#prepare");
+  check("Prepare runs the job, the matte lands and the frame returns", await until("prepared", `$("prepare").style.display === "none" && $("vstat").textContent.indexOf("ms/frame") > 0`, 30_000),
+    await js(`[$("vstat").textContent, $("msg").textContent]`));
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

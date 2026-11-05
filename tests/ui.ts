@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -147,6 +147,33 @@ check("play render finishes", done?.status === "done" && typeof done.url === "st
 const vid2 = done?.url ? await raw(done.url) : null;
 check("rendered preview served from previews/", vid2?.status === 200 && vid2.type === "video/mp4" && vid2.body.length > 1000);
 check("SSE reported the job", events.some((e) => e.event === "job" && e.data.id === job.id && e.data.status === "done"));
+
+// ---------------------------------------------------------------- not_prepared: hint + prepare job
+console.log("prepare");
+const fake = join(tmp, "fake-uv.mjs");
+writeFileSync(fake, `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const job = JSON.parse(process.argv.at(-1));
+const vf = "scale=" + job.w + ":" + job.h + ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,W/2),0,255)'";
+const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", job.path, "-an", "-vf", vf, "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov", job.out], { encoding: "utf8" });
+if (r.status) { process.stderr.write(r.stderr); process.exit(1); }
+process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
+`);
+chmodSync(fake, 0o755);
+process.env.AGENTCUT_UV = fake;
+await api.apply(dir, [{ op: "remove_background", id: vid.id }]);
+const np = await jget("/api/frame?t=0.5&scale=0.25");
+check("frame of an unprepared project -> 422 not_prepared with hint", np.status === 422 && np.j.error.code === "not_prepared" && /prepare/.test(np.j.error.hint), np);
+check("page offers the Prepare action for not_prepared", page.body.toString().includes("/api/prepare"));
+const pj = (await jget("/api/prepare", { method: "POST", body: {} })).j;
+const pj2 = (await jget("/api/prepare", { method: "POST", body: {} })).j;
+check("prepare starts a job; a second request joins it", pj.ok && pj.kind === "prepare" && pj2.id === pj.id, [pj, pj2]);
+let pdone: any = null;
+for (let i = 0; i < 300 && !pdone; i++) { const s = (await jget(`/api/jobs/${pj.id}`)).j; if (s.status !== "running") pdone = s; else await Bun.sleep(100); }
+check("prepare job finishes done with the result", pdone?.status === "done" && pdone.result?.ready === true, pdone);
+check("SSE reported the prepare job", events.some((e) => e.event === "job" && e.data.id === pj.id && e.data.status === "done"));
+const after = await raw("/api/frame?t=0.5&scale=0.25");
+check("frame succeeds after prepare", after.status === 200 && after.type === "image/jpeg", after.body.toString().slice(0, 200));
 
 ctl.abort();
 ui.server.closeAllConnections?.();

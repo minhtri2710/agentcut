@@ -222,6 +222,44 @@ await apply(B, [{ op: "remove_background", id: "vid2" }]);
 const ex2: any = await api.exportTimeline(B, { out: join(tmp, "x.fcpxml") });
 check("interchange export reports background removal as skipped", JSON.stringify(ex2.skipped).includes("background removal") && !JSON.stringify(ex.skipped ?? "").includes("background removal"), ex2.skipped);
 
+// audio-only outputs need no prepared analysis; video outputs still fail fast
+console.log("audio-only render vs not_prepared");
+ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", join(m, "tone.wav"));
+const AO = join(tmp, "audio-only");
+api.create(AO, { preset: "reels" });
+await apply(AO, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "add_clip", track: "music", src: join(m, "tone.wav"), duration: 2 }]);
+await apply(AO, [{ op: "auto_reframe", id: "vid1" }]);
+check("audio-only: pending reframe recorded", !!clip(AO, "vid1").pending?.auto_reframe);
+const wavP: any = await api.render(AO, { out: join(tmp, "pend.wav") }).catch((e: any) => e);
+check("audio-only: render -o .wav with a pending reframe succeeds", wavP.audio_only === true && existsSync(join(tmp, "pend.wav")) && wavP.size_bytes > 0, wavP);
+const vidP: any = await api.render(AO, { out: join(tmp, "pend.mp4"), quality: "draft" }).catch((e: any) => e);
+check("audio-only: video render with the pending reframe still fails not_prepared", vidP.code === "not_prepared" && vidP.details?.pending?.[0] === "auto_reframe vid1" && !existsSync(join(tmp, "pend.mp4")), vidP);
+await apply(B, [{ op: "remove_background", id: "vid2" }]);
+rmSync(join(B, ".agentcut", "cache"), { recursive: true, force: true });
+const wavM: any = await api.render(B, { out: join(tmp, "matte.wav") }).catch((e: any) => e);
+check("audio-only: render -o .wav with a missing matte succeeds", wavM.audio_only === true && existsSync(join(tmp, "matte.wav")), wavM);
+const vidM: any = await api.render(B, { out: join(tmp, "matte.mp4"), quality: "draft" }).catch((e: any) => e);
+check("audio-only: video render with the missing matte still fails not_prepared", vidM.code === "not_prepared" && vidM.details?.mattes?.[0] === "vid2", vidM);
+await api.prepare(B);
+
+// pending reframe / track in interchange export: listed in skipped per clip
+console.log("interchange export vs pending");
+const EP = join(tmp, "export-pending");
+api.create(EP, { preset: "reels" });
+await apply(EP, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 },
+  { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 0, duration: 4 }]);
+await apply(EP, [{ op: "auto_reframe", id: "vid1" }, { op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1 }]);
+check("export-pending: both clips carry pending requests", !!clip(EP, "vid1").pending?.auto_reframe && !!clip(EP, "shp1").pending?.track_to, [clip(EP, "vid1").pending, clip(EP, "shp1").pending]);
+for (const ext of ["fcpxml", "otio"]) {
+  const e: any = await api.exportTimeline(EP, { out: join(tmp, `pending.${ext}`) }).catch((x: any) => x);
+  const mine = (id: string) => (e.skipped ?? []).filter((s: any) => s.id === id && s.type === "pending");
+  check(`export-pending (${ext}): auto_reframe listed once for vid1 with prepare hint`, mine("vid1").length === 1 && /auto_reframe/.test(mine("vid1")[0].reason) && /prepare/.test(mine("vid1")[0].reason), e.skipped ?? e);
+  check(`export-pending (${ext}): track_to listed once for shp1`, mine("shp1").length === 1 && /track_to/.test(mine("shp1")[0].reason), e.skipped ?? e);
+}
+await api.prepare(EP);
+const eDone: any = await api.exportTimeline(EP, { out: join(tmp, "prepared.fcpxml") });
+check("export-pending: nothing pending after prepare", !JSON.stringify(eDone.skipped).includes("pending"), eDone.skipped);
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");

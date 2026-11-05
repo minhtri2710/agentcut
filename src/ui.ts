@@ -24,6 +24,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const clients = new Set<ServerResponse>();
   const jobs = new Map<string, Dict>();
   const playing = new Map<string, Dict>(); // play output path -> running job
+  let preparing: Dict | null = null; // the running prepare job: a second request joins it
   const thumbs = new Map<string, Promise<Buffer>>();
   const cacheDir = join(root, "previews", "ui");
 
@@ -103,6 +104,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
       }
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
+      if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare() });
     }
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
@@ -129,6 +131,20 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       finish(r);
     }).catch((e) => { if (part) rmSync(part, { force: true }); Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); })
       .finally(() => { if (out) playing.delete(out); });
+    return job;
+  }
+
+  /** compute mattes / vision analyses and apply the pending vision requests (the slow step not_prepared asks for) */
+  function prepare() {
+    if (preparing) return preparing;
+    const job: Dict = { id: Math.random().toString(36).slice(2, 10), kind: "prepare", status: "running", progress: 0, started: Date.now() };
+    jobs.set(job.id, job);
+    preparing = job;
+    let last = 0;
+    api.prepare(root, { progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } })
+      .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
+      .catch((e) => Object.assign(job, { status: "failed", error: errJson(e) }))
+      .finally(() => { preparing = null; broadcast("job", job); });
     return job;
   }
 
