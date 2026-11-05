@@ -49,6 +49,7 @@ export class Layer {
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = [];
   private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle;
+  private pan = false; private panBuf?: Buffer;
   private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
     this.type = c.type; this.start = parseTime(c.start ?? 0); this.dur = parseTime(c.duration ?? 0); this.end = this.start + this.dur;
@@ -63,8 +64,9 @@ export class Layer {
       this.q = Math.min(1.5, Math.max(1, mx > 1.06 ? mx : 1)); // oversample only for real zoom-ins
       const fit = c.fit ?? "cover";
       const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");
-      this.opaque = this.type !== "lottie" && !this.asset?.alpha && !keyed && ["cover", "fill", "blur"].includes(fit);
+      this.opaque = this.type !== "lottie" && !this.asset?.alpha && !keyed && !c._matte && ["cover", "fill", "blur"].includes(fit);
       if (c.keyframes?.speed) this.ramp = c.keyframes.speed;
+      this.pan = fit === "cover" && this.type !== "lottie" && !!(c.keyframes?.focus_x || c.keyframes?.focus_y);
     }
     if (this.type === "captions") {
       this.words = captionWords(c);
@@ -90,11 +92,12 @@ export class Layer {
       const c = this.c, a = this.asset!, r = this.r;
       const speed = Number(c.speed ?? 1) || 1;
       const fit = c.fit === "blur" ? "contain" : c.fit ?? "cover";
+      const mt = c._matte; // remove_background: the cached alpha matte replaces the source pixels (ops-vision attachMattes)
       this.src = new FrameSource({
-        path: r.path(a.path), kind: a.kind, srcW: a.width!, srcH: a.height!, srcFps: a.fps,
+        path: mt ? mt.path : r.path(a.path), kind: a.kind, srcW: mt ? mt.w : a.width!, srcH: mt ? mt.h : a.height!, srcFps: a.fps,
         srcIn: parseTime(c.in ?? 0), segLen: this.dur * speed,
         rate: this.ramp ? (a.fps || r.fps) : r.fps / speed,
-        fit, box: [this.box[0] * this.q, this.box[1] * this.q], focus: c.focus, crop: c.crop, filters: c.filters,
+        fit, box: [this.box[0] * this.q, this.box[1] * this.q], focus: c.focus, crop: c.crop, filters: c.filters, pan: this.pan,
         loop: !!c.loop, srcDuration: a.duration, reverse: !!c.reverse, freeze: !!c.freeze,
       });
     }
@@ -119,7 +122,7 @@ export class Layer {
   async warm(tl: number) {
     if (this.type === "compound") return this.sub().warm(this.subT(tl));
     if (this.type !== "video" && this.type !== "image") return;
-    if (this.type === "image" || this.c.freeze) { if (!this.staticFr) await this.frame(tl, new A.Mods()); return; }
+    if ((this.type === "image" || this.c.freeze) && !this.pan) { if (!this.staticFr) await this.frame(tl, new A.Mods()); return; }
     await this.media().readAt(this.srcOffset(tl));
   }
 
@@ -135,6 +138,7 @@ export class Layer {
     switch (this.type) {
       case "video": case "image": {
         const s = this.media();
+        if (this.pan) return this.panFrame(await s.readAt(this.type === "image" ? 0 : this.srcOffset(tl)), s, tl);
         if (this.type === "image" || c.freeze) { // still: decode + upload once, then reuse the canvas every frame
           if (!this.staticFr) {
             const buf = await s.readAt(0);
@@ -183,6 +187,17 @@ export class Layer {
       }
     }
     return null;
+  }
+
+  /** animated focus (keyframes.focus_x/focus_y): crop the visible window out of the cover-scaled source frame */
+  private panFrame(buf: Buffer, s: FrameSource, tl: number): Frame {
+    const kf = this.c.keyframes, [vw, vh] = s.view, f0 = this.c.focus ?? [0.5, 0.5];
+    const fx = Math.min(1, Math.max(0, kf.focus_x ? A.kfValue(kf.focus_x, tl) : Number(f0[0])));
+    const fy = Math.min(1, Math.max(0, kf.focus_y ? A.kfValue(kf.focus_y, tl) : Number(f0[1])));
+    const x0 = Math.round((s.w - vw) * fx), y0 = Math.round((s.h - vh) * fy);
+    const out = (this.panBuf ??= Buffer.alloc(vw * vh * 4)); // consumed before the next frame of this layer
+    for (let y = 0; y < vh; y++) buf.copy(out, y * vw * 4, ((y0 + y) * s.w + x0) * 4, ((y0 + y) * s.w + x0 + vw) * 4);
+    return { buf: out, w: vw, h: vh };
   }
 
   /** fit "blur": the contained frame + a tiny blurred cover copy that draw() stretches underneath (no full-res temp). */

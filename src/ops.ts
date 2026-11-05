@@ -13,6 +13,7 @@ import type { Project } from "./project.ts";
 import { captionWords, phrasesToWords } from "./captions.ts";
 import { registerEditOps } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
+import { registerVisionOps } from "./ops-vision.ts";
 
 const PREFIX: Record<string, string> = { video: "vid", image: "img", text: "txt", captions: "cap", shape: "shp", color: "col", audio: "aud", gap: "gap", lottie: "lot" };
 type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict;
@@ -596,6 +597,7 @@ export interface OpHelpers {
 const helpers: OpHelpers = { op, PREFIX, parseAt, place, resolveRef, ensureTrack, splitAt, trackEnd, addClip, importAsset };
 registerEditOps(helpers);
 registerCompoundOps(helpers);
+registerVisionOps(helpers);
 
 // ---------------------------------------------------------------- runner
 export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict[]] {

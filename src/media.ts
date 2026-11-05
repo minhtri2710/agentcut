@@ -166,12 +166,13 @@ export interface SourceOpts {
   srcIn?: number; segLen?: number; // source seconds used by the clip (for reverse)
   rate: number; // output frames per SOURCE second
   fit: string; box: [number, number]; focus?: [number, number]; crop?: any; filters?: any[];
+  pan?: boolean; // animated focus: emit the whole cover-scaled frame (view = visible size), the caller crops per frame
   loop?: boolean; srcDuration?: number; reverse?: boolean; freeze?: boolean;
 }
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
-  w: number; h: number;
+  w: number; h: number; view: [number, number];
   private vf: string[];
   private proc: ChildProcess | null = null;
   private stream: FrameStream | null = null;
@@ -189,12 +190,13 @@ export class FrameSource {
     vf.push(...filterChain(o.filters));
     const fb = fitBox(cw, ch, Math.max(1, Math.round(o.box[0])), Math.max(1, Math.round(o.box[1])), o.fit);
     vf.push(`scale=${fb.w}:${fb.h}:flags=bicubic`);
-    if (fb.crop && (fb.w > fb.ow || fb.h > fb.oh)) {
+    if (fb.crop && (fb.w > fb.ow || fb.h > fb.oh) && !o.pan) {
       const [fx, fy] = o.focus ?? [0.5, 0.5];
       vf.push(`crop=${fb.ow}:${fb.oh}:${Math.round((fb.w - fb.ow) * fx)}:${Math.round((fb.h - fb.oh) * fy)}`);
     }
     vf.push("format=rgba");
-    this.vf = vf; this.w = fb.ow; this.h = fb.oh;
+    this.vf = vf; this.view = [fb.ow, fb.oh];
+    [this.w, this.h] = o.pan ? [fb.w, fb.h] : this.view;
     // VideoToolbox saves ~2.6x CPU on 4K/HEVC but costs more than it saves on small sources
     if (o.kind === "image" || o.srcW * o.srcH < 2560 * 1440) this.hw = false;
   }

@@ -60,7 +60,7 @@ const LAYOUT = ["x", "y", "position", "size", "scale", "scale_x", "scale_y", "ro
 const DROPPED: Record<string, string> = {
   effects: "effects", filters: "filters/looks", keyframes: "keyframes", mask: "mask", motion: "motion", enter: "enter animation",
   exit: "exit animation", border: "border", shadow: "shadow", radius: "rounded corners", reverse: "reverse", freeze: "freeze",
-  loop: "loop", gradient: "gradient", glow: "glow", background: "text background",
+  loop: "loop", remove_background: "background removal", gradient: "gradient", glow: "glow", background: "text background",
 };
 
 function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {

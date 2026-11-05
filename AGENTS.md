@@ -24,7 +24,7 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 
 ## Workflow that works
 1. create_project (CLI: agentcut init DIR --preset reels).
-2. probe_media / analyze_beats / analyze_scenes / analyze_silence your inputs - know durations first.
+2. probe_media / analyze_beats / analyze_scenes / analyze_silence (/ analyze_subject) your inputs - know durations first.
 3. Build in ONE apply_ops batch (atomic: a batch that would create validation errors is rejected, nothing changes).
 4. LOOK (previews are JPEG, ~0.1 s per frame): contact_sheet (whole video) + preview_frame at the hook, every text, every transition (guides=true for 9:16).
    Judge pixels, not intentions: readable? inside safe area? cropped? on the beat?
@@ -73,6 +73,13 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
      regroup. Nested audio is mixed (compound volume/muted apply) at compound speed 1.
 
+## AI vision (optional: needs uv, packages download on first use; results cached in .agentcut/cache)
+{"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y follow the face/subject
+{"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it
+{"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
+  (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
+  -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
+
 ## Vocabulary
 - transitions: crossfade, dip_black, dip_white, flash, glitch, zoom, zoom_blur, spin, circle, blur, slide_*, push_*, wipe_*
 - enter/exit: fade, pop, bounce, flip, slide_*, zoom_in, zoom_out, wipe_*, blur, drop, spin, typewriter (text), words (text)
@@ -84,7 +91,7 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing
 - text presets: title_bold, subtitle_box, neon, gradient, lower_third, quote, typewriter, sticker, outline, cinematic
 - caption presets: tiktok, bold_pop, pill, clean, reveal, neon (styles: karaoke | word | reveal | line)
-- keyframes: x y scale scale_x scale_y rotation opacity blur volume speed; easings linear ease_in ease_out ease_in_out back_out bounce_out elastic_out hold
+- keyframes: x y scale scale_x scale_y rotation opacity blur volume speed focus_x focus_y; easings linear ease_in ease_out ease_in_out back_out bounce_out elastic_out hold
 
 ## Rules of thumb
 - Hook in the first 1-2 s. Cut on beats. Shots 1-3 s for social. One idea per text card, >= 64 px.

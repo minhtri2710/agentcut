@@ -16,7 +16,7 @@ Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--ever
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--workers N]
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
-Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F
+Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F · subject F [--fps 6]
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
 Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|idea title="..." [details=... suggestion=... area=... severity=...]
@@ -125,6 +125,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
       case "loudness": res = api.analyze.loudness(pos[0]); break;
       case "transcribe": res = api.analyze.transcribe(pos[0], f.language); break;
+      case "subject": res = api.analyze.subject(pos[0], num(f.fps)); break;
       case "tts": res = api.analyze.tts(pos[0], f.output, f.voice, num(f.rate)); break;
       case "voices": res = api.voices(f.lang); break;
       case "fonts": res = await api.fonts(pos[0] ?? ""); break;
