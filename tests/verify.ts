@@ -66,6 +66,7 @@ check("fixed project: no text/shot/validation findings", !rv2.findings.some((x: 
 cli("undo", "-p", P);
 
 console.log("audio");
+cli("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -6 } }])); // the default duck (-20) would already clear the finding this test pins
 const au = cli("audio", "-p", P, "--spectrogram");
 check("audio image written", au.ok && existsSync(au.image) && au.image.endsWith(".png"), au);
 check("one lane per audible track + mix", ["main", "voice", "music", "mix"].every((t) => au.lanes.some((l: any) => l.track === t)), au.lanes);
@@ -74,6 +75,32 @@ check("music cut off at the end without fade", au.findings.some((x: any) => x.ty
 cli("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -30 } }, { op: "update_clip", id: "aud1", set: { fade_out: 1 } }]));
 const au2 = cli("audio", "-p", P);
 check("ducked + faded: those findings are gone", !au2.findings.some((x: any) => x.type === "music_not_ducked" || (x.type === "cut_off" && x.track === "music")), au2.findings);
+
+console.log("music_not_ducked is judged by power over speech windows, hint is actionable");
+{
+  // speech-like voice: 0.15 s bursts, digital silence between (power over the bursts -9 dBFS, -12 in the stereo mix after the mono pan; mean of dB far lower); steady bed
+  ff("-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*300*t)*lt(mod(t,0.3),0.15)':s=48000:d=4", "-ac", "1", f("gated.wav"));
+  ff("-f", "lavfi", "-i", "aevalsrc='0.2*sin(2*PI*220*t)':s=48000:d=4", "-ac", "1", f("bed-quiet.wav")); // 8 dB under the bursts
+  ff("-f", "lavfi", "-i", "aevalsrc='0.35*sin(2*PI*220*t)':s=48000:d=4", "-ac", "1", f("bed-loud.wav")); // 3 dB under the bursts
+  const mixOf = (name: string, bed: string) => {
+    const Q = f(name);
+    cli("init", Q, "--preset", "reels");
+    cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
+      { op: "add_clip", track: "voice", src: f("gated.wav"), at: 0, duration: 4 }, { op: "add_clip", track: "music", src: f(bed), at: 0, duration: 4 }]));
+    return Q;
+  };
+  const notDucked = (Q: string) => cli("audio", "-p", Q).findings.filter((x: any) => x.type === "music_not_ducked");
+  const quiet = notDucked(mixOf("q-quiet", "bed-quiet.wav"));
+  check("bed 8 dB under the speech power (dB-mean gap < 6): clean", quiet.length === 0, quiet);
+  const Q = mixOf("q-loud", "bed-loud.wav"), loud = notDucked(Q);
+  check("bed 3 dB under the speech power: reported with power levels", loud.length === 1 && Math.abs(loud[0].voice_db + 12) < 1 && Math.abs(loud[0].music_db + 15) < 1, loud);
+  const duck = /set duck=(-\d+)/.exec(loud[0]?.hint ?? "")?.[1];
+  check(`hint names a duck value (${duck})`, !!duck, loud[0]);
+  cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(duck) } }]));
+  const fixed = notDucked(Q);
+  check("applying the hinted duck clears the finding", fixed.length === 0, fixed);
+}
+
 const src = cli("audio", "--source", f("clip.wav"), "-o", f("clip.png"));
 check("source file: clipping found at 0-1s", src.findings.some((x: any) => x.type === "clipping" && x.start < 0.1 && x.end > 0.9), src.findings);
 check("source file: 2s silence found at 1-3s", src.findings.some((x: any) => x.type === "silence" && Math.abs(x.start - 1) < 0.05 && Math.abs(x.end - 3) < 0.05), src.findings);

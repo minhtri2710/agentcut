@@ -196,7 +196,7 @@ export const TRACK_FIELDS: F = {
   name: [T("string"), "label"],
   magnetic: [T("boolean"), "clips play back-to-back in list order; starts are computed (Final Cut primary storyline)"],
   role: [T("string"), "dialogue|voice|music|sfx|titles|other (ducking/mixing)"],
-  duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -12)"],
+  duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -20)"],
   volume: [T("number"), "track gain"], muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
   clips: [T("array"), "clips (later ones draw on top within the track)"],
   ...Object.fromEntries(Object.entries(AUDIO_FX_FIELDS).map(([k, [t, d]]) => [k, [t, `${d} (${(PER_CLIP_KEYS as readonly string[]).includes(k) ? "applied to each clip without its own" : "applied to the track mix"})`]])),
@@ -319,7 +319,7 @@ export function newTimeline(width = 1920, height = 1080, fps = 30, name = "untit
       { id: "overlay", kind: "video", clips: [] },
       { id: "text", kind: "video", role: "titles", clips: [] },
       { id: "voice", kind: "audio", role: "voice", clips: [] },
-      { id: "music", kind: "audio", role: "music", duck: -12, clips: [] },
+      { id: "music", kind: "audio", role: "music", duck: -20, clips: [] },
     ],
     markers: [],
   };

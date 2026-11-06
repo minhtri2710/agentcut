@@ -191,7 +191,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
 }
 
 function ensureTrack(tl: Timeline, id: string, type: string): Track {
-  if (!tl.tracks.some((t) => t.id === id)) OPS.add_track.fn(null as any, tl, { id, kind: type === "audio" ? "audio" : "video", ...(id === "music" ? { role: "music", duck: -12 } : id === "voice" ? { role: "voice" } : {}) });
+  if (!tl.tracks.some((t) => t.id === id)) OPS.add_track.fn(null as any, tl, { id, kind: type === "audio" ? "audio" : "video", ...(id === "music" ? { role: "music", duck: -20 } : id === "voice" ? { role: "voice" } : {}) });
   return findTrack(tl, id);
 }
 

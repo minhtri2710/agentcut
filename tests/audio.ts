@@ -162,6 +162,28 @@ await api.render(P, { out: mkv, subtitles: true, end: 2, workers: 1, sheet: fals
 check("mkv gets an srt stream", spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", mkv], { encoding: "utf8" }).stdout.includes("subrip"));
 check("subtitles on .gif rejected before rendering", await rejects(() => api.render(P, { out: join(tmp, "x.gif"), subtitles: true }), "bad_format"));
 
+console.log("frame-evaluated volume expressions follow their curve to within a frame of a few ms");
+{
+  // the gain expression is evaluated once per audio frame: with decoder-sized frames (~85 ms) the duck ramp and a fast keyframe drop lag by up to a frame
+  const D = join(tmp, "duck");
+  api.create(D, { width: 320, height: 240, fps: 24 });
+  const dmix = (tag: string) => { const p = api.openProject(D), tl = p.absolutized(p.load()); tl.settings.loudness = null; return buildAudio(tl, join(tmp, `${tag}.wav`)); };
+  const at = 1.013; // not a multiple of the 20 ms analysis window
+  await api.apply(D, [
+    { op: "update_track", id: "music", set: { duck: -30 } },
+    { op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 4 },
+    { op: "add_clip", track: "voice", src: join(m, "tone.wav"), at, duration: 2, muted: true }, // muted: only the music is in the mix, the voice interval still ducks it
+  ]);
+  const dk = dmix("duck-onset"), full = rms(dk, 0.2, 0.7), steady = rms(dk, at + 0.5, at + 1.5);
+  check(`duck -30: music steady ${full.toFixed(1)} -> ${steady.toFixed(1)} dB`, Math.abs(full - steady - 30) < 0.5);
+  const first = rms(dk, at, at + 0.03);
+  check(`music already at the ducked level in the first 30 ms of the voice (${first.toFixed(1)} vs ${steady.toFixed(1)} dB)`, Math.abs(first - steady) < 2);
+
+  await api.apply(D, [{ op: "update_track", id: "music", set: { duck: null } }, { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: [[0, 1], [1.1, 1], [1.12, 0.0316]] }]);
+  const kf = dmix("kf-drop"), top = rms(kf, 0.2, 0.7), low = rms(kf, 2, 3), after = rms(kf, 1.13, 1.17);
+  check(`volume keyframe drop 1.10 -> 1.12 s: ${top.toFixed(1)} -> ${low.toFixed(1)} dB, already there at 1.13-1.17 s (${after.toFixed(1)})`, Math.abs(top - low - 30) < 0.5 && Math.abs(after - low) < 2);
+}
+
 const el = ((performance.now() - t0) / 1000).toFixed(1);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.log(`\n${failures} check(s) FAILED in ${el}s`); process.exit(1); }

@@ -8,6 +8,9 @@ import { type Clip, EditError, parseTime, resolve, type Timeline, totalDuration,
 
 const { atempo } = FX;
 
+// volume='expr':eval=frame holds one gain per audio frame (decoder frames are 85-93 ms). The duck ramp is linear in amplitude, so its dB error is steep near the ramp's end:
+// 128 samples (2.7 ms) keep the music within ~1 dB of the ducked level at the voice onset; measured cost +1% on a 600 s bed. Only chains with such an expression use it.
+const EVAL_FRAME = "asetnsamples=n=128:p=0";
 function kfExpr(kfs: any[], v = "t"): string {
   const pts = parseKfs(kfs);
   let e = `${pts[pts.length - 1][1]}`;
@@ -83,7 +86,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
     if (!track.duck || !merged.length || track.role === "voice" || track.role === "dialogue") return [];
     const g = 10 ** (Number(track.duck) / 20), r = 0.25;
     const terms = merged.map(([a0, a1]) => `clip(min((t-${(a0 - r).toFixed(3)})/${r},(${(a1 + r).toFixed(3)}-t)/${r}),0,1)`);
-    return [`volume='1-${(1 - g).toFixed(4)}*${terms.reduce((acc, x) => `max(${acc},${x})`)}':eval=frame`];
+    return [EVAL_FRAME, `volume='1-${(1 - g).toFixed(4)}*${terms.reduce((acc, x) => `max(${acc},${x})`)}':eval=frame`];
   };
   const bus = (track: Track) => [...FX.eqFilters(track.eq), ...FX.compressorFilter(track.compressor), ...FX.panFilter(track.pan)];
   const buses = new Map<Track, string[]>(); // tracks with bus processing -> their clip labels
@@ -109,7 +112,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
       if (lufs !== null) ch.push(`volume=${(target - lufs).toFixed(2)}dB`);
     }
     ch.push(`volume=${s.volume.toFixed(4)}`);
-    if (c.keyframes?.volume) ch.push(`volume='${kfExpr(c.keyframes.volume)}':eval=frame`);
+    if (c.keyframes?.volume) ch.push(EVAL_FRAME, `volume='${kfExpr(c.keyframes.volume)}':eval=frame`);
     if (c.fade_in) ch.push(`afade=t=in:st=0:d=${Number(c.fade_in)}`);
     if (c.fade_out) ch.push(`afade=t=out:st=${Math.max(0, dur - Number(c.fade_out))}:d=${Number(c.fade_out)}`);
     ch.push(`adelay=${Math.round(start * 1000)}:all=1`);

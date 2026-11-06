@@ -11,6 +11,8 @@ import { needFfmpeg } from "./media.ts";
 import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Timeline, totalDuration } from "./model.ts";
 
 const WIN = 0.02; // analysis window (s)
+const DUCK_MARGIN_DB = 6; // music_not_ducked fires when music power is within this many dB of the voice power
+const HINT_GAP_DB = 12; // the hint aims at the 6 dB threshold plus 6 dB of margin (covers the ~4 dB stem/metric bias seen against LUFS)
 const db = (x: number) => (x > 1e-9 ? 20 * Math.log10(x) : -180);
 const r3 = (x: number) => +x.toFixed(3), r1 = (x: number) => +x.toFixed(1);
 
@@ -98,8 +100,8 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
       const main = tl.tracks.find((t) => t.magnetic && (t.kind ?? "video") !== "audio");
       cuts = (main?.clips ?? []).slice(1).map(clipStart);
       tl.tracks.forEach((tr, j) => {
-        // stem: every other track at volume 0 (still feeds ducking), raw gain stage, low rate (fast)
-        const stem: Timeline = { ...tl, settings: { ...tl.settings, loudness: null, sample_rate: 16000 },
+        // stem: every other track at volume 0 (still feeds ducking), raw gain stage, mix rate (16 kHz stems cost no time but dropped the voice's >8 kHz energy, ~0.9 dB)
+        const stem: Timeline = { ...tl, settings: { ...tl.settings, loudness: null, sample_rate: 48000 },
           tracks: tl.tracks.map((t, i) => (i === j ? t : { ...t, volume: 0 })) };
         const srcs = audioSources(stem);
         if (!srcs.length) return;
@@ -142,21 +144,27 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
           hint: `audio stops abruptly at ${r3(e)}s: update_clip ${c.id} set fade_out=0.3 (or end it on a quieter moment)` });
     }
 
-    // 4. music not ducked under voice: music within 6 dB of the voice while someone is speaking
+    // 4. music not ducked under voice: over each stretch of speech, music power within 6 dB of voice power.
+    // Speech windows = voice windows above max(-40 dBFS, p95 - 20 dB), so syllable gaps and pauses do not drag the voice level down;
+    // both levels are the power mean (then dB) over those same windows, never a mean of dB values.
     const voice = lanes.filter((l) => l.role === "voice" || l.role === "dialogue"), music = lanes.filter((l) => l.role === "music");
     if (voice.length && music.length) {
       const n = Math.min(...[...voice, ...music].map((l) => l.rms.length));
-      // combined rms per window, smoothed over 200 ms so syllable gaps do not split the runs (dB)
-      const sm = (ls: Lane[]) => {
-        const comb = Float64Array.from({ length: n }, (_, k) => Math.sqrt(ls.reduce((s, l) => s + l.rms[k] ** 2, 0)));
-        return Float64Array.from({ length: n }, (_, k) => levelDb(comb, (k - 5) * WIN, (k + 5) * WIN));
-      };
-      const v = sm(voice), m = sm(music);
-      for (const [s, e] of runs(n, (k) => v[k] > -40 && m[k] > v[k] - 6, 0.5, 0.3)) {
-        const a = Math.floor(s / WIN), b = Math.ceil(e / WIN);
-        const avg = (x: Float64Array) => r1(x.subarray(a, b).reduce((p, q) => p + q, 0) / Math.max(1, b - a));
-        findings.push({ type: "music_not_ducked", start: r3(s), end: r3(e), music_db: avg(m), voice_db: avg(v), tracks: music.map((l) => l.id),
-          hint: `music is within 6 dB of the voice: lower its volume or duck harder (update_track ${music[0].id} set duck=-18)` });
+      const comb = (ls: Lane[]) => Float64Array.from({ length: n }, (_, k) => ls.reduce((s, l) => s + l.rms[k] ** 2, 0));
+      const vp = comb(voice), mp = comb(music);
+      const loudDb = Array.from(vp, (x) => 10 * Math.log10(x + 1e-18)).filter((x) => x > -40).sort((a, b) => a - b);
+      if (loudDb.length) {
+        const floor = Math.max(-40, loudDb[Math.floor(loudDb.length * 0.95)] - 20), isSpeech = (k: number) => 10 * Math.log10(vp[k] + 1e-18) > floor;
+        for (const [s, e] of runs(n, isSpeech, 0.5, 0.3)) {
+          let sv = 0, sm = 0, cnt = 0;
+          for (let k = Math.floor(s / WIN); k < Math.min(n, Math.ceil(e / WIN)); k++) if (isSpeech(k)) { sv += vp[k]; sm += mp[k]; cnt++; }
+          const voiceDb = 10 * Math.log10(sv / cnt + 1e-18), musicDb = 10 * Math.log10(sm / cnt + 1e-18);
+          if (musicDb <= voiceDb - DUCK_MARGIN_DB) continue;
+          const lower = Math.max(0, HINT_GAP_DB - (voiceDb - musicDb));
+          const fix = music.map((l) => `update_track ${l.id} set duck=${-Math.ceil(-Number(tl!.tracks.find((t) => t.id === l.id)?.duck ?? 0) + lower)}`).join("; ");
+          findings.push({ type: "music_not_ducked", start: r3(s), end: r3(e), music_db: r1(musicDb), voice_db: r1(voiceDb), tracks: music.map((l) => l.id),
+            hint: `music is ${r1(voiceDb - musicDb)} dB under the voice (want >= ${HINT_GAP_DB}): duck harder (${fix})` });
+        }
       }
     }
     findings.sort((a, b) => (a.start ?? a.t ?? 0) - (b.start ?? b.t ?? 0));

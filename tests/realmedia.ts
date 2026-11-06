@@ -171,6 +171,18 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   const L = AN.loudness(out);
   check(`final render -14 LUFS (${L.integrated_lufs}), true peak < -1 dBTP (${L.true_peak_dbfs})`, Math.abs(L.integrated_lufs! + 14) < 1 && L.true_peak_dbfs! < -1);
   check(`render embeds ${res.subtitles?.cues} caption cues`, probeJson(out).streams.some((s: any) => s.codec_name === "mov_text") && res.subtitles?.cues >= 3);
+  // default music duck (no override): the check is clean and the voice sits >= 15 LU over the bed across the voiced span (convention, not a listening test)
+  const ac = await api.audioCheck(P, {});
+  check("audio_check at the default duck: music is ducked", !ac.findings.some((x: any) => x.type === "music_not_ducked"), ac.findings);
+  const pr = api.openProject(P), base = pr.absolutized(pr.load()), span = [segs[0][0], segs[segs.length - 1][1]];
+  const stemLufs = (track: string) => {
+    const tl: any = structuredClone(base);
+    tl.settings.loudness = null;
+    tl.tracks = tl.tracks.map((t: any) => ({ ...t, volume: t.id === track ? t.volume : 0 }));
+    return AN.loudness(buildAudio(tl, join(tmp, `stem-${track}.wav`), span[0], span[1])).integrated_lufs!;
+  };
+  const vL = stemLufs("voice"), mL = stemLufs("music");
+  check(`voice ${vL} LUFS vs ducked bed ${mL} LUFS over the voiced span: >= 15 LU`, vL - mL >= 15, { vL, mL });
   const hasWhisper = ["whisper-cli", "whisper-cpp", "whisper"].some((b) => !spawnSync(b, ["--help"], { stdio: "ignore" }).error);
   if (!hasWhisper || (!process.env.AGENTCUT_WHISPER_MODEL && spawnSync("whisper", ["--help"], { stdio: "ignore" }).error))
     console.log("  - transcribe round-trip skipped: no whisper (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");

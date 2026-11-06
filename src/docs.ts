@@ -8,7 +8,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 ## Mental model
 - Canvas: settings.width x height @ fps. Presets: reels/tiktok/shorts 1080x1920, youtube 1920x1080, square, portrait 1080x1350, 4k.
 - Tracks are layers: tracks[0] is drawn first (BOTTOM); later tracks draw ON TOP. Audio tracks are not drawn.
-- Default tracks: main (magnetic) · overlay · text · voice (audio, role=voice) · music (audio, ducks -12 dB under voice).
+- Default tracks: main (magnetic) · overlay · text · voice (audio, role=voice) · music (audio, ducks -20 dB under voice).
 - Magnetic track (Final Cut primary storyline): clips play back-to-back in list order, start is computed; a clip's
   transition overlaps it with the previous clip. Reorder with move_clip index. gap clips = pauses.
 - Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine (later on top).
