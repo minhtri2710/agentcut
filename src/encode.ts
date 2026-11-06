@@ -10,6 +10,7 @@ import { availableParallelism } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
+import { inp } from "./ffinput.ts";
 import { needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
@@ -134,8 +135,8 @@ const renderTmp = (root: string) => { const base = join(root, ".agentcut", "tmp"
 export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: number, v: string[], out: string,
   audio?: { wav: string; a: string[] }, onFrame?: (done: number) => void, signal?: AbortSignal) {
   const fps = r.fps, n = i1 - i0;
-  const args = ["-v", "error", "-y", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${r.W}x${r.H}`, "-r", String(fps), "-i", "-"];
-  if (audio) args.push("-i", audio.wav, "-map", "0:v", "-map", "1:a");
+  const args = ["-v", "error", "-y", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${r.W}x${r.H}`, "-r", String(fps), ...inp("pipe:0")];
+  if (audio) args.push(...inp(audio.wav), "-map", "0:v", "-map", "1:a");
   args.push(...v, ...(audio ? audio.a : ["-an"]), "-t", (n / fps).toFixed(6), out);
   const enc = spawn("ffmpeg", args, { stdio: ["pipe", "ignore", "pipe"] });
   let err = "";
@@ -207,7 +208,7 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   const tmp = renderTmp(root), part = partPath(output);
   try {
     const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
-    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", wav, "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
+    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(wav), "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
     if (r.status !== 0) throw new EditError(`audio encode failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
     renameSync(part, output);
   } finally {
@@ -289,12 +290,12 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       if (first) throw first;
       const list = join(tmp, "list.txt");
       writeFileSync(list, jobs.map((j) => `file '${j.out.replace(/\\/g, "/").replace(/'/g, "'\\''")}'\n`).join(""));
-      const cc = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", "-i", list, "-i", wav,
+      const cc = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", ...inp(list), ...inp(wav),
         "-map", "0:v", "-map", "1:a", "-c:v", "copy", ...mux, ...a, "-t", (n / fps).toFixed(6), target], { encoding: "utf8" });
       if (cc.status !== 0) throw new EditError(`concat failed: ${(cc.stderr || "").slice(-600)}`, "encode_failed");
     }
     if (gif) {
-      const g = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", target, "-vf",
+      const g = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(target), "-vf",
         `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, part], { encoding: "utf8" });
       if (g.status !== 0) throw new EditError(`gif conversion failed: ${(g.stderr || "").slice(-400)}`, "encode_failed");
     }

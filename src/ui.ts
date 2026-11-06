@@ -6,6 +6,7 @@ import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, utim
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
+import { inp } from "./ffinput.ts";
 import { EditError, type Dict } from "./model.ts";
 import { PAGE } from "./ui-page.ts";
 
@@ -204,7 +205,7 @@ function sendFile(req: IncomingMessage, res: ServerResponse, abs: string) {
 
 function thumbnail(abs: string, t: number): Promise<Buffer> {
   return new Promise((ok, fail) => {
-    const ff = spawn("ffmpeg", ["-v", "error", "-ss", String(t), "-i", abs, "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
+    const ff = spawn("ffmpeg", ["-v", "error", "-ss", String(t), ...inp(abs), "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
     const chunks: Buffer[] = [];
     ff.stdout.on("data", (c) => chunks.push(c));
     ff.on("error", fail);

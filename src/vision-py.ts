@@ -20,7 +20,7 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     if start is not None: args += ["-ss", "%.6f" % start]
     if dur is not None: args += ["-t", "%.6f" % dur]
     vf = ("fps=%s," % fps if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
-    args += ["-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
+    args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
     import numpy as np
@@ -101,7 +101,7 @@ def matte(j):
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset
         return {"out": j["out"], "frames": 1}
     enc = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "%dx%d" % (w, h),
-           "-framerate", str(j["fps"]), "-i", "-", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
+           "-framerate", str(j["fps"]), "-protocol_whitelist", "file,pipe", "-i", "pipe:0", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
            "-alpha_bits", "16", "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "mov", j["out"]]
     e = subprocess.Popen(enc, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     n = 0

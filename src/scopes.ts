@@ -1,5 +1,6 @@
 // Video scopes of a rendered frame: waveform + vectorscope + histogram image and signalstats numbers (one FFmpeg run).
 import { spawnSync } from "node:child_process";
+import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
 import { EditError } from "./model.ts";
 
@@ -22,7 +23,7 @@ const GRAPH = [
  */
 export function scopes(still: Buffer, outPath: string) {
   needFfmpeg();
-  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-y", "-f", "image2pipe", "-i", "-", "-filter_complex", GRAPH,
+  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-y", "-f", "image2pipe", ...inp("pipe:0"), "-filter_complex", GRAPH,
     "-map", "[out]", "-frames:v", "1", outPath, "-map", "[s]", "-f", "null", "-"], { input: still, encoding: "utf8", maxBuffer: 1 << 24 });
   if (r.status !== 0) throw new EditError(`scopes failed: ${String(r.stderr || r.error).slice(0, 300)}`, "scopes_failed");
   const m: Record<string, number> = {};

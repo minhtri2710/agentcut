@@ -60,7 +60,7 @@ export const FILTERS: Record<string, string> = {
   blur: "radius px", sharpen: "amount (0..3, 1)", grayscale: "no params", vignette: "strength (0..1, 0.5)",
   hflip: "mirror horizontally", vflip: "mirror vertically",
   chromakey: "color (#00ff00), similarity (0.1), blend (0.05)", denoise: "strength (1..10, 4)",
-  stabilize: "deshake (FFmpeg deshake filter)", ffmpeg: "value: raw FFmpeg -vf filter string (escape hatch)",
+  stabilize: "deshake (FFmpeg deshake filter)",
 };
 export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];

@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
+import { inp } from "./ffinput.ts";
 import { EditError } from "./model.ts";
 
 /** Stop `ch` when `signal` aborts: close its stdin (EOF is the stop request for ffmpeg and the vision helper), SIGTERM it, and
@@ -50,7 +51,7 @@ export function probe(path: string): any {
     info = { path, kind: "lottie", width: j.w, height: j.h, fps: j.fr, duration: +((j.op - j.ip) / j.fr).toFixed(3), has_audio: false, alpha: true };
   } else {
     needFfmpeg();
-    const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path], { encoding: "utf8", maxBuffer: 32 << 20 });
+    const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { encoding: "utf8", maxBuffer: 32 << 20 });
     if (r.status !== 0) throw new EditError(`ffprobe cannot read ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
     const j = JSON.parse(r.stdout);
     const streams: any[] = j.streams || [];
@@ -80,6 +81,9 @@ export function probe(path: string): any {
   return { ...info };
 }
 
+/** A file path as a filter option value: escaped for the option level (\ ' :), then for the graph level (\ ' [ ] , ;). */
+const filterPath = (p: string) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p).replace(/[\\':]/g, "\\$&").replace(/[\\'[\],;]/g, "\\$&");
+
 export function filterChain(filters: any[] | undefined): string[] {
   const out: string[] = [];
   for (let f of filters || []) {
@@ -90,7 +94,7 @@ export function filterChain(filters: any[] | undefined): string[] {
         if (ks.length) out.push("eq=" + ks.map((k) => `${k}=${f[k]}`).join(":"));
         break;
       }
-      case "lut": out.push(`lut3d=file='${String(f.path).replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'")}'`); break;
+      case "lut": out.push(`lut3d=file=${filterPath(String(f.path))}`); break;
       case "blur": out.push(`gblur=sigma=${(Number(f.radius ?? 5) / 2).toFixed(2)}`); break;
       case "sharpen": out.push(`unsharp=5:5:${Number(f.amount ?? 1).toFixed(2)}`); break;
       case "grayscale": out.push("hue=s=0"); break;
@@ -101,7 +105,6 @@ export function filterChain(filters: any[] | undefined): string[] {
       case "stabilize": out.push("deshake"); break;
       case "chromakey":
         out.push(`format=rgba,chromakey=${String(f.color ?? "#00ff00").replace("#", "0x")}:${Number(f.similarity ?? 0.1)}:${Number(f.blend ?? 0.05)}`); break;
-      case "ffmpeg": out.push(String(f.value)); break;
       default: throw new EditError(`unknown filter '${f.type}'`, "bad_filter");
     }
   }
@@ -209,14 +212,14 @@ export class FrameSource {
     if (o.reverse) {
       const len = o.segLen ?? 1;
       // reverse buffers the whole segment, so it always streams from its start
-      a.push("-ss", (o.srcIn ?? 0).toFixed(6), "-t", len.toFixed(6), "-i", o.path, "-an", "-sn",
+      a.push("-ss", (o.srcIn ?? 0).toFixed(6), "-t", len.toFixed(6), ...inp(o.path), "-an", "-sn",
         "-vf", [`fps=${o.rate}`, "reverse", ...this.vf].join(","));
       return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     }
     let t0 = (o.srcIn ?? 0) + k / o.rate;
     if (o.loop && o.srcDuration) t0 %= o.srcDuration;
     if (o.loop) a.push("-stream_loop", "-1");
-    a.push("-ss", t0.toFixed(6), "-i", o.path, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","));
+    a.push("-ss", t0.toFixed(6), ...inp(o.path), "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","));
     if (single) a.push("-frames:v", "1");
     return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
   }
@@ -234,7 +237,7 @@ export class FrameSource {
 
   private async decodeStill(t: number): Promise<Buffer> {
     const o = this.o;
-    const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), "-i", o.path, "-frames:v", "1",
+    const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), ...inp(o.path), "-frames:v", "1",
       "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     const n = this.w * this.h * 4;
     // async so several layers / contact-sheet tiles decode concurrently

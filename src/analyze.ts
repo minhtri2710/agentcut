@@ -3,13 +3,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { inp } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
 function decodeMono(path: string, sr = 22050): Float32Array {
   needFfmpeg();
-  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", path, "-vn", "-ac", "1", "-ar", String(sr), "-f", "f32le", "-"], { maxBuffer: 1 << 30 });
+  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-ac", "1", "-ar", String(sr), "-f", "f32le", "-"], { maxBuffer: 1 << 30 });
   if (r.status !== 0) throw new EditError(`cannot decode audio from ${path}: ${String(r.stderr).slice(0, 300)}`, "decode_failed");
   const b = r.stdout as Buffer;
   return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 4)));
@@ -135,7 +136,7 @@ export function beats(path: string, minBpm = 60, maxBpm = 200) {
 export function scenes(path: string, threshold = 0.3) {
   needFfmpeg();
   const info = probe(path);
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-i", path, "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
+  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
   const cuts = [...(r.stderr || "").matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
   const dur = info.duration ?? 0;
   const b = [0, ...cuts, dur];
@@ -147,7 +148,7 @@ export function silence(path: string, noiseDb = -35, minSilence = 0.4) {
   needFfmpeg();
   const info = probe(path);
   if (!info.has_audio && info.kind !== "audio") throw new EditError("file has no audio", "no_audio");
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-i", path, "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
+  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
   const st = [...(r.stderr || "").matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => +m[1]);
   const en = [...(r.stderr || "").matchAll(/silence_end: ([\d.]+)/g)].map((m) => +m[1]);
   const dur = Number(info.duration ?? 0);
@@ -161,7 +162,7 @@ export function silence(path: string, noiseDb = -35, minSilence = 0.4) {
 
 export function loudness(path: string) {
   needFfmpeg();
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-i", path, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
+  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
   const txt = (r.stderr || "").slice((r.stderr || "").lastIndexOf("Summary:"));
   const grab = (l: string) => { const m = new RegExp(`${l}:\\s+(-?[\\d.]+|-inf)`).exec(txt); return m && m[1] !== "-inf" ? +m[1] : null; };
   return { source: path, integrated_lufs: grab("I"), range_lu: grab("LRA"), true_peak_dbfs: grab("Peak") };
@@ -170,7 +171,7 @@ export function loudness(path: string) {
 /** Non-blocking variant (used right after renders so it overlaps with the contact sheet). */
 export function loudnessAsync(path: string): Promise<ReturnType<typeof loudness>> {
   return new Promise((res) => {
-    const p = spawn("ffmpeg", ["-v", "info", "-nostdin", "-i", path, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"]);
+    const p = spawn("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"]);
     let err = "";
     p.stderr.on("data", (d) => { err += d; if (err.length > 1e6) err = err.slice(-20000); });
     p.on("close", () => {
@@ -218,7 +219,7 @@ export function tts(text: string, outPath: string, voice?: string, rate?: number
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
   try {
     const raw = provider === "piper" ? piperSpeech(text, tmp, v, rate) : provider === "openai" ? httpSpeech(text, tmp, v, rate) : systemSpeech(text, tmp, v, rate);
-    const c = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", raw, "-ar", "48000", "-ac", "2", outPath], { encoding: "utf8" });
+    const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", outPath], { encoding: "utf8" });
     if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
   } finally { rmSync(tmp, { recursive: true, force: true }); }
   return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider };
@@ -249,6 +250,7 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
     r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8" });
   } else {
     raw = join(tmp, "tts.wav");
+    if (voice && !/^[A-Za-z0-9][A-Za-z0-9_+.-]*$/.test(voice)) throw new EditError(`invalid voice '${voice}'`, "bad_voice", "espeak voice names are letters, digits and _ + . - (for example en-us, vi)");
     const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
     r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { encoding: "utf8" });
@@ -263,7 +265,7 @@ export function transcribe(path: string, language?: string, model?: string) {
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const wav = join(tmp, "a.wav");
-    spawnSync("ffmpeg", ["-v", "error", "-y", "-i", path, "-ar", "16000", "-ac", "1", wav]);
+    spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(path), "-ar", "16000", "-ac", "1", wav]);
     const cli = ["whisper-cli", "whisper-cpp", "main"].find((b) => !spawnSync(b, ["--help"], { stdio: "ignore" }).error);
     const mdl = model ?? process.env.AGENTCUT_WHISPER_MODEL;
     if (cli && mdl) {

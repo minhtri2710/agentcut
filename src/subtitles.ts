@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { extname } from "node:path";
+import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
 import { EditError, parseTime, type Timeline, type Track } from "./model.ts";
 
@@ -70,7 +71,7 @@ export function embedSubtitles(video: string, cues: Cue[]) {
   const sub = `${video}.subs.${vtt ? "vtt" : "srt"}`, tmp = `${video}.subs${ext}`;
   writeFileSync(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
-    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", video, "-i", sub, "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
+    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { encoding: "utf8" });
     if (r.status !== 0) throw new EditError(`subtitle mux failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
     renameSync(tmp, video);

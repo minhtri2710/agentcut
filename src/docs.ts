@@ -124,7 +124,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - color (grade, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel) as a base, exposure (stops),
   contrast, saturation, vibrance, temperature/tint (-1..1), lift/gamma/gain [r,g,b] -1..1, curves {master|r|g|b: [[x,y],..]},
   hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}
-- filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip, ffmpeg
+- filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip
 - masks: rect, circle, ellipse, heart, star, linear, mirror (+ feather, invert, x, y, width, height, angle)
 - layout: position+margin or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy]; radius; border; shadow; blend; opacity
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing

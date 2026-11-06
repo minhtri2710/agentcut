@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -143,6 +143,42 @@ for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix
 }
 r = await renderVideo(tl(), p.root, out("part.mp3"), { start: 0.5, end: 1.5 });
 check("audio range 1s", Math.abs(Number(probe(out("part.mp3")).format.duration) - 1) < 0.1 && r.duration === 1, r);
+
+console.log("ffmpeg reads only local files and pipes");
+{
+  // the listener runs in a child process: this process blocks in spawnSync while ffmpeg runs
+  const lis = spawn(process.execPath, ["--no-install", "-e",
+    `const n=require("node:net");let c=0;const s=n.createServer(k=>{c++;k.destroy()});` +
+    `s.listen(0,"127.0.0.1",()=>console.log(s.address().port));process.stdin.on("data",()=>console.log(c))`], { cwd: tmp, stdio: ["pipe", "pipe", "ignore"] });
+  const lines: string[] = []; let wake: (() => void) | null = null;
+  let buf = "";
+  lis.stdout!.on("data", (d) => { buf += d; const p = buf.split("\n"); buf = p.pop()!; lines.push(...p); wake?.(); });
+  const nextLine = async () => { while (!lines.length) await new Promise<void>((r) => { wake = r; }); return lines.shift()!; };
+  const port = Number(await nextLine());
+  const requests = async () => { lis.stdin!.write("\n"); return Number(await nextLine()); };
+  const url = `tcp://127.0.0.1:${port}/a.wav`;
+  const { beats, loudness } = await import("../src/analyze.ts");
+  const { FrameSource, probe: probeMedia } = await import("../src/media.ts");
+  const refused = (f: () => unknown) => { try { f(); return false; } catch { return true; } };
+
+  check("beats refuses a non-file source", refused(() => beats(url)));
+  loudness(url);
+  const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+  check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
+  fs.close();
+  const opened = await requests();
+  check("a non-file source is never opened", opened === 0, opened);
+  // a playlist that names a network URL: probe and decode both refuse it
+  const list = join(m, "net.m3u8");
+  writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
+  check("probe refuses a playlist that names a network URL", refused(() => probeMedia(list)));
+  const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+  check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
+  dec.close();
+  const total = await requests();
+  check("no request reached the listener", total === 0, total);
+  lis.kill();
+}
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });

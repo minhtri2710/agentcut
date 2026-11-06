@@ -2,6 +2,7 @@
 // Validation and FFmpeg filter strings are pure; noiseFloor/loudness run FFmpeg once per processed clip.
 // No model.ts import: model.ts imports this file for its field table and validation.
 import { spawnSync } from "node:child_process";
+import { inp } from "./ffinput.ts";
 
 export const AUDIO_FX_KEYS = ["denoise", "eq", "compressor", "pan", "pitch", "normalize"] as const;
 /** Track-level keys applied to every clip on the track (they depend on each source); the rest process the track bus. */
@@ -167,7 +168,7 @@ export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : is
  *   is under 10% of the clip, where the lead-in counts as dither: the floor then sits on speech and can clip soft endings, but it is
  *   never higher than before. */
 export function noiseFloor(path: string, start: number, len: number): number | null {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", path, "-vn", "-af",
+  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-af",
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
     "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
     "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { unlinkSync } from "node:fs";
 import { parseKfs } from "./anim.ts";
 import * as FX from "./audiofx.ts";
+import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
 import { type Clip, EditError, parseTime, resolve, type Timeline, totalDuration, type Track } from "./model.ts";
 
@@ -102,7 +103,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   srcs.forEach((s, i) => {
     const c = s.clip, tr = s.track;
     const fx = (k: (typeof FX.PER_CLIP_KEYS)[number]) => c[k] ?? tr[k];
-    const input = [...(c.loop ? ["-stream_loop", "-1"] : []), "-i", s.path];
+    const input = [...(c.loop ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
     args.push(...input);
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
     const ch = [`atrim=start=${cin}:duration=${dur * speed}`, "asetpts=PTS-STARTPTS"];
@@ -146,14 +147,14 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   const lufs = tl.settings.loudness === undefined ? -14 : tl.settings.loudness;
   if (lufs !== null && labels.length) {
     const target = `I=${Number(lufs)}:TP=-1.5:LRA=11`;
-    const m = spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-i", raw, "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" });
+    const m = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(raw), "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" });
     const js = (m.stderr || "").match(/\{[^{}]*\}/g);
     const meas = js ? JSON.parse(js[js.length - 1]) : null;
     if (meas && meas.input_i !== "-inf" && Number(meas.input_i) > -70)
       post.push(`loudnorm=${target}:measured_I=${meas.input_i}:measured_TP=${meas.input_tp}:measured_LRA=${meas.input_lra}:measured_thresh=${meas.input_thresh}:offset=${meas.target_offset}:linear=true,aresample=${sr}`);
   }
   post.push(`atrim=start=${t0}:end=${t1},asetpts=PTS-STARTPTS`);
-  r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", raw, "-af", post.join(","), "-ac", "2", "-ar", String(sr), "-c:a", "pcm_s16le", outWav], { encoding: "utf8" });
+  r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(raw), "-af", post.join(","), "-ac", "2", "-ar", String(sr), "-c:a", "pcm_s16le", outWav], { encoding: "utf8" });
   try { unlinkSync(raw); } catch { /* ignore */ }
   if (r.status !== 0) throw new EditError(`audio loudness pass failed: ${(r.stderr || "").trim().slice(-600)}`, "audio_failed");
   return outWav;

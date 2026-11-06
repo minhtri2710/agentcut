@@ -13,6 +13,7 @@ const api = await import("../src/api.ts");
 const { gradeChain, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");
+const { filterChain } = await import("../src/media.ts");
 
 let failures = 0;
 function check(name: string, cond: unknown, info?: unknown) {
@@ -59,6 +60,32 @@ check("bad grade rejected with one issue per problem", bad.code === "validation_
 check("look typo suggests the right name", issues.find((i: any) => i.path.endsWith(".look"))?.hint?.includes("'warm'"));
 check("audio clips have no color field", !("color" in (api.schema() as any).clip_types.audio));
 
+console.log("filters");
+{
+  const Q = join(tmp, "projq");
+  api.create(Q, { preset: "720p" });
+  await api.apply(Q, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
+  const unknown = await api.apply(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "not_a_filter" }] } }]).catch((e) => e);
+  check("an unknown filter type is rejected with the filter list", unknown.code === "validation_failed" && unknown.details?.issues?.some((i: any) => i.message.includes("unknown filter") && i.hint.includes("lut")), unknown.details);
+  // every character that is special in a filtergraph, plus a space and "=" , in the directory and file name
+  const dir = join(tmp, "lut q'x:y,z[w]v;u\\t= s");
+  mkdirSync(dir);
+  const cube = join(dir, "red a'b:c,d[e];f.cube");
+  const all = (rgb: string) => ["LUT_3D_SIZE 2", ...Array(8).fill(rgb)].join("\n") + "\n";
+  writeFileSync(cube, all("1 0 0"));
+  const b0 = meanRgb((await api.frame(Q, 1, { out: join(tmp, "nolut.png") })).image);
+  await api.apply(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "lut", path: cube }] } }]);
+  const b1 = await api.frame(Q, 1, { out: join(tmp, "lut.png") }).then((f) => meanRgb(f.image), () => [-1, -1, -1]);
+  {
+    // Windows drive letter: the platform is presented as win32 only while the chain is built
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try { check("lut path on a Windows drive: separators become /, the colon is escaped at both levels", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])[0] === "lut3d=file=C\\\\:/a b/x\\,y.cube", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])); }
+    finally { Object.defineProperty(process, "platform", platform); }
+  }
+  check("lut at a path with filtergraph-special characters is applied", Math.abs(b0[0] - b0[1]) < 8 && b1[0] > 200 && b1[1] < 40 && b1[2] < 40, { b0, b1 });
+}
+
 console.log("scopes");
 await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: null } }]);
 const sc = await api.scopes(P, 1, { out: join(tmp, "scopes.jpg") });
@@ -82,6 +109,18 @@ check("key alone means api.openai.com; nothing set means unconfigured", T.speech
 const b = T.speechBody("hi", undefined, 350, { AGENTCUT_TTS_MODEL: "kokoro", AGENTCUT_TTS_VOICE: "af_bella" });
 check("body: env model/voice, wav, rate -> speed", b.model === "kokoro" && b.voice === "af_bella" && b.response_format === "wav" && b.speed === 2 && b.input === "hi", b);
 check("piper without a model is a missing_dependency", throwsCode(() => AN.tts("x", join(tmp, "p.wav"), "piper"), "missing_dependency") === true);
+{
+  // the espeak branch is the non-darwin, non-win32 one: present it as linux; no engine is installed here, so a valid voice ends at missing_dependency
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    const bv = (v: string) => { try { AN.tts("x", join(tmp, "v.wav"), v); return null; } catch (e: any) { return e; } };
+    const e = bv("-x");
+    check("espeak voice that reads as an option is a bad_voice with a hint", e?.code === "bad_voice" && !!e.hint, e && { code: e.code, msg: e.message });
+    check("espeak voice with a path separator is a bad_voice", bv("en/../x")?.code === "bad_voice");
+    check("espeak voice names like en-us and en+f3 pass the voice check", ["en-us", "en+f3", "vi", "mb-en1"].every((v) => bv(v)?.code !== "bad_voice"));
+  } finally { Object.defineProperty(process, "platform", platform); }
+}
 check("openai without config is a missing_dependency", throwsCode(() => AN.tts("x", join(tmp, "o.wav"), "openai:nova"), "missing_dependency") === true);
 
 console.log("tts over http (local server)");

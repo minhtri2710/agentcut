@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import * as AN from "./analyze.ts";
 import { audioSources, buildAudio } from "./audio.ts";
+import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
 import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Timeline, totalDuration } from "./model.ts";
 
@@ -82,7 +83,7 @@ function runs(n: number, pred: (k: number) => boolean, min = 0, gap = 0): [numbe
 function toWav(src: string, out: string, sr: number) {
   needFfmpeg();
   // keep the channel layout: upmixing mono to stereo pans it down 3 dB and would hide clipping
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", src, "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { encoding: "utf8" });
+  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(src), "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { encoding: "utf8" });
   if (r.status !== 0) throw new EditError(`cannot decode audio from ${src}: ${(r.stderr || "").slice(-300)}`, "decode_failed", "is it a media file with an audio stream?");
 }
 
@@ -256,7 +257,7 @@ async function draw(a: { lanes: Lane[]; mix: Win; findings: Dict[]; markers: Dic
     }
   }
   if (a.spec) {
-    const ss = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-ss", String(a.t0), "-t", String(a.t1 - a.t0), "-i", a.mixPath,
+    const ss = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-ss", String(a.t0), "-t", String(a.t1 - a.t0), ...inp(a.mixPath),
       "-lavfi", `aformat=channel_layouts=mono,showspectrumpic=s=${PW}x${SH}:legend=0:fscale=log:color=intensity`, a.spec], { encoding: "utf8" });
     if (ss.status === 0) { ctx.drawImage(await loadImage(a.spec), G, y, PW, SH); ctx.fillStyle = "#ccc"; ctx.fillText("spectrogram", 6, y + 16); ctx.fillStyle = "#888"; ctx.fillText("(log freq)", 6, y + 32); }
     else { ctx.fillStyle = "#f55"; ctx.fillText(`spectrogram failed: ${(ss.stderr || "").slice(-80)}`, G + 6, y + 20); }
