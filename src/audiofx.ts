@@ -33,7 +33,7 @@ export const NORMALIZE_LUFS = -16;
 export const DENOISE_STRENGTH = 0.5;
 // noiseFloor constants (see the docstring). Measured on ~21k synthetic and Linh clips: pauses, 5-30 s clips with a 300 ms lead-in, -95..-40 dBFS noise,
 // dither, partly-zero windows, fades and dropouts.
-const FLOOR_SILENCE_DB = -90, FLOOR_CLEAN_SHARE = 0.05, FLOOR_RUN = 3, FLOOR_BAND_DB = 1, FLOOR_SPAN_DB = 3;
+const FLOOR_SILENCE_DB = -90, FLOOR_RUN = 3, FLOOR_BAND_DB = 1, FLOOR_SPAN_DB = 3;
 
 export const AUDIO_FX_DOC = {
   denoise: "true or strength 0..1 (0.5): FFT noise reduction + soft expander in pauses; the noise floor is measured per clip",
@@ -146,17 +146,23 @@ export const denoiseStrength = (v: unknown) => (v === true ? DENOISE_STRENGTH : 
 export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : isNum(v) ? v : null);
 
 // ------------------------------------------------------------------ measurement
-/** Noise floor estimate in dBFS from 50 ms RMS windows; null when there is no signal. Stationary noise is a flat bottom of the sorted windows
- * (3 windows within 1 dB), speech is not. The floor is the median of the lowest such run, taken with every window up to FLOOR_SPAN_DB above
- * its start, so a plain 10th percentile (soft speech when there are few pauses) never sets the gate and afftdn above quiet word endings.
- * The final window (may be partial) is ignored. Windows at or below FLOOR_SILENCE_DB (-90, under the 16-bit floor) are dither or digital
- * padding, not noise, and are ignored too, unless they are at least FLOOR_CLEAN_SHARE (5%) of the clip: that is a clean recording whose
- * pauses sit below -90, and the floor is their median.
- * Limits (measured; each leaves the floor too LOW, i.e. less noise reduction, never extra clipping, unless noted):
- * - runs of 3+ equal windows below the noise (equal dropouts, the boundary windows of padded blocks: up to 6 dB low) and fades baked into the
- *   source (1 s linear: up to 15 dB low; 2 s linear: 2 dB low on median, up to 21 dB; 2 s linear in dB, in and out: 18 dB low on median);
- * - a clip with no 3 noise-only windows (150 ms) falls back to the 10th percentile, as before, and so does a clean recording (noise
- *   below -90) with a short lead-in only (< 5% of the clip): both put the floor on speech and can clip soft endings. */
+/** Noise floor estimate in dBFS from 50 ms RMS windows; null when there is no signal. Two bounds hold in every branch: the result is never above
+ * the plain 10th percentile of all windows > -100 dBFS (final window included, the estimate before the plateau rule), and it is taken from
+ * the noise, not from soft speech, whenever the clip has noise-only windows.
+ * Stationary noise is a flat bottom of the sorted windows (3 windows within 1 dB), speech is not. The floor is the median of the lowest such
+ * run, taken with every window up to FLOOR_SPAN_DB above its start. The final window (may be partial) is ignored for the run, and so are
+ * windows at or below FLOOR_SILENCE_DB (-90, under the 16-bit floor): dither or digital padding, not noise.
+ * Clean recording: only when that 10th percentile is itself at or below FLOOR_SILENCE_DB are the windows below -90 the pauses, and the floor
+ * is their median.
+ * Limits (measured on the D-i grid, 3162 cells; each leaves the floor too LOW, i.e. less noise reduction, never extra clipping, unless noted):
+ * - 3 equal dropouts inside pauses: up to 4.1 dB low; 8: up to 5.0 dB; dither or gated pauses at 3-7% of the clip: up to 1.5 dB low;
+ * - fades baked into the source: 1 s linear up to 13.0 dB low, 1 s linear in dB up to 29.1; 2 s linear 2.5 dB low on median and up to 19.0,
+ *   2 s linear in dB 16.8 on median and up to 29.9;
+ * - dither or a closed upstream gate at 10% of the clip or more: the 10th percentile lands in it, so the floor is that percentile (about
+ *   -91..-96 dBFS, as before) and the gate and afftdn do almost nothing;
+ * - a clip with no 3 noise-only windows (150 ms) returns the 10th percentile, and so does a clean recording (noise below -90) whose lead-in
+ *   is under 10% of the clip, where the lead-in counts as dither: the floor then sits on speech and can clip soft endings, but it is
+ *   never higher than before. */
 export function noiseFloor(path: string, start: number, len: number): number | null {
   const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", path, "-vn", "-af",
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
@@ -164,17 +170,17 @@ export function noiseFloor(path: string, start: number, len: number): number | n
     "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
   const all = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100);
   if (!all.length) return null;
-  const kept = all.length > 1 ? all.slice(0, -1) : all, byLevel = (a: number[]) => a.sort((x, y) => x - y);
-  const low = byLevel(kept.filter((x) => x <= FLOOR_SILENCE_DB)), high = kept.filter((x) => x > FLOOR_SILENCE_DB);
-  if (low.length >= Math.max(FLOOR_RUN, FLOOR_CLEAN_SHARE * kept.length)) return low[low.length >> 1];
-  const v = byLevel(high.length ? high : kept);
+  const byLevel = (a: number[]) => a.sort((x, y) => x - y), p10 = byLevel([...all])[Math.floor(all.length * 0.1)]; // c98537e's estimate: the ceiling
+  const kept = all.length > 1 ? all.slice(0, -1) : all, low = byLevel(kept.filter((x) => x <= FLOOR_SILENCE_DB));
+  if (p10 <= FLOOR_SILENCE_DB) return low.length ? Math.min(low[low.length >> 1], p10) : p10;
+  const v = byLevel(kept.filter((x) => x > FLOOR_SILENCE_DB));
   for (let i = 0; i + FLOOR_RUN <= v.length; i++) {
     if (v[i + FLOOR_RUN - 1] - v[i] > FLOOR_BAND_DB) continue;
     let j = i + FLOOR_RUN;
     while (j < v.length && v[j] - v[i] <= FLOOR_SPAN_DB) j++;
-    return v[i + ((j - i) >> 1)];
+    return Math.min(v[i + ((j - i) >> 1)], p10);
   }
-  return v[Math.floor(v.length * 0.1)];
+  return p10;
 }
 
 /** Integrated loudness (LUFS) of `input` args through filter chain `af`; null when too short/quiet to measure. */

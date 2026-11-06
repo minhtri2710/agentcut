@@ -151,16 +151,18 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   check(`pauses: noise in the gaps drops >= 15 dB (${reduction.toFixed(1)})`, reduction >= 15, reduction);
   const tflo = noiseFloor(talkSrc, 0, talkDur);
   check(`noiseFloor with pauses is the noise level (${tflo?.toFixed(1)} dBFS, true -50)`, tflo !== null && Math.abs(tflo + 50) < 1.5, tflo);
-  // the same clip plus 2% windows of dithered silence (-96 dBFS, the 16-bit floor) appended: those windows are not the noise
-  const win = 2400, k = Math.ceil(0.02 * Math.floor(talk.length / win)), padded = new Float32Array(talk.length + k * win);
-  padded.set(talk);
-  { let seed = 7; const a = 10 ** (-96 / 20) * Math.sqrt(3); for (let i = talk.length; i < padded.length; i++) padded[i] = a * (((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1); }
-  const dithSrc = wavOf("talk-dither.wav", padded), dithDur = padded.length / SR;
-  const dflo = noiseFloor(dithSrc, 0, dithDur);
-  check(`pauses + ${k} windows of dithered silence: noiseFloor is still the noise (${dflo?.toFixed(1)} dBFS, true -50)`, dflo !== null && Math.abs(dflo + 50) < 1.5, dflo);
-  const dithRaw = await project("dither-raw", dithSrc, dithDur, false), dithDn = await project("dither-dn", dithSrc, dithDur, true);
-  const dred = rms(dithRaw, pa, pb) - rms(dithDn, pa, pb);
-  check(`pauses + dithered silence: noise in the gaps still drops >= 15 dB (${dred.toFixed(1)})`, dred >= 15, dred);
+  // the same clip plus 2% and 6% windows of dithered silence (-96 dBFS, the 16-bit floor) appended: those windows are not the noise
+  for (const share of [0.02, 0.06]) {
+    const win = 2400, k = Math.ceil(share * Math.floor(talk.length / win)), padded = new Float32Array(talk.length + k * win);
+    padded.set(talk);
+    { let seed = 7; const a = 10 ** (-96 / 20) * Math.sqrt(3); for (let i = talk.length; i < padded.length; i++) padded[i] = a * (((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1); }
+    const dithSrc = wavOf(`talk-dither${k}.wav`, padded), dithDur = padded.length / SR;
+    const dflo = noiseFloor(dithSrc, 0, dithDur);
+    check(`pauses + ${k} windows of dithered silence: noiseFloor is still the noise (${dflo?.toFixed(1)} dBFS, true -50)`, dflo !== null && Math.abs(dflo + 50) < 1.5, dflo);
+    const dithRaw = await project(`dither${k}-raw`, dithSrc, dithDur, false), dithDn = await project(`dither${k}-dn`, dithSrc, dithDur, true);
+    const dred = rms(dithRaw, pa, pb) - rms(dithDn, pa, pb);
+    check(`pauses + ${k} windows of dithered silence: noise in the gaps still drops >= 15 dB (${dred.toFixed(1)})`, dred >= 15, dred);
+  }
   // a clip under 5 s (fewer than 100 windows) with one window that is 90% zero inside a pause
   const shortClip = synth(600, 3, -50, 0.3);
   shortClip.fill(0, 1.2 * SR, 1.2 * SR + 2160);
