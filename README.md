@@ -43,7 +43,7 @@ Muốn ra binary cho hệ điều hành khác thì build trên chính máy đó,
 **Cách 3: dùng Bun (để phát triển)**
 ```bash
 bun install
-bun src/cli.ts guide
+scripts/ac guide
 ```
 
 Có thể cài thêm:

@@ -2,7 +2,7 @@
   "mcpServers": {
     "agentcut": {
       "command": "bun",
-      "args": ["src/mcp.ts"]
+      "args": ["--no-env-file", "--config=/dev/null", "src/mcp.ts"]
     }
   }
 }

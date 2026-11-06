@@ -16,6 +16,6 @@ for (const f of ["dist/cli.js", "dist/mcp.js"]) {
 }
 console.log("dist:", res.outputs.map((o) => o.path.split("/").pop()).join(", "));
 if (process.argv.includes("--compile")) {
-  await $`bun build src/cli.ts --compile --minify --outfile bin/agentcut`;
+  await $`bun build src/cli.ts --compile --minify --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile bin/agentcut`;
   console.log("binary: bin/agentcut (MCP: `bin/agentcut mcp`)");
 }

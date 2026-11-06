@@ -6,7 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, devNull } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
@@ -169,7 +169,9 @@ function workerCommand(): string[] {
   const here = fileURLToPath(import.meta.url);
   if (here.includes("$bunfs") || here.includes("~BUN")) return [process.execPath, "__segment"];
   const ext = extname(here);
-  return [process.execPath, join(dirname(here), `segment-worker${ext}`)];
+  // under bun the worker, like the launchers, reads neither .env nor bunfig.toml from the working dir
+  const flags = process.versions.bun ? ["--no-env-file", `--config=${devNull}`] : [];
+  return [process.execPath, ...flags, join(dirname(here), `segment-worker${ext}`)];
 }
 
 export function defaultWorkers(frames: number, fps: number) {
