@@ -277,7 +277,7 @@ function mcpProc(env: Record<string, string>) {
   child.on("exit", (code, signal) => { exit = { code, signal, at: performance.now() }; });
   const rpc = (method: string, params: unknown) => new Promise<any>((res) => { const i = ++id; waiting.set(i, res); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method, params }) + "\n"); });
   return {
-    child, pid: child.pid!, get exit() { return exit; },
+    child, pid: child.pid!, rpc, get exit() { return exit; },
     init: async () => { await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "jobs-test", version: "1" } }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n"); },
     call: async (name: string, args: Record<string, unknown> = {}) => JSON.parse((await rpc("tools/call", { name, arguments: args })).result.content.find((c: any) => c.type === "text").text),
   };
@@ -419,6 +419,41 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
   check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
     working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
+}
+
+// DM-01: a reply bigger than the pipe buffer, read late by a client that is paused when SIGTERM arrives, still arrives whole (the shutdown waits
+// for stdout to take it); the exit code stays 143. DM-02: a reader that went away does not change the exit code.
+{
+  const big = join(tmp, "big.png");
+  ff("-f", "lavfi", "-i", "nullsrc=s=1200x1000,geq=r='random(1)*255':g='random(2)*255':b='random(3)*255'", "-frames:v", "1", big);
+  const bytes = statSync(big).size;
+  const srv = mcpProc({});
+  await srv.init();
+  srv.child.stdout.pause();
+  const reply = srv.rpc("tools/call", { name: "view_image", arguments: { path: big } });
+  await sleep(500); // the server has written what the pipe takes and is waiting for the rest to drain
+  const t0 = performance.now();
+  process.kill(srv.pid, "SIGTERM");
+  await sleep(400);
+  const aliveBeforeRead = !srv.exit;
+  const exited = () => srv.exit; // read after the awaits: the getter is not narrowed by the check above
+  srv.child.stdout.resume();
+  const msg: any = await Promise.race([reply, sleep(10_000).then(() => null)]);
+  await until(() => srv.exit, 10_000);
+  const got = msg?.result?.content?.[0]?.data?.length ?? 0;
+  check(`DM-01: a ${(bytes / 1e6).toFixed(1)} MB image reply, client paused at SIGTERM and reading 400 ms later, arrives whole; exit 143`,
+    aliveBeforeRead && got === Math.ceil(bytes / 3) * 4 && exited()?.code === 143, { bytes, got, aliveBeforeRead, exit: exited(), exitMs: exited() ? Math.round(exited()!.at - t0) : null });
+}
+{
+  const srv = mcpProc({});
+  await srv.init();
+  srv.child.stdout.destroy(); // nobody reads the replies any more: the server's next write fails with EPIPE
+  srv.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "guide", arguments: {} } }) + "\n");
+  await sleep(500);
+  const diedEarly = !!srv.exit;
+  if (!diedEarly) process.kill(srv.pid, "SIGTERM");
+  await until(() => srv.exit, 10_000);
+  check("DM-02: stdout closed by the reader (EPIPE on a reply), then SIGTERM: the server stays up until the stop and exits 143", !diedEarly && (srv.exit as typeof srv.exit)?.code === 143, { diedEarly, exit: srv.exit });
 }
 
 // DL-01: the embedded helper script, run by the real python3 (no uv, no packages): a normal exit must stay normal, the stdin stop must work,

@@ -22,6 +22,8 @@ const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
 const jobs = new Map<string, any>();
 /** tool calls the server has accepted and not yet finished; shutdown answers them before it exits */
 const calls = new Set<Promise<unknown>>();
+/** transport sends not yet taken by stdout */
+const sends = new Set<Promise<void>>();
 
 const text = (o: unknown): Content => ({ type: "text", text: typeof o === "string" ? o : JSON.stringify(o) });
 const ok = (o: object) => ({ content: [text({ ok: true, ...o })] });
@@ -194,14 +196,15 @@ export function buildServer() {
 // Inside the SDK client's close sequence (stdin end, 2 s, SIGTERM, 2 s, SIGKILL); children get 1.5 s of it (media.ts stopOnAbort).
 const SHUTDOWN_MS = 1900;
 let stopping: Promise<void> | undefined;
-/** Wait until no job is running and no accepted tool call is unanswered (jobs and calls that start meanwhile count: startJob aborts them
- *  at once), then until stdout has taken every reply. The SDK's server.close() does neither: it drops in-flight handlers and writes nothing. */
+/** Wait until no job is running, no accepted tool call is unanswered and every reply has left the process (jobs and calls that start
+ *  meanwhile count: startJob aborts them at once). A reply counts as sent when the transport's send resolves, which is when stdout took
+ *  all of it ('drain' if the pipe was full); an empty write is no barrier under bun. Not covered: a request read after this loop has
+ *  exited gets no reply. The SDK's server.close() does neither: it drops in-flight handlers and writes nothing. */
 async function drain() {
-  while ([...jobs.values()].some((j) => j.status === "running") || calls.size) {
-    await Promise.allSettled([...[...jobs.values()].filter((j) => j.status === "running").map((j) => j.promise), ...calls]);
+  while ([...jobs.values()].some((j) => j.status === "running") || calls.size || sends.size) {
+    await Promise.allSettled([...[...jobs.values()].filter((j) => j.status === "running").map((j) => j.promise), ...calls, ...sends]);
     await new Promise((r) => setImmediate(r)); // the SDK sends a handler's reply in microtasks after it returns
   }
-  await new Promise((r) => process.stdout.write("", r)); // callback runs once every earlier write has been flushed
 }
 /** The one stop path (stdin EOF, SIGTERM, SIGINT, SIGHUP): abort every running job, wait a bounded time for their cleanup
  *  (children stopped, part files and render temp removed) and for every accepted call to be answered, then exit.
@@ -218,7 +221,12 @@ export async function startMcp() {
   const server = buildServer();
   for (const [sig, n] of [["SIGTERM", 15], ["SIGINT", 2], ["SIGHUP", 1]] as const) process.on(sig, () => shutdown(128 + n));
   process.stdin.on("end", () => shutdown(0)).on("close", () => shutdown(0));
-  await server.connect(new StdioServerTransport());
+  // a closed reader must not change the exit code: the reply is lost, the stop goes on (bounded by SHUTDOWN_MS)
+  process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code !== "EPIPE" && e.code !== "ERR_STREAM_DESTROYED") throw e; });
+  const transport = new StdioServerTransport();
+  const send = transport.send.bind(transport);
+  transport.send = (m) => { const p = send(m); sends.add(p); void p.finally(() => sends.delete(p)); return p; };
+  await server.connect(transport);
 }
 
 const self = process.argv[1] ?? "";
