@@ -1,6 +1,6 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
@@ -16,20 +16,21 @@ const SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 /** The one version gate: every timeline read from disk (project.json, history snapshots) and every one written goes through it.
  *  `source` names where the timeline came from (op input is checked by replace_timeline itself). */
-function checkVersion(tl: Timeline, source: string): Timeline {
+function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: create a new project (agentcut init <new dir>) and re-import its media"): Timeline {
   if (tl?.version !== SCHEMA_VERSION) {
     const found = JSON.stringify(tl?.version) ?? "missing";
-    throw new EditError(`${source} has schema version ${found}; this build reads only version ${SCHEMA_VERSION}`, "bad_version",
-      `found ${found}, supported ${SCHEMA_VERSION}; there is no upgrade: create a new project (agentcut init <new dir>) and re-import its media`);
+    throw new EditError(`${source} has schema version ${found}; this build reads only version ${SCHEMA_VERSION}`, "bad_version", `found ${found}, supported ${SCHEMA_VERSION}; ${fix}`);
   }
   return tl;
 }
 
-function parse(text: string, source = "project.json"): Timeline {
+/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json */
+function parse(text: string, snapshot?: string): Timeline {
+  const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
   catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", "fix the file or run `agentcut undo` to restore the last good version"); }
-  return checkVersion(tl, source);
+  return checkVersion(tl, source, snapshot ? `there is no upgrade; project.json itself is fine: delete .agentcut/history/${snapshot}` : undefined);
 }
 
 function revisionOf(tl: Timeline): number {
@@ -46,11 +47,13 @@ export function checkRevision(base: number, current: number) {
 
 /** only ESRCH proves a pid dead; anything else (EPERM, or an impossible pid process.kill rejects with another code) counts as alive: fail closed */
 export const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; } };
+/** exists, a dangling symlink included (existsSync follows the link, so a dangling one reads as absent) */
+const lexists = (f: string) => { try { lstatSync(f); return true; } catch (e: any) { if (e.code === "ENOENT") return false; throw e; } };
 const readOr = (f: string) => { try { return readFileSync(f, "utf8"); } catch (e: any) { if (e.code === "ENOENT") return null; throw e; } };
 /** O_EXCL create with the full content already in place (link of a temp file), so readers never see a half-written lock. */
 function createExcl(file: string, body: string): boolean {
   const tmp = `${file}.tmp-${randomBytes(6).toString("hex")}`;
-  writeFileSync(tmp, body);
+  writeFileSync(tmp, body, { flag: "wx" });
   try { linkSync(tmp, file); return true; }
   catch (e: any) { if (e.code === "EEXIST") return false; throw e; }
   finally { rmSync(tmp, { force: true }); }
@@ -108,18 +111,17 @@ export function findProject(start?: string): string {
 }
 
 export class Project {
-  root: string; file: string; hist: string;
+  root: string; file: string;
   constructor(root: string) {
     this.root = presolve(root);
     this.file = join(this.root, PROJECT_FILE);
     if (!existsSync(this.file)) throw new EditError(`${this.file} does not exist`, "no_project", "run `agentcut init` first");
-    this.hist = join(this.root, ".agentcut", "history");
     registerFontDir(join(this.root, "fonts"));
   }
 
   static create(root: string, o: { preset?: string; width?: number; height?: number; fps?: number; name?: string; empty?: boolean } = {}) {
     root = presolve(root);
-    if (existsSync(join(root, PROJECT_FILE))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
+    if (lexists(join(root, PROJECT_FILE))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
     let w = o.width ?? 1920, h = o.height ?? 1080;
     if (o.preset) {
       if (!PRESETS[o.preset]) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
@@ -128,7 +130,7 @@ export class Project {
     for (const d of ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"]) mkdirSync(join(root, d), { recursive: true });
     const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
     if (o.empty) tl.tracks = [];
-    writeFileSync(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2));
+    writeFileSync(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2), { flag: "wx" });
     return new Project(root);
   }
 
@@ -136,39 +138,48 @@ export class Project {
 
   /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. */
   save(tl: Timeline, label = "edit", snapshot = true): number {
-    checkVersion(tl, "the timeline to save");
+    checkVersion(tl, "the timeline to save", "save only a timeline loaded from the project");
     resolve(tl);
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
       const disk = revisionOf(parse(cur));
       checkRevision(revisionOf(tl), disk);
-      if (snapshot) { this.push("undo", cur, label); this.clear("redo"); }
+      if (snapshot) { this.entries("undo"); this.entries("redo"); this.push("undo", cur, label); this.clear("redo"); } // both stacks verified before the first write
       tl.revision = disk + 1;
       this.write(tl);
       return tl.revision;
     });
   }
 
+  /** a new temp name per write, created O_EXCL: a planted symlink (or any existing file) is never written through or reused */
   private write(tl: Timeline) {
-    const tmp = this.file + ".tmp";
-    writeFileSync(tmp, JSON.stringify(tl, null, 2));
-    renameSync(tmp, this.file);
+    const tmp = `${this.file}.tmp-${randomBytes(6).toString("hex")}`;
+    try { writeFileSync(tmp, JSON.stringify(tl, null, 2), { flag: "wx" }); renameSync(tmp, this.file); }
+    catch (e: any) { if (e.code !== "EEXIST") rmSync(tmp, { force: true }); throw e; }
   }
 
-  private locked<T>(fn: () => T): T { return withLock(join(this.root, ".agentcut", "lock"), fn); }
+  private locked<T>(fn: () => T): T { return withLock(join(this.plainDir(".agentcut"), "lock"), fn); }
+
+  /** root/<parts> as a real directory, made one component at a time: an existing component that is not a real directory (a symlink)
+   *  is refused before anything is created or written there. */
+  private plainDir(...parts: string[]) {
+    let d = this.root;
+    for (const part of parts) {
+      d = join(d, part);
+      let st;
+      try { st = lstatSync(d); } catch (e: any) { if (e.code !== "ENOENT") throw e; mkdirSync(d); continue; }
+      if (!st.isDirectory()) throw new EditError(`${relative(this.root, d)} is not a plain directory inside the project (symlink?)`, "unsafe_history", "AgentCut never reads, writes or deletes history through symlinks: replace it with a real directory");
+    }
+    return d;
+  }
 
   // ---------------------------------------------------------------- history
   /** The history writer's entry names (push): digits + ".json". Undo/redo/prune only ever touch a path built from a stack dir plus such a name. */
   private static readonly ENTRY = /^\d+\.json$/;
-  /** The stack dir; refuses (before any write) unless it is exactly <real project root>/.agentcut/history/<name>: a symlinked
-   *  .agentcut, history or stack dir would point undo/redo/prune at files outside the history. Not shared with cache.ts's `contained`:
-   *  that one checks only a file's parent against an area root and throws unsafe_cache_dir. */
-  private stack(name: string) {
-    const d = join(this.hist, name); mkdirSync(d, { recursive: true });
-    if (realpathSync(d) !== join(realpathSync(this.root), ".agentcut", "history", name))
-      throw new EditError(`.agentcut/history/${name} is not a plain directory inside the project (symlink?)`, "unsafe_history", "AgentCut never reads or deletes history through symlinks: replace it with a real directory");
-    return d;
-  }
+  /** The stack dir, checked component by component (.agentcut, history, the stack) with lstat before anything is created: a symlink
+   *  there would point undo/redo/prune at files outside the history. Same intent as cache.ts areaRoot (:28-35, a realpath check of
+   *  a cache area, code unsafe_cache_dir); the two are not merged because that one resolves a path and this one refuses to create through a link. */
+  private stack(name: string) { return this.plainDir(".agentcut", "history", name); }
   /** Entry paths of a stack, oldest first. An entry that is not a regular file (a symlink, a directory) is refused, never followed. */
   private entries(name: string) {
     const d = this.stack(name), out: string[] = [];
@@ -195,9 +206,10 @@ export class Project {
       const e = this.entries(from), snaps: { file: string; label: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
         const file = e[e.length - 1 - i], d = JSON.parse(readFileSync(file, "utf8"));
-        snaps.push({ file, label: d.label, tl: parse(d.timeline, `history snapshot ${from}/${basename(file)}`) });
+        snaps.push({ file, label: d.label, tl: parse(d.timeline, `${from}/${basename(file)}`) });
       }
       if (!snaps.length) throw new EditError(`nothing to ${from}`, "empty_history");
+      this.entries(to); // the stack this call writes to is verified before the first write
       for (const sn of snaps) {
         this.push(to, cur, sn.label);
         unlinkSync(sn.file);
