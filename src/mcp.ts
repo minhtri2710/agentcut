@@ -104,7 +104,7 @@ export function buildServer() {
     const j = jobs.get(id);
     if (!j) return { content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true };
     const until = Date.now() + secs * 1000;
-    while (j.status === "running" && Date.now() < until) await new Promise((r) => setTimeout(r, 300));
+    while (j.status === "running" && Date.now() < until) await Promise.race([j.promise, new Promise((r) => setTimeout(r, 300))]); // wakes when the job settles
     const { promise, ctl, ...pub } = j;
     return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })] };
   };
@@ -114,6 +114,7 @@ export function buildServer() {
     const ctl = new AbortController();
     const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project, ctl };
     jobs.set(id, job);
+    if (stopping) ctl.abort(new EditError("the server is shutting down", "aborted")); // requested inside the shutdown window: nothing may start
     job.promise = run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal)
       .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
       .finally(() => { job.finished = Date.now(); });

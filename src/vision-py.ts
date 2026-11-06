@@ -2,13 +2,18 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
-import json, os, subprocess, sys, threading
+import json, os, stat, subprocess, sys, threading
 
 def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it): leave at once, no cleanup
-    try: sys.stdin.buffer.read()
+    try:
+        while os.read(0, 65536): pass  # the raw fd: sys.stdin.buffer would hold its lock and abort the interpreter at a normal exit
     except Exception: pass
     os._exit(143)
-threading.Thread(target=_stop_on_eof, daemon=True).start()
+# Armed only when stdin is a pipe or socket, i.e. vision.ts holds the other end. If uv handed us /dev/null or a tty instead, EOF
+# would arrive at once and kill every run: then only the kill / EPIPE path stops us.
+try: _m = os.fstat(0).st_mode
+except OSError: _m = 0
+if stat.S_ISFIFO(_m) or stat.S_ISSOCK(_m): threading.Thread(target=_stop_on_eof, daemon=True).start()
 
 def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     args = ["ffmpeg", "-v", "error", "-nostdin"]

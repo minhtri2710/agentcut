@@ -2,7 +2,7 @@
 // UI play drafts). "Referenced" = still needed by the current timeline (mattes of remove_background clips, analyses of
 // pending vision requests, the current helper script); everything else can be rebuilt and is pruned first.
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { mattesFor } from "./ops-vision.ts";
@@ -92,17 +92,20 @@ const RENDER_TMP = /^render-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp: rend
  *  process looks alive and keeps its file: the safe direction. Names carry no host, so a project shared over a network
  *  filesystem by several machines is out of scope. */
 export function sweepStale(p: Project) {
-  const plain = (dir: string) => { try { return areaRoot(p, dir); } catch (e) { if (e instanceof EditError && e.code === "unsafe_cache_dir") return null; throw e; } };
-  const rm = (e: Pick<Entry, "root" | "path">, recursive: boolean) => {
-    try { if (contained(e)) rmSync(e.path, { recursive, force: true }); } catch (err) { if (!(err instanceof EditError)) throw err; }
-  };
+  // Housekeeping must never fail the user's render or prepare: any error with a `code` (an fs error such as EBUSY / EPERM while an
+  // orphan still holds a file, or an EditError from the containment checks) leaves that entry for the next sweep. A containment
+  // failure never reaches the delete.
+  const soft = <T,>(f: () => T, otherwise: T): T => { try { return f(); } catch (e: any) { if (typeof e?.code === "string") return otherwise; throw e; } };
+  const list = (dir: string) => soft(() => readdirSync(dir, { withFileTypes: true }), []);
+  const plain = (dir: string) => soft(() => areaRoot(p, dir), null);
+  const rm = (e: Pick<Entry, "root" | "path">, recursive: boolean) => soft(() => { if (contained(e)) rmSync(e.path, { recursive, force: true }); }, undefined);
   const cache = cacheDir(p.root), cacheRoot = plain(cache);
-  if (cacheRoot) for (const f of files(cache)) {
-    const m = PART_FILE.exec(basename(f));
-    if (m && !alive(Number(m[1]))) rm({ root: cacheRoot, path: f }, false);
+  if (cacheRoot) for (const d of list(cache)) { // the cache dir is flat: direct children only, regular files only
+    const m = PART_FILE.exec(d.name);
+    if (d.isFile() && m && !alive(Number(m[1]))) rm({ root: cacheRoot, path: join(cache, d.name) }, false);
   }
   const tmp = join(p.root, ".agentcut", "tmp"), tmpRoot = plain(tmp);
-  if (tmpRoot) for (const d of readdirSync(tmp, { withFileTypes: true })) {
+  if (tmpRoot) for (const d of list(tmp)) {
     const m = RENDER_TMP.exec(d.name);
     if (d.isDirectory() && m && !alive(Number(m[1]))) rm({ root: tmpRoot, path: join(tmp, d.name) }, true);
   }

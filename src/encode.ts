@@ -156,8 +156,8 @@ export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: numb
   } finally {
     enc.stdin!.end();
     r.close();
-    // a frame/progress error: stop the encoder and wait for it, so the caller can delete `out` without ffmpeg touching it again
-    if (failed) { enc.kill(); await exited; }
+    // a frame/progress error, or an abort that landed on the last frame: stop the encoder and wait for it, so the caller can delete `out` without ffmpeg touching it again
+    if (failed || signal?.aborted) { enc.kill(); await exited; }
   }
   signal?.throwIfAborted();
   const [code] = await exited;

@@ -392,6 +392,54 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
     r.working && r.procs.length >= 3 && r.exited && r.exitMs < 3000 && r.code === 143 && r.gone && clean(r), r);
 }
 
+// DL-02: a job requested while the server is already shutting down is aborted at once (no new helper starts)
+{
+  const proj = join(tmp, "proj-late"), uvLog2 = uvLog;
+  rmSync(uvLog2, { force: true });
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog2 }); // 'deaf' keeps the shutdown window open for 1.5 s
+  await srv.init();
+  await srv.call("create_project", { path: proj, preset: "720p" });
+  await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
+  await srv.call("prepare", { wait_seconds: 0 });
+  const working = await until(() => existsSync(uvLog2), 30_000);
+  const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog2, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
+  process.kill(srv.pid, "SIGTERM");
+  // arrives inside the shutdown window; a server that starts the job never answers before it exits
+  const late: any = await Promise.race([srv.call("prepare", { wait_seconds: 5 }), until(() => srv.exit, 10_000).then(() => null)]);
+  await until(() => srv.exit, 10_000);
+  for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
+  check("DL-02: a prepare requested during shutdown fails with `aborted` and starts no helper", working && late?.status === "failed" && late.error?.code === "aborted" && readFileSync(uvLog2, "utf8").trim().split("\n").length === 1 && srv.exit?.code === 143, { late, exit: srv.exit });
+}
+
+// DL-01: the embedded helper script, run by the real python3 (no uv, no packages): a normal exit must stay normal, the stdin stop must work,
+// and the stop must stay unarmed when stdin is not a pipe
+console.log("vision helper script (python3)");
+{
+  const py = spawnSync("python3", ["--version"], { encoding: "utf8" });
+  if (py.error) console.log("  - skipped: no python3 on PATH");
+  else {
+    const { VISION_PY } = await import("../src/vision-py.ts");
+    const file = join(tmp, "helper.py"), head = join(tmp, "helper-head.py");
+    writeFileSync(file, VISION_PY);
+    writeFileSync(head, VISION_PY.slice(0, VISION_PY.indexOf("def frames(")) + "\nimport sys, time\ntime.sleep(float(sys.argv[1]))\n"); // the stop watcher only, then a sleep
+    const runPy = (args: string[], stdio: "pipe" | "ignore", closeStdinAfterMs?: number) => new Promise<{ code: number | null; signal: string | null; ms: number; stderr: string }>((res) => {
+      const t = performance.now(), ch = spawn("python3", ["-I", ...args], { stdio: [stdio, "pipe", "pipe"] });
+      let stderr = ""; ch.stderr!.on("data", (d) => (stderr += d));
+      if (closeStdinAfterMs !== undefined) setTimeout(() => ch.stdin!.end(), closeStdinAfterMs);
+      const guard = setTimeout(() => ch.kill("SIGKILL"), 15_000); // a hung python must fail the check, not the suite
+      ch.on("exit", (code, signal) => { clearTimeout(guard); res({ code, signal, ms: performance.now() - t, stderr }); });
+    });
+    const bogus = await runPy([file, '{"cmd":"bogus"}'], "pipe");
+    check(`helper exits normally (code 1, KeyError) with its stop watcher armed, not by SIGABRT [${py.stdout.trim()}]`, bogus.code === 1 && bogus.signal === null && /KeyError/.test(bogus.stderr), bogus);
+    const ok = await runPy([head, "0.3"], "pipe");
+    check("helper that finishes normally with stdin an open pipe exits 0", ok.code === 0 && ok.signal === null, ok);
+    const stop = await runPy([head, "30"], "pipe", 300);
+    check(`closing the helper's stdin stops it: exit 143 in ${(stop.ms / 1000).toFixed(2)}s`, stop.code === 143 && stop.ms < 3000, stop);
+    const devnull = await runPy([head, "0.5"], "ignore");
+    check("stdin from /dev/null (not a pipe): the watcher stays unarmed, the run finishes normally", devnull.code === 0 && devnull.signal === null, devnull);
+  }
+}
+
 // a dead process's leftovers are swept at the next prepare and render; nothing else is touched
 console.log("sweep of a dead process's leftovers");
 {
@@ -402,6 +450,7 @@ console.log("sweep of a dead process's leftovers");
   const gone = [join(cacheD, `matte-aaa.part-${dead}-1.mov`), join(cacheD, `subject-bbb.part-${dead}-abcdef.json`), join(tmpD, `render-${dead}-abc123`)];
   const kept = [join(cacheD, `matte-aaa.part-${me}-1.mov`), join(cacheD, `matte-aaa.part-99999999999-1.mov`), join(tmpD, `render-${me}-abc123`), join(tmpD, `render-99999999999-abc123`),
     join(tmpD, `render-${dead}-abc123.txt`), join(tmpD, `render-${dead}-abc12`), join(tmpD, "other"), join(P6, `stray.part-${dead}-1.mov`),
+    join(cacheD, "sub", `deep.part-${dead}-1.mov`), // the cache dir is flat: only its direct children are swept
     join(P6, "previews", `p.part-${dead}-1.bin`), join(P6, "renders", `r.part-${dead}-1.mp4`), join(P6, "media", `media.part-${dead}-1.mp4`)];
   const plant = (fs: string[]) => { for (const f of fs) { mkdirSync(join(f, ".."), { recursive: true }); if (/render-\d+-abc123$|other$|abc12$/.test(f)) { mkdirSync(f, { recursive: true }); writeFileSync(join(f, "seg000.mkv"), "x".repeat(2000)); } else writeFileSync(f, "x"); } };
   const info0: any = api.cache.info(P6);
@@ -416,6 +465,17 @@ console.log("sweep of a dead process's leftovers");
     check(`R5: ${what} sweeps the dead pid's .part files and render dirs`, gone.every((f) => !existsSync(f)), gone.filter(existsSync));
     check(`R5: ${what} keeps a live pid's, impossible pids, near-miss names, symlinks and anything outside the cache and .agentcut/tmp`,
       kept.every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), kept.filter((f) => !existsSync(f)));
+  }
+  // DL-04: housekeeping never fails the user's call: stale entries that cannot be removed (read-only parents) are left, prepare and render still succeed
+  if (process.getuid?.() === 0) console.log("  - skipped: running as root, chmod cannot make a directory read-only");
+  else {
+    plant(gone);
+    chmodSync(gone[2], 0o555); chmodSync(cacheD, 0o555); // the stale render dir cannot lose its file, the cache dir cannot lose its .part files
+    const r1: any = await api.prepare(P6).catch((e) => e), r2: any = await api.render(P6, { out: join(tmp, "sweep-out2.mp4"), quality: "draft", sheet: false, workers: 1, end: 0.5 }).catch((e) => e);
+    chmodSync(gone[2], 0o755); chmodSync(cacheD, 0o755);
+    check("R5: entries that cannot be removed do not fail prepare or render, and stay for the next sweep", r1.ready === true && r2.frames > 0 && gone.every(existsSync), { r1: r1?.message ?? r1.ready, r2: r2?.message ?? r2.frames, left: gone.filter(existsSync) });
+    await api.prepare(P6);
+    check("R5: the next sweep removes them", gone.every((f) => !existsSync(f)));
   }
   api.cache.prune(P6, { maxMb: 0 });
   check("cache prune (max_mb=0) leaves .agentcut/tmp alone", existsSync(join(tmpD, `render-${me}-abc123`)) && existsSync(join(tmpD, "other")) && existsSync(join(tmpD, `render-${dead}-lnk123`)));
