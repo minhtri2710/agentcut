@@ -141,7 +141,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     jobs.set(job.id, job);
     preparing = job;
     let last = 0;
-    api.prepare(root, { progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } })
+    Promise.resolve().then(() => api.prepare(root, { progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: "failed", error: errJson(e) }))
       .finally(() => { preparing = null; broadcast("job", job); });

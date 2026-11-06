@@ -54,7 +54,11 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
       }
       return { revision, computed, applied, ready: true };
     }
-    if (round > ORDER.length) throw new EditError("prepare made no progress", "internal", "this is an AgentCut bug; please report_feedback(kind='bug')");
+    if (round > ORDER.length) {
+      // the timeline moved since prepare started: edits kept adding requests, not a bug
+      if (tl.revision !== revision) throw new EditError(`the project kept changing while prepare ran (revision ${revision} -> ${tl.revision}); it did not finish`, "conflict", "run prepare again", undefined, { revision: tl.revision });
+      throw new EditError("prepare made no progress", "internal", "this is an AgentCut bug; please report_feedback(kind='bug')");
+    }
     const total = jobs.reduce((n, d) => n + d.frames, 0);
     let base = 0;
     for (const d of jobs) {

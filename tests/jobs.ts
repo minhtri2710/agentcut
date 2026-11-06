@@ -97,6 +97,7 @@ console.log("project lock (concurrent processes)");
       "non-hex id": `${dead} ${"z".repeat(16)} ${hostname()}`,
       "trailing newline": `${lockBody(dead)}\n`,
       "dead pid on another host": lockBody(dead, "a".repeat(16), `${hostname()}-other host`),
+      "impossible pid on this host": lockBody(99999999999),
     };
     for (const [name, body] of Object.entries(cases)) {
       writeFileSync(L5, body);
@@ -230,6 +231,21 @@ const cli = (...a: string[]) => JSON.parse(spawnSync(process.execPath, [resolve(
 const ci = cli("cache", "info"), cp = cli("cache", "prune", "--older-than", "30d"), ps = cli("prepare", "--status");
 check("CLI cache info / prune / prepare --status print one JSON object", ci.ok && ci.total.files > 0 && cp.ok && cp.removed.files === 0 && ps.ok && ps.ready === true, { ci, cp, ps });
 
+// prepare while the timeline keeps changing: the missing set is never settled in the round budget -> conflict, not internal
+console.log("prepare vs concurrent edits");
+{
+  const P2 = join(tmp, "proj-race"), srcs = [0, 1, 2, 3].map((i) => join(m, `race-${i}.mp4`));
+  srcs.forEach((f, i) => ff("-f", "lavfi", "-i", `testsrc2=s=${160 + 16 * i}x90:r=30:d=1`, "-pix_fmt", "yuv420p", f));
+  api.create(P2, { preset: "720p" });
+  const addMatte = (i: number) => api.apply(P2, [{ op: "add_clip", track: `t${i}`, src: srcs[i], at: 0, duration: 1 }, { op: "remove_background", id: `vid${i + 1}` }]);
+  await addMatte(0);
+  let edits = 1;
+  // once a round's matte is on disk (edits-th matte file), add one more clip that needs a new matte
+  const mattes = () => readdirSync(join(P2, ".agentcut", "cache")).filter((f) => f.startsWith("matte-")).length;
+  const r: any = await api.prepare(P2, { progress: (d, n) => { if (d === n && edits < 4 && mattes() >= edits) void addMatte(edits++); } }).catch((e) => e);
+  check("edits landing every round: prepare fails `conflict` with a prepare-again hint, not `internal`", r.code === "conflict" && /prepare/.test(r.hint ?? "") && edits === 4, { code: r.code, hint: r.hint, edits });
+}
+
 // containment: symlinks inside or in place of an area are never walked, counted or deleted
 console.log("cache containment (symlinks)");
 {
@@ -271,6 +287,10 @@ console.log("cache containment (symlinks)");
     symlinkSync(outside, link);
     const codes = [errCode(() => api.cache.prune(P)), errCode(() => api.cache.prune(P, { maxMb: 0 })), errCode(() => api.cache.info(P))];
     check(`${name}/ symlinked outside: prune and info fail closed, sentinels survive`, codes.every((c) => c === "unsafe_cache_dir") && intact(), codes);
+    if (name === "previews") {
+      const wf: any = await api.frame(P, 1, { scale: 0.5 }).catch((e) => e);
+      check("preview write into a symlinked previews/: unsafe_cache_dir, the hint names AGENTCUT_PREVIEWS_MAX_MB, sentinels survive", wf.code === "unsafe_cache_dir" && /AGENTCUT_PREVIEWS_MAX_MB/.test(wf.hint ?? "") && intact(), { code: wf.code, hint: wf.hint });
+    }
     unlinkSync(link);
     renameSync(real, link);
   }
@@ -279,11 +299,15 @@ console.log("cache containment (symlinks)");
   mkdirSync(join(prev, "ui"), { recursive: true });
   const draft = join(prev, "ui", `play-r1-0.00-1.00.part-${process.pid}-abcd1234.mp4`);
   writeFileSync(draft, Buffer.alloc(100_000)); utimesSync(draft, week - 5, week - 5);
+  const impossible = join(prev, "x.part-99999999999-1.bin");
+  writeFileSync(impossible, Buffer.alloc(100_000)); utimesSync(impossible, week - 5, week - 5);
   process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.05";
   await api.frame(P, 1.5, { scale: 0.5 });
   delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
   api.cache.prune(P, { maxMb: 0 });
   check("in-flight draft survives the cap and prune", existsSync(draft));
+  check("temp with an impossible pid (process.kill rejects it without ESRCH) survives the cap and prune too", existsSync(impossible));
+  rmSync(impossible, { force: true });
 
   // a directory swapped for a symlink after the walk, before the delete: the per-delete realpath recheck refuses it.
   // The walk has no hook, so the swap runs from inside the in-flight probe (process.kill(pid, 0)) that prune makes for

@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -174,6 +174,17 @@ check("prepare job finishes done with the result", pdone?.status === "done" && p
 check("SSE reported the prepare job", events.some((e) => e.event === "job" && e.data.id === pj.id && e.data.status === "done"));
 const after = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame succeeds after prepare", after.status === 200 && after.type === "image/jpeg", after.body.toString().slice(0, 200));
+
+// a prepare that fails before it starts (project.json gone) lands in the job and frees the slot
+const pf = join(dir, "project.json"), pfAway = join(dir, "project.json.away");
+renameSync(pf, pfAway);
+const fj = (await jget("/api/prepare", { method: "POST", body: {} })).j;
+let fdone: any = null;
+for (let i = 0; i < 100 && !fdone; i++) { const s = (await jget(`/api/jobs/${fj.id}`)).j; if (s.status !== "running") fdone = s; else await Bun.sleep(50); }
+const fj2 = (await jget("/api/prepare", { method: "POST", body: {} })).j;
+renameSync(pfAway, pf);
+check("prepare that throws at once: the job fails with no_project", fj.kind === "prepare" && fdone?.status === "failed" && fdone.error?.code === "no_project", { fj, fdone });
+check("  the slot is free: the next request is a new job", !!fj.id && fj2.kind === "prepare" && fj2.id !== fj.id, { fj, fj2 });
 
 ctl.abort();
 ui.server.closeAllConnections?.();

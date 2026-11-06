@@ -31,7 +31,8 @@ export function checkRevision(base: number, current: number) {
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
 }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code === "EPERM"; } };
+/** only ESRCH proves a pid dead; anything else (EPERM, or an impossible pid process.kill rejects with another code) counts as alive: fail closed */
+export const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; } };
 const readOr = (f: string) => { try { return readFileSync(f, "utf8"); } catch (e: any) { if (e.code === "ENOENT") return null; throw e; } };
 /** O_EXCL create with the full content already in place (link of a temp file), so readers never see a half-written lock. */
 function createExcl(file: string, body: string): boolean {

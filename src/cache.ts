@@ -6,14 +6,13 @@ import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { mattesFor } from "./ops-vision.ts";
-import type { Project } from "./project.ts";
+import { alive, type Project } from "./project.ts";
 import { cacheDir, helperScript } from "./vision.ts";
 
 const MB = 1 << 20;
 export const PREVIEWS_MAX_MB = () => Number(process.env.AGENTCUT_PREVIEWS_MAX_MB ?? 200);
 interface Entry { area: "cache" | "previews"; root: string; path: string; bytes: number; mtime: number; referenced: boolean }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code === "EPERM"; } };
 /** temp output of a compute/render that is still running (pid in the name: vision.ts `.part-<pid>-`, `.<pid>.tmp`) */
 const inFlight = (f: string) => { const m = /\.part-(\d+)-|\.(\d+)\.tmp$/.exec(f); return !!m && alive(Number(m[1] ?? m[2])); };
 
@@ -31,7 +30,7 @@ function areaRoot(p: Project, dir: string): string | null {
   try { real = realpathSync(dir); } catch (e: any) { if (e.code === "ENOENT") return null; if (e.code !== "ELOOP") throw e; }
   const rel = relative(p.root, dir);
   if (real !== join(realpathSync(p.root), rel))
-    throw new EditError(`${rel} is not a plain directory inside the project (symlink?)`, "unsafe_cache_dir", `AgentCut never deletes through symlinks: replace ${rel} with a real directory`);
+    throw new EditError(`${rel} is not a plain directory inside the project (symlink?)`, "unsafe_cache_dir", `AgentCut never deletes through symlinks: replace ${rel} with a real directory (or set AGENTCUT_PREVIEWS_MAX_MB=0 to turn the automatic previews cap off)`);
   return real;
 }
 
