@@ -99,6 +99,36 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(duck) } }]));
   const fixed = notDucked(Q);
   check("applying the hinted duck clears the finding", fixed.length === 0, fixed);
+
+  // a short stretch of un-ducked music inside long narration is judged locally, not averaged away over the whole run
+  ff("-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*300*t)':s=48000:d=20", "-ac", "1", f("long-voice.wav")); // -12 dBFS in the mix, continuous
+  ff("-f", "lavfi", "-i", "aevalsrc='if(between(t,8,11),0.397,0.0997)*sin(2*PI*220*t)':s=48000:d=20", "-ac", "1", f("swell.wav")); // 14 dB under the voice, 2 dB under for 8-11 s
+  const Z = f("q-swell");
+  cli("init", Z, "--preset", "reels");
+  cli("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
+    { op: "add_clip", track: "voice", src: f("long-voice.wav"), at: 0, duration: 20 }, { op: "add_clip", track: "music", src: f("swell.wav"), at: 0, duration: 20 }]));
+  const sw = notDucked(Z);
+  check("3 s swell (2 dB under) inside 20 s of narration (14 dB under): one finding around 8-11 s", sw.length === 1 && sw[0].start > 7 && sw[0].start < 9 && sw[0].end > 10 && sw[0].end < 12 && sw[0].end - sw[0].start < 5, sw);
+  const swDuck = /set duck=(-\d+)/.exec(sw[0]?.hint ?? "")?.[1];
+  cli("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(swDuck) } }]));
+  check(`the swell's hinted duck (${swDuck}) clears it`, !!swDuck && notDucked(Z).length === 0, notDucked(Z));
+
+  // each voice clip is judged against its own level: a quiet dialogue clip next to a loud voiceover, with a bed under the dialogue
+  ff("-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*300*t)':s=48000:d=6", "-ac", "1", f("vo-loud.wav")); // -12 dBFS in the mix
+  ff("-f", "lavfi", "-i", "aevalsrc='0.035*sin(2*PI*300*t)':s=48000:d=6", "-ac", "1", f("dlg-quiet.wav")); // -35 dBFS in the mix
+  ff("-f", "lavfi", "-i", "aevalsrc='0.0251*sin(2*PI*220*t)':s=48000:d=13", "-ac", "1", f("bed-low.wav")); // -38 dBFS: 3 dB under the dialogue, 26 dB under the voiceover
+  const M = f("q-mixed");
+  cli("init", M, "--preset", "reels");
+  cli("apply", "-p", M, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } }, { op: "add_track", id: "dlg", kind: "audio", role: "dialogue" },
+    { op: "add_clip", track: "voice", src: f("vo-loud.wav"), at: 0, duration: 6 }, { op: "add_clip", track: "dlg", src: f("dlg-quiet.wav"), at: 6.5, duration: 6 },
+    { op: "add_clip", track: "music", src: f("bed-low.wav"), at: 0, duration: 13 }]));
+  const mixed = notDucked(M);
+  check("bed 3 dB under a quiet dialogue clip is reported although a loud voiceover sets a high global level", mixed.length === 1 && mixed[0].start >= 6 && mixed[0].end <= 13, mixed);
+
+  // music louder than the voice: the hint says so
+  ff("-f", "lavfi", "-i", "aevalsrc='0.7*sin(2*PI*220*t)':s=48000:d=4", "-ac", "1", f("bed-hot.wav"));
+  const hot = notDucked(mixOf("q-hot", "bed-hot.wav"));
+  check("music above the voice: hint says 'above', not a negative 'under'", hot.length === 1 && /dB above the voice/.test(hot[0].hint) && !/-\d+(\.\d+)? dB under/.test(hot[0].hint), hot);
 }
 
 const src = cli("audio", "--source", f("clip.wav"), "-o", f("clip.png"));

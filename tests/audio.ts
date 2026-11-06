@@ -182,6 +182,20 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   await api.apply(D, [{ op: "update_track", id: "music", set: { duck: null } }, { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: [[0, 1], [1.1, 1], [1.12, 0.0316]] }]);
   const kf = dmix("kf-drop"), top = rms(kf, 0.2, 0.7), low = rms(kf, 2, 3), after = rms(kf, 1.13, 1.17);
   check(`volume keyframe drop 1.10 -> 1.12 s: ${top.toFixed(1)} -> ${low.toFixed(1)} dB, already there at 1.13-1.17 s (${after.toFixed(1)})`, Math.abs(top - low - 30) < 0.5 && Math.abs(after - low) < 2);
+
+  // 130 separate voice intervals (ffmpeg rejects an expression nested ~100 deep) over a bed split in two clips: every interval ducks, the gaps do not
+  ff("-f", "lavfi", "-i", "sine=f=220:d=140:r=8000", "-ac", "1", join(m, "bed140.wav"));
+  const V = join(tmp, "many");
+  api.create(V, { width: 320, height: 240, fps: 24 });
+  await api.apply(V, [
+    { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 0, duration: 70 }, { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 70, duration: 70 },
+    ...Array.from({ length: 130 }, (_, i) => ({ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 1 + i, duration: 0.3, muted: true })),
+  ]);
+  const pv = api.openProject(V), tv = pv.absolutized(pv.load());
+  tv.settings.loudness = null;
+  const many = buildAudio(tv, join(tmp, "many.wav"));
+  const dips = [10, 69, 70, 100].map((t) => [rms(many, t + 1.1, t + 1.25), rms(many, t + 1.58, t + 1.72)]); // interval at 1+t.., gap after it
+  check(`130 voice intervals: each sampled one ducks by ~20 dB and its gap does not (${dips.map(([a, b]) => `${a.toFixed(0)}/${b.toFixed(0)}`).join(" ")} dB)`, dips.every(([a, b]) => Math.abs(b - a - 20) < 1.5), dips);
 }
 
 const el = ((performance.now() - t0) / 1000).toFixed(1);

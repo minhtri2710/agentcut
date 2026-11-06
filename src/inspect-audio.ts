@@ -1,7 +1,7 @@
 // Audio inspection for agents that can only see stills: one image (time ruler, per-track waveforms, the rendered mix,
 // optional spectrogram, clip boundaries, markers, findings) + numeric findings (clipping/overs, silences, cut-offs, ducking).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
@@ -12,44 +12,47 @@ import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Time
 
 const WIN = 0.02; // analysis window (s)
 const DUCK_MARGIN_DB = 6; // music_not_ducked fires when music power is within this many dB of the voice power
+const DUCK_NEIGHBOURHOOD_S = 0.5; // each side: music_not_ducked compares power over speech windows within +-0.5 s (1 s) of a window
 const HINT_GAP_DB = 12; // the hint aims at the 6 dB threshold plus 6 dB of margin (covers the ~4 dB stem/metric bias seen against LUFS)
 const db = (x: number) => (x > 1e-9 ? 20 * Math.log10(x) : -180);
 const r3 = (x: number) => +x.toFixed(3), r1 = (x: number) => +x.toFixed(1);
 
-interface Pcm { ch: Float32Array[]; sr: number; dur: number }
-interface Lane { id: string; role?: string; clips: Clip[]; pcm: Pcm; rms: Float64Array; peak: Float64Array }
+interface Win { rms: Float64Array; peak: Float64Array; dur: number }
+interface Lane extends Win { id: string; role?: string; clips: Clip[] }
 
-/** 16-bit PCM WAV (what buildAudio / our ffmpeg calls write) -> per-channel floats. */
-export function readWav(path: string): Pcm {
-  const b = readFileSync(path);
-  if (b.toString("ascii", 0, 4) !== "RIFF" || b.toString("ascii", 8, 12) !== "WAVE") throw new EditError(`not a WAV file: ${path}`, "decode_failed");
-  let o = 12, nch = 0, sr = 0, bits = 0;
-  while (o + 8 <= b.length) {
-    const id = b.toString("ascii", o, o + 4), n = b.readUInt32LE(o + 4);
-    if (id === "fmt ") { nch = b.readUInt16LE(o + 10); sr = b.readUInt32LE(o + 12); bits = b.readUInt16LE(o + 22); }
-    if (id === "data") {
-      if (bits !== 16 || !nch) throw new EditError(`unsupported WAV (${bits}-bit, ${nch} ch): ${path}`, "decode_failed");
-      const frames = Math.floor(Math.min(n, b.length - o - 8) / (2 * nch));
-      const ch = Array.from({ length: nch }, () => new Float32Array(frames));
-      for (let i = 0, p = o + 8; i < frames; i++) for (let c = 0; c < nch; c++, p += 2) ch[c][i] = b.readInt16LE(p) / 32768;
-      return { ch, sr, dur: frames / sr };
+/** 16-bit PCM WAV (what buildAudio / our ffmpeg calls write) -> per-WIN rms (channel mean power) and sample peak (max over channels), linear; read in blocks so no sample array is kept */
+function readWindows(path: string): Win {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size, h = Buffer.alloc(24);
+    readSync(fd, h, 0, 12, 0);
+    if (h.toString("ascii", 0, 4) !== "RIFF" || h.toString("ascii", 8, 12) !== "WAVE") throw new EditError(`not a WAV file: ${path}`, "decode_failed");
+    let o = 12, nch = 0, sr = 0, bits = 0;
+    while (o + 8 <= size) {
+      h.fill(0); readSync(fd, h, 0, 24, o);
+      const id = h.toString("ascii", 0, 4), n = h.readUInt32LE(4);
+      if (id === "fmt ") { nch = h.readUInt16LE(10); sr = h.readUInt32LE(12); bits = h.readUInt16LE(22); }
+      if (id === "data") {
+        if (bits !== 16 || !nch) throw new EditError(`unsupported WAV (${bits}-bit, ${nch} ch): ${path}`, "decode_failed");
+        const frames = Math.floor(Math.min(n, size - o - 8) / (2 * nch)), dur = frames / sr;
+        const nw = Math.ceil(dur / WIN), w = Math.max(1, Math.round(WIN * sr)), per = 500; // windows per block
+        const rms = new Float64Array(nw), peak = new Float64Array(nw), buf = Buffer.allocUnsafeSlow(per * w * nch * 2);
+        for (let k0 = 0; k0 < nw; k0 += per) {
+          const f0 = k0 * w, nf = Math.min(frames - f0, per * w), got = readSync(fd, buf, 0, nf * nch * 2, o + 8 + f0 * nch * 2);
+          const x = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(got / 2));
+          for (let k = k0; k < Math.min(nw, k0 + per); k++) {
+            let sum = 0, pk = 0, cnt = 0;
+            const a = (k - k0) * w * nch, e = Math.min(x.length, a + w * nch);
+            for (let i = a; i < e; i++) { const v = x[i] / 32768; sum += v * v; cnt++; const av = v < 0 ? -v : v; if (av > pk) pk = av; }
+            rms[k] = cnt ? Math.sqrt(sum / cnt) : 0; peak[k] = pk;
+          }
+        }
+        return { rms, peak, dur };
+      }
+      o += 8 + n + (n % 2);
     }
-    o += 8 + n + (n % 2);
-  }
-  throw new EditError(`WAV has no data chunk: ${path}`, "decode_failed");
-}
-
-/** per-WIN rms (channel mean power) and sample peak (max over channels), linear */
-function windows(p: Pcm): { rms: Float64Array; peak: Float64Array } {
-  const n = Math.ceil(p.dur / WIN), w = Math.max(1, Math.round(WIN * p.sr));
-  const rms = new Float64Array(n), peak = new Float64Array(n);
-  for (let k = 0; k < n; k++) {
-    let s = 0, pk = 0, cnt = 0;
-    const a = k * w, e = Math.min(p.ch[0].length, a + w);
-    for (const c of p.ch) for (let i = a; i < e; i++) { const v = c[i]; s += v * v; cnt++; const av = v < 0 ? -v : v; if (av > pk) pk = av; }
-    rms[k] = cnt ? Math.sqrt(s / cnt) : 0; peak[k] = pk;
-  }
-  return { rms, peak };
+    throw new EditError(`WAV has no data chunk: ${path}`, "decode_failed");
+  } finally { closeSync(fd); }
 }
 
 /** rms (dBFS) over the windows lying fully inside [t0, t1); outside the signal counts as silence */
@@ -107,15 +110,13 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
         if (!srcs.length) return;
         const wav = join(tmp, `stem${j}.wav`);
         buildAudio(stem, wav);
-        const pcm = readWav(wav);
-        lanes.push({ id: tr.id, role: tr.role, clips: tr.clips.filter((c) => srcs.some((s) => s.clip.id === c.id) || c.type === "compound"), pcm, ...windows(pcm) });
+        lanes.push({ id: tr.id, role: tr.role, clips: tr.clips.filter((c) => srcs.some((s) => s.clip.id === c.id) || c.type === "compound"), ...readWindows(wav) });
       });
       mixPath = join(tmp, "mix.wav");
       buildAudio(structuredClone(tl), mixPath);
     }
-    const mix = readWav(mixPath);
-    const mw = windows(mix);
-    const T = o.source ? mix.dur : Math.max(mix.dur, totalDuration(tl!));
+    const mw = readWindows(mixPath);
+    const T = o.source ? mw.dur : Math.max(mw.dur, totalDuration(tl!));
     const findings: Dict[] = [];
     const loud = AN.loudness(mixPath);
 
@@ -144,27 +145,38 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
           hint: `audio stops abruptly at ${r3(e)}s: update_clip ${c.id} set fade_out=0.3 (or end it on a quieter moment)` });
     }
 
-    // 4. music not ducked under voice: over each stretch of speech, music power within 6 dB of voice power.
-    // Speech windows = voice windows above max(-40 dBFS, p95 - 20 dB), so syllable gaps and pauses do not drag the voice level down;
-    // both levels are the power mean (then dB) over those same windows, never a mean of dB values.
+    // 4. music not ducked under voice. Speech windows = voice windows above a per-clip floor, max(-40 dBFS, that clip's p95 - 20 dB), so syllable gaps and pauses
+    // do not drag the voice level down and a quiet clip is judged by its own level. Levels are power means (then dB) over speech windows only, never a mean of dB values,
+    // taken locally (+-DUCK_NEIGHBOURHOOD_S) so a short loud stretch of music is not averaged away inside long narration. A run (>= 0.5 s, gaps <= 0.3 s) of speech windows whose
+    // local music power is within 6 dB of the local voice power is a finding; its levels and hint come from the run's own speech windows.
     const voice = lanes.filter((l) => l.role === "voice" || l.role === "dialogue"), music = lanes.filter((l) => l.role === "music");
     if (voice.length && music.length) {
       const n = Math.min(...[...voice, ...music].map((l) => l.rms.length));
       const comb = (ls: Lane[]) => Float64Array.from({ length: n }, (_, k) => ls.reduce((s, l) => s + l.rms[k] ** 2, 0));
-      const vp = comb(voice), mp = comb(music);
-      const loudDb = Array.from(vp, (x) => 10 * Math.log10(x + 1e-18)).filter((x) => x > -40).sort((a, b) => a - b);
-      if (loudDb.length) {
-        const floor = Math.max(-40, loudDb[Math.floor(loudDb.length * 0.95)] - 20), isSpeech = (k: number) => 10 * Math.log10(vp[k] + 1e-18) > floor;
-        for (const [s, e] of runs(n, isSpeech, 0.5, 0.3)) {
-          let sv = 0, sm = 0, cnt = 0;
-          for (let k = Math.floor(s / WIN); k < Math.min(n, Math.ceil(e / WIN)); k++) if (isSpeech(k)) { sv += vp[k]; sm += mp[k]; cnt++; }
-          const voiceDb = 10 * Math.log10(sv / cnt + 1e-18), musicDb = 10 * Math.log10(sm / cnt + 1e-18);
-          if (musicDb <= voiceDb - DUCK_MARGIN_DB) continue;
-          const lower = Math.max(0, HINT_GAP_DB - (voiceDb - musicDb));
-          const fix = music.map((l) => `update_track ${l.id} set duck=${-Math.ceil(-Number(tl!.tracks.find((t) => t.id === l.id)?.duck ?? 0) + lower)}`).join("; ");
-          findings.push({ type: "music_not_ducked", start: r3(s), end: r3(e), music_db: r1(musicDb), voice_db: r1(voiceDb), tracks: music.map((l) => l.id),
-            hint: `music is ${r1(voiceDb - musicDb)} dB under the voice (want >= ${HINT_GAP_DB}): duck harder (${fix})` });
-        }
+      const vp = comb(voice), mp = comb(music), vdb = Float64Array.from(vp, (x) => 10 * Math.log10(x + 1e-18));
+      const floor = new Float64Array(n).fill(Infinity); // lowest floor of the voice clips covering each window; Infinity = no voice clip there
+      for (const l of voice) for (const c of l.clips) {
+        const a0 = Math.max(0, Math.floor(clipStart(c) / WIN)), a1 = Math.min(n, Math.ceil(clipEnd(c) / WIN));
+        const loudDb = Array.from(vdb.subarray(a0, Math.max(a0, a1))).filter((x) => x > -40).sort((x, y) => x - y);
+        if (!loudDb.length) continue;
+        const f = Math.max(-40, loudDb[Math.floor(loudDb.length * 0.95)] - 20);
+        for (let k = a0; k < a1; k++) floor[k] = Math.min(floor[k], f);
+      }
+      const speech = (k: number) => vdb[k] > floor[k];
+      // prefix sums of voice power, music power and count over speech windows
+      const cv = new Float64Array(n + 1), cm = new Float64Array(n + 1), cn = new Float64Array(n + 1);
+      for (let k = 0; k < n; k++) { const sp = speech(k); cv[k + 1] = cv[k] + (sp ? vp[k] : 0); cm[k + 1] = cm[k] + (sp ? mp[k] : 0); cn[k + 1] = cn[k] + (sp ? 1 : 0); }
+      const H = Math.round(DUCK_NEIGHBOURHOOD_S / WIN), gapDb = (a: number, b: number) => 10 * Math.log10((cv[b] - cv[a]) / (cm[b] - cm[a]) + 1e-18);
+      const flagged = (k: number) => { if (!speech(k)) return false; const a = Math.max(0, k - H), b = Math.min(n, k + H + 1); return cm[b] - cm[a] > 0 && gapDb(a, b) < DUCK_MARGIN_DB; };
+      for (const [s, e] of runs(n, flagged, 0.5, 0.3)) {
+        const a = Math.floor(s / WIN), b = Math.min(n, Math.ceil(e / WIN));
+        if (!(cn[b] - cn[a])) continue;
+        const voiceDb = 10 * Math.log10((cv[b] - cv[a]) / (cn[b] - cn[a]) + 1e-18), musicDb = 10 * Math.log10((cm[b] - cm[a]) / (cn[b] - cn[a]) + 1e-18), gap = voiceDb - musicDb;
+        if (gap >= DUCK_MARGIN_DB) continue;
+        const lower = Math.max(0, HINT_GAP_DB - gap);
+        const fix = music.map((l) => `update_track ${l.id} set duck=${-Math.ceil(-Number(tl!.tracks.find((t) => t.id === l.id)?.duck ?? 0) + lower)}`).join("; ");
+        findings.push({ type: "music_not_ducked", start: r3(s), end: r3(e), music_db: r1(musicDb), voice_db: r1(voiceDb), tracks: music.map((l) => l.id),
+          hint: `music is ${r1(Math.abs(gap))} dB ${gap < 0 ? "above" : "under"} the voice (want >= ${HINT_GAP_DB} under): duck harder (${fix})` });
       }
     }
     findings.sort((a, b) => (a.start ?? a.t ?? 0) - (b.start ?? b.t ?? 0));
@@ -172,11 +184,11 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
     const spec = o.spectrogram ? join(tmp, "spec.png") : null;
     const t0 = Math.max(0, o.start ?? 0), t1 = Math.min(T, o.end ?? T);
     if (!(t1 > t0)) throw new EditError(`empty range ${t0}-${t1}`, "bad_range", `use start/end inside 0-${r3(T)}`);
-    const img = await draw({ lanes, mix: { pcm: mix, ...mw }, findings, markers, cuts, t0, t1, width: o.width ?? 1400, spec, mixPath, source: o.source });
+    const img = await draw({ lanes, mix: mw, findings, markers, cuts, t0, t1, width: o.width ?? 1400, spec, mixPath, source: o.source });
     return {
       image: img, duration: r3(T), range: [r3(t0), r3(t1)],
-      lanes: [...lanes.map((l) => ({ track: l.id, role: l.role, peak_dbfs: r1(db(Math.max(...l.peak))), rms_dbfs: r1(levelDb(l.rms, 0, l.pcm.dur)) })),
-        { track: "mix", peak_dbfs: r1(db(Math.max(0, ...mw.peak))), rms_dbfs: r1(levelDb(mw.rms, 0, mix.dur)) }],
+      lanes: [...lanes.map((l) => ({ track: l.id, role: l.role, peak_dbfs: r1(db(Math.max(...l.peak))), rms_dbfs: r1(levelDb(l.rms, 0, l.dur)) })),
+        { track: "mix", peak_dbfs: r1(db(Math.max(0, ...mw.peak))), rms_dbfs: r1(levelDb(mw.rms, 0, mw.dur)) }],
       loudness: { integrated_lufs: loud.integrated_lufs, range_lu: loud.range_lu, true_peak_dbfs: loud.true_peak_dbfs },
       findings,
     };
@@ -186,7 +198,7 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
 const COL: Record<string, string> = { voice: "#4fc3f7", dialogue: "#4fc3f7", music: "#ba68c8", sfx: "#ffb74d" };
 const FIND: Record<string, string> = { clipping: "#ff1744", over: "#ff9100", silence: "#9e9e9e", cut_off: "#ff9100", music_not_ducked: "#e040fb" };
 
-async function draw(a: { lanes: Lane[]; mix: { pcm: Pcm; rms: Float64Array; peak: Float64Array }; findings: Dict[]; markers: Dict[]; cuts: number[];
+async function draw(a: { lanes: Lane[]; mix: Win; findings: Dict[]; markers: Dict[]; cuts: number[];
   t0: number; t1: number; width: number; spec: string | null; mixPath: string; source?: string }): Promise<Buffer> {
   const G = 120, RH = 26, LH = 76, MH = 120, SH = 170, W = Math.max(400, Math.round(a.width)), PW = W - G - 8;
   const H = RH + a.lanes.length * (LH + 4) + MH + (a.spec ? SH + 4 : 0) + 6;

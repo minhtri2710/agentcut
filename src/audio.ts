@@ -9,8 +9,9 @@ import { type Clip, EditError, parseTime, resolve, type Timeline, totalDuration,
 const { atempo } = FX;
 
 // volume='expr':eval=frame holds one gain per audio frame (decoder frames are 85-93 ms). The duck ramp is linear in amplitude, so its dB error is steep near the ramp's end:
-// 128 samples (2.7 ms) keep the music within ~1 dB of the ducked level at the voice onset; measured cost +1% on a 600 s bed. Only chains with such an expression use it.
-const EVAL_FRAME = "asetnsamples=n=128:p=0";
+// 256 samples (5.3 ms) keep the music within 0.25 dB of the ducked level in the first 30 ms of the voice (worst of 7 onset offsets; 128: 0.10, 480: 1.07, 1024: 4.0 dB)
+// and a fast keyframe drop within 0.02 dB (1024: 9.4 dB). Cost, user CPU on 85 voice intervals x 4 music clips vs unframed: n=128 +15%, n=256 +7%, n=480 +4..11% (within noise). Only chains with such an expression use it.
+const EVAL_FRAME = "asetnsamples=n=256:p=0", REFRAME = "asetnsamples=n=4096:p=0"; // REFRAME: back to decoder-sized frames so amix does not poll its inputs every 256 samples
 function kfExpr(kfs: any[], v = "t"): string {
   const pts = parseKfs(kfs);
   let e = `${pts[pts.length - 1][1]}`;
@@ -82,11 +83,14 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   for (const [s, e] of voice) { const l = merged[merged.length - 1]; if (l && s - l[1] < 0.5) l[1] = Math.max(l[1], e); else merged.push([s, e]); }
   const args = ["-v", "error", "-y", "-nostdin"];
   const graph: string[] = [], labels: string[] = [];
-  const duck = (track: Track) => {
-    if (!track.duck || !merged.length || track.role === "voice" || track.role === "dialogue") return [];
-    const g = 10 ** (Number(track.duck) / 20), r = 0.25;
-    const terms = merged.map(([a0, a1]) => `clip(min((t-${(a0 - r).toFixed(3)})/${r},(${(a1 + r).toFixed(3)}-t)/${r}),0,1)`);
-    return [EVAL_FRAME, `volume='1-${(1 - g).toFixed(4)}*${terms.reduce((acc, x) => `max(${acc},${x})`)}':eval=frame`];
+  // gain 1 outside the voice intervals; only intervals within a ramp of [from, to] matter, so a clip is not charged for the whole project's intervals
+  const duck = (track: Track, from = -Infinity, to = Infinity) => {
+    const r = 0.25, near = merged.filter(([a0, a1]) => a1 + r > from && a0 - r < to);
+    if (!track.duck || !near.length || track.role === "voice" || track.role === "dialogue") return [];
+    const g = 10 ** (Number(track.duck) / 20);
+    const terms = near.map(([a0, a1]) => `clip(min((t-${(a0 - r).toFixed(3)})/${r},(${(a1 + r).toFixed(3)}-t)/${r}),0,1)`);
+    const maxOf = (xs: string[]): string => (xs.length === 1 ? xs[0] : `max(${maxOf(xs.slice(0, xs.length >> 1))},${maxOf(xs.slice(xs.length >> 1))})`); // balanced: ffmpeg rejects expressions nested ~100 deep
+    return [EVAL_FRAME, `volume='1-${(1 - g).toFixed(4)}*${maxOf(terms)}':eval=frame`, REFRAME];
   };
   const bus = (track: Track) => [...FX.eqFilters(track.eq), ...FX.compressorFilter(track.compressor), ...FX.panFilter(track.pan)];
   const buses = new Map<Track, string[]>(); // tracks with bus processing -> their clip labels
@@ -112,19 +116,20 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
       if (lufs !== null) ch.push(`volume=${(target - lufs).toFixed(2)}dB`);
     }
     ch.push(`volume=${s.volume.toFixed(4)}`);
-    if (c.keyframes?.volume) ch.push(EVAL_FRAME, `volume='${kfExpr(c.keyframes.volume)}':eval=frame`);
+    if (c.keyframes?.volume) ch.push(EVAL_FRAME, `volume='${kfExpr(c.keyframes.volume)}':eval=frame`, REFRAME);
     if (c.fade_in) ch.push(`afade=t=in:st=0:d=${Number(c.fade_in)}`);
     if (c.fade_out) ch.push(`afade=t=out:st=${Math.max(0, dur - Number(c.fade_out))}:d=${Number(c.fade_out)}`);
     ch.push(`adelay=${Math.round(start * 1000)}:all=1`);
     const onBus = bus(tr).length > 0;
-    if (!onBus) ch.push(...duck(tr));
+    if (!onBus) ch.push(...duck(tr, start, start + dur));
     graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
     if (onBus) buses.set(tr, [...(buses.get(tr) ?? []), `[a${i}]`]);
     else labels.push(`[a${i}]`);
   });
   [...buses].forEach(([tr, ls], k) => {
     // ducking after the bus chain so a track compressor does not pull the ducked level back up
-    graph.push(`${ls.join("")}amix=inputs=${ls.length}:duration=longest:normalize=0,${[...bus(tr), ...duck(tr)].join(",")}[b${k}]`);
+    const mine = srcs.filter((x) => x.track === tr), lo = Math.min(...mine.map((x) => parseTime(x.clip.start ?? 0))), hi = Math.max(...mine.map((x) => parseTime(x.clip.start ?? 0) + parseTime(x.clip.duration)));
+    graph.push(`${ls.join("")}amix=inputs=${ls.length}:duration=longest:normalize=0,${[...bus(tr), ...duck(tr, lo, hi)].join(",")}[b${k}]`);
     labels.push(`[b${k}]`);
   });
   if (labels.length) graph.push(`${labels.join("")}amix=inputs=${labels.length}:duration=longest:normalize=0,apad=whole_dur=${T},atrim=0:${T}[out]`);
