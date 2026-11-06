@@ -242,8 +242,23 @@ console.log("prepare vs concurrent edits");
   let edits = 1;
   // once a round's matte is on disk (edits-th matte file), add one more clip that needs a new matte
   const mattes = () => readdirSync(join(P2, ".agentcut", "cache")).filter((f) => f.startsWith("matte-")).length;
-  const r: any = await api.prepare(P2, { progress: (d, n) => { if (d === n && edits < 4 && mattes() >= edits) void addMatte(edits++); } }).catch((e) => e);
+  const pending: Promise<unknown>[] = [];
+  const r: any = await api.prepare(P2, { progress: (d, n) => { if (d === n && edits < 4 && mattes() >= edits) pending.push(addMatte(edits++)); } }).catch((e) => e);
+  await Promise.all(pending);
   check("edits landing every round: prepare fails `conflict` with a prepare-again hint, not `internal`", r.code === "conflict" && /prepare/.test(r.hint ?? "") && edits === 4, { code: r.code, hint: r.hint, edits });
+}
+
+// prepare that cannot settle with no edit in between (the matte vanishes after every compute): a bug -> internal, revision unchanged
+{
+  const P3 = join(tmp, "proj-stuck"), cache3 = join(P3, ".agentcut", "cache");
+  api.create(P3, { preset: "720p" });
+  await api.apply(P3, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "remove_background", id: "vid1" }]);
+  const rev = (api.info(P3) as any).revision;
+  const r: any = await api.prepare(P3, { progress: (d, n) => {
+    // runs after vision.ts renamed the matte into place: delete it so the next round finds it missing again
+    if (d === n) for (const f of readdirSync(cache3)) if (f.startsWith("matte-") && !f.includes(".part-")) rmSync(join(cache3, f), { force: true });
+  } }).catch((e) => e);
+  check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && (api.info(P3) as any).revision === rev, { code: r.code, rev, now: (api.info(P3) as any).revision });
 }
 
 // containment: symlinks inside or in place of an area are never walked, counted or deleted
@@ -254,6 +269,7 @@ console.log("cache containment (symlinks)");
   const plant = () => sentinels.forEach((f, i) => { writeFileSync(f, Buffer.alloc(100_000)); utimesSync(f, week + i, week + i); });
   const intact = () => sentinels.every((f) => existsSync(f));
   const errCode = (fn: () => unknown) => { try { fn(); } catch (e: any) { return e.code; } };
+  const errHint = (fn: () => unknown) => { try { fn(); } catch (e: any) { return e.hint; } };
   plant();
   symlinkSync(outside, join(prev, "linkdir"));
   symlinkSync(sentinels[0], join(prev, "linkfile.bin"));
@@ -286,7 +302,9 @@ console.log("cache containment (symlinks)");
     renameSync(link, real);
     symlinkSync(outside, link);
     const codes = [errCode(() => api.cache.prune(P)), errCode(() => api.cache.prune(P, { maxMb: 0 })), errCode(() => api.cache.info(P))];
+    const hints = [errHint(() => api.cache.prune(P)), errHint(() => api.cache.info(P))];
     check(`${name}/ symlinked outside: prune and info fail closed, sentinels survive`, codes.every((c) => c === "unsafe_cache_dir") && intact(), codes);
+    check(`  their hint does not offer AGENTCUT_PREVIEWS_MAX_MB (it only governs the automatic cap)`, hints.every((h) => typeof h === "string" && !/AGENTCUT_PREVIEWS_MAX_MB/.test(h)), hints);
     if (name === "previews") {
       const wf: any = await api.frame(P, 1, { scale: 0.5 }).catch((e) => e);
       check("preview write into a symlinked previews/: unsafe_cache_dir, the hint names AGENTCUT_PREVIEWS_MAX_MB, sentinels survive", wf.code === "unsafe_cache_dir" && /AGENTCUT_PREVIEWS_MAX_MB/.test(wf.hint ?? "") && intact(), { code: wf.code, hint: wf.hint });

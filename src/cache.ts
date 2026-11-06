@@ -30,7 +30,7 @@ function areaRoot(p: Project, dir: string): string | null {
   try { real = realpathSync(dir); } catch (e: any) { if (e.code === "ENOENT") return null; if (e.code !== "ELOOP") throw e; }
   const rel = relative(p.root, dir);
   if (real !== join(realpathSync(p.root), rel))
-    throw new EditError(`${rel} is not a plain directory inside the project (symlink?)`, "unsafe_cache_dir", `AgentCut never deletes through symlinks: replace ${rel} with a real directory (or set AGENTCUT_PREVIEWS_MAX_MB=0 to turn the automatic previews cap off)`);
+    throw new EditError(`${rel} is not a plain directory inside the project (symlink?)`, "unsafe_cache_dir", `AgentCut never deletes through symlinks: replace ${rel} with a real directory`);
   return real;
 }
 
@@ -106,5 +106,11 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
  *  previews go first, the file just written stays. Outputs elsewhere (-o) are not touched. */
 export function capPreviews(p: Project, written: string) {
   const max = PREVIEWS_MAX_MB(), dir = join(p.root, "previews");
-  if (max > 0 && written.startsWith(dir + sep)) prune(p, { maxMb: max, area: "previews", keep: written });
+  if (max > 0 && written.startsWith(dir + sep)) {
+    try { prune(p, { maxMb: max, area: "previews", keep: written }); }
+    catch (e) {
+      if (e instanceof EditError && e.code === "unsafe_cache_dir") e.hint += ` (or set AGENTCUT_PREVIEWS_MAX_MB=0 to turn the automatic previews cap off)`;
+      throw e;
+    }
+  }
 }
