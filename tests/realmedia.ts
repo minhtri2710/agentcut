@@ -198,7 +198,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
     for (let i = want.length - 1; i >= 0; i--) for (let j = got.length - 1; j >= 0; j--) lcs[i][j] = want[i] === got[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
     const share = lcs[0][0] / want.length;
     check(`whisper returns ${lcs[0][0]}/${want.length} script words whole and in order (${(share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%): ${tr.text.slice(0, 80)}`, share >= MIN_SHARE);
-    check("no transcribed word is punctuation only", tr.words.every((w: any) => /[\p{L}\p{N}]/u.test(w.text)), tr.words.filter((w: any) => !/[\p{L}\p{N}]/u.test(w.text)));
+    check("no transcribed word is punctuation only", tr.words.every((w: any) => !/^\p{P}+$/u.test(w.text)), tr.words.filter((w: any) => /^\p{P}+$/u.test(w.text)));
   }
 }
 

@@ -1,7 +1,7 @@
 // End-to-end smoke test: generates synthetic media, exercises every op + template + export format through the CLI.
 // Run: bun tests/smoke.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -145,6 +145,25 @@ check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.na
 check("render speed logged", fs.render?.renders >= 1, fs.render);
 check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
 check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
+
+console.log("schema version");
+{
+  const V = JSON.parse(readFileSync(join(T, "project.json"), "utf8")).version;
+  check("a new project carries the supported version (cli schema agrees)", Number.isInteger(V) && cli(["schema"]).timeline.version === V, [V, cli(["schema"]).timeline.version]);
+  for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as const) {
+    const d = join(tmp, `ver-${label.replace(/\W/g, "")}`);
+    cli(["init", d, "--preset", "reels"]);
+    const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+    if (v === undefined) delete t.version; else t.version = v;
+    writeFileSync(join(d, "project.json"), JSON.stringify(t, null, 2));
+    const before = readFileSync(join(d, "project.json"), "utf8");
+    for (const args of [["validate"], ["info"], ["op", "add_marker", "t=1"], ["undo"]]) {
+      const r = cli(args, { cwd: d, ok: false });
+      check(`${label}: cli ${args[0]} -> bad_version, hint names both versions`, r.ok === false && r.error.code === "bad_version" && r.error.hint.includes(String(V)) && r.error.hint.includes(String(v ?? "missing")), r);
+    }
+    check(`${label}: project.json is byte-identical`, readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
+  }
+}
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });

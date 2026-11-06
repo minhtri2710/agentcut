@@ -3,7 +3,7 @@
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 1;
 
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 export type Dict = Record<string, any>;

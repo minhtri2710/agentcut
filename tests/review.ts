@@ -117,6 +117,71 @@ console.log("render -o subs.srt writes captions (CLI and MCP agree)");
   check("api.render .srt -> subtitle file", r.format === "srt" && r.cues === 1 && /hello world/i.test(readFileSync(join(tmp, "subs.srt"), "utf8")), r);
 }
 
+console.log("schema version: any version but SCHEMA_VERSION fails closed, nothing is rewritten");
+{
+  const { SCHEMA_VERSION } = await import("../src/model.ts");
+  check("SCHEMA_VERSION is 1", SCHEMA_VERSION === 1, SCHEMA_VERSION);
+  check("a new project and timeline_schema report SCHEMA_VERSION", tl().version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [tl().version, (api.schema() as any).timeline.version]);
+  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
+  const setVersion = (dir: string, v: unknown) => {
+    const t = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
+    if (v === undefined) delete t.version; else t.version = v;
+    writeFileSync(join(dir, "project.json"), JSON.stringify(t, null, 2));
+  };
+  const everyPath: [string, (d: string) => unknown][] = [
+    ["info", (d) => api.info(d, "json")],
+    ["validate", (d) => api.validate(d)],
+    ["apply", (d) => api.apply(d, [{ op: "add_marker", t: 1 }])],
+    ["apply --dry-run", (d) => api.apply(d, [{ op: "add_marker", t: 1 }], { dryRun: true })],
+    ["undo", (d) => api.undo(d)],
+    ["redo", (d) => api.redo(d)],
+    ["frame", (d) => api.frame(d, 0)],
+    ["sheet", (d) => api.sheet(d, {})],
+    ["scopes", (d) => api.scopes(d, 0)],
+    ["motion", (d) => api.motion(d, {})],
+    ["audio_check", (d) => api.audioCheck(d, {})],
+    ["review", (d) => api.review(d)],
+    ["render", (d) => api.render(d, { out: join(d, "renders", "x.mp4") })],
+    ["export otio", (d) => api.exportTimeline(d, { format: "otio", out: join(d, "x.otio") })],
+    ["export fcpxml", (d) => api.exportTimeline(d, { format: "fcpxml", out: join(d, "x.fcpxml") })],
+    ["export captions", (d) => api.exportCaptions(d, { out: join(d, "x.srt") })],
+    ["prepare", (d) => api.prepare(d)],
+    ["cache info", (d) => api.cache.info(d)],
+    ["ui", async (d) => { const ui = await startUi(d, { port: 0 }); ui.server.closeAllConnections?.(); await new Promise((ok) => ui.server.close(ok)); }],
+  ];
+  for (const [label, v] of [["version+1", SCHEMA_VERSION + 1], ["no version", undefined]] as const) {
+    const d = join(tmp, `ver-${label.replace(/\W/g, "")}`);
+    api.create(d, { preset: "reels" });
+    await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
+    setVersion(d, v);
+    const before = readFileSync(join(d, "project.json"), "utf8");
+    const hist = () => readdirSync(join(d, ".agentcut", "history"), { recursive: true }).sort().join();
+    const h0 = hist();
+    for (const [name, f] of everyPath) {
+      const e = await caught(() => f(d));
+      check(`${label}: ${name} -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
+    }
+    const e = await caught(() => api.info(d));
+    check(`${label}: the hint names the value found, the one supported, and that there is no upgrade`,
+      e?.hint?.includes(String(SCHEMA_VERSION)) && (v === undefined ? /missing/.test(e.hint) : e.hint.includes(String(v))) && /recreate/.test(e.hint) && /no upgrade/.test(e.hint), e?.hint);
+    check(`${label}: project.json is byte-identical, history untouched`, readFileSync(join(d, "project.json"), "utf8") === before && hist() === h0);
+  }
+  for (const stack of ["undo", "redo"] as const) {
+    const d = join(tmp, `ver-snap-${stack}`);
+    api.create(d, { preset: "reels" });
+    await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
+    if (stack === "redo") await api.undo(d);
+    const dir = join(d, ".agentcut", "history", stack), f = join(dir, readdirSync(dir).filter((n) => n.endsWith(".json")).sort().pop()!);
+    const snap = JSON.parse(readFileSync(f, "utf8")), inner = JSON.parse(snap.timeline);
+    inner.version = SCHEMA_VERSION + 1; snap.timeline = JSON.stringify(inner);
+    writeFileSync(f, JSON.stringify(snap));
+    const before = readFileSync(join(d, "project.json"), "utf8"), snapBefore = readFileSync(f, "utf8");
+    const e = await caught(() => (stack === "undo" ? api.undo(d) : api.redo(d)));
+    check(`${stack}: a snapshot of another version -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
+    check(`${stack}: project.json and the snapshot are untouched`, readFileSync(join(d, "project.json"), "utf8") === before && existsSync(f) && readFileSync(f, "utf8") === snapBefore);
+  }
+}
+
 console.log("ui: concurrent play renders share one job, the cache never sees a partial file");
 {
   const ui = await startUi(P, { port: 0 });

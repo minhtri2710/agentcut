@@ -1,6 +1,6 @@
 // MCP end-to-end: spawns the server over stdio, exercises the main tools like an agent would.
 // Run: bun tests/mcp.ts
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -58,6 +58,21 @@ check("summary ranks the note", sum.json.recommendations?.[0]?.text.includes("de
 check("markdown report", String((await call("feedback_summary", { markdown: true })).json).includes("# AgentCut improvement backlog"));
 const gone = await call("render_status", { job_id: "nope", wait_seconds: 0 });
 check("render_status of an unknown job: not_found with a hint to re-run prepare/render", !gone.json.ok && gone.json.error.code === "not_found" && /prepare|render/.test(gone.json.error.hint ?? ""), gone.json);
+const V = (await call("timeline_schema")).json.timeline.version;
+check("timeline_schema reports the version a new project carries", Number.isInteger(V) && JSON.parse(readFileSync(join(tmp, "p", "project.json"), "utf8")).version === V, V);
+for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as const) {
+  const d = join(tmp, `ver-${label.replace(/\W/g, "")}`);
+  await call("create_project", { path: d, preset: "youtube" });
+  const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+  if (v === undefined) delete t.version; else t.version = v;
+  writeFileSync(join(d, "project.json"), JSON.stringify(t, null, 2));
+  const before = readFileSync(join(d, "project.json"), "utf8");
+  for (const [tool, args] of [["validate", {}], ["project_info", {}], ["apply_ops", { ops: [{ op: "add_marker", t: 1 }] }], ["undo", {}], ["render", { draft: true }]] as const) {
+    const r = await call(tool, { project: d, ...args });
+    check(`${label}: ${tool} -> bad_version with a hint naming both versions`, r.json.ok === false && r.json.error.code === "bad_version" && r.json.error.hint.includes(String(V)) && r.json.error.hint.includes(String(v ?? "missing")), r.json);
+  }
+  check(`${label}: project.json is byte-identical`, readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
+}
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });

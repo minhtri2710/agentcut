@@ -5,7 +5,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
 import {
-  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, PRESETS, resolve, suggest, type Timeline,
+  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, PRESETS, resolve, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
 
@@ -14,9 +14,21 @@ const MAX_HISTORY = 100;
 const LOCK_WAIT_MS = 10_000;
 const SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
+/** The one version gate: every timeline read from disk (project.json, history snapshots) and every one written goes through it. */
+function checkVersion(tl: Timeline): Timeline {
+  if (tl?.version !== SCHEMA_VERSION) {
+    const found = JSON.stringify(tl?.version) ?? "missing";
+    throw new EditError(`project.json has schema version ${found}; this build reads only version ${SCHEMA_VERSION}`, "bad_version",
+      `found ${found}, supported ${SCHEMA_VERSION}; there is no upgrade, recreate the project (agentcut init) and re-import its media`);
+  }
+  return tl;
+}
+
 function parse(text: string): Timeline {
-  try { return JSON.parse(text); }
+  let tl: Timeline;
+  try { tl = JSON.parse(text); }
   catch (e: any) { throw new EditError(`project.json is not valid JSON: ${e.message}`, "bad_json", "fix the file or run `agentcut undo` to restore the last good version"); }
+  return checkVersion(tl);
 }
 
 function revisionOf(tl: Timeline): number {
@@ -123,6 +135,7 @@ export class Project {
 
   /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. */
   save(tl: Timeline, label = "edit", snapshot = true): number {
+    checkVersion(tl);
     resolve(tl);
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
@@ -153,12 +166,9 @@ export class Project {
     for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old);
   }
   private clear(name: string) { rmSync(this.stack(name), { recursive: true, force: true }); }
-  private pop(name: string) {
+  private last(name: string) {
     const e = this.entries(name);
-    if (!e.length) return null;
-    const d = JSON.parse(readFileSync(e[e.length - 1], "utf8"));
-    unlinkSync(e[e.length - 1]);
-    return d;
+    return e.length ? { file: e[e.length - 1], ...JSON.parse(readFileSync(e[e.length - 1], "utf8")) } : null;
   }
   // restored snapshots get a fresh revision, so the revision only ever increases
   private step(from: string, to: string, steps: number, base?: number) {
@@ -167,10 +177,11 @@ export class Project {
       if (base !== undefined) checkRevision(base, rev);
       const labels: string[] = [];
       for (let i = 0; i < steps; i++) {
-        const d = this.pop(from);
+        const d = this.last(from);
         if (!d) break;
+        const tl = parse(d.timeline); // before anything moves: a snapshot that cannot be read stays where it is
         this.push(to, cur, d.label);
-        const tl = parse(d.timeline);
+        unlinkSync(d.file);
         tl.revision = ++rev;
         this.write(tl);
         cur = readFileSync(this.file, "utf8");
