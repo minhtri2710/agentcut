@@ -43,6 +43,9 @@ export function registerCompoundOps(h: OpHelpers) {
   const stampedIds = (tl: Timeline, from: string): { ids: string[]; name?: string; parent?: Clip } => {
     const found = tl.tracks.flatMap((tr) => tr.clips.filter((c) => c.group?.id === from).map((c) => ({ tr, c })));
     if (!found.length) throw new EditError(`no clips are stamped with group '${from}'`, "no_group", "from regroups the clips expand_compound placed; see each clip's 'group' field, or pass ids");
+    const inner = [...new Set(tl.tracks.flatMap((tr) => tr.clips).flatMap((c) => { for (let g = c.group?.parent; g; g = g.parent) if (g.id === from) return [c.group.id]; return []; }))];
+    if (inner.length) throw new EditError(`group '${from}' cannot be rebuilt while its inner group${inner.length > 1 ? "s" : ""} ${inner.map((i) => `'${i}'`).join(", ")} ${inner.length > 1 ? "are" : "is"} still expanded`, "inner_expanded",
+      `make_compound from=${inner[0]} first (rebuild inner groups before outer ones)`);
     const home = found[0].c.group.track, rank = (f: { tr: Track }) => (f.tr.id === home ? 0 : 1); // stamps are written together; if they disagreed, the first wins
     if (!tl.tracks.some((t) => t.id === home))
       throw new EditError(`group '${from}' was expanded onto track '${home}', which no longer exists`, "missing_track", `recreate it (add_track id=${home}), or regroup by hand with ids`);
@@ -57,7 +60,7 @@ export function registerCompoundOps(h: OpHelpers) {
     "contiguous; there the selection must not extend before/after them). Other magnetic tracks keep their timing with a gap; clips outside the " +
     "selection attached to selected clips are detached (reported). Undo with expand_compound. `from` regroups an expanded compound: it takes every " +
     "top-level clip and gap that expand_compound stamped with that compound id (field group; it survives split_clip), gives the compound that id and " +
-    "name, and clears the stamps.",
+    "name, and clears the stamps. Rebuild inner groups first (inner_expanded otherwise).",
     { ids: "clip ids or refs like 'main#1' (first one picks the track); or use from", from: "id of an expanded compound: regroup the clips its expand_compound stamped (instead of ids)",
       id: "compound id (auto cmpN; with from: that id)", name: "label (with from: the compound's old name)" }, (p, tl, a) => {
       resolve(tl);

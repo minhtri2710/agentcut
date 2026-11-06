@@ -200,6 +200,10 @@ async function twoLevel(name: string, setup: object[], outer: string[], innerOut
   check(`${name}: expanding the inner compound records the outer stamp as its parent`, inner?.id === "A" && inner.parent?.id === "O" && inner.parent.track === expectTrack, inner);
   const sp2 = (await api.apply(R, [{ op: "split_clip", id: splitAt[0], at: splitAt[1] }])).results[0];
   check(`${name}: split carries the whole stamp, parent included`, JSON.stringify(flat().find((c: any) => c.id === sp2.right).group) === JSON.stringify(inner), flat().find((c: any) => c.id === sp2.right)?.group);
+  const before2 = JSON.stringify(tl());
+  const early = await failure(() => api.apply(R, [{ op: "make_compound", from: "O" }]));
+  check(`${name}: from=O while A is still expanded -> inner_expanded naming A (not not_contiguous)`, early?.code === "inner_expanded" && /'A'/.test(early.message) && /from=A first/.test(early.hint), early && [early.code, early.message, early.hint]);
+  check(`${name}:   the project is unchanged`, JSON.stringify(tl()) === before2);
   const ra2 = await failure(() => api.apply(R, [{ op: "make_compound", from: "A" }]));
   check(`${name}: from=A succeeds`, ra2 === null, ra2 && [ra2.code, ra2.message]);
   check(`${name}: the rebuilt A carries O's stamp again`, flat().find((c: any) => c.id === "A")?.group?.id === "O");
@@ -214,6 +218,20 @@ await twoLevel("two-level non-magnetic", [col("np", "m1", "red", { at: 0, durati
   ["m1", "m2", "A"], "np", ["i1", 1], "np");
 await twoLevel("two-level storyline", [col("main", "x1", "red", { duration: 1 }), col("main", "i1", "green", { duration: 1 }), col("main", "i2", "white", { duration: 1 }), col("main", "x2", "blue", { duration: 1 })],
   ["x1", "A", "x2"], "main", ["i1", 1.5], "main");
+{
+  const R = join(tmp, "three-level");
+  api.create(R, { preset: "720p" });
+  await api.apply(R, [col("tp", "p1", "red", { at: 0, duration: 1 }), col("to", "o1", "blue", { at: 0, duration: 1 }), col("ta", "a1", "green", { at: 0, duration: 1 }), col("ta", "a2", "white", { at: 1, duration: 1 }),
+    { op: "make_compound", ids: ["a1", "a2"], id: "A" }, { op: "make_compound", ids: ["o1", "A"], id: "O" }, { op: "make_compound", ids: ["p1", "O"], id: "P" },
+    { op: "expand_compound", id: "P" }, { op: "expand_compound", id: "O" }, { op: "expand_compound", id: "A" }]);
+  const snap3 = JSON.stringify(api.openProject(R).load());
+  const e3 = await failure(() => api.apply(R, [{ op: "make_compound", from: "P" }]));
+  check("three levels: from=P while O and A are expanded -> inner_expanded naming both", e3?.code === "inner_expanded" && /'O'/.test(e3.message) && /'A'/.test(e3.message), e3 && [e3.code, e3.message]);
+  check("  the project is unchanged", JSON.stringify(api.openProject(R).load()) === snap3);
+  for (const g of ["A", "O", "P"]) await api.apply(R, [{ op: "make_compound", from: g }]);
+  const P3 = api.openProject(R).load().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "P");
+  check("  inner first (A, O, P) restores P with O and A inside, unstamped", !!P3 && deepIds(P3).sort().join() === ["A", "O", "a1", "a2", "o1", "p1"].join() && !JSON.stringify(api.openProject(R).load().tracks).includes('"group"'), P3 && deepIds(P3));
+}
 const bp = await failure(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz3", at: 8, duration: 1, group: { id: "G", track: "t", parent: { id: "P" } } }]));
 check("a stamp whose parent lacks a track is rejected, at group.parent.track", bp?.code === "validation_failed" && JSON.stringify(bp.details?.issues).includes("group.parent.track"), bp && [bp.code, bp.details]);
 
