@@ -4,10 +4,11 @@
 //               batches, slow commands, render speed, internal errors
 //  -> summary - ranked improvement backlog (+ markdown report) for whoever improves AgentCut next.
 // Everything stays on this machine (~/.agentcut/feedback). Disable auto events with AGENTCUT_TELEMETRY=0.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { EditError, similarity } from "./model.ts";
+import { appendFile, ensureDir, writeFile } from "./safe-write.ts";
 import { VERSION } from "./version.ts";
 
 export const KINDS = ["bug", "missing_feature", "friction", "performance", "docs", "idea", "praise"] as const;
@@ -19,7 +20,7 @@ const SLOW_MS: Record<string, number> = { apply: 1500, apply_ops: 1500, op: 1500
   validate: 500, frame: 1500, preview_frame: 1500, sheet: 5000, contact_sheet: 5000, undo: 500, redo: 500, probe: 1500, probe_media: 1500 };
 
 export const home = () => process.env.AGENTCUT_HOME ?? join(homedir(), ".agentcut");
-const dir = () => { const d = join(home(), "feedback"); mkdirSync(d, { recursive: true }); return d; };
+const dir = () => ensureDir(home(), join(home(), "feedback"));
 const notesFile = () => join(dir(), "notes.json");
 const eventsFile = () => join(dir(), "events.jsonl");
 const telemetryOn = () => process.env.AGENTCUT_TELEMETRY !== "0";
@@ -50,10 +51,9 @@ export function recordEvent(ev: Record<string, unknown>) {
     const f = eventsFile();
     if (existsSync(f) && statSync(f).size > MAX_EVENTS_BYTES) { // keep the newest half
       const lines = readFileSync(f, "utf8").split("\n");
-      writeFileSync(f + ".tmp", lines.slice(Math.floor(lines.length / 2)).join("\n"));
-      renameSync(f + ".tmp", f);
+      writeFile(f, lines.slice(Math.floor(lines.length / 2)).join("\n"), home());
     }
-    appendFileSync(f, JSON.stringify({ t: new Date().toISOString(), v: VERSION, ...ev }) + "\n");
+    appendFile(f, JSON.stringify({ t: new Date().toISOString(), v: VERSION, ...ev }) + "\n", home());
   } catch { /* feedback must never break the tool */ }
 }
 
@@ -84,9 +84,7 @@ function loadNotes(): Note[] {
   try { return JSON.parse(readFileSync(notesFile(), "utf8")); } catch { return []; }
 }
 function saveNotes(n: Note[]) {
-  const f = notesFile();
-  writeFileSync(f + ".tmp", JSON.stringify(n, null, 1));
-  renameSync(f + ".tmp", f);
+  writeFile(notesFile(), JSON.stringify(n, null, 1), home());
 }
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 

@@ -1,6 +1,5 @@
 // High-level API shared by the CLI and the MCP server. Every function returns JSON-able objects.
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, resolve as presolve } from "node:path";
+import { extname, isAbsolute, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import * as AFX from "./audiofx.ts";
 import { loadCanvas } from "./canvas.ts";
@@ -18,6 +17,7 @@ import * as PREP from "./prepare.ts";
 import { analyzeSubject } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
+import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
@@ -27,8 +27,7 @@ export const openProject = (p?: string) => new Project(findProject(p));
 const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
 function writeOut(p: Project | null, out: string, data: string | Uint8Array) {
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, data);
+  writeFile(out, data, p?.root);
   if (p) CACHE.capPreviews(p, out);
 }
 
@@ -116,8 +115,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   const png = await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, false, "png");
-  mkdirSync(dirname(out), { recursive: true });
-  const res = { t: tt, ...frameScopes(png, out) };
+  const res = { t: tt, ...frameScopes(png, out, p.root) };
   CACHE.capPreviews(p, out);
   return res;
 }
@@ -198,9 +196,8 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
   const format = (o.format ?? INTERCHANGE[ext] ?? "fcpxml").toLowerCase();
   if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(`.${format}`);
-  mkdirSync(dirname(out), { recursive: true });
   const { exportTimeline: ex } = await import("./export.ts");
-  return ex(p.absolutized(M.resolve(tl)), format, out);
+  return ex(p.absolutized(M.resolve(tl)), format, out, p.root);
 }
 
 /** Write the captions clips (timeline times, the pages the renderer shows) as .srt or .vtt. ids limits it to some clips. */
@@ -214,8 +211,7 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
   const cues = SUB.captionCues(p.absolutized(M.resolve(tl)), o.ids);
   if (!cues.length) throw new M.EditError(o.ids ? `no caption cues in ${o.ids.join(", ")}` : "the timeline has no captions clips", "empty", "add captions first: add_captions words=[...] | srt=... | transcribe=...");
   const out = o.out ? presolve(o.out) : p.defaultOutput(`.${format}`);
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, SUB.formatCues(cues, format));
+  writeFile(out, SUB.formatCues(cues, format), p.root);
   return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
 }
 
@@ -265,7 +261,7 @@ export async function render(project: string | undefined, o: {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
       const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
       const sp = out.replace(/\.[^.]+$/, ".sheet.jpg");
-      writeFileSync(sp, png);
+      writeFile(sp, png, p.root);
       res.contact_sheet = sp;
     } catch (e: any) { res.contact_sheet_error = e.message; }
     res.loudness = await loud;
@@ -309,7 +305,7 @@ export const feedback = {
   summary: (sinceDays?: number, limit?: number) => FB.summary({ sinceDays, limit }),
   report: (out?: string, sinceDays?: number) => {
     const md = FB.summaryMarkdown(FB.summary({ sinceDays }));
-    if (out) { mkdirSync(dirname(presolve(out)), { recursive: true }); writeFileSync(presolve(out), md); return { report: presolve(out) }; }
+    if (out) { writeFile(presolve(out), md); return { report: presolve(out) }; }
     return { markdown: md };
   },
   resolve: (id: string, status?: "resolved" | "wontfix" | "open", note?: string) => FB.resolveNote(id, status, note),

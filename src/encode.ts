@@ -3,9 +3,8 @@
 // Output options: codec (h264 | hevc | prores | prores_4444 | vp9 | auto by extension), alpha (transparent video in
 // .mov ProRes 4444 / .webm VP9), and audio-only exports (.wav .mp3 .m4a .aac .flac) that skip video entirely.
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +13,7 @@ import { inp } from "./ffinput.ts";
 import { needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
+import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
 
 export type VideoCodec = "h264" | "hevc" | "prores" | "prores_4444" | "vp9";
 export type Codec = VideoCodec | "auto";
@@ -124,12 +124,8 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
 
 export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDirs: string[]; t0: number; i0: number; i1: number; v: string[]; out: string }
 
-/** Where a render writes before it is renamed to `output`: `<name>.part-<pid>-<rand><ext>` (ext kept so ffmpeg picks the muxer;
- *  cache.ts treats the name as in flight while the pid lives). `output` itself never holds a partial or truncated file. */
-const partPath = (output: string) => { const ext = extname(output); return `${output.slice(0, output.length - ext.length)}.part-${process.pid}-${randomBytes(3).toString("hex")}${ext}`; };
-
 /** Scratch dir of one render: `<project>/.agentcut/tmp/render-<pid>-<rand>/`. The pid lets cache.ts sweepStale remove it after a crash. */
-const renderTmp = (root: string) => { const base = join(root, ".agentcut", "tmp"); mkdirSync(base, { recursive: true }); return mkdtempSync(join(base, `render-${process.pid}-`)); };
+const renderTmp = (root: string) => mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `render-${process.pid}-`));
 
 /** Render frames [i0, i1) to `out` (video only, or muxed with audio when given). `signal` stops the encoder and ends the loop. */
 export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: number, v: string[], out: string,
@@ -203,14 +199,13 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix --from/--to");
   const warnings: string[] = [];
   if (!audioSources(tl).length) warnings.push("timeline has no audible clips: the export is silence");
-  mkdirSync(dirname(output), { recursive: true });
   const began = performance.now();
-  const tmp = renderTmp(root), part = partPath(output);
+  const part = tmpSibling(output, root), tmp = renderTmp(root); // part: where ffmpeg writes before it is renamed to `output`, which never holds a partial file
   try {
     const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(wav), "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
     if (r.status !== 0) throw new EditError(`audio encode failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
-    renameSync(part, output);
+    commit(part, output);
   } finally {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
     rmSync(part, { force: true });
@@ -236,7 +231,6 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const { v, mux, a } = plan;
   // alpha dropped: render on opaque black so semi-transparent edges are composited, not shown at full strength
   const rtl = plan.transparent && !plan.alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
-  mkdirSync(dirname(output), { recursive: true });
   const scale = gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1;
   const probe = new Renderer(structuredClone(rtl), root, scale);
   const T = probe.duration, fps = probe.fps, W = probe.W, H = probe.H;
@@ -246,7 +240,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const n = Math.round((end - start) * fps);
   const workers = Math.max(1, o.workers ?? defaultWorkers(n, fps));
   const began = performance.now();
-  const tmp = renderTmp(root), part = partPath(output);
+  const part = tmpSibling(output, root), tmp = renderTmp(root);
   try {
     const wav = join(tmp, "mix.wav");
     const audioJob = Promise.resolve().then(() => buildAudio(structuredClone(tl), wav, start, end));
@@ -272,7 +266,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       const guarded = <T,>(pr: Promise<T>) => pr.catch((e) => { first ??= e; stop.abort(); throw e; });
       await Promise.allSettled([guarded(audioJob), ...jobs.map((job, k) => guarded((async () => {
         const jf = join(tmp, `job${k}.json`);
-        writeFileSync(jf, JSON.stringify(job));
+        createFile(jf, JSON.stringify(job));
         const p = spawn(cmd[0], [...cmd.slice(1), jf], { stdio: ["ignore", "pipe", "pipe"] });
         stopOnAbort(p, stop.signal);
         let err = "", buf = "";
@@ -289,7 +283,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       o.signal?.throwIfAborted();
       if (first) throw first;
       const list = join(tmp, "list.txt");
-      writeFileSync(list, jobs.map((j) => `file '${j.out.replace(/\\/g, "/").replace(/'/g, "'\\''")}'\n`).join(""));
+      createFile(list, jobs.map((j) => `file '${j.out.replace(/\\/g, "/").replace(/'/g, "'\\''")}'\n`).join(""));
       const cc = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", ...inp(list), ...inp(wav),
         "-map", "0:v", "-map", "1:a", "-c:v", "copy", ...mux, ...a, "-t", (n / fps).toFixed(6), target], { encoding: "utf8" });
       if (cc.status !== 0) throw new EditError(`concat failed: ${(cc.stderr || "").slice(-600)}`, "encode_failed");
@@ -299,7 +293,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
         `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, part], { encoding: "utf8" });
       if (g.status !== 0) throw new EditError(`gif conversion failed: ${(g.stderr || "").slice(-400)}`, "encode_failed");
     }
-    renameSync(part, output);
+    commit(part, output);
   } finally {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
     rmSync(part, { force: true });

@@ -3,7 +3,7 @@
 // are exact and the suite runs offline. AGENTCUT_TEST_VISION=1 also runs the real helper through uv (downloads packages).
 // Run: bun tests/vision.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync as lstat, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync as symlink, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -214,6 +214,20 @@ const gone: any = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-again.p
 check("deleted cache -> preview fails fast, never computes", gone.code === "not_prepared" && nCalls("matte") === mc, gone);
 await api.prepare(B);
 check("prepare rebuilds a deleted matte", nCalls("matte") === mc + 1 && readdirSync(join(B, ".agentcut", "cache")).some((f) => f.startsWith("matte-")));
+{ // the project cache dir as a link: prepare refuses it before the helper runs, and the target is unchanged (content, entries, mtimes)
+  const t = join(tmp, "cache-link-target"), cacheD = join(B, ".agentcut", "cache");
+  mkdirSync(t);
+  writeFileSync(join(t, "keep.txt"), "keep");
+  utimesSync(t, 1e9, 1e9);
+  const snap = () => [".", ...readdirSync(t, { recursive: true }).map(String).sort()].map((e) => { const st = lstat(join(t, e)); return `${e}:${st.isSymbolicLink() ? "->" + readlinkSync(join(t, e)) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(join(t, e), "utf8")}`; }).join("\n");
+  const was = snap(), calls = nCalls("matte");
+  rmSync(cacheD, { recursive: true });
+  symlink(t, cacheD);
+  const lk: any = await api.prepare(B).catch((e) => e);
+  check(".agentcut/cache as a link: prepare -> unsafe_path, the helper is not run, the target is unchanged", lk.code === "unsafe_path" && nCalls("matte") === calls && snap() === was, { code: lk.code, calls: nCalls("matte") - calls, now: snap() });
+  unlinkSync(cacheD);
+  await api.prepare(B);
+}
 await fails(B, [{ op: "remove_background", id: "vid2", model: "bogus" }], "bad_value", "unknown model -> bad_value");
 const off = (await apply(B, [{ op: "remove_background", id: "vid2", off: true }]))[0];
 check("off=true removes the field", off.remove_background === false && clip(B, "vid2").remove_background === undefined);
@@ -368,15 +382,17 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       const open = fresh("open");
       mkdirSync(join(open, "sub"));
       chmod(open, 0o777);
-      await refused("an ancestor is world-writable without the sticky bit", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
+      const under = (name: string) => join(open, "sub", name); // each case gets its own cache path, so a red result is never read through a cached one
+      await refused("an ancestor is world-writable without the sticky bit", under("cache-open"), [under("cache-open")]);
       chmod(open, 0o1777);
-      await refused("an ancestor that is world-writable with the sticky bit", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
+      await refused("an ancestor that is world-writable with the sticky bit", under("cache-sticky"), [under("cache-sticky")]);
       chmod(open, 0o775);
-      await refused("an ancestor that is group-writable", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
+      await refused("an ancestor that is group-writable", under("cache-group"), [under("cache-group")]);
       chmod(open, 0o755);
       if (existsSync("/tmp") && (statSync("/tmp").mode & 0o022) !== 0) { // the shared temp dir itself: refused, and the check never creates anything there
         const shared = join("/tmp", `agentcut-never-created-${process.pid}`);
-        await refused("a cache dir under the shared /tmp", shared, [shared]);
+        try { await refused("a cache dir under the shared /tmp", shared, [shared]); }
+        finally { rmSync(shared, { recursive: true, force: true }); } // if the refusal ever regresses, nothing is left in the real /tmp
       }
     }
 

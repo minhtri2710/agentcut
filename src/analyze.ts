@@ -1,11 +1,12 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
+import { commit, createFile, tmpSibling } from "./safe-write.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
 function decodeMono(path: string, sr = 22050): Float32Array {
@@ -211,17 +212,19 @@ export function ttsVoices() {
   };
 }
 
-/** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system). */
-export function tts(text: string, outPath: string, voice?: string, rate?: number) {
+/** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
+ *  `base`: the project folder when outPath is inside it. */
+export function tts(text: string, outPath: string, voice?: string, rate?: number, base?: string) {
   needFfmpeg();
-  mkdirSync(dirname(outPath), { recursive: true });
+  const part = tmpSibling(outPath, base);
   const { provider, voice: v } = pickProvider(voice);
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
   try {
     const raw = provider === "piper" ? piperSpeech(text, tmp, v, rate) : provider === "openai" ? httpSpeech(text, tmp, v, rate) : systemSpeech(text, tmp, v, rate);
-    const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", outPath], { encoding: "utf8" });
+    const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", part], { encoding: "utf8" });
     if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+    commit(part, outPath);
+  } finally { rmSync(tmp, { recursive: true, force: true }); rmSync(part, { force: true }); }
   return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider };
 }
 
@@ -230,7 +233,7 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
   let raw = join(tmp, "tts.aiff");
   // text goes in a file, never argv: a script starting with "-" would be parsed as an option
   const txt = join(tmp, "tts.txt");
-  writeFileSync(txt, text);
+  createFile(txt, text);
   let r;
   if (process.platform === "darwin") {
     const args = ["-o", raw];

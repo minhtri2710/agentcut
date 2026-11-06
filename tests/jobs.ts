@@ -572,7 +572,7 @@ console.log("cache containment (symlinks)");
     check(`  their hint does not offer AGENTCUT_PREVIEWS_MAX_MB (it only governs the automatic cap)`, hints.every((h) => typeof h === "string" && !/AGENTCUT_PREVIEWS_MAX_MB/.test(h)), hints);
     if (name === "previews") {
       const wf: any = await api.frame(P, 1, { scale: 0.5 }).catch((e) => e);
-      check("preview write into a symlinked previews/: unsafe_cache_dir, the hint names AGENTCUT_PREVIEWS_MAX_MB, sentinels survive", wf.code === "unsafe_cache_dir" && /AGENTCUT_PREVIEWS_MAX_MB/.test(wf.hint ?? "") && intact(), { code: wf.code, hint: wf.hint });
+      check("preview write into a symlinked previews/: unsafe_path, sentinels survive", wf.code === "unsafe_path" && intact(), { code: wf.code, hint: wf.hint });
     }
     unlinkSync(link);
     renameSync(real, link);

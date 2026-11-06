@@ -1,13 +1,14 @@
 // AI vision features run as an optional external tool: a Python helper (vision-py.ts) executed with `uv run --with ...`,
 // so packages are fetched on demand and AgentCut core never needs them. Results are cached per file hash + params and are
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
+import { commit, createFile, tmpSibling, writeFile } from "./safe-write.ts";
 import { VISION_PY } from "./vision-py.ts";
 
 // pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
@@ -34,8 +35,6 @@ const helperSha = createHash("sha256").update(VISION_PY).digest("hex");
 const scriptHash = helperSha.slice(0, 12);
 export const cacheKey = (path: string, params: unknown) =>
   createHash("sha256").update(`${fileHash(path)}|${scriptHash}|${JSON.stringify(params)}`).digest("hex").slice(0, 20);
-
-const writeAtomic = (file: string, data: string) => { const t = `${file}.${process.pid}.tmp`; writeFileSync(t, data); renameSync(t, file); };
 
 /** A derived asset (analysis JSON or alpha matte) in the cache: `file` exists once it was computed. Ops only look it up;
  *  `compute` (run by prepare, never inside apply_ops) produces it. `frames` estimates the helper's work for progress. */
@@ -83,18 +82,16 @@ export function checkHelper(script: string) {
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
 const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
 
-/** Runs the helper from a fresh private (0700) run dir `helper-runs/vision-<pid>-xxxxxx`, removed afterwards even on failure or abort
+/** Runs the helper (`root` = helperRoot()) from a fresh private (0700) run dir `helper-runs/vision-<pid>-xxxxxx`, removed afterwards even on failure or abort
  *  (best effort: a cleanup error never replaces the result; a SIGKILL leaves the dir behind). The dir is also the spawn's cwd, and uv gets
  *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
-async function runHelper(d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
-  const root = helperRoot();
-  mkdirSync(cacheDir(d.root), { recursive: true });
+async function runHelper(root: string, d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   const uvEnv = process.env.AGENTCUT_UV || "uv", uv = /[\\/]/.test(uvEnv) ? resolve(uvEnv) : uvEnv; // the cwd changes below: keep a relative path meaning what the user typed
   const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
   const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {
     const script = join(dir, "helper.py");
-    writeFileSync(script, VISION_PY, { flag: "wx", mode: 0o600 });
+    createFile(script, VISION_PY, 0o600);
     return await spawnHelper(uv, dir, script, d, job, onFrames, signal);
   } finally { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort: never mask the result or the abort reason */ } }
 }
@@ -127,15 +124,19 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
   });
 }
 
+/** The trusted base of d.file: the project folder, or the user cache for an analysis without a project. */
+const baseOf = (d: Derived) => d.root ?? userCache();
+
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file. */
 export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
-  const tmp = d.file.replace(/(\.\w+)$/, `.part-${process.pid}-${randomBytes(3).toString("hex")}$1`);
+  const root = helperRoot(); // refused before anything is written, the cache dir included
+  const tmp = tmpSibling(d.file, baseOf(d));
   try {
-    const r = await runHelper(d, tmp, onFrames, signal);
-    if (d.kind === "matte") renameSync(tmp, d.file);
-    else writeAtomic(d.file, JSON.stringify(r));
+    const r = await runHelper(root, d, tmp, onFrames, signal);
+    if (d.kind === "matte") commit(tmp, d.file);
+    else writeFile(d.file, JSON.stringify(r), baseOf(d));
   } finally { rmSync(tmp, { force: true }); }
   return { cached: false };
 }

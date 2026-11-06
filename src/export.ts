@@ -7,10 +7,10 @@
 // handles, so the cut goes to the overlap midpoint: A loses ceil(d/2) at its end, B starts floor(d/2) later in its
 // source (in += floor(d/2) * speed), and a transition of duration d is centred on the cut.
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname } from "node:path";
+import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
+import { writeFile } from "./safe-write.ts";
 
 export interface Skipped { id: string; type: string; reason: string }
 export type InterchangeFormat = "fcpxml" | "otio";
@@ -497,15 +497,14 @@ export function exportOtio(tl: Timeline, o: { name?: string } = {}): { json: str
 }
 
 // ------------------------------------------------------------------ file output
-/** Write `tl` (resolved + absolutized) as FCPXML or OTIO to `out`. */
-export function exportTimeline(tl: Timeline, format: InterchangeFormat | string, out: string) {
+/** Write `tl` (resolved + absolutized) as FCPXML or OTIO to `out`; `base` is the project folder when `out` is inside it. */
+export function exportTimeline(tl: Timeline, format: InterchangeFormat | string, out: string, base?: string) {
   const f = String(format).toLowerCase();
   let body: string, skipped: Skipped[], clips: number;
   if (f === "fcpxml") ({ xml: body, skipped, clips } = exportFcpxml(tl));
   else if (f === "otio") ({ json: body, skipped, clips } = exportOtio(tl));
   else throw new EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, body);
+  writeFile(out, body, base);
   return {
     output: out, format: f, clips, skipped,
     next: f === "fcpxml" ? "open in Final Cut Pro (File > Import > XML); media is linked by absolute file:// paths"

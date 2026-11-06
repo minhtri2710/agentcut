@@ -123,10 +123,11 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   check("SCHEMA_VERSION is 1", SCHEMA_VERSION === 1, SCHEMA_VERSION);
   check("a new project and timeline_schema report SCHEMA_VERSION", tl().version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [tl().version, (api.schema() as any).timeline.version]);
   const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  /** every entry under dir with its content (a symlink with its target): names alone would miss a rewritten snapshot */
-  const tree = (dir: string): string => readdirSync(dir, { recursive: true }).map(String).sort().map((n) => {
+  /** every entry under dir with its content (a symlink with its target) and every directory's mtime, dir itself included: names and
+   *  contents alone would miss a file created and removed again behind a link */
+  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
     const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" : readFileSync(f, "utf8")}`;
+    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
   }).join("\n");
   const setVersion = (dir: string, v: unknown) => {
     const t = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
@@ -194,9 +195,9 @@ console.log("undo/redo act only on history entries, never on a path named inside
 {
   const { SCHEMA_VERSION } = await import("../src/model.ts");
   const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  const tree = (dir: string): string => readdirSync(dir, { recursive: true }).map(String).sort().map((n) => {
+  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
     const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" : readFileSync(f, "utf8")}`;
+    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
   }).join("\n");
   /** a project with `n` entries on `stack`; returns its dir */
   const make = async (name: string, stack: "undo" | "redo", n = 1) => {
@@ -235,7 +236,7 @@ console.log("undo/redo act only on history entries, never on a path named inside
       }
       const proj = readFileSync(join(d, "project.json"), "utf8"), hist = tree(join(d, ".agentcut", "history")), outside = tree(out);
       const e = await caught(() => run(d, stack));
-      check(`${stack}: ${kind} -> unsafe_history`, e?.code === "unsafe_history", e ? { code: e.code, message: e.message } : "ok");
+      check(`${stack}: ${kind} -> unsafe_path`, e?.code === "unsafe_path", e ? { code: e.code, message: e.message } : "ok");
       check(`${stack}: ${kind}: project.json, the history dir and the target are byte-identical`,
         readFileSync(join(d, "project.json"), "utf8") === proj && tree(join(d, ".agentcut", "history")) === hist && tree(out) === outside);
     }
@@ -256,9 +257,9 @@ console.log("undo/redo act only on history entries, never on a path named inside
 console.log("history writes never follow a symlink, and nothing is written before a refusal");
 {
   const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  const tree = (dir: string): string => readdirSync(dir, { recursive: true }).map(String).sort().map((n) => {
+  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
     const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" : readFileSync(f, "utf8")}`;
+    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
   }).join("\n");
   const make = async (name: string, stack: "undo" | "redo") => {
     const d = join(tmp, name);
@@ -272,15 +273,15 @@ console.log("history writes never follow a symlink, and nothing is written befor
     ["apply", (d) => api.apply(d, [{ op: "add_marker", t: 1 }])], ["history", (d) => api.history(d)],
   ];
 
-  // DP-10: the temp file of every write is new, never a planted project.json.tmp
+  // DP-10: project.json as a link is replaced by a regular file; the file it pointed to is left alone
   {
-    const d = await make("tmp-link", "undo"), target = join(tmp, "tmp-link-target.txt");
-    writeFileSync(target, "keep me");
-    const plant = () => { rmSync(join(d, "project.json.tmp"), { force: true }); symlinkSync(target, join(d, "project.json.tmp")); };
+    const d = await make("json-link", "undo"), target = join(tmp, "json-link-target.json");
     for (const [name, f] of [["apply", () => api.apply(d, [{ op: "add_marker", t: 2 }])], ["undo", () => api.undo(d)], ["redo", () => api.redo(d)]] as const) {
-      plant();
+      writeFileSync(target, readFileSync(join(d, "project.json"), "utf8"));
+      const keep = readFileSync(target, "utf8");
+      rmSync(join(d, "project.json")); symlinkSync(target, join(d, "project.json"));
       const e = await caught(f);
-      check(`a planted project.json.tmp symlink: ${name} leaves the target alone`, readFileSync(target, "utf8") === "keep me" && lstatSync(join(d, "project.json")).isFile(), e ? { code: e.code } : "ok");
+      check(`project.json as a link: ${name} leaves the target alone and writes a regular file`, readFileSync(target, "utf8") === keep && lstatSync(join(d, "project.json")).isFile(), e ? { code: e.code } : "ok");
     }
   }
   // a dangling project.json symlink is not a free slot for init
@@ -300,8 +301,8 @@ console.log("history writes never follow a symlink, and nothing is written befor
     for (const [name, f] of [[stack, () => (stack === "undo" ? api.undo(d) : api.redo(d))], ["apply", () => api.apply(d, [{ op: "add_marker", t: 1 }])]] as const) {
       const proj = readFileSync(join(d, "project.json"), "utf8"), hist = tree(join(d, ".agentcut", "history"));
       const e = await caught(f);
-      check(`${name} with a ${kind} entry in ${other}/ -> unsafe_history, history and project.json byte-identical`,
-        e?.code === "unsafe_history" && readFileSync(join(d, "project.json"), "utf8") === proj && tree(join(d, ".agentcut", "history")) === hist, e ? { code: e.code } : "ok");
+      check(`${name} with a ${kind} entry in ${other}/ -> unsafe_path, history and project.json byte-identical`,
+        e?.code === "unsafe_path" && readFileSync(join(d, "project.json"), "utf8") === proj && tree(join(d, ".agentcut", "history")) === hist, e ? { code: e.code } : "ok");
     }
   }
   // DP-09: a symlinked .agentcut or history dir: refused before anything is created, written or removed there
@@ -313,8 +314,8 @@ console.log("history writes never follow a symlink, and nothing is written befor
       for (const [name, f] of acts) {
         const proj = readFileSync(join(d, "project.json"), "utf8"), before = tree(out);
         const e = await caught(f.bind(null, d));
-        check(`${kind} (${stack}): ${name} -> unsafe_history, nothing changed behind the link`,
-          e?.code === "unsafe_history" && tree(out) === before && readFileSync(join(d, "project.json"), "utf8") === proj, e ? { code: e.code, message: e.message } : "ok");
+        check(`${kind} (${stack}): ${name} -> unsafe_path, nothing changed behind the link`,
+          e?.code === "unsafe_path" && tree(out) === before && readFileSync(join(d, "project.json"), "utf8") === proj, e ? { code: e.code, message: e.message } : "ok");
       }
     }
   }

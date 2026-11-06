@@ -1,5 +1,5 @@
 // Edit operations. Every op is {"op": name, ...args}; batches are atomic (applied to a copy).
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
@@ -11,6 +11,7 @@ import {
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
+import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
 import { registerEditOps, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
@@ -41,8 +42,8 @@ export function importAsset(p: Project | null, tl: Timeline, path: string, id?: 
   for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) return k;
   if (copy && p) {
     let dst = join(p.root, "media", basename(src));
-    for (let i = 1; existsSync(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
-    if (presolve(dst) !== src) copyFileSync(src, dst);
+    for (let i = 1; lexists(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
+    if (presolve(dst) !== src) copyFile(src, dst, p.root);
     src = dst;
   }
   const info = probe(src);
@@ -500,7 +501,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const out = join(p.root, "media", `vo-${Date.now()}.wav`);
-    const res = AN.tts(a.text, out, a.voice, a.rate);
+    const res = AN.tts(a.text, out, a.voice, a.rate, p.root);
     const tid = a.track ?? "voice";
     const tr = ensureTrack(tl, tid, "audio");
     if (!tr.role) tr.role = "voice";

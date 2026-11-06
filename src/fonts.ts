@@ -1,9 +1,10 @@
 // Font resolution on top of Skia's system font manager (@napi-rs/canvas GlobalFonts).
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { C, canvasLoaded, queueFontDir } from "./canvas.ts";
 import { EditError, suggest } from "./model.ts";
+import { writeFile } from "./safe-write.ts";
 
 const WEIGHTS: Record<string, number> = {
   thin: 100, hairline: 100, extralight: 200, ultralight: 200, light: 300, regular: 400, normal: 400, book: 400, roman: 400,
@@ -28,7 +29,7 @@ function families(): Map<string, string> {
     familyMap = new Map();
     for (const f of C().GlobalFonts.families as any[]) familyMap.set(f.family.toLowerCase(), f.family);
     familyMapFromSkia = true;
-    try { mkdirSync(join(CACHE, ".."), { recursive: true }); writeFileSync(CACHE, JSON.stringify({ sig: sig(), families: [...familyMap.values()] })); } catch { /* cache is optional */ }
+    try { writeFile(CACHE, JSON.stringify({ sig: sig(), families: [...familyMap.values()] }), dirname(CACHE)); } catch { /* cache is optional */ }
     return familyMap;
   }
   try {

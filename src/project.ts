@@ -1,6 +1,6 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
@@ -8,6 +8,7 @@ import {
   clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, PRESETS, resolve, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
+import { createExclusive, ensureDir, lexists, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
 const MAX_HISTORY = 100;
@@ -47,17 +48,7 @@ export function checkRevision(base: number, current: number) {
 
 /** only ESRCH proves a pid dead; anything else (EPERM, or an impossible pid process.kill rejects with another code) counts as alive: fail closed */
 export const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; } };
-/** exists, a dangling symlink included (existsSync follows the link, so a dangling one reads as absent) */
-const lexists = (f: string) => { try { lstatSync(f); return true; } catch (e: any) { if (e.code === "ENOENT") return false; throw e; } };
 const readOr = (f: string) => { try { return readFileSync(f, "utf8"); } catch (e: any) { if (e.code === "ENOENT") return null; throw e; } };
-/** O_EXCL create with the full content already in place (link of a temp file), so readers never see a half-written lock. */
-function createExcl(file: string, body: string): boolean {
-  const tmp = `${file}.tmp-${randomBytes(6).toString("hex")}`;
-  writeFileSync(tmp, body, { flag: "wx" });
-  try { linkSync(tmp, file); return true; }
-  catch (e: any) { if (e.code === "EEXIST") return false; throw e; }
-  finally { rmSync(tmp, { force: true }); }
-}
 /** Lock and claim files hold "<pid> <id> <host>": id is 16 hex chars, unique per acquisition; the host goes last because a
  *  hostname may contain spaces. Anything else is not something AgentCut wrote and is never reclaimed. */
 const LOCK_FORMAT = /^(\d+) ([0-9a-f]{16}) (.+)$/;
@@ -76,7 +67,7 @@ export function reclaim(file: string, held: string, token: string) {
   const stale = staleHolder(held);
   if (!stale) return;
   const claim = `${file}.reclaim-${stale.id}`;
-  if (createExcl(claim, token)) {
+  if (createExclusive(claim, token)) {
     try { if (readOr(file) === held) rmSync(file); } finally { rmSync(claim, { force: true }); }
     return;
   }
@@ -84,12 +75,11 @@ export function reclaim(file: string, held: string, token: string) {
   if (c !== null) reclaim(claim, c, token);
 }
 
-/** Cross-process mutex on `file`, whose content is "<pid> <id> <host>" (id unique per acquisition). Every iteration that
+/** Cross-process mutex on `file` (its directory exists), whose content is "<pid> <id> <host>" (id unique per acquisition). Every iteration that
  *  does not acquire the lock checks the deadline and sleeps, so a reclaim that cannot progress never spins. */
 export function withLock<T>(file: string, fn: () => T, waitMs = LOCK_WAIT_MS): T {
-  mkdirSync(dirname(file), { recursive: true });
   const token = `${process.pid} ${randomBytes(8).toString("hex")} ${HOST}`, until = Date.now() + waitMs;
-  while (!createExcl(file, token)) {
+  while (!createExclusive(file, token)) {
     const held = readOr(file);
     if (held !== null) reclaim(file, held, token);
     if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${file}`);
@@ -127,10 +117,10 @@ export class Project {
       if (!PRESETS[o.preset]) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
       [w, h] = PRESETS[o.preset];
     }
-    for (const d of ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"]) mkdirSync(join(root, d), { recursive: true });
+    for (const d of ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"]) ensureDir(root, join(root, d));
     const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
     if (o.empty) tl.tracks = [];
-    writeFileSync(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2), { flag: "wx" });
+    if (!createExclusive(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
     return new Project(root);
   }
 
@@ -151,27 +141,12 @@ export class Project {
     });
   }
 
-  /** a new temp name per write, created O_EXCL: a planted symlink (or any existing file) is never written through or reused */
-  private write(tl: Timeline) {
-    const tmp = `${this.file}.tmp-${randomBytes(6).toString("hex")}`;
-    try { writeFileSync(tmp, JSON.stringify(tl, null, 2), { flag: "wx" }); renameSync(tmp, this.file); }
-    catch (e: any) { if (e.code !== "EEXIST") rmSync(tmp, { force: true }); throw e; }
-  }
+  private write(tl: Timeline) { writeFile(this.file, JSON.stringify(tl, null, 2), this.root); }
 
   private locked<T>(fn: () => T): T { return withLock(join(this.plainDir(".agentcut"), "lock"), fn); }
 
-  /** root/<parts> as a real directory, made one component at a time: an existing component that is not a real directory (a symlink)
-   *  is refused before anything is created or written there. */
-  private plainDir(...parts: string[]) {
-    let d = this.root;
-    for (const part of parts) {
-      d = join(d, part);
-      let st;
-      try { st = lstatSync(d); } catch (e: any) { if (e.code !== "ENOENT") throw e; mkdirSync(d); continue; }
-      if (!st.isDirectory()) throw new EditError(`${relative(this.root, d)} is not a plain directory inside the project (symlink?)`, "unsafe_history", "AgentCut never reads, writes or deletes history through symlinks: replace it with a real directory");
-    }
-    return d;
-  }
+  /** root/<parts> as a real directory: an existing component that is not a real directory (a symlink) is refused before anything is created or written there. */
+  private plainDir(...parts: string[]) { return ensureDir(this.root, join(this.root, ...parts)); }
 
   // ---------------------------------------------------------------- history
   /** The history writer's entry names (push): digits + ".json". Undo/redo/prune only ever touch a path built from a stack dir plus such a name. */
@@ -185,14 +160,14 @@ export class Project {
     const d = this.stack(name), out: string[] = [];
     for (const e of readdirSync(d, { withFileTypes: true })) {
       if (!Project.ENTRY.test(e.name)) continue;
-      if (!e.isFile()) throw new EditError(`.agentcut/history/${name}/${e.name} is not a regular file (symlink?)`, "unsafe_history", "AgentCut never reads or deletes history through symlinks: remove it");
+      if (!e.isFile()) throw new EditError(`.agentcut/history/${name}/${e.name} is not a regular file (symlink?)`, "unsafe_path", "AgentCut never reads or deletes history through symlinks: remove it");
       out.push(join(d, e.name));
     }
     return out.sort();
   }
   private push(name: string, content: string, label: string) {
     const ts = `${Date.now()}${String(Math.floor(performance.now() * 1000) % 1e6).padStart(6, "0")}`;
-    writeFileSync(join(this.stack(name), `${ts}.json`), JSON.stringify({ label, time: Date.now(), timeline: content }));
+    writeFile(join(this.stack(name), `${ts}.json`), JSON.stringify({ label, time: Date.now(), timeline: content }), this.root);
     const e = this.entries(name);
     for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old);
   }

@@ -1,11 +1,12 @@
 // Subtitle export: captions clips -> timed cues (the same pages and timing the renderer burns in) -> .srt / .vtt,
 // or a soft subtitle stream muxed into a rendered video (mov_text in MP4/MOV, SubRip in MKV, WebVTT in WebM).
 import { spawnSync } from "node:child_process";
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { extname } from "node:path";
 import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
 import { EditError, parseTime, type Timeline, type Track } from "./model.ts";
+import { commit, createFile, tmpSibling } from "./safe-write.ts";
 
 export interface Cue { start: number; end: number; text: string; clip: string }
 export const SUB_FORMATS: Record<string, "srt" | "vtt"> = { ".srt": "srt", ".vtt": "vtt" };
@@ -68,13 +69,13 @@ export function embedCodec(video: string): string {
 export function embedSubtitles(video: string, cues: Cue[]) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
   const vtt = codec === "webvtt";
-  const sub = `${video}.subs.${vtt ? "vtt" : "srt"}`, tmp = `${video}.subs${ext}`;
-  writeFileSync(sub, formatCues(cues, vtt ? "vtt" : "srt"));
+  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`), tmp = tmpSibling(video); // new names next to the video; nothing exists at them
+  createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { encoding: "utf8" });
     if (r.status !== 0) throw new EditError(`subtitle mux failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
-    renameSync(tmp, video);
+    commit(tmp, video);
   } finally {
     rmSync(sub, { force: true });
     rmSync(tmp, { force: true });

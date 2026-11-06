@@ -1,9 +1,10 @@
 // Text-to-speech providers besides the OS voice: piper (local neural TTS) and OpenAI-compatible HTTP /v1/audio/speech.
 // Selected by voice prefix ("piper", "piper:/m.onnx", "openai:nova", "system:Linh") or AGENTCUT_TTS_PROVIDER.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { EditError } from "./model.ts";
+import { createFile } from "./safe-write.ts";
 
 export const PROVIDERS = ["system", "piper", "openai"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -41,7 +42,7 @@ export function httpSpeech(text: string, dir: string, voice?: string, rate?: num
   if (!url) throw new EditError("HTTP TTS is not configured", "missing_dependency", "set AGENTCUT_TTS_URL (OpenAI-compatible base, e.g. http://localhost:8880/v1) and/or AGENTCUT_TTS_KEY; optional AGENTCUT_TTS_MODEL, AGENTCUT_TTS_VOICE");
   if (!has("curl")) throw new EditError("HTTP TTS needs curl", "missing_dependency", "install curl");
   const body = join(dir, "req.json"), out = join(dir, "tts-http.wav");
-  writeFileSync(body, JSON.stringify(speechBody(text, voice, rate, env)));
+  createFile(body, JSON.stringify(speechBody(text, voice, rate, env)));
   const key = env.AGENTCUT_TTS_KEY;
   const cfg = key ? `header = "Authorization: Bearer ${key.replace(/[\\"]/g, "\\$&")}"\n` : "";
   const r = spawnSync("curl", ["-sS", "-K", "-", "-X", "POST", url, "-H", "Content-Type: application/json", "--data-binary", `@${body}`,

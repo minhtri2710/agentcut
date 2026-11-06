@@ -1,7 +1,7 @@
 // Colour grading (color field -> FFmpeg), scopes, and TTS provider selection / HTTP request building (local server, no network).
 // Run: bun tests/color-tts.ts [--keep]          (needs ffmpeg + curl on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -194,6 +194,19 @@ try {
   check("voices lists openai as available with key status only", lv.providers.find((p: any) => p.name === "openai")?.available === true && lv.voices.some((v: any) => v.name === "openai:nova") && !JSON.stringify(lv).includes(KEY));
   await api.apply(P, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]);
   check("add_voiceover goes through the http provider", api.info(P, "json").timeline.tracks.find((t: any) => t.id === "voice").clips.length === 1);
+  { // media/ as a link: add_voiceover is refused and the target is unchanged (content, entries, mtimes)
+    const W = join(tmp, "vo-link"), t = join(tmp, "vo-link-target");
+    api.create(W, { preset: "720p" });
+    mkdirSync(t);
+    writeFileSync(join(t, "keep.txt"), "keep");
+    utimesSync(t, 1e9, 1e9);
+    const snap = () => `${readdirSync(t).sort().join(",")}|${readFileSync(join(t, "keep.txt"), "utf8")}|${statSync(t).mtimeMs}`;
+    const was = snap();
+    rmSync(join(W, "media"), { recursive: true });
+    symlinkSync(t, join(W, "media"));
+    const e: any = await api.apply(W, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]).catch((x) => x);
+    check("media/ as a link: add_voiceover -> unsafe_path, the target is unchanged", e.code === "unsafe_path" && snap() === was, { code: e.code, now: snap() });
+  }
 
   process.env.AGENTCUT_TTS_KEY = "sk-wrong-SECRET-456";
   let msg = "";
