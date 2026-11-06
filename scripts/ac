@@ -1,3 +1,4 @@
 #!/bin/sh
-# dev wrapper: run the CLI from source; bunfig.toml and .env in the working dir are not read
-exec bun --no-env-file --config=/dev/null "$(dirname "$0")/../src/cli.ts" "$@"
+# dev wrapper: run the CLI from source; bunfig.toml and .env in the working dir are not read, and no package is auto-installed
+d=$(dirname "$0")
+exec bun --no-install --no-env-file --config="$d/bunfig.empty.toml" "$d/../src/cli.ts" "$@"

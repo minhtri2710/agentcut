@@ -1,7 +1,9 @@
 // Launchers: bun runs of scripts/ac, the .mcp.json command, the segment worker and the compiled binary ignore the bunfig.toml and .env in the working dir.
-// Run: bun tests/launchers.ts     (AGENTCUT_BIN=<compiled binary> checks that binary instead of the source launchers)
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// A source tree without node_modules makes no registry request. Run: bun tests/launchers.ts
+// (AGENTCUT_BIN=<compiled binary> checks that binary instead of the source launchers; the no-registry case needs a source tree and is skipped)
+import { spawn, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,26 +15,33 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-launchers-"));
 const work = join(tmp, "work"); // the working dir of every launch: a project holding a bunfig.toml and .env
 const home = join(tmp, "home"); // default AGENTCUT_HOME of the launches (HOME is set at spawn)
 const dotenvHome = join(tmp, "dotenv-home"); // where the working dir's .env would send AGENTCUT_HOME
+const dotenvCache = join(tmp, "dotenv-cache"); // where the working dir's .env would send AGENTCUT_CACHE
 const marker = join(work, "preload-ran");
 let fails = 0;
 const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c ? "" : JSON.stringify(info ?? null).slice(0, 500)); if (!c) fails++; };
 
-// launcher env: HOME at spawn, no AGENTCUT_HOME (a set variable would win over .env), isolated cache
+// launcher env: HOME at spawn; no AGENTCUT_HOME or AGENTCUT_CACHE (a set variable would win over .env), so both default under HOME
 const env = (): Record<string, string> => {
-  const e: Record<string, string> = { ...(process.env as Record<string, string>), HOME: home, AGENTCUT_CACHE: join(tmp, "cache") };
-  delete e.AGENTCUT_HOME; delete e.AGENTCUT_PROJECT; delete e.NODE_ENV;
+  const e: Record<string, string> = { ...(process.env as Record<string, string>), HOME: home };
+  delete e.AGENTCUT_HOME; delete e.AGENTCUT_CACHE; delete e.AGENTCUT_PROJECT; delete e.NODE_ENV;
   return e;
 };
-const mcpJson = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")).mcpServers.agentcut as { command: string; args: string[] };
-// .mcp.json paths are relative to the project root; resolve them so the server can run from `work`
-const mcpCmd = [mcpJson.command, ...mcpJson.args.map((a: string) => (a.endsWith(".ts") ? resolve(root, a) : a))];
+// the .mcp.json command of a source tree; its paths are relative to the tree root, so resolve them to run from another working dir
+const mcpOf = (tree: string) => {
+  const m = JSON.parse(readFileSync(join(tree, ".mcp.json"), "utf8")).mcpServers.agentcut as { command: string; args: string[] };
+  const abs = (a: string) => {
+    const [flag, value] = a.startsWith("--") && a.includes("=") ? [a.slice(0, a.indexOf("=") + 1), a.slice(a.indexOf("=") + 1)] : ["", a];
+    return !value.startsWith("/") && existsSync(resolve(tree, value)) ? flag + resolve(tree, value) : a;
+  };
+  return [m.command, ...m.args.map(abs)];
+};
 const cliCmd = bin ? [bin] : [resolve(root, "scripts/ac")];
-const mcpLaunch = bin ? [bin, "mcp"] : mcpCmd;
+const mcpLaunch = bin ? [bin, "mcp"] : mcpOf(root);
 const cli = (args: string[], cwd: string) => {
   const r = spawnSync(cliCmd[0], [...cliCmd.slice(1), ...args], { cwd, env: env(), encoding: "utf8" });
   try { return JSON.parse(r.stdout); } catch { throw new Error(`non-JSON output for ${args.join(" ")}: ${r.stdout.slice(0, 300)} ${r.stderr.slice(-500)}`); }
 };
-const reset = () => { rmSync(marker, { force: true }); rmSync(dotenvHome, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); };
+const reset = () => { for (const d of [marker, dotenvHome, dotenvCache, home]) rmSync(d, { recursive: true, force: true }); };
 const ignored = (name: string, wrote: string) => {
   check(`${name}: bunfig.toml in the working dir is not loaded`, !existsSync(marker));
   check(`${name}: .env in the working dir is not loaded (feedback went to ${wrote})`, existsSync(join(home, ".agentcut", "feedback")) && !existsSync(dotenvHome));
@@ -40,11 +49,10 @@ const ignored = (name: string, wrote: string) => {
 
 // project and media are made before those files are written
 cli(["init", work, "--preset", "square"], tmp);
-cli(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", duration: 2 }])], work);
+cli(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", duration: 2 }, { op: "add_clip", track: "text", text: "Hi", at: 0, duration: 2 }])], work);
 writeFileSync(join(work, "pre.ts"), `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, "x");\n`);
 writeFileSync(join(work, "bunfig.toml"), 'preload = ["./pre.ts"]\n');
-writeFileSync(join(work, ".env"), `AGENTCUT_HOME=${dotenvHome}\n`);
-writeFileSync(join(work, ".env.local"), `AGENTCUT_HOME=${dotenvHome}\n`);
+for (const f of [".env", ".env.local"]) writeFileSync(join(work, f), `AGENTCUT_HOME=${dotenvHome}\nAGENTCUT_CACHE=${dotenvCache}\n`);
 
 console.log(`launcher: ${cliCmd.join(" ")}`);
 reset();
@@ -57,6 +65,8 @@ reset();
 const rd = cli(["render", "-o", "renders/w.mp4", "--draft", "--no-sheet", "--quiet", "--workers", "2"], work);
 check("render with 2 workers ran in the working dir", rd.ok !== false && rd.workers === 2 && existsSync(join(work, "renders", "w.mp4")), rd);
 check("segment workers: bunfig.toml in the working dir is not loaded", !existsSync(marker));
+// the workers resolve fonts and write the font cache under AGENTCUT_CACHE: it lands in the default place, not where the .env points
+check("segment workers: .env in the working dir is not loaded (font cache went to the default place)", existsSync(join(home, ".cache", "agentcut", "font-families.json")) && !existsSync(dotenvCache));
 
 console.log(`mcp: ${mcpLaunch.join(" ")}`);
 reset();
@@ -67,6 +77,35 @@ reset();
   check("mcp server runs from the working dir", !r.isError, r.content);
   await client.close();
   ignored("mcp", "home");
+}
+
+// a source tree without node_modules, and a registry on 127.0.0.1 that records every request: no launch may ask it for a package
+if (bin) console.log("no registry request: skipped (a compiled binary resolves no packages)");
+else {
+  console.log("no registry request");
+  const copy = join(tmp, "tree");
+  mkdirSync(copy);
+  for (const f of ["src", "scripts", "package.json", "bun.lock", "tsconfig.json", ".mcp.json"]) cpSync(join(root, f), join(copy, f), { recursive: true });
+  const hits: string[] = [];
+  const registry = createServer((q, s) => { hits.push(q.url ?? ""); s.statusCode = 404; s.end("{}"); });
+  await new Promise<void>((r) => registry.listen(0, "127.0.0.1", r));
+  const bare = join(tmp, "bare"); // working dir whose .npmrc names the registry
+  mkdirSync(bare);
+  writeFileSync(join(bare, ".npmrc"), `registry=http://127.0.0.1:${(registry.address() as any).port}/\n`);
+  const e: Record<string, string> = { ...env(), BUN_INSTALL_CACHE_DIR: join(tmp, "bun-cache"), NO_PROXY: "127.0.0.1,localhost", HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9" };
+  delete e.BUN_INSTALL; delete e.XDG_CACHE_HOME;
+  const launch = (cmd: string[]) => new Promise<void>((done) => {
+    const p = spawn(cmd[0], cmd.slice(1), { cwd: bare, env: e, stdio: "ignore" });
+    const poll = setInterval(() => { if (hits.length) p.kill(); }, 50);
+    const limit = setTimeout(() => p.kill(), 30000);
+    p.on("exit", () => { clearInterval(poll); clearTimeout(limit); done(); });
+  });
+  for (const [name, cmd] of [["scripts/ac", [join(copy, "scripts/ac"), "fonts"]], [".mcp.json command", mcpOf(copy)]] as const) {
+    hits.length = 0;
+    await launch([...cmd]);
+    check(`${name}: no registry request (${hits.join(" ") || "none"})`, hits.length === 0, hits);
+  }
+  registry.close();
 }
 
 console.log(`\n${fails ? `✗ ${fails} check(s) failed` : "OK - all checks passed"}  (${tmp})`);

@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "scripts/bunfig.empty.toml",
     "README.md",
     "AGENTS.md"
   ],

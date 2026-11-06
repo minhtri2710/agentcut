@@ -2,7 +2,7 @@
   "mcpServers": {
     "agentcut": {
       "command": "bun",
-      "args": ["--no-env-file", "--config=/dev/null", "src/mcp.ts"]
+      "args": ["--no-install", "--no-env-file", "--config=scripts/bunfig.empty.toml", "src/mcp.ts"]
     }
   }
 }

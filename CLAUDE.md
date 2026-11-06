@@ -3,7 +3,7 @@
 Agent-first video editor. Read [AGENTS.md](AGENTS.md) to *use* it; this file is for *developing* it.
 `legacy/python/` is the first prototype - do not edit or use it.
 
-- Setup: `bun install`. Run from source: `scripts/ac …` (CLI), `bun --no-env-file --config=/dev/null src/mcp.ts` (MCP); a bunfig.toml and .env in the working dir are not read (tests/launchers.ts).
+- Setup: `bun install`. Run from source: `scripts/ac …` (CLI), the `.mcp.json` command (MCP; copy its flags to launch it by hand): they pass `--no-install --no-env-file --config=scripts/bunfig.empty.toml`, so a bunfig.toml and .env in the working dir are not read and nothing is auto-installed (tests/launchers.ts).
 - Check: `npx tsc --noEmit -p .` then `bun run test` (smoke, mcp, edit-ops, compound, codecs, export, ui, audio, color-tts, verify, vision, review, jobs, ui-browser, realmedia, launchers). Export roundtrip
   checks run when `AGENTCUT_OTIO_PY` (python with opentimelineio) / `AGENTCUT_FCPXML_DTD` are set.
 - Build: `bun run build` -> `dist/` (Node >= 20 bundles); `bun run build -- --compile` -> `bin/agentcut` (single binary).

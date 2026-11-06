@@ -1,0 +1,1 @@
+# empty on purpose: the launchers pass this file to bun so no bunfig.toml is read from the working dir
