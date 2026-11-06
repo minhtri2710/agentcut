@@ -264,7 +264,7 @@ console.log("the vision helper always runs from a private per-user dir");
 {
   const { VISION_PY } = await import("../src/vision-py.ts");
   const { createHash } = await import("node:crypto");
-  const { chmodSync: chmod, lstatSync, realpathSync, symlinkSync } = await import("node:fs");
+  const { chmodSync: chmod, lstatSync, realpathSync, statSync, symlinkSync } = await import("node:fs");
   const { dirname, basename, isAbsolute, relative, sep } = await import("node:path");
   const want = createHash("sha256").update(VISION_PY).digest("hex");
   const log = join(tmp, "helper-runs.jsonl");
@@ -370,16 +370,22 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       chmod(open, 0o777);
       await refused("an ancestor is world-writable without the sticky bit", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
       chmod(open, 0o1777);
-      check("an ancestor that is world-writable with the sticky bit is accepted", (await subject(join(open, "sub", "cache"))) === "ok");
+      await refused("an ancestor that is world-writable with the sticky bit", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
+      chmod(open, 0o775);
+      await refused("an ancestor that is group-writable", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
       chmod(open, 0o755);
+      if (existsSync("/tmp") && (statSync("/tmp").mode & 0o022) !== 0) { // the shared temp dir itself: refused, and the check never creates anything there
+        const shared = join("/tmp", `agentcut-never-created-${process.pid}`);
+        await refused("a cache dir under the shared /tmp", shared, [shared]);
+      }
     }
 
-    // without AGENTCUT_CACHE the root is ~/.cache/agentcut/helper-runs and the walk stops at the home dir (which may be group-writable, not
-    // world-writable). A child process: the runtime reads HOME at start, and this suite must never touch the real home.
+    // without AGENTCUT_CACHE the root is ~/.cache/agentcut/helper-runs; the walk continues to "/", and only the home dir itself may be
+    // group-writable (not world-writable). A child process: the runtime reads HOME at start, and this suite must never touch the real home.
     if (posix) {
       const home = fresh("home"), cli = join(import.meta.dir, "../src/cli.ts");
-      const inHome = () => {
-        const e: Record<string, string | undefined> = { ...process.env, HOME: home, AGENTCUT_UV: rec };
+      const inHome = (h = home) => {
+        const e: Record<string, string | undefined> = { ...process.env, HOME: h, AGENTCUT_UV: rec };
         delete e.AGENTCUT_CACHE;
         return JSON.parse(spawnSync(process.execPath, [cli, "subject", join(m, "rb.mp4"), "--fps", "7"], { encoding: "utf8", env: e as NodeJS.ProcessEnv }).stdout || "{}");
       };
@@ -391,6 +397,15 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       const openHome = inHome();
       check("default root: a world-writable home dir is refused (unsafe_helper_dir), nothing created", openHome.ok === false && openHome.error?.code === "unsafe_helper_dir" && !existsSync(join(home, ".cache", "agentcut", "helper-runs")), openHome);
       chmod(home, 0o755);
+      // the walk does not stop at the home dir: a writable directory above it counts too
+      const open2 = fresh("open-above-home"), home2 = join(open2, "home");
+      mkdirSync(home2);
+      chmod(home2, 0o755);
+      chmod(open2, 0o777);
+      const n2 = runs().length, above = inHome(home2);
+      check("default root: a world-writable directory above the home dir is refused (unsafe_helper_dir), uv not run, nothing created",
+        above.ok === false && above.error?.code === "unsafe_helper_dir" && runs().length === n2 && !existsSync(join(home2, ".cache", "agentcut", "helper-runs")), above);
+      chmod(open2, 0o755);
     }
 
     // the check run before every spawn refuses any file that is not the embedded helper

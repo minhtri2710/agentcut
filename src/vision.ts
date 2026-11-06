@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
@@ -44,8 +44,9 @@ export const isReady = (d: Derived) => existsSync(d.file);
 export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(readFileSync(d.file, "utf8"));
 
 /** `<user cache>/helper-runs`, where every run dir lives. Resolved to a canonical absolute path, then checked before anything is written:
- *  every directory from there up to the home dir (or the filesystem root, when the cache is outside it) must be a real directory
- *  owned by this user or root and not writable by others (group/world write is allowed only with the sticky bit), and `helper-runs`
+ *  every directory from there up to the filesystem root (the home dir is no stopping point: the parent search goes above it) must be a real directory
+ *  owned by this user or root and not group- or world-writable (the sticky bit does not matter: it stops deletion, not creating entries;
+ *  only the home dir itself may be group-writable), and `helper-runs`
  *  itself must be a real directory owned by this user with mode 0700 (created so if missing). Anything else is refused with
  *  `unsafe_helper_dir`. Windows has no uid or mode bits: there only the real-directory checks apply. */
 function helperRoot(): string {
@@ -56,14 +57,13 @@ function helperRoot(): string {
   while (!lstatSync(top, { throwIfNoEntry: false })) top = dirname(top);
   const real = realpathSync(top);
   let home: string | undefined;
-  try { home = realpathSync(homedir()); } catch { /* no home: check up to the filesystem root */ }
-  const inHome = home !== undefined && (real === home || real.startsWith(home + sep));
+  try { home = realpathSync(homedir()); } catch { /* no home: no exemption */ }
   for (let d = real; ; d = dirname(d)) {
-    const st = lstatSync(d), isHome = inHome && d === home;
-    // the home dir may be group-writable (user-private groups); any other directory on the way may not be, unless sticky
-    const loose = posix && (st.mode & (isHome ? 0o002 : 0o022)) !== 0 && (st.mode & 0o1000) === 0;
+    const st = lstatSync(d), isHome = d === home;
+    // the home dir may be group-writable (user-private groups); no other directory on the way may be group- or world-writable
+    const loose = posix && (st.mode & (isHome ? 0o002 : 0o022)) !== 0;
     if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(`${d} is not a directory that only you can write`);
-    if (isHome || d === dirname(d)) break;
+    if (d === dirname(d)) break;
   }
   const root = join(real, relative(top, base), "helper-runs");
   mkdirSync(root, { recursive: true, mode: 0o700 });
