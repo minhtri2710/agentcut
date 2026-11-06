@@ -31,7 +31,9 @@ const COMP_RANGE: Record<keyof Comp, [number, number]> = { threshold: [-60, 0], 
 const BAND_RANGE: Record<string, [number, number]> = { f: [20, 20000], gain: [-24, 24], q: [0.1, 10], intensity: [0, 1] };
 export const NORMALIZE_LUFS = -16;
 export const DENOISE_STRENGTH = 0.5;
-const FLOOR_PLATEAU_DB = 5; // measured P10-P1: pauses <= 1.3 dB, speech under P10 >= 3.1 dB; the 3-5 dB band does not clip endings, so P1 only above 5
+// noiseFloor: windows below FLOOR_SILENCE_DB are digital silence/dither (16-bit floor is -96), not a recorded noise floor; the floor is a run of
+// FLOOR_MIN_RUN+ windows within FLOOR_BAND_DB, widened to FLOOR_SPAN_DB. Measured on ~10k clips (continuous speech, pauses, dither, dropouts).
+const FLOOR_SILENCE_DB = -90, FLOOR_BAND_DB = 2, FLOOR_SPAN_DB = 3, FLOOR_MIN_RUN = 3, FLOOR_RUN_SHARE = 0.02;
 
 export const AUDIO_FX_DOC = {
   denoise: "true or strength 0..1 (0.5): FFT noise reduction + soft expander in pauses; the noise floor is measured per clip",
@@ -131,10 +133,10 @@ export function pitchFilters(semitones: unknown, sr: number): string[] {
 
 /** Two afftdn stages (white-noise model, then a model that follows coloured noise) with the floor set just above the measured noise,
  * then a soft expander 6 dB above the measured floor: pauses lose the residual (musical) noise, speech passes untouched.
- * Each afftdn stage delays its output by sr/40 samples (25 ms) and keeps the length, so the end is padded by the delay and the start
+ * Each afftdn stage delays its output by 2*floor(sr/80) samples (25 ms; measured at 8-96 kHz) and keeps the length, so the end is padded by the delay and the start
  * trimmed after the stages: the clip stays sample-aligned and keeps its last 50 ms. agate, EQ and compressor add no delay (measured). */
 export function denoiseFilters(strength: number, floorDb: number, sr: number): string[] {
-  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)), lin = (db: number) => (10 ** (db / 20)).toFixed(5), delay = Math.round(sr / 20);
+  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)), lin = (db: number) => (10 ** (db / 20)).toFixed(5), delay = 4 * Math.floor(sr / 80);
   return [`apad=pad_len=${delay}`, `afftdn=nr=${(6 + 24 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`, `afftdn=nt=v:nr=${(12 + 12 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`,
     `atrim=start_sample=${delay}`, "asetpts=PTS-STARTPTS",
     `agate=threshold=${lin(Math.min(-20, floorDb + 6))}:ratio=2:range=${lin(-6 - 12 * strength)}:attack=10:release=250`];
@@ -144,18 +146,30 @@ export const denoiseStrength = (v: unknown) => (v === true ? DENOISE_STRENGTH : 
 export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : isNum(v) ? v : null);
 
 // ------------------------------------------------------------------ measurement
-/** Noise floor estimate in dBFS: 10th percentile of 50 ms RMS windows (digital silence ignored); null when there is none.
- * Stationary noise gives a flat bottom (P10 within ~1.5 dB of P1). When P10 sits more than FLOOR_PLATEAU_DB above P1 there are no
- * pauses (continuous speech) and P10 is soft speech, which would set the gate and afftdn above quiet word endings: use P1 then. */
+/** Noise floor estimate in dBFS from 50 ms RMS windows; null when there is no signal. Noise shows as a flat bottom of the sorted windows
+ * (stationary, a few tenths of a dB apart), speech and outliers do not, so the floor is the median of the lowest plateau: the lowest run of
+ * windows spanning <= FLOOR_BAND_DB that holds max(3, 2% of the windows), taken with every window up to FLOOR_SPAN_DB above its start.
+ * A pause-free clip still gets its lead-in/gaps as the plateau (a plain 10th percentile would land on soft speech and set the gate and
+ * afftdn above quiet word endings). Isolated windows below the noise (a partly-zero edge or dropout, the final partial window, dither under
+ * FLOOR_SILENCE_DB) are never a plateau and are skipped. Without 3 windows (150 ms) of near-stationary noise it falls back to the 10th percentile. */
 export function noiseFloor(path: string, start: number, len: number): number | null {
   const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", path, "-vn", "-af",
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
     "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
     "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
-  const v = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100).sort((a, b) => a - b);
-  if (!v.length) return null;
-  const p10 = v[Math.floor(v.length * 0.1)], p1 = v[Math.floor(v.length * 0.01)];
-  return p10 - p1 > FLOOR_PLATEAU_DB ? p1 : p10;
+  const all = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100);
+  if (!all.length) return null;
+  const kept = all.length > 1 ? all.slice(0, -1) : all, loud = kept.filter((x) => x > FLOOR_SILENCE_DB), v = (loud.length ? loud : kept).sort((a, b) => a - b);
+  const plateau = (run: number) => {
+    for (let i = 0; i + run <= v.length; i++) {
+      if (v[i + run - 1] - v[i] > FLOOR_BAND_DB) continue;
+      let j = i + run;
+      while (j < v.length && v[j] - v[i] <= FLOOR_SPAN_DB) j++;
+      return v[i + ((j - i) >> 1)];
+    }
+    return null;
+  };
+  return plateau(Math.max(FLOOR_MIN_RUN, Math.ceil(FLOOR_RUN_SHARE * v.length))) ?? plateau(FLOOR_MIN_RUN) ?? v[Math.floor(v.length * 0.1)];
 }
 
 /** Integrated loudness (LUFS) of `input` args through filter chain `af`; null when too short/quiet to measure. */

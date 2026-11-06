@@ -10,7 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
-const { noiseFloor } = await import("../src/audiofx.ts");
+const { noiseFloor, denoiseFilters } = await import("../src/audiofx.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -128,7 +128,7 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   const kept = rms(contDn, fadeA, fadeEnd) - rms(contRaw, fadeA, fadeEnd);
   check(`continuous speech: last 150 ms of a soft ending keeps its level (${kept.toFixed(1)} dB, tolerance 3)`, Math.abs(kept) <= 3, kept);
   const flo = noiseFloor(contSrc, 0, contDur);
-  check(`noiseFloor of a clip with no pauses stays near the noise, not on the speech (${flo?.toFixed(1)} dBFS, true -70)`, flo !== null && flo < -60, flo);
+  check(`noiseFloor of a clip with few pauses (300 ms of noise before the first word) stays near the noise, not on the speech (${flo?.toFixed(1)} dBFS, true -70)`, flo !== null && flo < -60, flo);
   // clip with real pauses: the gate still has to take the noise out
   const talk = synth(600, 8, -50, 0.3), talkSrc = wavOf("talk-pauses.wav", talk), talkDur = talk.length / SR;
   const talkRaw = await project("pauses-raw", talkSrc, talkDur, false), talkDn = await project("pauses-dn", talkSrc, talkDur, true);
@@ -137,6 +137,21 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   check(`pauses: noise in the gaps drops >= 15 dB (${reduction.toFixed(1)})`, reduction >= 15, reduction);
   const tflo = noiseFloor(talkSrc, 0, talkDur);
   check(`noiseFloor with pauses is the noise level (${tflo?.toFixed(1)} dBFS, true -50)`, tflo !== null && Math.abs(tflo + 50) < 1.5, tflo);
+  // the same clip plus 2% windows of dithered silence (-96 dBFS, the 16-bit floor) appended: those windows are not the noise
+  const win = 2400, k = Math.ceil(0.02 * Math.floor(talk.length / win)), padded = new Float32Array(talk.length + k * win);
+  padded.set(talk);
+  { let seed = 7; const a = 10 ** (-96 / 20) * Math.sqrt(3); for (let i = talk.length; i < padded.length; i++) padded[i] = a * (((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1); }
+  const dithSrc = wavOf("talk-dither.wav", padded), dithDur = padded.length / SR;
+  const dflo = noiseFloor(dithSrc, 0, dithDur);
+  check(`pauses + ${k} windows of dithered silence: noiseFloor is still the noise (${dflo?.toFixed(1)} dBFS, true -50)`, dflo !== null && Math.abs(dflo + 50) < 1.5, dflo);
+  const dithRaw = await project("dither-raw", dithSrc, dithDur, false), dithDn = await project("dither-dn", dithSrc, dithDur, true);
+  const dred = rms(dithRaw, pa, pb) - rms(dithDn, pa, pb);
+  check(`pauses + dithered silence: noise in the gaps still drops >= 15 dB (${dred.toFixed(1)})`, dred >= 15, dred);
+  // a clip under 5 s (fewer than 100 windows) with one window that is 90% zero inside a pause
+  const shortClip = synth(600, 3, -50, 0.3);
+  shortClip.fill(0, 1.2 * SR, 1.2 * SR + 2160);
+  const shortSrc = wavOf("short-dropout.wav", shortClip), sflo = noiseFloor(shortSrc, 0, shortClip.length / SR);
+  check(`${(shortClip.length / SR).toFixed(1)} s clip with one mostly-zero window: noiseFloor is still the noise (${sflo?.toFixed(1)} dBFS, true -50)`, sflo !== null && Math.abs(sflo + 50) < 1.5, sflo);
 }
 
 console.log("denoise: the clip stays aligned and complete (afftdn delays its output by 25 ms per stage)");
@@ -161,6 +176,15 @@ console.log("denoise: the clip stays aligned and complete (afftdn delays its out
   check(`tone onset lands where it does without denoise (${shift} samples, tolerance 48 = 1 ms)`, Math.abs(shift) <= 48, shift);
   const tailKept = rms(dnA, 0.99, 1) - rms(raw, 0.99, 1);
   check(`a burst in the final 10 ms survives (${tailKept.toFixed(1)} dB, tolerance 3)`, Math.abs(tailKept) <= 3, tailKept);
+  // the delay is a whole number of samples per rate (2*floor(sr/80) per stage): a click must stay within 1 sample at rates other than 48 kHz
+  for (const rate of [44100, 22050]) {
+    const click = new Float32Array(rate); click[rate >> 1] = 0.8;
+    const o = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-f", "f32le", "-ar", String(rate), "-ac", "1", "-i", "-", "-af", denoiseFilters(0.5, -50, rate).join(","), "-f", "f32le", "-"], { input: Buffer.from(click.buffer), maxBuffer: 1 << 26 });
+    const y = new Float32Array(o.stdout.buffer.slice(o.stdout.byteOffset, o.stdout.byteOffset + o.stdout.length));
+    let at = 0;
+    for (let i = 0; i < y.length; i++) if (Math.abs(y[i]) > Math.abs(y[at])) at = i;
+    check(`${rate} Hz: a click keeps its position through the denoise chain (${at - (rate >> 1)} samples, tolerance 1)`, y.length === rate && Math.abs(at - (rate >> 1)) <= 1, [y.length, at]);
+  }
 }
 
 console.log("pan");
