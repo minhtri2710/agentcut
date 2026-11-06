@@ -225,7 +225,7 @@ export async function startMcp() {
   process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code !== "EPIPE" && e.code !== "ERR_STREAM_DESTROYED") throw e; });
   const transport = new StdioServerTransport();
   const send = transport.send.bind(transport);
-  transport.send = (m) => { const p = send(m); sends.add(p); void p.finally(() => sends.delete(p)); return p; };
+  transport.send = (m) => { const p = send(m); sends.add(p); const del = () => sends.delete(p); p.then(del, del); return p; };
   await server.connect(transport);
 }
 
