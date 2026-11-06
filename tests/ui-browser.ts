@@ -48,6 +48,7 @@ const ui = await startUi(dir, { port: 0 });
 const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run", "--use-mock-keychain", "--password-store=basic",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1440,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 const exited = new Promise<void>((ok) => chrome.once("close", () => ok()));
+console.log(`chrome pid ${chrome.pid}`);
 let ws: WebSocket | undefined, sessionId = "", seq = 0;
 const pending = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
 const consoleErrors: string[] = [];
@@ -182,6 +183,52 @@ try {
   await js(`$("group").click()`);
   check("shift-select + Group -> make_compound", await untilFile((tl) => tl.tracks.find((t: any) => t.id === "main").clips.length === 2 && !clipOf(tl, "vid1")));
 
+  console.log("retimed compounds in the nested view");
+  // expected placement = render's formula (render.ts subT): a nested time u plays at s + (u - in) / speed, level by level
+  const place = (levels: { s: number; in: number; v: number }[], u: number) => levels.reduceRight((x, l) => l.s + (x - l.in) / l.v, u);
+  const at = (levels: { s: number; in: number; v: number }[], u: number, du: number) => ({ left: place(levels, u), width: place(levels, u + du) - place(levels, u) });
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.02;
+  const boxOf = (id: string) => js(`(function(){var e=document.querySelector('[data-id="${id}"]');return {left:parseFloat(e.style.left)/pps,width:parseFloat(e.style.width)/pps,off:e.classList.contains("off")}})()`);
+  const same = (b: any, w: { left: number; width: number }) => !!b && near(b.left, w.left) && near(b.width, w.width);
+  await api.apply(dir, [
+    { op: "add_clip", track: "n", type: "color", color: "red", id: "ra", at: 1, duration: 1 },
+    { op: "add_clip", track: "n", type: "color", color: "blue", id: "rb", at: 2, duration: 2 },
+    { op: "add_clip", track: "n", type: "color", color: "green", id: "rc", at: 5, duration: 1 },
+    { op: "set_keyframes", id: "rb", prop: "opacity", keyframes: [[0, 1], [1, 0.5]] },
+    { op: "make_compound", ids: ["ra", "rb", "rc"], id: "cs2" },
+    { op: "update_clip", id: "cs2", set: { start: 2, in: 1, speed: 2, duration: 1.5 } },
+  ]);
+  await until("speed-2 compound", `!!findIn(S.timeline.tracks, "cs2")`);
+  await click(`[data-id="cs2"]`, { count: 2 });
+  await until("nested view", `V.nested && !!document.querySelector('[data-id="rb"]')`);
+  const L1 = [{ s: 2, in: 1, v: 2 }];
+  const [ba, bb, bc] = [await boxOf("ra"), await boxOf("rb"), await boxOf("rc")];
+  check("speed-2 compound, in 1: nested clips sit where render plays them", same(ba, at(L1, 0, 1)) && same(bb, at(L1, 1, 2)) && same(bc, at(L1, 4, 1)), { ba, bb, bc, want: [at(L1, 0, 1), at(L1, 1, 2), at(L1, 4, 1)] });
+  check("clips outside the visible window are dimmed, the one inside is not", ba.off && !bb.off && bc.off, { ba, bb, bc });
+  await click(`[data-id="rb"] .kf[data-t="1"]`);
+  const tk = await js(`t`);
+  check("clicking a nested tick seeks to the timeline time render plays it at", near(tk, place(L1, 1 + 1)), { t: tk, want: place(L1, 2) });
+  await js(`document.querySelector("#crumbs a").click()`);
+  await until("top view", `!V.nested`);
+  await api.apply(dir, [
+    { op: "add_clip", track: "m", type: "color", color: "red", id: "x1", at: 1, duration: 2 },
+    { op: "add_clip", track: "m", type: "color", color: "blue", id: "x2", at: 3, duration: 2 },
+    { op: "make_compound", ids: ["x1", "x2"], id: "ci" },
+    { op: "update_clip", id: "ci", set: { start: 2, in: 1, speed: 2, duration: 1.5 } },
+    { op: "make_compound", ids: ["ci"], id: "co" },
+    { op: "update_clip", id: "co", set: { start: 1, in: 0.25, speed: 0.5, duration: 3 } },
+  ]);
+  await until("two-level compound", `!!findIn(S.timeline.tracks, "co")`);
+  await click(`[data-id="co"]`, { count: 2 });
+  await until("outer open", `V.nested && !!document.querySelector('[data-id="ci"]')`);
+  await click(`[data-id="ci"]`, { count: 2 });
+  await until("inner open", `path.length === 2 && !!document.querySelector('[data-id="x2"]')`);
+  const L2 = [{ s: 1, in: 0.25, v: 0.5 }, { s: 0, in: 1, v: 2 }];
+  const [bx1, bx2] = [await boxOf("x1"), await boxOf("x2")];
+  check("two levels (speed 0.5 outside, speed 2 inside): nested clips sit where render plays them", same(bx1, at(L2, 0, 2)) && same(bx2, at(L2, 2, 2)), { bx1, bx2, want: [at(L2, 0, 2), at(L2, 2, 2)] });
+  await js(`document.querySelector("#crumbs a").click()`);
+  await until("top view again", `!V.nested`);
+
   console.log("previews/ui");
   await js(`$("sheet").click()`);
   check("contact sheet lands in previews/ui/", await until("sheet", `document.querySelector("#out img") && document.querySelector("#out img").src.indexOf("/files/previews/ui/") > 0`, 30_000));
@@ -226,6 +273,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   ws?.close();
   chrome.kill();
   const gone = await Promise.race([exited.then(() => true), sleep(5000).then(() => false)]);
+  console.log(`chrome pid ${chrome.pid} ${gone ? "closed" : "did not close, SIGKILL"}`);
   if (!gone) { chrome.kill("SIGKILL"); await Promise.race([exited, sleep(5000)]); }
   ui.server.closeAllConnections?.();
   await new Promise((ok) => ui.server.close(ok));

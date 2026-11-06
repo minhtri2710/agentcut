@@ -132,16 +132,19 @@ function setState(s) {
 function findIn(tracks, id) { var r = null; tracks.forEach(function (tr) { tr.clips.forEach(function (c) { if (c.id === id) r = { c: c, tr: tr }; }); }); return r; }
 function findClip(id) { var r = findIn(V.tracks, id); return r && r.c; }
 function trackOf(id) { var r = findIn(V.tracks, id); return r && r.tr; }
-/** the tracks shown: the timeline, or the nested tracks of the opened compound (path) drawn at their timeline time.
- *  shortcut: assumes opened compounds play at speed 1 (expand_compound requires it too). */
+/** the tracks shown: the timeline, or the nested tracks of the opened compound (path) drawn where render plays them.
+ *  A nested time u plays at timeline time off + k * u (render.ts subT: u = in + local * speed, composed per opened level);
+ *  [lo, hi] is the timeline range every opened compound shows (its [in, in + duration * speed] window). */
 function view() {
-  var tracks = S.timeline.tracks, off = 0;
+  var tracks = S.timeline.tracks, off = 0, k = 1, lo = -Infinity, hi = Infinity;
   for (var i = 0; i < path.length; i++) {
     var f = findIn(tracks, path[i]);
     if (!f || f.c.type !== "compound") { path = path.slice(0, i); break; }
-    off += start(f.c) - num(f.c.in || 0); tracks = f.c.tracks || [];
+    var v = Number(f.c.speed || 1) || 1;
+    lo = Math.max(lo, off + k * start(f.c)); hi = Math.min(hi, off + k * (start(f.c) + dur(f.c)));
+    off += k * (start(f.c) - num(f.c.in || 0) / v); k /= v; tracks = f.c.tracks || [];
   }
-  return { tracks: tracks, off: off, nested: path.length > 0 };
+  return { tracks: tracks, off: off, k: k, lo: lo, hi: hi, nested: path.length > 0 };
 }
 function openPath(p) { path = p; sel = null; picked = []; V = view(); select(null); drawTimeline(); }
 function drawCrumbs() {
@@ -191,7 +194,7 @@ function drawTimeline() {
   rows.forEach(function (tr, i) { tr.clips.forEach(function (c) {
     if (!c.attach_to) return;
     var pid = resolveRef(c.attach_to); if (pid === null || laneOf[pid] === undefined) return;
-    var x = (V.off + start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
+    var x = (V.off + V.k * start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
     var ln = document.createElementNS("http://www.w3.org/2000/svg", "path");
     ln.setAttribute("d", "M" + x + " " + y1 + " L" + x + " " + y2); ln.setAttribute("stroke", "#fc3"); ln.setAttribute("stroke-dasharray", "3 3");
     var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -207,9 +210,11 @@ function resolveRef(ref) {
   var i = +m[2]; if (i < 0) i += tr.clips.length; var c = tr.clips[i]; return c ? c.id : null;
 }
 function clipEl(tr, c, i) {
-  var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (picked.indexOf(c.id) >= 0 ? " pick" : "") + (c.enabled === false ? " off" : "");
+  var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (picked.indexOf(c.id) >= 0 ? " pick" : "");
   e.dataset.id = c.id;
-  e.style.left = (V.off + start(c)) * pps + "px"; e.style.width = Math.max(4, dur(c) * pps) + "px";
+  var x0 = V.off + V.k * start(c), x1 = x0 + V.k * dur(c);
+  if (c.enabled === false || x1 <= V.lo + 1e-6 || x0 >= V.hi - 1e-6) e.classList.add("off"); // disabled, or outside the opened compound's window
+  e.style.left = x0 * pps + "px"; e.style.width = Math.max(4, V.k * dur(c) * pps) + "px";
   e.style.backgroundColor = COL[c.type] || "#555";
   var a = c.asset && S.timeline.assets[c.asset];
   if (a && (a.kind === "video" || a.kind === "image")) e.style.backgroundImage = "url(/api/thumb/" + encodeURIComponent(c.asset) + "?t=" + num(c.in || 0).toFixed(2) + ")";
@@ -221,7 +226,7 @@ function clipEl(tr, c, i) {
     o.style.width = td * pps + "px"; o.title = "transition " + (trn.type || trn); e.appendChild(o); }
   if (!V.nested) ["l", "r"].forEach(function (s) { var h = document.createElement("div"); h.className = "h " + s; h.dataset.edge = s; e.appendChild(h); });
   kfTimes(c).forEach(function (kt) {
-    var k = document.createElement("div"); k.className = "kf"; k.style.left = kt * pps + "px"; k.dataset.t = kt;
+    var k = document.createElement("div"); k.className = "kf"; k.style.left = V.k * kt * pps + "px"; k.dataset.t = kt;
     k.title = "keyframe " + kt + "s: " + Object.keys(c.keyframes).filter(function (p) { return pts(c.keyframes[p]).some(function (q) { return near(q[0], kt); }); }).join(", ");
     e.appendChild(k);
   });
@@ -390,7 +395,7 @@ function drawKf(c) {
     ENUM.animatable.map(function (p) { return el("option", { value: p, textContent: p, selected: p === kfProp }); }));
   var add = el("button", { id: "kfadd", textContent: "+ key at playhead", disabled: ro });
   add.onclick = function () {
-    var p = prop.value, lt = +Math.max(0, Math.min(dur(c), t - V.off - start(c))).toFixed(3), list = pts(kf[p]);
+    var p = prop.value, lt = +Math.max(0, Math.min(dur(c), (t - V.off) / V.k - start(c))).toFixed(3), list = pts(kf[p]);
     var v = list.length ? kfAt(list, lt) : kfBase(c, p);
     setKf(c, p, list.filter(function (q) { return !near(q[0], lt); }).concat([[lt, v, undefined]]));
   };
@@ -420,7 +425,7 @@ function kfDrag(ev, c, kt) {
   function mm(e) { if (Math.abs(e.clientX - x0) > 2) moved = true; if (!V.nested) k.style.left = (kt * pps + e.clientX - x0) + "px"; }
   function mu(e) {
     document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu);
-    if (!moved || V.nested) { seek(V.off + start(c) + kt); return; }
+    if (!moved || V.nested) { seek(V.off + V.k * (start(c) + kt)); return; }
     var nt = +Math.max(0, Math.min(dur(c), kt + (e.clientX - x0) / pps)).toFixed(3), batch = [];
     Object.keys(c.keyframes).forEach(function (p) {
       var list = pts(c.keyframes[p]); if (!list.some(function (q) { return near(q[0], kt); })) return;
