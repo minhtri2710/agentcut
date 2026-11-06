@@ -148,14 +148,17 @@ export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : is
 // ------------------------------------------------------------------ measurement
 /** Noise floor estimate in dBFS from 50 ms RMS windows; null when there is no signal. Two bounds hold in every branch: the result is never above
  * the plain 10th percentile of all windows > -100 dBFS (final window included, the estimate before the plateau rule), and it is taken from
- * the noise, not from soft speech, whenever the clip has noise-only windows.
+ * the noise, not from soft speech, whenever the clip has 3+ noise-only windows above -90 dBFS and fewer than 10% of windows at or below -90
+ * (see Limits).
  * Stationary noise is a flat bottom of the sorted windows (3 windows within 1 dB), speech is not. The floor is the median of the lowest such
  * run, taken with every window up to FLOOR_SPAN_DB above its start. The final window (may be partial) is ignored for the run, and so are
  * windows at or below FLOOR_SILENCE_DB (-90, under the 16-bit floor): dither or digital padding, not noise.
  * Clean recording: only when that 10th percentile is itself at or below FLOOR_SILENCE_DB are the windows below -90 the pauses, and the floor
  * is their median.
  * Limits (measured on the D-i grid, 3162 cells; each leaves the floor too LOW, i.e. less noise reduction, never extra clipping, unless noted):
- * - 3 equal dropouts inside pauses: up to 4.1 dB low; 8: up to 5.0 dB; dither or gated pauses at 3-7% of the clip: up to 1.5 dB low;
+ * - 3 equal dropouts inside pauses: up to 4.1 dB low; 8: up to 5.0 dB; dither or gated pauses at 3-7% of the clip, aligned to
+ *   the 50 ms windows: up to 1.5 dB low; unaligned blocks (edits, mutes, gate release ramps) leave partial boundary windows below the noise,
+ *   up to 6.9 dB low (measured on the earlier grid, not rerun on the D-i grid);
  * - fades baked into the source: 1 s linear up to 13.0 dB low, 1 s linear in dB up to 29.1; 2 s linear 2.5 dB low on median and up to 19.0,
  *   2 s linear in dB 16.8 on median and up to 29.9;
  * - dither or a closed upstream gate at 10% of the clip or more: the 10th percentile lands in it, so the floor is that percentile (about
