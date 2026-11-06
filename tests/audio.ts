@@ -129,6 +129,20 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   check(`continuous speech: last 150 ms of a soft ending keeps its level (${kept.toFixed(1)} dB, tolerance 3)`, Math.abs(kept) <= 3, kept);
   const flo = noiseFloor(contSrc, 0, contDur);
   check(`noiseFloor of a clip with few pauses (300 ms of noise before the first word) stays near the noise, not on the speech (${flo?.toFixed(1)} dBFS, true -70)`, flo !== null && flo < -60, flo);
+  // 30 words (16.8 s) with only the 300 ms lead-in as noise-only windows: still found, and the ending still survives
+  const long = synth(40, 30, -70, 0.6), longSrc = wavOf("cont-long.wav", long), longDur = long.length / SR;
+  const llo = noiseFloor(longSrc, 0, longDur);
+  check(`${longDur.toFixed(1)} s clip, 6 noise-only windows: noiseFloor is within 3 dB of the noise (${llo?.toFixed(1)} dBFS, true -70)`, llo !== null && Math.abs(llo + 70) <= 3, llo);
+  const longRaw = await project("long-raw", longSrc, longDur, false), longDn = await project("long-dn", longSrc, longDur, true);
+  const lkept = rms(longDn, longDur - 0.15, longDur) - rms(longRaw, longDur - 0.15, longDur);
+  check(`${longDur.toFixed(1)} s clip: the soft ending keeps its level (${lkept.toFixed(1)} dB, tolerance 3)`, Math.abs(lkept) <= 3, lkept);
+  // a clean recording: real noise at -95 dBFS (between the 16-bit floor and -100), normal pauses, an ending 20 dB down
+  const clean = synth(600, 8, -95, 0.6), cleanSrc = wavOf("clean95.wav", clean), cleanDur = clean.length / SR;
+  const cflo = noiseFloor(cleanSrc, 0, cleanDur);
+  check(`noise at -95 dBFS with pauses: noiseFloor stays at the noise, not on the speech (${cflo?.toFixed(1)} dBFS, expect <= -88)`, cflo !== null && cflo <= -88, cflo);
+  const cleanRaw = await project("clean-raw", cleanSrc, cleanDur, false), cleanDn = await project("clean-dn", cleanSrc, cleanDur, true);
+  const fadeEnd2 = cleanDur - 0.6, ckept = rms(cleanDn, fadeEnd2 - 0.15, fadeEnd2) - rms(cleanRaw, fadeEnd2 - 0.15, fadeEnd2); // the last word's 600 ms fade ends 0.6 s (one gap) before the clip end
+  check(`noise at -95 dBFS: the ending 20 dB down keeps its level (${ckept.toFixed(1)} dB, tolerance 3)`, Math.abs(ckept) <= 3, ckept);
   // clip with real pauses: the gate still has to take the noise out
   const talk = synth(600, 8, -50, 0.3), talkSrc = wavOf("talk-pauses.wav", talk), talkDur = talk.length / SR;
   const talkRaw = await project("pauses-raw", talkSrc, talkDur, false), talkDn = await project("pauses-dn", talkSrc, talkDur, true);
