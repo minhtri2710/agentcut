@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, suggest, type Timeline, totalDuration, type Track, TRANSITIONS,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -595,6 +595,8 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
 op("replace_timeline", "Replace the whole timeline JSON (validated, undoable).", { timeline: "full timeline object" }, (p, tl, a) => {
   const n = a.timeline;
   if (!n || typeof n !== "object" || !n.tracks || !n.settings) throw new EditError("timeline must contain settings and tracks", "bad_timeline");
+  if (n.version !== SCHEMA_VERSION)
+    throw new EditError(`the op input timeline has schema version ${JSON.stringify(n.version) ?? "missing"}; this build uses version ${SCHEMA_VERSION}`, "bad_version", `set "version": ${SCHEMA_VERSION}`);
   n.assets ??= {}; n.markers ??= [];
   for (const k of Object.keys(tl)) delete (tl as Dict)[k];
   Object.assign(tl, structuredClone(n));

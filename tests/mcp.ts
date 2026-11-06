@@ -73,6 +73,18 @@ for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as co
   }
   check(`${label}: project.json is byte-identical`, readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
 }
+{
+  const d = join(tmp, "replace-version");
+  await call("create_project", { path: d, preset: "youtube" });
+  const before = readFileSync(join(d, "project.json"), "utf8");
+  for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as const) for (const dry_run of [true, false]) {
+    const t = JSON.parse(before); if (v === undefined) delete t.version; else t.version = v;
+    const r = await call("apply_ops", { project: d, dry_run, ops: [{ op: "replace_timeline", timeline: t }] });
+    check(`apply_ops replace_timeline ${label}${dry_run ? " (dry run)" : ""} -> bad_version about the op input`,
+      r.json.ok === false && r.json.error.code === "bad_version" && /op input/.test(r.json.error.message) && r.json.error.hint.includes(`"version": ${V}`), r.json);
+  }
+  check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
+}
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });

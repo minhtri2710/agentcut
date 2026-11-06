@@ -1,9 +1,9 @@
 // Regression checks for the review of the colour/audio/vision/ui/verify round: one block per fixed bug.
 // Run: bun tests/review.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-review-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
@@ -123,6 +123,11 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   check("SCHEMA_VERSION is 1", SCHEMA_VERSION === 1, SCHEMA_VERSION);
   check("a new project and timeline_schema report SCHEMA_VERSION", tl().version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [tl().version, (api.schema() as any).timeline.version]);
   const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
+  /** every entry under dir with its content (a symlink with its target): names alone would miss a rewritten snapshot */
+  const tree = (dir: string): string => readdirSync(dir, { recursive: true }).map(String).sort().map((n) => {
+    const f = join(dir, n), st = lstatSync(f);
+    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" : readFileSync(f, "utf8")}`;
+  }).join("\n");
   const setVersion = (dir: string, v: unknown) => {
     const t = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
     if (v === undefined) delete t.version; else t.version = v;
@@ -155,7 +160,7 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
     await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
     setVersion(d, v);
     const before = readFileSync(join(d, "project.json"), "utf8");
-    const hist = () => readdirSync(join(d, ".agentcut", "history"), { recursive: true }).sort().join();
+    const hist = () => tree(join(d, ".agentcut", "history"));
     const h0 = hist();
     for (const [name, f] of everyPath) {
       const e = await caught(() => f(d));
@@ -163,7 +168,7 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
     }
     const e = await caught(() => api.info(d));
     check(`${label}: the hint names the value found, the one supported, and that there is no upgrade`,
-      e?.hint?.includes(String(SCHEMA_VERSION)) && (v === undefined ? /missing/.test(e.hint) : e.hint.includes(String(v))) && /recreate/.test(e.hint) && /no upgrade/.test(e.hint), e?.hint);
+      e?.hint?.includes(String(SCHEMA_VERSION)) && (v === undefined ? /missing/.test(e.hint) : e.hint.includes(String(v))) && e.hint.includes("agentcut init <new dir>") && /no upgrade/.test(e.hint) && e.message.startsWith("project.json "), e);
     check(`${label}: project.json is byte-identical, history untouched`, readFileSync(join(d, "project.json"), "utf8") === before && hist() === h0);
   }
   for (const stack of ["undo", "redo"] as const) {
@@ -178,8 +183,90 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
     const before = readFileSync(join(d, "project.json"), "utf8"), snapBefore = readFileSync(f, "utf8");
     const e = await caught(() => (stack === "undo" ? api.undo(d) : api.redo(d)));
     check(`${stack}: a snapshot of another version -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
+    check(`${stack}: the message names the snapshot, not project.json`, e?.message.includes(basename(f)) && /history snapshot/.test(e.message) && !e.message.startsWith("project.json"), e?.message);
     check(`${stack}: project.json and the snapshot are untouched`, readFileSync(join(d, "project.json"), "utf8") === before && existsSync(f) && readFileSync(f, "utf8") === snapBefore);
   }
+}
+
+console.log("undo/redo act only on history entries, never on a path named inside a snapshot");
+{
+  const { SCHEMA_VERSION } = await import("../src/model.ts");
+  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
+  const tree = (dir: string): string => readdirSync(dir, { recursive: true }).map(String).sort().map((n) => {
+    const f = join(dir, n), st = lstatSync(f);
+    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" : readFileSync(f, "utf8")}`;
+  }).join("\n");
+  /** a project with `n` entries on `stack`; returns its dir */
+  const make = async (name: string, stack: "undo" | "redo", n = 1) => {
+    const d = join(tmp, name);
+    api.create(d, { preset: "reels" });
+    for (let i = 0; i < n; i++) await api.apply(d, [{ op: "add_marker", t: 0.5 + i }]);
+    if (stack === "redo") await api.undo(d, n);
+    return d;
+  };
+  const entries = (d: string, stack: string) => readdirSync(join(d, ".agentcut", "history", stack)).filter((x) => x.endsWith(".json")).sort();
+  const run = (d: string, stack: string, steps = 1) => (stack === "undo" ? api.undo(d, steps) : api.redo(d, steps));
+  for (const stack of ["undo", "redo"] as const) {
+    // (a) a "file" key naming a file outside the project, (b) one naming a sibling inside the project but outside history
+    for (const [label, where] of [["outside the project", join(tmp, "outside-victim.txt")], ["a sibling inside the project", "keep.txt"]] as const) {
+      const d = await make(`path-${stack}-${label.replace(/\W/g, "")}`, stack);
+      const victim = where.startsWith("/") ? where : join(d, where);
+      writeFileSync(victim, "keep me");
+      const f = join(d, ".agentcut", "history", stack, entries(d, stack).pop()!);
+      const snap = JSON.parse(readFileSync(f, "utf8")); snap.file = victim; writeFileSync(f, JSON.stringify(snap));
+      const e = await caught(() => run(d, stack));
+      check(`${stack}: a snapshot naming a file ${label} does not delete it`, existsSync(victim) && readFileSync(victim, "utf8") === "keep me", e ? { code: e.code } : "ok");
+      const e2 = await caught(() => (stack === "undo" ? api.redo(d) : api.undo(d)));
+      check(`${stack}: ... nor does the opposite step (${label})`, existsSync(victim) && readFileSync(victim, "utf8") === "keep me", e2 ? { code: e2.code } : "ok");
+    }
+    // (c) an entry that is a symlink to a snapshot outside history, (d) the stack directory itself a symlink
+    for (const kind of ["entry symlink", "stack dir symlink"] as const) {
+      const d = await make(`link-${stack}-${kind.replace(/\W/g, "")}`, stack);
+      const out = join(tmp, `elsewhere-${stack}-${kind.replace(/\W/g, "")}`); mkdirSync(out);
+      const dir = join(d, ".agentcut", "history", stack);
+      if (kind === "entry symlink") {
+        const f = join(dir, entries(d, stack).pop()!);
+        renameSync(f, join(out, "snap.json")); symlinkSync(join(out, "snap.json"), f);
+      } else {
+        for (const n of readdirSync(dir)) renameSync(join(dir, n), join(out, n));
+        rmSync(dir, { recursive: true }); symlinkSync(out, dir);
+      }
+      const proj = readFileSync(join(d, "project.json"), "utf8"), hist = tree(join(d, ".agentcut", "history")), outside = tree(out);
+      const e = await caught(() => run(d, stack));
+      check(`${stack}: ${kind} -> unsafe_history`, e?.code === "unsafe_history", e ? { code: e.code, message: e.message } : "ok");
+      check(`${stack}: ${kind}: project.json, the history dir and the target are byte-identical`,
+        readFileSync(join(d, "project.json"), "utf8") === proj && tree(join(d, ".agentcut", "history")) === hist && tree(out) === outside);
+    }
+    // multi-step is all-or-nothing: a bad snapshot at the second step leaves everything as it was
+    {
+      const d = await make(`multi-${stack}`, stack, 2);
+      const dir = join(d, ".agentcut", "history", stack), f = join(dir, entries(d, stack)[0]);
+      const snap = JSON.parse(readFileSync(f, "utf8")), inner = JSON.parse(snap.timeline);
+      inner.version = SCHEMA_VERSION + 1; snap.timeline = JSON.stringify(inner); writeFileSync(f, JSON.stringify(snap));
+      const proj = readFileSync(join(d, "project.json"), "utf8"), hist = tree(join(d, ".agentcut", "history"));
+      const e = await caught(() => run(d, stack, 2));
+      check(`${stack} x2: the bad snapshot at the second step -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
+      check(`${stack} x2: nothing was applied: project.json and both stacks are byte-identical`, readFileSync(join(d, "project.json"), "utf8") === proj && tree(join(d, ".agentcut", "history")) === hist);
+    }
+  }
+}
+
+console.log("replace_timeline rejects a wrong or missing version itself (dry run and real apply agree)");
+{
+  const { SCHEMA_VERSION } = await import("../src/model.ts");
+  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
+  const d = join(tmp, "replace-version");
+  api.create(d, { preset: "reels" });
+  const before = readFileSync(join(d, "project.json"), "utf8");
+  for (const [label, v] of [["version+1", SCHEMA_VERSION + 1], ["no version", undefined]] as const) for (const dryRun of [true, false]) {
+    const t = JSON.parse(before); if (v === undefined) delete t.version; else t.version = v;
+    const e = await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: t }], { dryRun }));
+    check(`replace_timeline ${label}${dryRun ? " (dry run)" : ""} -> bad_version about the op input`,
+      e?.code === "bad_version" && /op input/.test(e.message) && !e.message.startsWith("project.json") && e.hint.includes(`"version": ${SCHEMA_VERSION}`) && !/init/.test(e.hint), e ? { code: e.code, message: e.message, hint: e.hint } : "ok");
+  }
+  check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before);
+  const good = JSON.parse(before); good.name = "replaced";
+  check("replace_timeline with the supported version is applied", (await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: good }]))) === null && api.info(d, "json").timeline.name === "replaced");
 }
 
 console.log("ui: concurrent play renders share one job, the cache never sees a partial file");
