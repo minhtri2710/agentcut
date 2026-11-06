@@ -156,7 +156,14 @@ function drawCrumbs() {
 }
 var es = new EventSource("/api/events");
 es.addEventListener("state", function (e) { setState(JSON.parse(e.data)); });
-es.addEventListener("job", function (e) { onJob(JSON.parse(e.data)); });
+/** newest SSE event per job id: a job can settle before its POST response resolves, and the POST body is only the snapshot at start */
+var lastJob = {};
+es.addEventListener("job", function (e) {
+  var j = JSON.parse(e.data); lastJob[j.id] = j;
+  var ids = Object.keys(lastJob); if (ids.length > 16) delete lastJob[ids[0]];
+  onJob(j);
+});
+function settle(j) { var k = lastJob[j.id] || j; delete lastJob[j.id]; onJob(k); }
 es.addEventListener("error", function (e) { if (e.data) fail(JSON.parse(e.data)); });
 
 // ------------------------------------------------------------ timeline
@@ -299,13 +306,13 @@ $("play").addEventListener("click", function () {
   if ($("video").style.display !== "none") { stopPlay(); return; }
   var sc = $("scroll"), end = Math.min(total(), Math.max(t + 1, (sc.scrollLeft + sc.clientWidth - LABEL) / pps));
   playStart = t; $("play").textContent = "Preparing…";
-  api("/api/render", { play: true, start: t, end: end }).then(function (j) { playJob = j.id; onJob(j); }, function (e) { $("play").textContent = "Play"; fail(e); });
+  api("/api/render", { play: true, start: t, end: end }).then(function (j) { playJob = j.id; settle(j); }, function (e) { $("play").textContent = "Play"; fail(e); });
 });
 var prepJob = null;
 /** run prepare (mattes, vision analyses, pending requests) as a server job; the viewer redraws when it is done */
 $("prepare").addEventListener("click", function () {
   $("prepare").disabled = true; $("prepare").textContent = "Preparing…";
-  api("/api/prepare", {}).then(function (j) { prepJob = j.id; onJob(j); }, function (e) { $("prepare").disabled = false; $("prepare").textContent = "Prepare"; fail(e); });
+  api("/api/prepare", {}).then(function (j) { prepJob = j.id; settle(j); }, function (e) { $("prepare").disabled = false; $("prepare").textContent = "Prepare"; fail(e); });
 });
 function stopPlay() { var v = $("video"); if (v.style.display === "none") return; v.pause(); v.style.display = "none"; $("frame").style.display = ""; $("play").textContent = "Play"; requestFrame(); }
 $("video").addEventListener("timeupdate", function () { t = playStart + $("video").currentTime; movePlayhead(); });
@@ -451,7 +458,7 @@ document.addEventListener("keydown", function (e) {
 var renderJob = null;
 $("render").addEventListener("click", function () {
   $("render").disabled = true; $("out").innerHTML = "<progress id=prog max=1 value=0></progress>";
-  api("/api/render", { draft: $("draft").checked }).then(function (j) { renderJob = j.id; onJob(j); }, function (e) { $("render").disabled = false; $("out").innerHTML = ""; fail(e); });
+  api("/api/render", { draft: $("draft").checked }).then(function (j) { renderJob = j.id; settle(j); }, function (e) { $("render").disabled = false; $("out").innerHTML = ""; fail(e); });
 });
 function onJob(j) {
   if (j.id === prepJob) {

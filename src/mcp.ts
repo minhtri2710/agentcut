@@ -128,7 +128,7 @@ export function buildServer() {
     return waitJob(id, a.wait_seconds);
   });
   s.registerTool("prepare", {
-    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview/render fail with code not_prepared until prepare is done. Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing.",
+    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview and video render fail with code not_prepared until prepare is done (audio-only renders skip it). Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing.",
     inputSchema: { project: P, status_only: z.boolean().default(false), wait_seconds: z.number().default(30) },
   }, async (a) => {
     let project: string;

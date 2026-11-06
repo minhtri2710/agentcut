@@ -205,6 +205,21 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await click("#prepare");
   check("Prepare runs the job, the matte lands and the frame returns", await until("prepared", `$("prepare").style.display === "none" && $("vstat").textContent.indexOf("ms/frame") > 0`, 30_000),
     await js(`[$("vstat").textContent, $("msg").textContent]`));
+  // a prepare with nothing left to compute settles before its POST response: hold the response until the SSE "job" event is in
+  await js(`(function(){
+    var f = window.fetch, got = false;
+    es.addEventListener("job", function (e) { var j = JSON.parse(e.data); if (j.kind === "prepare" && j.status !== "running") got = true; });
+    window.fetch = function (u) {
+      var r = f.apply(this, arguments);
+      if (String(u) !== "/api/prepare") return r;
+      return r.then(function (res) { return new Promise(function (ok) { var n = 0; (function w() { if (got || ++n > 100) { window.fetch = f; ok(res); } else setTimeout(w, 50); })(); }); });
+    };
+    $("prepare").style.display = "";
+  })()`);
+  await click("#prepare");
+  check("Prepare with nothing to compute is not stuck when its job event beats the POST response",
+    await until("prepare reset", `$("prepare").style.display === "none" && !$("prepare").disabled && $("prepare").textContent === "Prepare"`, 10_000),
+    await js(`[$("prepare").style.display, $("prepare").disabled, $("prepare").textContent, $("msg").textContent]`));
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

@@ -230,7 +230,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   }
   for (const c of allClips(tracks)) {
     const ops = Object.keys(c.pending ?? {});
-    if (ops.length) skipped.push({ id: c.id, type: "pending", reason: `${ops.join(", ")} requested but prepare has not run: its keyframes are not in the export (run prepare, then export again)` });
+    if (ops.length) skipped.push({ id: c.id, type: "pending", reason: `${ops.join(", ")} requested and not prepared, so the keyframes it would write do not exist yet; keyframes are never exported anyway (re-create the motion in the NLE)` });
   }
   for (const [k, v] of Object.entries(tl.settings || {}))
     if (k === "effects" && Array.isArray(v) && v.length) skipped.push({ id: "settings", type: "effects", reason: "whole-frame effects are not exported" });

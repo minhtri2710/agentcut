@@ -42,7 +42,8 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
    Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio):
    cuts, in-points, crossfades,
    constant speed, volume, titles and connected clips carry over (media linked by absolute path); effects, looks, keyframes,
-   masks, captions, shapes are listed in result.skipped - tell the human what is left to finish.
+   masks, captions, shapes, and vision requests not yet prepared (type "pending") are listed in result.skipped - tell the human
+   what is left to finish.
 6. Fix with update_clip / trim_clip / undo.
 
 ## Ops cheat-sheet
@@ -106,8 +107,8 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
   prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress): it computes the mattes /
-  tracks (seconds per clip; cached by file hash + params) and writes the keyframes. Until then preview/render fail fast with
-  code not_prepared (details list what is missing) - they never compute. A repeated op on cached analysis applies at once.
+  tracks (seconds per clip; cached by file hash + params) and writes the keyframes. Until then preview/video render fail fast with
+  code not_prepared (details list what is missing; audio-only renders skip it) - they never compute. A repeated op on cached analysis applies at once.
 Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: cache) covers .agentcut/cache + previews/;
   prune deletes unreferenced files first (max_mb also referenced ones: prepare rebuilds them). previews/ is capped
   automatically at AGENTCUT_PREVIEWS_MAX_MB (200; 0 = off), oldest first.
@@ -136,7 +137,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 
 ## Working alongside a human (agentcut ui)
 - `agentcut ui [DIR] [--port 4810]` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
-  editor, compound open/expand/regroup, render). The human's edits land in the same project.json, so re-read (info /
+  editor, compound open/expand/regroup, prepare, render). The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
 - project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
   apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.

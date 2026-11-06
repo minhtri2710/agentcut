@@ -17,7 +17,7 @@ Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--ever
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black]
              audio [--source F] [--spectrogram] [--from S --to S] [-o a.png] · motion [--from S --to S] [--frames 10] [-o m.jpg]
 Prepare:     prepare [--status] [--quiet]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
-             preview and render fail with code not_prepared until it ran)
+             preview and video render fail with code not_prepared until it ran)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N]
