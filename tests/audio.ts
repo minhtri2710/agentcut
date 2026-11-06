@@ -10,6 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
+const { noiseFloor } = await import("../src/audiofx.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -75,6 +76,68 @@ check(`noise floor drops >= 6 dB (${baseNoise.toFixed(1)} -> ${rms(dn, 2.5, 4).t
 check(`tone kept within 1.5 dB (${baseTone.toFixed(1)} -> ${rms(dn, 0.5, 1.5).toFixed(1)})`, Math.abs(baseTone - rms(dn, 0.5, 1.5)) < 1.5);
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: 1 } }]);
 check("strength 1 removes more than 0.5", rms(mix("denoise1"), 2.5, 4) < rms(dn, 2.5, 4) - 2);
+
+/** write a mono float signal as a stereo wav in the media dir */
+const wavOf = (name: string, x: Float32Array) => {
+  const f = join(m, name);
+  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "f32le", "-ar", "48000", "-ac", "1", "-i", "-", "-af", "pan=stereo|c0=c0|c1=c0", f], { input: Buffer.from(x.buffer, x.byteOffset, x.byteLength) });
+  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
+  return f;
+};
+/** one-clip project (denoise on/off), mixed with the loudness master off; returns the mixed wav */
+const project = async (name: string, src: string, dur: number, denoise: boolean) => {
+  const proj = join(tmp, name);
+  api.create(proj, { width: 320, height: 240, fps: 24 });
+  await api.apply(proj, [{ op: "add_clip", track: "voice", src, at: 0, duration: dur, ...(denoise ? { denoise: true } : {}) }]);
+  const p = api.openProject(proj), tl = p.absolutized(p.load());
+  tl.settings.loudness = null;
+  return buildAudio(tl, join(tmp, `${name}.wav`));
+};
+
+console.log("denoise floor: continuous speech has no pauses to measure the noise in");
+{
+  // synthetic voiced words (buzz with formant-like tilt, jittered f0, aspiration), ~-20 dBFS; optional long fade-out at the end; white noise at noiseDb
+  const SR = 48000;
+  const synth = (gapMs: number, words: number, noiseDb: number, fadeSec: number) => {
+    let seed = 12345;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+    const out: number[] = [];
+    const quiet = (n: number) => { for (let i = 0; i < n; i++) out.push(0); };
+    quiet(0.3 * SR);
+    for (let w = 0; w <= words; w++) {
+      const last = w === words, f0 = 120 + ((w * 37) % 40), sus = Math.round((last ? 0.25 : 0.33) * SR), n = last ? sus + Math.round(fadeSec * SR) : Math.round(0.48 * SR);
+      let ph = 0;
+      for (let i = 0; i < n; i++) {
+        const t = i / SR, f = f0 * (1 + 0.04 * Math.sin(2 * Math.PI * 5 * t + w));
+        ph += 2 * Math.PI * f / SR;
+        let v = 0;
+        for (let h = 1; h <= 20; h++) v += Math.sin(h * ph) / h ** 1.2 * (1 + 0.6 * Math.exp(-((h * f - 700) ** 2) / 2e5) + 0.5 * Math.exp(-((h * f - 1800) ** 2) / 4e5));
+        const env = i < 0.03 * SR ? i / (0.03 * SR) : i < sus ? 1 : last ? 10 ** (-20 / 20) : 10 ** (-22 * ((i - sus) / (n - sus)) / 20);
+        out.push((v * 0.5 + 0.08 * rnd()) * env * 0.3);
+      }
+      quiet(Math.round(gapMs / 1000 * SR));
+    }
+    const x = Float32Array.from(out), a = 10 ** (noiseDb / 20) * Math.sqrt(3);
+    for (let i = 0; i < x.length; i++) x[i] += a * rnd();
+    return x;
+  };
+  // continuous clip, noise at -70 dBFS: the sentence-final fade (600 ms at -20 dB) must survive the gate and afftdn
+  const cont = synth(40, 12, -70, 0.6), contSrc = wavOf("cont.wav", cont), contDur = cont.length / SR;
+  const fadeEnd = contDur, fadeA = fadeEnd - 0.15; // last 150 ms of the fade
+  const contRaw = await project("cont-raw", contSrc, contDur, false), contDn = await project("cont-dn", contSrc, contDur, true);
+  const kept = rms(contDn, fadeA, fadeEnd) - rms(contRaw, fadeA, fadeEnd);
+  check(`continuous speech: last 150 ms of a soft ending keeps its level (${kept.toFixed(1)} dB, tolerance 3)`, Math.abs(kept) <= 3, kept);
+  const flo = noiseFloor(contSrc, 0, contDur);
+  check(`noiseFloor of a clip with no pauses stays near the noise, not on the speech (${flo?.toFixed(1)} dBFS, true -70)`, flo !== null && flo < -60, flo);
+  // clip with real pauses: the gate still has to take the noise out
+  const talk = synth(600, 8, -50, 0.3), talkSrc = wavOf("talk-pauses.wav", talk), talkDur = talk.length / SR;
+  const talkRaw = await project("pauses-raw", talkSrc, talkDur, false), talkDn = await project("pauses-dn", talkSrc, talkDur, true);
+  const pa = 0.3 + 2 * 0.48 + 0.6 + 0.3, pb = pa + 0.2; // inside the second pause (1.86-2.46 s), past the gate's release
+  const reduction = rms(talkRaw, pa, pb) - rms(talkDn, pa, pb);
+  check(`pauses: noise in the gaps drops >= 15 dB (${reduction.toFixed(1)})`, reduction >= 15, reduction);
+  const tflo = noiseFloor(talkSrc, 0, talkDur);
+  check(`noiseFloor with pauses is the noise level (${tflo?.toFixed(1)} dBFS, true -50)`, tflo !== null && Math.abs(tflo + 50) < 1.5, tflo);
+}
 
 console.log("pan");
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: null, pan: -0.8 } }]);

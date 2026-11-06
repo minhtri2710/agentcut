@@ -31,6 +31,7 @@ const COMP_RANGE: Record<keyof Comp, [number, number]> = { threshold: [-60, 0], 
 const BAND_RANGE: Record<string, [number, number]> = { f: [20, 20000], gain: [-24, 24], q: [0.1, 10], intensity: [0, 1] };
 export const NORMALIZE_LUFS = -16;
 export const DENOISE_STRENGTH = 0.5;
+const FLOOR_PLATEAU_DB = 5; // measured P10-P1: pauses <= 1.3 dB, speech under P10 >= 3.1 dB; the 3-5 dB band does not clip endings, so P1 only above 5
 
 export const AUDIO_FX_DOC = {
   denoise: "true or strength 0..1 (0.5): FFT noise reduction + soft expander in pauses; the noise floor is measured per clip",
@@ -140,14 +141,18 @@ export const denoiseStrength = (v: unknown) => (v === true ? DENOISE_STRENGTH : 
 export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : isNum(v) ? v : null);
 
 // ------------------------------------------------------------------ measurement
-/** Noise floor estimate in dBFS: 10th percentile of 50 ms RMS windows (digital silence ignored); null when there is none. */
+/** Noise floor estimate in dBFS: 10th percentile of 50 ms RMS windows (digital silence ignored); null when there is none.
+ * Stationary noise gives a flat bottom (P10 within ~1.5 dB of P1). When P10 sits more than FLOOR_PLATEAU_DB above P1 there are no
+ * pauses (continuous speech) and P10 is soft speech, which would set the gate and afftdn above quiet word endings: use P1 then. */
 export function noiseFloor(path: string, start: number, len: number): number | null {
   const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", path, "-vn", "-af",
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
     "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
     "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
   const v = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100).sort((a, b) => a - b);
-  return v.length ? v[Math.floor(v.length * 0.1)] : null;
+  if (!v.length) return null;
+  const p10 = v[Math.floor(v.length * 0.1)], p1 = v[Math.floor(v.length * 0.01)];
+  return p10 - p1 > FLOOR_PLATEAU_DB ? p1 : p10;
 }
 
 /** Integrated loudness (LUFS) of `input` args through filter chain `af`; null when too short/quiet to measure. */
