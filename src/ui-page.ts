@@ -223,7 +223,7 @@ function clipEl(tr, c, i) {
   e.title = c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s";
   var trn = c.transition && i > 0 ? c.transition : null;
   if (trn) { var td = typeof trn === "object" ? num(trn.duration || 0.5) : 0.5; var o = document.createElement("div"); o.className = "tr";
-    o.style.width = td * pps + "px"; o.title = "transition " + (trn.type || trn); e.appendChild(o); }
+    o.style.width = V.k * td * pps + "px"; o.title = "transition " + (trn.type || trn); e.appendChild(o); }
   if (!V.nested) ["l", "r"].forEach(function (s) { var h = document.createElement("div"); h.className = "h " + s; h.dataset.edge = s; e.appendChild(h); });
   kfTimes(c).forEach(function (kt) {
     var k = document.createElement("div"); k.className = "kf"; k.style.left = V.k * kt * pps + "px"; k.dataset.t = kt;
@@ -344,8 +344,9 @@ function groupIds() { return picked.length ? picked.slice() : sel && findClip(se
 function drawRegroup() {
   var box = $("regroups"), seen = {}; box.innerHTML = "";
   if (V.nested) return;
+  var used = {}; (function ids(tracks) { tracks.forEach(function (tr) { tr.clips.forEach(function (c) { used[c.id] = 1; if (c.type === "compound") ids(c.tracks || []); }); }); })(S.timeline.tracks); // like the server: nested ids count
   S.timeline.tracks.forEach(function (tr) { tr.clips.forEach(function (c) {
-    var g = c.group && c.group.id; if (!g || seen[g] || findIn(S.timeline.tracks, g)) return;
+    var g = c.group && c.group.id; if (!g || seen[g] || used[g]) return;
     seen[g] = 1;
     var b = el("button", { textContent: "Regroup " + g, onclick: function () {
       ops([{ op: "make_compound", from: g }], "regroup " + g).then(function (r) { if (r) select(r.results[0].id); }); } });

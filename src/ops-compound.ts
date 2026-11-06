@@ -40,7 +40,7 @@ export function registerCompoundOps(h: OpHelpers) {
   const fillGaps = (tl: Timeline, gaps: Clip[]) => gaps.map((g) => (g.id = newId(tl, "gap")));
 
   /** the clips (and gaps) expand_compound stamped with `group.id === from`, on the group's home track first (the first id picks the compound's track) */
-  const stampedIds = (tl: Timeline, from: string): { ids: string[]; name?: string } => {
+  const stampedIds = (tl: Timeline, from: string): { ids: string[]; name?: string; parent?: Clip } => {
     const found = tl.tracks.flatMap((tr) => tr.clips.filter((c) => c.group?.id === from).map((c) => ({ tr, c })));
     if (!found.length) throw new EditError(`no clips are stamped with group '${from}'`, "no_group", "from regroups the clips expand_compound placed; see each clip's 'group' field, or pass ids");
     const home = found[0].c.group.track, rank = (f: { tr: Track }) => (f.tr.id === home ? 0 : 1); // stamps are written together; if they disagreed, the first wins
@@ -48,7 +48,8 @@ export function registerCompoundOps(h: OpHelpers) {
       throw new EditError(`group '${from}' was expanded onto track '${home}', which no longer exists`, "missing_track", `recreate it (add_track id=${home}), or regroup by hand with ids`);
     if (!found.some((f) => f.tr.id === home))
       throw new EditError(`none of group '${from}' is on its home track '${home}' any more`, "home_track_empty", `move the clips back to '${home}', or regroup by hand with ids (the first id picks the track)`);
-    return { ids: found.map((f, i) => ({ f, i })).sort((x, y) => rank(x.f) - rank(y.f) || x.i - y.i).map((x) => x.f.c.id), name: found.find((f) => f.c.group.name)?.c.group.name };
+    return { ids: found.map((f, i) => ({ f, i })).sort((x, y) => rank(x.f) - rank(y.f) || x.i - y.i).map((x) => x.f.c.id), name: found.find((f) => f.c.group.name)?.c.group.name,
+      parent: found.find((f) => f.c.group.parent)?.c.group.parent }; // the outer group the rebuilt compound rejoins; members were stamped together, so if they disagreed the first wins
   };
 
   h.op("make_compound", "Group clips into one compound clip (Final Cut compound clip / CapCut group) that moves, trims, fades and gets effects as one " +
@@ -63,10 +64,10 @@ export function registerCompoundOps(h: OpHelpers) {
       const refs: unknown[] = Array.isArray(a.ids) ? a.ids : typeof a.ids === "string" ? a.ids.split(",") : [];
       if (a.from !== undefined && refs.length) throw new EditError("pass either 'ids' or 'from', not both", "bad_arg", "ids groups the clips you list; from regroups an expanded compound");
       if (a.from === undefined && !refs.length) throw new EditError("missing 'ids' or 'from'", "missing_arg", "ids: [clip ids or refs like 'main#1'], at least one; or from: the id of an expanded compound");
-      let regroup: { ids: string[]; name?: string } | undefined;
+      let regroup: { ids: string[]; name?: string; parent?: Clip } | undefined;
       if (a.from !== undefined) {
         const from = String(a.from);
-        if ([...allClips(tl.tracks)].some((c) => c.id === from)) throw new EditError(`compound '${from}' is already on the timeline`, "exists", "nothing to regroup: expand_compound it first, or pass ids");
+        if ([...allClips(tl.tracks)].some((c) => c.id === from)) throw new EditError(`id '${from}' is already used on the timeline`, "exists", `if '${from}' is a compound, expand_compound it first; otherwise pass ids`);
         regroup = stampedIds(tl, from);
         a = { ...a, id: a.id ?? from, name: a.name ?? regroup.name };
       }
@@ -76,6 +77,7 @@ export function registerCompoundOps(h: OpHelpers) {
       if (a.id && (tl.tracks.some((t) => t.id === a.id) || [...allClips(tl.tracks)].some((c) => c.id === a.id))) throw new EditError(`id '${a.id}' already exists`, "exists");
       const s0 = Math.min(...picked.map(clipStart)), e0 = Math.max(...picked.map(clipEnd));
       const cmp: Clip = { id: a.id || newId(tl, "cmp"), type: "compound", ...(a.name ? { name: a.name } : {}), duration: round6(e0 - s0), tracks: [] };
+      if (regroup?.parent) cmp.group = structuredClone(regroup.parent);
       const gaps: Clip[] = [], lost: string[] = [];
       for (const tr of tl.tracks) {
         const idx = tr.clips.flatMap((c, i) => (sel.has(c.id) ? [i] : []));
@@ -119,7 +121,7 @@ export function registerCompoundOps(h: OpHelpers) {
 
   h.op("expand_compound", "Break a compound clip apart: its nested clips go back onto the same-id tracks (created if missing) at their current " +
     "timeline positions, trimmed to the visible part (in/duration). On the compound's magnetic track they are spliced in its place (gaps fill holes). " +
-    "Every clip and gap it places gets a `group` stamp {id, name, track}; make_compound from=<id> regroups them. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
+    "Every clip and gap it places gets a `group` stamp {id, name, track, parent?} (parent = the stamp the expanded compound itself carried); make_compound from=<id> regroups them, and the rebuilt compound takes that parent stamp back. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
@@ -129,7 +131,7 @@ export function registerCompoundOps(h: OpHelpers) {
       if (home.magnetic) pin(next, base + dur - clipStart(next ?? c));
       home.clips.splice(ci, 1);
       const placed = new Map<string, Clip>(), dropped: string[] = [], created: string[] = [], gaps: Clip[] = [];
-      const stamp = () => ({ id: c.id, ...(c.name ? { name: c.name } : {}), track: home.id }); // make_compound from=<id> regroups what carries it
+      const stamp = () => ({ id: c.id, ...(c.name ? { name: c.name } : {}), track: home.id, ...(c.group ? { parent: structuredClone(c.group) } : {}) }); // make_compound from=<id> regroups what carries it
       const lists: [Track, Clip[]][] = [];
       for (const nt of (c.tracks ?? []) as Track[]) {
         const clips: Clip[] = [];

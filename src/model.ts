@@ -76,7 +76,7 @@ export const COMMON_FIELDS: F = {
   duration: [T("number", "string"), "seconds on the timeline"],
   enabled: [T("boolean"), "false hides/mutes the clip"],
   note: [T("string"), "free-form note, ignored by the renderer"],
-  group: [T("object"), "{id, name?, track}: written by expand_compound on every clip and gap it places; make_compound from=<id> regroups them (split_clip keeps it, duplicate_clip drops it)"],
+  group: [T("object"), "{id, name?, track, parent?}: written by expand_compound on every clip and gap it places (parent = the stamp the expanded compound carried); make_compound from=<id> regroups them (split_clip keeps it, duplicate_clip drops it)"],
   preset: [T("string"), "style preset expanded when the clip is added (see capabilities.presets)"],
   until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark)"],
   attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
@@ -443,6 +443,17 @@ function checkFields(obj: Dict, fields: F, path: string, issues: Issue[], what: 
   }
 }
 
+/** group stamp {id, name?, track, parent?}: id and track are non-empty strings, name a string; parent is a stamp too (recursively) */
+function groupIssues(g: any, path: string): { path: string; message: string; hint: string }[] {
+  const hint = "group: {id, name?, track, parent?}";
+  if (!g || typeof g !== "object" || Array.isArray(g)) return [{ path, message: "group must be an object", hint }];
+  const out = (["id", "track"] as const).filter((k) => typeof g[k] !== "string" || !g[k])
+    .map((k) => ({ path: `${path}.${k}`, message: `group needs a ${k} (${k === "id" ? "the expanded compound's id" : "the track it was expanded onto"})`, hint }));
+  if (g.name !== undefined && typeof g.name !== "string") out.push({ path: `${path}.name`, message: "group name must be a string", hint });
+  if (g.parent !== undefined) out.push(...groupIssues(g.parent, `${path}.parent`));
+  return out;
+}
+
 function checkName(v: unknown, opts: string[], path: string, issues: Issue[], what: string) {
   const name = v && typeof v === "object" ? (v as Dict).type : v;
   if (name === undefined || name === null || name === false || name === "none" || name === "") return;
@@ -505,7 +516,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
-      if (c.group && typeof c.group === "object" && (typeof c.group.id !== "string" || !c.group.id)) issues.push({ level: "error", path: `${p}.group.id`, message: "group needs an id (the expanded compound's id)", hint: "group: {id, name?, track}" });
+      if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
       if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
       else if (dup(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${dup(c.id)})`, hint: "clip ids must be unique across the project, including inside compound clips" });

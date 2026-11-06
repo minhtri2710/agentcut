@@ -179,7 +179,43 @@ check("  the failed batch left the timeline unchanged", JSON.stringify(api.openP
 await api.apply(Q, [{ op: "add_track", id: "hm" }, { op: "move_clip", id: "h1", track: "hm", at: 0 }]);
 const rh = (await api.apply(Q, [{ op: "make_compound", from: "gH" }])).results[0];
 check("from: with the home track back (one member on it) the compound lands there, not on another track", rh.id === "gH" && rh.track === "hm", rh);
+check("a group without a track is rejected by validation", await rejects(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz1", at: 8, duration: 1, group: { id: "G" } }]), "validation_failed"));
+check("a group whose track is not a string is rejected by validation", await rejects(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz2", at: 8, duration: 1, group: { id: "G", track: 5 } }]), "validation_failed"));
+const xs = await failure(() => api.apply(Q, [{ op: "make_compound", from: "c3" }]));
+check("from=<id of a plain clip> says the id is used, not that a compound is", xs?.code === "exists" && /already used/.test(xs.message) && !/compound/.test(xs.message), xs && [xs.code, xs.message]);
 check("a group without an id is rejected by validation", await rejects(() => api.apply(Q, [{ op: "update_clip", id: "v2", set: { group: { id: null } } }]), "validation_failed"));
+
+console.log("regroup: a compound expanded inside an expanded compound rejoins its outer group");
+const deepIds = (c: any): string[] => c.tracks.flatMap((t: any) => t.clips.flatMap((x: any) => (x.type === "compound" ? [x.id, ...deepIds(x)] : [x.id])));
+async function twoLevel(name: string, setup: object[], outer: string[], innerOuterId: string, splitAt: [string, number], expectTrack: string) {
+  const R = join(tmp, name);
+  api.create(R, { preset: "720p" });
+  await api.apply(R, setup);
+  await api.apply(R, [{ op: "make_compound", ids: ["i1", "i2"], id: "A" }, { op: "make_compound", ids: outer, id: "O" }]);
+  await api.apply(R, [{ op: "expand_compound", id: "O" }]);
+  await api.apply(R, [{ op: "expand_compound", id: "A" }]);
+  const tl = () => api.openProject(R).load();
+  const flat = () => tl().tracks.flatMap((t: any) => t.clips) as any[];
+  const inner = flat().find((c: any) => c.id === "i1").group;
+  check(`${name}: expanding the inner compound records the outer stamp as its parent`, inner?.id === "A" && inner.parent?.id === "O" && inner.parent.track === expectTrack, inner);
+  const sp2 = (await api.apply(R, [{ op: "split_clip", id: splitAt[0], at: splitAt[1] }])).results[0];
+  check(`${name}: split carries the whole stamp, parent included`, JSON.stringify(flat().find((c: any) => c.id === sp2.right).group) === JSON.stringify(inner), flat().find((c: any) => c.id === sp2.right)?.group);
+  const ra2 = await failure(() => api.apply(R, [{ op: "make_compound", from: "A" }]));
+  check(`${name}: from=A succeeds`, ra2 === null, ra2 && [ra2.code, ra2.message]);
+  check(`${name}: the rebuilt A carries O's stamp again`, flat().find((c: any) => c.id === "A")?.group?.id === "O");
+  const ro2 = await failure(() => api.apply(R, [{ op: "make_compound", from: "O" }]));
+  check(`${name}: from=O succeeds (A is part of the group, so a storyline run stays contiguous)`, ro2 === null, ro2 && [ro2.code, ro2.message]);
+  const O = flat().find((c: any) => c.id === "O");
+  check(`${name}: O contains A again, with both halves of i1 and i2 inside A`, !!O && deepIds(O).sort().join() === ["A", "i1", sp2.right, "i2", ...outer.filter((i) => i !== "A")].sort().join(), O && deepIds(O));
+  check(`${name}: no clip anywhere carries a stamp at the end`, !JSON.stringify(tl().tracks).includes('"group"'));
+  check(`${name}: validates`, api.info(R, "json").errors === 0, api.info(R, "json").issues);
+}
+await twoLevel("two-level non-magnetic", [col("np", "m1", "red", { at: 0, duration: 1 }), col("np", "m2", "blue", { at: 1, duration: 1 }), col("npa", "i1", "green", { at: 0, duration: 2 }), col("npa", "i2", "white", { at: 2, duration: 1 })],
+  ["m1", "m2", "A"], "np", ["i1", 1], "np");
+await twoLevel("two-level storyline", [col("main", "x1", "red", { duration: 1 }), col("main", "i1", "green", { duration: 1 }), col("main", "i2", "white", { duration: 1 }), col("main", "x2", "blue", { duration: 1 })],
+  ["x1", "A", "x2"], "main", ["i1", 1.5], "main");
+const bp = await failure(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz3", at: 8, duration: 1, group: { id: "G", track: "t", parent: { id: "P" } } }]));
+check("a stamp whose parent lacks a track is rejected, at group.parent.track", bp?.code === "validation_failed" && JSON.stringify(bp.details?.issues).includes("group.parent.track"), bp && [bp.code, bp.details]);
 
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });

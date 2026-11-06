@@ -261,6 +261,25 @@ try {
   check("two levels (speed 0.5 outside, speed 2 inside): nested clips sit where render plays them", same(bx1, at(L2, 0, 2)) && same(bx2, at(L2, 2, 2)), { bx1, bx2, want: [at(L2, 0, 2), at(L2, 2, 2)] });
   await js(`document.querySelector("#crumbs a").click()`);
   await until("top view again", `!V.nested`);
+  // a stamp whose compound id is a clip nested inside another compound: the server's make_compound from would answer "exists", so no button
+  await api.apply(dir, [{ op: "add_clip", track: "q", type: "color", color: "red", id: "gz", at: 4, duration: 1, group: { id: "x1", track: "q" } }]);
+  await until("stamped clip", `!!document.querySelector('[data-id="gz"]')`);
+  check("no Regroup button for a group id that exists nested", await js(`${btns} === ""`), await js(btns));
+  await api.apply(dir, [{ op: "remove_clip", id: "gz" }]);
+  // a nested clip with a 0.5 s transition in a speed-2 compound: render plays the nested 0.5 s in 0.25 s
+  await api.apply(dir, [
+    { op: "add_clip", track: "w", type: "color", color: "red", id: "wa", at: 0, duration: 2 },
+    { op: "add_clip", track: "w", type: "color", color: "blue", id: "wb", at: 1.5, duration: 2, transition: { type: "crossfade", duration: 0.5 } },
+    { op: "make_compound", ids: ["wa", "wb"], id: "cw" },
+    { op: "update_clip", id: "cw", set: { speed: 2, duration: 1.75 } },
+  ]);
+  await until("transition compound", `!!findIn(S.timeline.tracks, "cw")`);
+  await click(`[data-id="cw"]`, { count: 2 });
+  await until("transition nested view", `V.nested && !!document.querySelector('[data-id="wb"] .tr')`);
+  const trw = await js(`parseFloat(document.querySelector('[data-id="wb"] .tr').style.width) / pps`);
+  check("nested transition overlay is as wide as render plays it (0.5 s / speed 2)", near(trw, 0.5 / 2), trw);
+  await js(`document.querySelector("#crumbs a").click()`);
+  await until("top view after transition", `!V.nested`);
 
   console.log("previews/ui");
   await js(`$("sheet").click()`);
