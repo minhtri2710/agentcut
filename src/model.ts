@@ -54,14 +54,45 @@ export const EFFECTS: Record<string, string> = {
   contrast: "multiplier (1.2)",
   saturate: "multiplier (1.4)",
 };
-export const FILTERS: Record<string, string> = {
-  eq: "brightness (-1..1, 0), contrast (0..3, 1), saturation (0..3, 1), gamma (0.1..10, 1)",
-  lut: "path to a .cube 3D LUT file",
-  blur: "radius px", sharpen: "amount (0..3, 1)", grayscale: "no params", vignette: "strength (0..1, 0.5)",
-  hflip: "mirror horizontally", vflip: "mirror vertically",
-  chromakey: "color (#00ff00), similarity (0.1), blend (0.05)", denoise: "strength (1..10, 4)",
-  stabilize: "deshake (FFmpeg deshake filter)",
+type FilterField = { kind: "number"; lo: number; hi: number; def: number } | { kind: "color"; def: string } | { kind: "path" };
+const fnum = (lo: number, hi: number, def: number): FilterField => ({ kind: "number", lo, hi, def });
+/** One source of truth for the clip filters: each parameter's kind, range and default. Validation, the filter graph and the
+ *  FILTERS docs all come from it; no project value reaches an FFmpeg graph except through filterParam. */
+export const FILTER_SPECS: Record<string, { doc?: string; fields: Record<string, FilterField> }> = {
+  eq: { fields: { brightness: fnum(-1, 1, 0), contrast: fnum(0, 3, 1), saturation: fnum(0, 3, 1), gamma: fnum(0.1, 10, 1) } },
+  lut: { doc: "path to a .cube 3D LUT file", fields: { path: { kind: "path" } } },
+  blur: { fields: { radius: fnum(0, 500, 5) } },
+  sharpen: { fields: { amount: fnum(0, 3, 1) } },
+  grayscale: { doc: "no params", fields: {} },
+  vignette: { fields: { strength: fnum(0, 1, 0.5) } },
+  hflip: { doc: "mirror horizontally", fields: {} },
+  vflip: { doc: "mirror vertically", fields: {} },
+  chromakey: { fields: { color: { kind: "color", def: "#00ff00" }, similarity: fnum(0.01, 1, 0.1), blend: fnum(0, 1, 0.05) } },
+  denoise: { fields: { strength: fnum(1, 10, 4) } },
+  stabilize: { doc: "deshake (FFmpeg deshake filter)", fields: {} },
 };
+export const FILTERS: Record<string, string> = Object.fromEntries(Object.entries(FILTER_SPECS).map(([k, s]) => [k, s.doc ?? Object.entries(s.fields)
+  .map(([f, x]) => (x.kind === "number" ? `${f} (${x.lo}..${x.hi}, ${x.def})` : `${f} (${x.kind === "color" ? x.def : "path"})`)).join(", ")]));
+const filterTable = (type: string): Record<string, [string[], string]> => ({
+  type: [["string"], "filter name"],
+  ...Object.fromEntries(Object.entries(FILTER_SPECS[type].fields).map(([f, x]) => [f, [[x.kind === "number" ? "number" : "string"], FILTERS[type]]])),
+});
+
+/** A filter parameter as the only form that enters an FFmpeg graph: a finite number within its range, or a colour as 0xRRGGBB.
+ *  `v` null/undefined gives the default. Throws bad_filter. */
+export function filterParam(type: string, key: string, v: unknown): number | string {
+  const x = FILTER_SPECS[type]?.fields[key];
+  if (!x || x.kind === "path") throw new EditError(`'${type}.${key}' is not a value parameter`, "bad_filter");
+  if (x.kind === "number") {
+    const n = Number(v ?? x.def);
+    if (!Number.isFinite(n) || n < x.lo || n > x.hi) throw new EditError(`${type}.${key} must be a number ${x.lo}..${x.hi}`, "bad_filter", FILTERS[type]);
+    return n;
+  }
+  let c: number[];
+  try { c = parseColor(v ?? x.def).slice(0, 3); } catch { throw new EditError(`${type}.${key} must be a colour (#RRGGBB)`, "bad_filter", FILTERS[type]); }
+  if (!c.every((q) => Number.isFinite(q) && q >= 0 && q <= 255)) throw new EditError(`${type}.${key} must be a colour (#RRGGBB)`, "bad_filter", FILTERS[type]);
+  return "0x" + c.map((q) => Math.round(q).toString(16).padStart(2, "0")).join("");
+}
 export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 
@@ -561,7 +592,15 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       (c.filters || []).forEach((f: any, fi: number) => {
         const ft = typeof f === "string" ? f : f?.type;
         if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
-        else if (ft === "lut" && o.exists && !o.exists(String(f.path ?? ""))) issues.push({ level: "error", path: `${p}.filters[${fi}].path`, message: "LUT file not found" });
+        else {
+          if (typeof f === "object") {
+            const tbl = filterTable(ft), fp = `${p}.filters[${fi}]`;
+            checkFields(f, tbl, fp, issues, `${ft} filter`);
+            for (const [k, x] of Object.entries(FILTER_SPECS[ft].fields)) if (x.kind !== "path" && f[k] != null && tbl[k][0].includes(jtype(f[k])))
+              try { filterParam(ft, k, f[k]); } catch (e: any) { issues.push({ level: "error", path: `${fp}.${k}`, message: e.message, hint: e.hint }); }
+          }
+          if (ft === "lut" && o.exists && !o.exists(String(f.path ?? ""))) issues.push({ level: "error", path: `${p}.filters[${fi}].path`, message: "LUT file not found" });
+        }
       });
       if ((c.type === "video" || c.type === "image") && c.remove_background && typeof c.remove_background === "object") {
         checkFields(c.remove_background, { model: [T("string"), MATTE_MODELS.join("|")] }, `${p}.remove_background`, issues, "remove_background");

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
-import { EditError } from "./model.ts";
+import { EditError, FILTER_SPECS, filterParam } from "./model.ts";
 
 /** Stop `ch` when `signal` aborts: close its stdin (EOF is the stop request for ffmpeg and the vision helper), SIGTERM it, and
  *  SIGKILL it after `graceMs` if it is still running. Only the direct child is signalled (no process-group kill): what uv forwards
@@ -81,30 +81,31 @@ export function probe(path: string): any {
   return { ...info };
 }
 
-/** A file path as a filter option value: escaped for the option level (\ ' :), then for the graph level (\ ' [ ] , ;). */
-const filterPath = (p: string) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p).replace(/[\\':]/g, "\\$&").replace(/[\\'[\],;]/g, "\\$&");
+/** A file path as a filter option value: escaped for the option level (\ ' : whitespace), then for the graph level (\ ' [ ] , ; whitespace). */
+const filterPath = (p: string) => (process.platform === "win32" ? p.replace(/\\/g, "/") : p).replace(/[\\':\s]/g, "\\$&").replace(/[\\'[\],;\s]/g, "\\$&");
 
+/** Clip filters -> FFmpeg filters. Every parameter goes through filterParam (finite, in range, or 0xRRGGBB); only a LUT path is text, escaped by filterPath. */
 export function filterChain(filters: any[] | undefined): string[] {
   const out: string[] = [];
   for (let f of filters || []) {
     if (typeof f === "string") f = { type: f };
+    const n = (k: string) => filterParam(f.type, k, f[k]) as number;
     switch (f.type) {
       case "eq": {
-        const ks = ["brightness", "contrast", "saturation", "gamma"].filter((k) => k in f);
-        if (ks.length) out.push("eq=" + ks.map((k) => `${k}=${f[k]}`).join(":"));
+        const ks = Object.keys(FILTER_SPECS.eq.fields).filter((k) => f[k] != null);
+        if (ks.length) out.push("eq=" + ks.map((k) => `${k}=${n(k)}`).join(":"));
         break;
       }
       case "lut": out.push(`lut3d=file=${filterPath(String(f.path))}`); break;
-      case "blur": out.push(`gblur=sigma=${(Number(f.radius ?? 5) / 2).toFixed(2)}`); break;
-      case "sharpen": out.push(`unsharp=5:5:${Number(f.amount ?? 1).toFixed(2)}`); break;
+      case "blur": out.push(`gblur=sigma=${(n("radius") / 2).toFixed(2)}`); break;
+      case "sharpen": out.push(`unsharp=5:5:${n("amount").toFixed(2)}`); break;
       case "grayscale": out.push("hue=s=0"); break;
-      case "vignette": out.push(`vignette=angle=${(0.2 + 0.6 * Number(f.strength ?? 0.5)).toFixed(3)}`); break;
+      case "vignette": out.push(`vignette=angle=${(0.2 + 0.6 * n("strength")).toFixed(3)}`); break;
       case "hflip": out.push("hflip"); break;
       case "vflip": out.push("vflip"); break;
-      case "denoise": out.push(`hqdn3d=${Number(f.strength ?? 4).toFixed(1)}`); break;
+      case "denoise": out.push(`hqdn3d=${n("strength").toFixed(1)}`); break;
       case "stabilize": out.push("deshake"); break;
-      case "chromakey":
-        out.push(`format=rgba,chromakey=${String(f.color ?? "#00ff00").replace("#", "0x")}:${Number(f.similarity ?? 0.1)}:${Number(f.blend ?? 0.05)}`); break;
+      case "chromakey": out.push(`format=rgba,chromakey=${filterParam("chromakey", "color", f.color)}:${n("similarity")}:${n("blend")}`); break;
       default: throw new EditError(`unknown filter '${f.type}'`, "bad_filter");
     }
   }
@@ -286,9 +287,4 @@ export class FrameSource {
     if (this.proc) { try { this.proc.stdout?.destroy(); this.proc.kill("SIGKILL"); } catch { /* ignore */ } }
     this.proc = null; this.stream = null;
   }
-}
-
-export function ffmpegRun(args: string[], opts: { input?: Buffer } = {}) {
-  needFfmpeg();
-  return spawnSync("ffmpeg", args, { input: opts.input, maxBuffer: 1 << 30, encoding: "buffer" });
 }

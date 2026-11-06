@@ -150,34 +150,47 @@ console.log("ffmpeg reads only local files and pipes");
   const lis = spawn(process.execPath, ["--no-install", "-e",
     `const n=require("node:net");let c=0;const s=n.createServer(k=>{c++;k.destroy()});` +
     `s.listen(0,"127.0.0.1",()=>console.log(s.address().port));process.stdin.on("data",()=>console.log(c))`], { cwd: tmp, stdio: ["pipe", "pipe", "ignore"] });
-  const lines: string[] = []; let wake: (() => void) | null = null;
-  let buf = "";
-  lis.stdout!.on("data", (d) => { buf += d; const p = buf.split("\n"); buf = p.pop()!; lines.push(...p); wake?.(); });
-  const nextLine = async () => { while (!lines.length) await new Promise<void>((r) => { wake = r; }); return lines.shift()!; };
-  const port = Number(await nextLine());
-  const requests = async () => { lis.stdin!.write("\n"); return Number(await nextLine()); };
-  const url = `tcp://127.0.0.1:${port}/a.wav`;
-  const { beats, loudness } = await import("../src/analyze.ts");
-  const { FrameSource, probe: probeMedia } = await import("../src/media.ts");
-  const refused = (f: () => unknown) => { try { f(); return false; } catch { return true; } };
+  console.log(`  listener pid ${lis.pid}`);
+  try {
+    const lines: string[] = []; let wake: (() => void) | null = null;
+    let buf = "";
+    lis.stdout!.on("data", (d) => { buf += d; const p = buf.split("\n"); buf = p.pop()!; lines.push(...p); wake?.(); });
+    const nextLine = async () => {
+      const t = Date.now();
+      while (!lines.length) {
+        if (Date.now() - t > 10_000) throw new Error("listener child gave no line in 10 s");
+        await new Promise<void>((r) => { wake = r; setTimeout(r, 200); });
+      }
+      return lines.shift()!;
+    };
+    const port = Number(await nextLine());
+    const requests = async () => { lis.stdin!.write("\n"); return Number(await nextLine()); };
+    const url = `tcp://127.0.0.1:${port}/a.wav`;
+    const { beats, loudness } = await import("../src/analyze.ts");
+    const { FrameSource, probe: probeMedia } = await import("../src/media.ts");
+    const refused = (f: () => unknown) => { try { f(); return false; } catch { return true; } };
+    // probe is the only ffprobe caller: it checks the path exists first, so a URL never reaches ffprobe
+    check("probe of a URL stops at not_found", (() => { try { probeMedia(url); return "opened"; } catch (e: any) { return e.code; } })() === "not_found");
 
-  check("beats refuses a non-file source", refused(() => beats(url)));
-  loudness(url);
-  const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
-  check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
-  fs.close();
-  const opened = await requests();
-  check("a non-file source is never opened", opened === 0, opened);
-  // a playlist that names a network URL: probe and decode both refuse it
-  const list = join(m, "net.m3u8");
-  writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
-  check("probe refuses a playlist that names a network URL", refused(() => probeMedia(list)));
-  const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
-  check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
-  dec.close();
-  const total = await requests();
-  check("no request reached the listener", total === 0, total);
-  lis.kill();
+    check("beats refuses a non-file source", refused(() => beats(url)));
+    loudness(url);
+    const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+    check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
+    fs.close();
+    const opened = await requests();
+    check("a non-file source is never opened", opened === 0, opened);
+    // a playlist that names a network URL: probe and decode both refuse it
+    const list = join(m, "net.m3u8");
+    writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
+    check("probe refuses a playlist that names a network URL", refused(() => probeMedia(list)));
+    const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+    check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
+    dec.close();
+    const total = await requests();
+    check("no request reached the listener", total === 0, total);
+  } finally {
+    lis.kill();
+  }
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);

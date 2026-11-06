@@ -80,10 +80,55 @@ console.log("filters");
     // Windows drive letter: the platform is presented as win32 only while the chain is built
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "win32" });
-    try { check("lut path on a Windows drive: separators become /, the colon is escaped at both levels", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])[0] === "lut3d=file=C\\\\:/a b/x\\,y.cube", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])); }
+    try { check("lut path on a Windows drive: separators become /, the colon and the space are escaped at both levels", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])[0] === "lut3d=file=C\\\\:/a\\\\\\ b/x\\,y.cube", filterChain([{ type: "lut", path: "C:\\a b\\x,y.cube" }])); }
     finally { Object.defineProperty(process, "platform", platform); }
   }
   check("lut at a path with filtergraph-special characters is applied", Math.abs(b0[0] - b0[1]) < 8 && b1[0] > 200 && b1[1] < 40 && b1[2] < 40, { b0, b1 });
+  {
+    // a file name that ends in a space: ffmpeg must be handed that exact name (the name is not a recognised LUT type, which is what the message shows)
+    const sp = join(dir, "trail.cube ");
+    writeFileSync(sp, all("1 0 0"));
+    const r = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=0x808080:s=16x16:d=0.1", "-vf", filterChain([{ type: "lut", path: sp }])[0], "-frames:v", "1", "-f", "null", "-"], { encoding: "utf8" });
+    check("lut path ending in a space names that exact file", /'\.cube ' file type/.test(r.stderr) && !/No such file/.test(r.stderr), r.stderr);
+  }
+  // filter parameter values are typed and validated before they enter a filter graph: numbers in range, colours as 0xRRGGBB
+  const R = join(tmp, "projr");
+  api.create(R, { preset: "720p" });
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:size=320x180:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "green.mp4"));
+  ff("-f", "lavfi", "-i", "color=c=0xff0000:size=320x180:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "red.mp4"));
+  await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
+  const rev = api.info(R, "json").revision;
+  const badValues = [
+    ["a non-numeric eq value", { type: "eq", brightness: "0.1,more" }, "brightness"],
+    ["an eq value out of range", { type: "eq", gamma: 99 }, "gamma"],
+    ["a chromakey colour with extra characters", { type: "chromakey", color: "#00ff00,more" }, "color"],
+    ["a chromakey similarity out of range", { type: "chromakey", similarity: 5 }, "similarity"],
+    ["a blur radius that is a string", { type: "blur", radius: "5x" }, "radius"],
+    ["an unknown filter parameter", { type: "denoise", power: 3 }, "power"],
+  ] as const;
+  for (const [what, f, key] of badValues) {
+    const e = await api.apply(R, [{ op: "update_clip", id: "vid1", set: { filters: [f] } }]).catch((x) => x);
+    check(`${what} is rejected by validate and the batch is not applied`, e.code === "validation_failed" && e.details?.issues?.some((i: any) => i.path.endsWith(`.filters[0].${key}`)) && api.info(R, "json").revision === rev, e.details ?? e);
+  }
+  check("filterChain fails closed on a non-numeric value", throwsCode(() => filterChain([{ type: "eq", brightness: "0.1,more" }]), "bad_filter") === true);
+  check("filterChain fails closed on a non-finite value", [Infinity, NaN].every((v) => throwsCode(() => filterChain([{ type: "blur", radius: v }]), "bad_filter") === true));
+  check("filterChain fails closed on an out-of-range value", throwsCode(() => filterChain([{ type: "vignette", strength: 7 }]), "bad_filter") === true);
+  check("filterChain fails closed on a chromakey colour with extra characters", throwsCode(() => filterChain([{ type: "chromakey", color: "#00ff00,more" }]), "bad_filter") === true);
+  check("valid eq and chromakey build the same chains as before", JSON.stringify(filterChain([{ type: "eq", brightness: 0.2, contrast: 1.5 }, { type: "chromakey", color: "#00ff00", similarity: 0.2 }, "chromakey"]))
+    === JSON.stringify(["eq=brightness=0.2:contrast=1.5", "format=rgba,chromakey=0x00ff00:0.2:0.05", "format=rgba,chromakey=0x00ff00:0.1:0.05"]), filterChain([{ type: "eq", brightness: 0.2, contrast: 1.5 }]));
+  await api.apply(R, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "eq", brightness: 0.2, contrast: 1.5 }] } }]);
+  const eqPix = meanRgb((await api.frame(R, 1, { out: join(tmp, "eq.png") })).image);
+  ff("-i", join(m, "grey.mp4"), "-vf", "eq=brightness=0.2:contrast=1.5", "-frames:v", "1", join(tmp, "eq-ref.png"));
+  const eqRef = meanRgb(join(tmp, "eq-ref.png"));
+  check("a valid eq renders like the same filter run directly", eqPix.every((v, i) => Math.abs(v - eqRef[i]) < 6) && eqPix[0] !== 128, { eqPix, eqRef });
+  let ki = 0;
+  for (const [what, src, color, keyed] of [["default green", "green.mp4", undefined, true], ["explicit hex", "green.mp4", "#00ff00", true], ["a colour that is not in the clip", "green.mp4", "#ff0000", false], ["red", "red.mp4", "#ff0000", true]] as const) {
+    const K = join(tmp, `projk${ki++}`);
+    api.create(K, { preset: "720p" });
+    await api.apply(K, [{ op: "add_clip", track: "main", src: join(m, src), duration: 2, filters: [color ? { type: "chromakey", color, similarity: 0.2 } : { type: "chromakey", similarity: 0.2 }] }]);
+    const px = meanRgb((await api.frame(K, 1, { out: join(tmp, "key.png") })).image);
+    check(`chromakey ${what}: ${keyed ? "keyed out" : "kept"}`, keyed ? Math.max(...px) < 40 : Math.max(...px) > 200, px);
+  }
 }
 
 console.log("scopes");
