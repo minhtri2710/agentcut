@@ -188,8 +188,17 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
     console.log("  - transcribe round-trip skipped: no whisper (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");
   else {
     const tr = AN.transcribe(out, "vi");
-    const hits = ["chào", "video", "kênh"].filter((w) => tr.text.toLowerCase().includes(w));
-    check(`whisper hears the voiceover through the music (${hits.length}/3 keywords: ${tr.text.slice(0, 80)})`, hits.length >= 2);
+    // Share of script words returned as whole tokens, in order (LCS over normalised words). Measured on this mix with whisper base,
+    // -ml 1: 10/21 (48%) when words split mid-syllable (no -sow), 21/21 (100%) with -sow. 80% sits between, 4 words under the green result.
+    // Fixed before the fix; a miss is a measurement limit of the model, not a reason to retune it.
+    const MIN_SHARE = 0.8;
+    const norm = (s: string) => s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
+    const want = norm(text), got = tr.words.map((w: any) => norm(w.text).join(" ")).filter(Boolean);
+    const lcs = want.map(() => new Array(got.length + 1).fill(0)).concat([new Array(got.length + 1).fill(0)]);
+    for (let i = want.length - 1; i >= 0; i--) for (let j = got.length - 1; j >= 0; j--) lcs[i][j] = want[i] === got[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    const share = lcs[0][0] / want.length;
+    check(`whisper returns ${lcs[0][0]}/${want.length} script words whole and in order (${(share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%): ${tr.text.slice(0, 80)}`, share >= MIN_SHARE);
+    check("no transcribed word is punctuation only", tr.words.every((w: any) => /[\p{L}\p{N}]/u.test(w.text)), tr.words.filter((w: any) => !/[\p{L}\p{N}]/u.test(w.text)));
   }
 }
 

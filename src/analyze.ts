@@ -267,11 +267,22 @@ export function transcribe(path: string, language?: string, model?: string) {
     const cli = ["whisper-cli", "whisper-cpp", "main"].find((b) => !spawnSync(b, ["--help"], { stdio: "ignore" }).error);
     const mdl = model ?? process.env.AGENTCUT_WHISPER_MODEL;
     if (cli && mdl) {
-      const r = spawnSync(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { encoding: "utf8", maxBuffer: 1 << 28 });
+      // -ml 1 alone splits inside a syllable ("ch","ào"); -sow splits only on whole words
+      const r = spawnSync(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { encoding: "utf8", maxBuffer: 1 << 28 });
       if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
-      const words = (j.transcription || []).map((s: any) => ({ text: String(s.text).trim(), start: s.offsets.from / 1000, end: s.offsets.to / 1000 })).filter((w: any) => w.text);
-      return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w: any) => w.text).join(" "), words };
+      // punctuation comes back as timed tokens of its own: it joins the previous word (a leading one, the next) and stretches its end
+      const words: { text: string; start: number; end: number }[] = [];
+      let lead = "";
+      for (const s of j.transcription || []) {
+        const text = String(s.text).trim();
+        if (!text) continue;
+        const prev = words[words.length - 1];
+        if (!/^\p{P}+$/u.test(text)) { words.push({ text: lead + text, start: s.offsets.from / 1000, end: s.offsets.to / 1000 }); lead = ""; }
+        else if (prev) { prev.text += text; prev.end = s.offsets.to / 1000; }
+        else lead += text;
+      }
+      return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words };
     }
     if (!spawnSync("whisper", ["--help"], { stdio: "ignore" }).error) {
       const r = spawnSync("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { encoding: "utf8", maxBuffer: 1 << 28 });
