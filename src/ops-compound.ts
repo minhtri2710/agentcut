@@ -43,7 +43,11 @@ export function registerCompoundOps(h: OpHelpers) {
   const stampedIds = (tl: Timeline, from: string): { ids: string[]; name?: string } => {
     const found = tl.tracks.flatMap((tr) => tr.clips.filter((c) => c.group?.id === from).map((c) => ({ tr, c })));
     if (!found.length) throw new EditError(`no clips are stamped with group '${from}'`, "no_group", "from regroups the clips expand_compound placed; see each clip's 'group' field, or pass ids");
-    const home = found[0].c.group.track, rank = (f: { tr: Track }) => (f.tr.id === home ? 0 : 1);
+    const home = found[0].c.group.track, rank = (f: { tr: Track }) => (f.tr.id === home ? 0 : 1); // stamps are written together; if they disagreed, the first wins
+    if (!tl.tracks.some((t) => t.id === home))
+      throw new EditError(`group '${from}' was expanded onto track '${home}', which no longer exists`, "missing_track", `recreate it (add_track id=${home}), or regroup by hand with ids`);
+    if (!found.some((f) => f.tr.id === home))
+      throw new EditError(`none of group '${from}' is on its home track '${home}' any more`, "home_track_empty", `move the clips back to '${home}', or regroup by hand with ids (the first id picks the track)`);
     return { ids: found.map((f, i) => ({ f, i })).sort((x, y) => rank(x.f) - rank(y.f) || x.i - y.i).map((x) => x.f.c.id), name: found.find((f) => f.c.group.name)?.c.group.name };
   };
 

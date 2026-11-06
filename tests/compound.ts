@@ -164,6 +164,21 @@ check("ids and from together are rejected", await rejects(() => api.apply(Q, [{ 
 check("neither ids nor from is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound" }]), "missing_arg"));
 check("from with no stamped clips is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "nope" }]), "no_group"));
 check("from while that compound is on the timeline is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "gD" }]), "exists"));
+async function failure(f: () => Promise<unknown>) { try { await f(); return null; } catch (e: any) { return e; } }
+await api.apply(Q, [col("hm", "h1", "red", { at: 0, duration: 1 }), col("hm", "h2", "blue", { at: 1, duration: 1 }), { op: "make_compound", ids: ["h1", "h2"], id: "gH" }, { op: "expand_compound", id: "gH" }]);
+await api.apply(Q, [{ op: "add_track", id: "other" }, { op: "move_clip", id: "h1", track: "other", at: 0 }, { op: "move_clip", id: "h2", track: "other", at: 1 }]);
+let snapQ = JSON.stringify(api.openProject(Q).load());
+const hx1 = await failure(() => api.apply(Q, [{ op: "make_compound", from: "gH" }]));
+check("from: every member left the home track -> home_track_empty, naming the track and the group", hx1?.code === "home_track_empty" && /'hm'/.test(hx1.message) && /'gH'/.test(hx1.message) && !!hx1.hint, hx1 && [hx1.code, hx1.message]);
+check("  the failed batch left the timeline unchanged", JSON.stringify(api.openProject(Q).load()) === snapQ);
+await api.apply(Q, [{ op: "remove_track", id: "hm" }]);
+snapQ = JSON.stringify(api.openProject(Q).load());
+const hx2 = await failure(() => api.apply(Q, [{ op: "make_compound", from: "gH" }]));
+check("from: the home track is gone -> missing_track, naming the track and the group", hx2?.code === "missing_track" && /'hm'/.test(hx2.message) && /'gH'/.test(hx2.message) && /add_track/.test(hx2.hint), hx2 && [hx2.code, hx2.message, hx2.hint]);
+check("  the failed batch left the timeline unchanged", JSON.stringify(api.openProject(Q).load()) === snapQ);
+await api.apply(Q, [{ op: "add_track", id: "hm" }, { op: "move_clip", id: "h1", track: "hm", at: 0 }]);
+const rh = (await api.apply(Q, [{ op: "make_compound", from: "gH" }])).results[0];
+check("from: with the home track back (one member on it) the compound lands there, not on another track", rh.id === "gH" && rh.track === "hm", rh);
 check("a group without an id is rejected by validation", await rejects(() => api.apply(Q, [{ op: "update_clip", id: "v2", set: { group: { id: null } } }]), "validation_failed"));
 
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
