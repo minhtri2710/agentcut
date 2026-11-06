@@ -20,6 +20,8 @@ Help improve AgentCut: when something is slow, confusing, missing or broken, cal
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
 const jobs = new Map<string, any>();
+/** tool calls the server has accepted and not yet finished; shutdown answers them before it exits */
+const calls = new Set<Promise<unknown>>();
 
 const text = (o: unknown): Content => ({ type: "text", text: typeof o === "string" ? o : JSON.stringify(o) });
 const ok = (o: object) => ({ content: [text({ ok: true, ...o })] });
@@ -38,15 +40,21 @@ const image = (path: string): Content => ({ type: "image", data: readFileSync(pa
 
 export function buildServer() {
   const s = new McpServer({ name: "agentcut", version: VERSION }, { instructions: INSTRUCTIONS });
-  // every tool call is timed and its outcome logged for the feedback summary (errors, guessed names, slow calls)
+  // every tool call is timed and its outcome logged for the feedback summary (errors, guessed names, slow calls);
+  // it is also tracked in `calls` until it settles, so shutdown can answer it before exiting
   const register = s.registerTool.bind(s);
-  (s as any).registerTool = (name: string, cfg: any, handler: any) => (register as any)(name, cfg, async (a: any, extra: any) => {
-    const t0 = performance.now();
-    const r = await handler(a, extra);
-    let res: any = { ok: !r?.isError };
-    try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
-    recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
-    return r;
+  (s as any).registerTool = (name: string, cfg: any, handler: any) => (register as any)(name, cfg, (a: any, extra: any) => {
+    const p = (async () => {
+      const t0 = performance.now();
+      const r = await handler(a, extra);
+      let res: any = { ok: !r?.isError };
+      try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
+      recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
+      return r;
+    })();
+    calls.add(p);
+    p.then(() => calls.delete(p), () => calls.delete(p));
+    return p;
   });
   const P = z.string().optional().describe("project folder (optional after create/open)");
   const REV = z.number().int().optional().describe("revision you based this on (project_info); if a human/another agent saved since, fails with code 'conflict'");
@@ -115,7 +123,7 @@ export function buildServer() {
     const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project, ctl };
     jobs.set(id, job);
     if (stopping) ctl.abort(new EditError("the server is shutting down", "aborted")); // requested inside the shutdown window: nothing may start
-    job.promise = run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal)
+    job.promise = (async () => run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal))() // a synchronous throw in `run` becomes a failed job, never a `running` one with no promise
       .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
       .finally(() => { job.finished = Date.now(); });
     return id;
@@ -186,13 +194,22 @@ export function buildServer() {
 // Inside the SDK client's close sequence (stdin end, 2 s, SIGTERM, 2 s, SIGKILL); children get 1.5 s of it (media.ts stopOnAbort).
 const SHUTDOWN_MS = 1900;
 let stopping: Promise<void> | undefined;
+/** Wait until no job is running and no accepted tool call is unanswered (jobs and calls that start meanwhile count: startJob aborts them
+ *  at once), then until stdout has taken every reply. The SDK's server.close() does neither: it drops in-flight handlers and writes nothing. */
+async function drain() {
+  while ([...jobs.values()].some((j) => j.status === "running") || calls.size) {
+    await Promise.allSettled([...[...jobs.values()].filter((j) => j.status === "running").map((j) => j.promise), ...calls]);
+    await new Promise((r) => setImmediate(r)); // the SDK sends a handler's reply in microtasks after it returns
+  }
+  await new Promise((r) => process.stdout.write("", r)); // callback runs once every earlier write has been flushed
+}
 /** The one stop path (stdin EOF, SIGTERM, SIGINT, SIGHUP): abort every running job, wait a bounded time for their cleanup
- *  (children stopped, part files and render temp removed), then exit. Idempotent: a second signal during shutdown does nothing. */
+ *  (children stopped, part files and render temp removed) and for every accepted call to be answered, then exit.
+ *  Idempotent: a second signal during shutdown does nothing. */
 export function shutdown(code: number) {
   stopping ??= (async () => {
-    const running = [...jobs.values()].filter((j) => j.status === "running");
-    for (const j of running) j.ctl.abort(new EditError("the server is shutting down", "aborted"));
-    await Promise.race([Promise.allSettled(running.map((j) => j.promise)), new Promise((r) => setTimeout(r, SHUTDOWN_MS))]);
+    for (const j of jobs.values()) if (j.status === "running") j.ctl.abort(new EditError("the server is shutting down", "aborted"));
+    await Promise.race([drain(), new Promise((r) => setTimeout(r, SHUTDOWN_MS))]);
     process.exit(code);
   })();
 }

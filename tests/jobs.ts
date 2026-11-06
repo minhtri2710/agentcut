@@ -392,23 +392,33 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
     r.working && r.procs.length >= 3 && r.exited && r.exitMs < 3000 && r.code === 143 && r.gone && clean(r), r);
 }
 
-// DL-02: a job requested while the server is already shutting down is aborted at once (no new helper starts)
-{
-  const proj = join(tmp, "proj-late"), uvLog2 = uvLog;
-  rmSync(uvLog2, { force: true });
-  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog2 }); // 'deaf' keeps the shutdown window open for 1.5 s
+// DL-02 / DL-07: a tool call the server has accepted around the stop always gets its reply before the server exits (exit code unchanged).
+// The late `prepare` is sent just before or just after SIGTERM (shift in ms; < 0: request first); it is `aborted` either way, and the
+// server must never start a helper after `stopping`: a request sent after SIGTERM (shift >= 0) starts none (1 helper), one sent before may
+// start a concurrent compute (<= 2). Independent of the helper's 1.5 s kill window.
+for (const shift of [-30, -2, 0, 2, 30]) {
+  const proj = join(tmp, `proj-late${shift}`);
+  rmSync(uvLog, { force: true });
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog });
   await srv.init();
   await srv.call("create_project", { path: proj, preset: "720p" });
   await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
   await srv.call("prepare", { wait_seconds: 0 });
-  const working = await until(() => existsSync(uvLog2), 30_000);
-  const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog2, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
-  process.kill(srv.pid, "SIGTERM");
-  // arrives inside the shutdown window; a server that starts the job never answers before it exits
-  const late: any = await Promise.race([srv.call("prepare", { wait_seconds: 5 }), until(() => srv.exit, 10_000).then(() => null)]);
+  const working = await until(() => existsSync(uvLog), 30_000);
+  const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
+  const t0 = performance.now();
+  let late: any = null, lateMs: number | null = null;
+  const send = () => srv.call("prepare", { wait_seconds: 5 }).then((r) => { late = r; lateMs = Math.round(performance.now() - t0); });
+  let sent: Promise<void>;
+  if (shift < 0) { sent = send(); await sleep(-shift); process.kill(srv.pid, "SIGTERM"); }
+  else { process.kill(srv.pid, "SIGTERM"); await sleep(shift); sent = send(); }
   await until(() => srv.exit, 10_000);
+  await Promise.race([sent, sleep(200)]); // a reply written before the exit is already in the pipe
+  const exitMs = srv.exit ? Math.round(srv.exit.at - t0) : null;
+  const helpers = readFileSync(uvLog, "utf8").trim().split("\n").length;
   for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
-  check("DL-02: a prepare requested during shutdown fails with `aborted` and starts no helper", working && late?.status === "failed" && late.error?.code === "aborted" && readFileSync(uvLog2, "utf8").trim().split("\n").length === 1 && srv.exit?.code === 143, { late, exit: srv.exit });
+  check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
+    working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
 }
 
 // DL-01: the embedded helper script, run by the real python3 (no uv, no packages): a normal exit must stay normal, the stdin stop must work,
