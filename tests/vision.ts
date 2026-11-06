@@ -258,6 +258,84 @@ await api.prepare(EP);
 const eDone: any = await api.exportTimeline(EP, { out: join(tmp, "prepared.fcpxml") });
 check("export-pending: nothing pending after prepare", !JSON.stringify(eDone.skipped).includes("pending"), eDone.skipped);
 
+// ---------------------------------------------------------------- helper location
+// A recording uv: logs where the helper script lives (and its hash), the spawn's cwd and argv, then hands over to the fake above.
+console.log("the vision helper always runs from a private temp dir");
+{
+  const { VISION_PY } = await import("../src/vision-py.ts");
+  const { createHash } = await import("node:crypto");
+  const { dirname, sep } = await import("node:path");
+  const want = createHash("sha256").update(VISION_PY).digest("hex");
+  const log = join(tmp, "helper-runs.jsonl");
+  const rec = join(tmp, "recording-uv.mjs");
+  writeFileSync(rec, `#!/usr/bin/env node
+import { appendFileSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+const argv = process.argv.slice(2), script = argv.at(-2);
+let sha = null; try { sha = createHash("sha256").update(readFileSync(script)).digest("hex"); } catch {}
+let mode = null; try { mode = statSync(dirname(script)).mode & 0o777; } catch {}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, script, sha, mode, cwd: process.cwd() }) + "\\n");
+if (process.env.FAKE_UV_FAIL) { process.stderr.write("boom\\n"); process.exit(3); }
+const r = spawnSync(${JSON.stringify(fake)}, argv, { encoding: "utf8" });
+process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.status ?? 1);
+`);
+  chmodSync(rec, 0o755);
+  const runs = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as { argv: string[]; script: string; sha: string | null; mode: number | null; cwd: string }[];
+  const within = (p: string, dir: string) => p === dir || p.startsWith(dir + sep);
+  const staleScript = "# stale helper\nraise SystemExit(99)\n", oldPath = (dir: string) => join(dir, `vision-${want.slice(0, 12)}.py`);
+  process.env.AGENTCUT_UV = rec;
+  try {
+    // with a project: a file already sitting where the helper used to be cached is neither used nor changed
+    const H = join(tmp, "helper-proj");
+    api.create(H, { preset: "reels" });
+    await apply(H, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "auto_reframe", id: "vid1" }]);
+    mkdirSync(join(H, ".agentcut", "cache"), { recursive: true });
+    writeFileSync(oldPath(join(H, ".agentcut", "cache")), staleScript);
+    await api.prepare(H);
+    const r1 = runs()[0];
+    check("project: the helper ran once", runs().length === 1, runs());
+    check("project: script is outside the project and the cache", !!r1 && !within(r1.script, H) && !within(r1.script, process.env.AGENTCUT_CACHE!) && r1.script !== oldPath(join(H, ".agentcut", "cache")), r1?.script);
+    check("project: the script that ran is exactly the embedded helper", r1?.sha === want, r1?.sha);
+    check("project: a stale helper at the old cache path is left alone and not used", readFileSync(oldPath(join(H, ".agentcut", "cache")), "utf8") === staleScript);
+    check("project: spawn cwd is not under the project", !!r1 && !within(r1.cwd, H) && !within(r1.cwd, process.cwd()) , r1?.cwd);
+    check("project: uv is told not to read config files", !!r1 && r1.argv.includes("--no-config"), r1?.argv);
+    if (process.platform !== "win32") check("project: the helper dir is mode 0700", r1?.mode === 0o700, r1?.mode?.toString(8));
+    check("project: the helper dir is removed after the run", !!r1 && !existsSync(dirname(r1.script)), r1?.script);
+    check("project: no helper script is written to the project cache", readdirSync(join(H, ".agentcut", "cache")).filter((f) => f.endsWith(".py")).length === 1);
+
+    // without a project (analyze_subject): same, against the user cache
+    const userCache = join(process.env.AGENTCUT_CACHE!, "vision");
+    mkdirSync(userCache, { recursive: true });
+    writeFileSync(oldPath(userCache), staleScript);
+    const s: any = await api.analyze.subject(join(m, "rb.mp4"), 3);
+    const r2 = runs()[1];
+    check("no project: analyze_subject computed through the helper", s.cached === false && runs().length === 2, s);
+    check("no project: script is outside the user cache and runs unchanged", !!r2 && !within(r2.script, process.env.AGENTCUT_CACHE!) && r2.sha === want && r2.script !== oldPath(userCache), r2);
+    check("no project: a stale helper at the old cache path is left alone and not used", readFileSync(oldPath(userCache), "utf8") === staleScript);
+    check("no project: the helper dir is removed after the run", !!r2 && !existsSync(dirname(r2.script)));
+
+    // the check run before every spawn refuses any file that is not the embedded helper
+    const odd = join(tmp, "odd-helper.py");
+    writeFileSync(odd, VISION_PY);
+    V.checkHelper(odd);
+    writeFileSync(odd, VISION_PY + "\n# extra\n");
+    const refuse = (f: string) => { try { V.checkHelper(f); return "ran"; } catch (e: any) { return e.code; } };
+    check("checkHelper: a changed file and a missing file are refused (unsafe_helper)", refuse(odd) === "unsafe_helper" && refuse(join(tmp, "no-such.py")) === "unsafe_helper");
+
+    // a failing helper run still removes its dir
+    process.env.FAKE_UV_FAIL = "1";
+    await apply(H, [{ op: "auto_reframe", id: "vid1", fps: 2 }]);
+    let code = "";
+    try { await api.prepare(H); } catch (e: any) { code = e.code; }
+    delete process.env.FAKE_UV_FAIL;
+    const r3 = runs()[2];
+    check("project: a failed run reports vision_failed and removes the helper dir", code === "vision_failed" && !!r3 && !existsSync(dirname(r3.script)), { code, r3 });
+    await api.undo(H);
+  } finally { process.env.AGENTCUT_UV = fake; }
+}
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");

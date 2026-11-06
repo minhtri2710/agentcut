@@ -1,13 +1,13 @@
-// Project cache management: .agentcut/cache (vision analyses, mattes, helper script) and previews/ (frames, sheets, strips,
+// Project cache management: .agentcut/cache (vision analyses and mattes) and previews/ (frames, sheets, strips,
 // UI play drafts). "Referenced" = still needed by the current timeline (mattes of remove_background clips, analyses of
-// pending vision requests, the current helper script); everything else can be rebuilt and is pruned first.
+// pending vision requests); everything else can be rebuilt and is pruned first.
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { mattesFor } from "./ops-vision.ts";
 import { alive, type Project } from "./project.ts";
-import { cacheDir, helperScript } from "./vision.ts";
+import { cacheDir } from "./vision.ts";
 
 const MB = 1 << 20;
 export const PREVIEWS_MAX_MB = () => Number(process.env.AGENTCUT_PREVIEWS_MAX_MB ?? 200);
@@ -43,7 +43,7 @@ function entries(p: Project, area?: "cache" | "previews"): Entry[] {
   let ref = new Set<string>(); // previews are never referenced: skip the timeline walk for the automatic preview cap
   if (area !== "previews") {
     const tl = p.load();
-    ref = new Set([helperScript(p.root), ...mattesFor(p.absolutized(tl), p.root).map((m) => m.job.file), ...pendingFiles(p, tl)]);
+    ref = new Set([...mattesFor(p.absolutized(tl), p.root).map((m) => m.job.file), ...pendingFiles(p, tl)]);
   }
   const out: Entry[] = [];
   for (const [a, dir] of [["cache", cacheDir(p.root)], ["previews", join(p.root, "previews")]] as const) {

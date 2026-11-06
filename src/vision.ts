@@ -3,9 +3,9 @@
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
@@ -30,7 +30,8 @@ export function fileHash(path: string): string {
   return h;
 }
 
-const scriptHash = createHash("sha256").update(VISION_PY).digest("hex").slice(0, 12);
+const helperSha = createHash("sha256").update(VISION_PY).digest("hex");
+const scriptHash = helperSha.slice(0, 12);
 export const cacheKey = (path: string, params: unknown) =>
   createHash("sha256").update(`${fileHash(path)}|${scriptHash}|${JSON.stringify(params)}`).digest("hex").slice(0, 20);
 
@@ -42,19 +43,35 @@ export interface Derived { kind: "subject" | "track" | "matte"; file: string; jo
 export const isReady = (d: Derived) => existsSync(d.file);
 export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(readFileSync(d.file, "utf8"));
 
-export const helperScript = (root?: string) => join(cacheDir(root), `vision-${scriptHash}.py`);
+/** The helper is only ever run from a private temp dir that this process just created, never from a cache or project path.
+ *  This check runs right before every spawn: the bytes on disk must be exactly the embedded script. */
+export function checkHelper(script: string) {
+  let sha: string | undefined;
+  try { sha = createHash("sha256").update(readFileSync(script)).digest("hex"); } catch { /* unreadable: refused below */ }
+  if (sha !== helperSha) throw new EditError("the vision helper script on disk is not the embedded script", "unsafe_helper", "AgentCut did not run it; retry, and check that nothing else writes to the temp dir");
+}
+
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
 const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
 
-function runHelper(d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
-  const dir = cacheDir(d.root);
-  mkdirSync(dir, { recursive: true });
-  const script = helperScript(d.root);
-  if (!existsSync(script)) writeAtomic(script, VISION_PY);
-  const uv = process.env.AGENTCUT_UV || "uv";
+/** Runs the helper from a fresh private (0700) temp dir, removed afterwards even on failure or abort (a SIGKILL leaves it for the OS to clear).
+ *  The dir is also the spawn's cwd, and uv gets --no-config, so no folder the user is in chooses uv's settings. */
+async function runHelper(d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
+  mkdirSync(cacheDir(d.root), { recursive: true });
+  const uvEnv = process.env.AGENTCUT_UV || "uv", uv = /[\\/]/.test(uvEnv) ? resolve(uvEnv) : uvEnv; // the cwd changes below: keep a relative path meaning what the user typed
   const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
+  const dir = mkdtempSync(join(tmpdir(), "agentcut-vision-"));
+  try {
+    const script = join(dir, "helper.py");
+    writeFileSync(script, VISION_PY, { flag: "wx", mode: 0o600 });
+    return await spawnHelper(uv, dir, script, d, job, onFrames, signal);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
+  checkHelper(script);
   return new Promise((res, rej) => {
-    const ch = spawn(uv, ["run", "--no-project", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { stdio: ["pipe", "pipe", "pipe"] });
+    const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)
     ch.stdin.on("error", () => {});
     stopOnAbort(ch, signal);

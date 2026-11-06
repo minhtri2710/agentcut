@@ -194,7 +194,7 @@ const matte = readdirSync(cache).find((f) => f.startsWith("matte-"))!;
 // an orphan analysis (no clip needs it) and an old preview
 writeFileSync(join(cache, "subject-0123456789abcdef0123.json"), JSON.stringify({ samples: [] }).padEnd(4096));
 const info0: any = api.cache.info(P);
-check("cache info: sizes per area, matte + helper script referenced", info0.cache.files === 3 && info0.cache.referenced.files === 2 && info0.previews.files >= 1, info0);
+check("cache info: sizes per area, the matte referenced, the orphan not", info0.cache.files === 2 && info0.cache.referenced.files === 1 && info0.previews.files >= 1, info0);
 const pr1: any = api.cache.prune(P);
 check("prune (default): removes only unreferenced cache files", pr1.removed.files >= 2 && existsSync(join(cache, matte)) && !existsSync(join(cache, "subject-0123456789abcdef0123.json")) && pr1.removed_referenced === 0, pr1);
 check("prepared project still previews after a default prune", !!(await api.frame(P, 1, { out: png })).image);
