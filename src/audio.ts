@@ -12,14 +12,19 @@ const { atempo } = FX;
 // 256 samples (5.3 ms) keep the music within 0.25 dB of the ducked level in the first 30 ms of the voice (worst of 7 onset offsets; 128: 0.10, 480: 1.07, 1024: 4.0 dB)
 // and a fast keyframe drop within 0.02 dB (1024: 9.4 dB). Cost, user CPU on 85 voice intervals x 4 music clips vs unframed: n=128 +15%, n=256 +7%, n=480 +4..11% (within noise). Only chains with such an expression use it.
 const EVAL_FRAME = "asetnsamples=n=256:p=0", REFRAME = "asetnsamples=n=4096:p=0"; // REFRAME: back to decoder-sized frames so amix does not poll its inputs every 256 samples
-function kfExpr(kfs: any[], v = "t"): string {
-  const pts = parseKfs(kfs);
-  let e = `${pts[pts.length - 1][1]}`;
-  for (let i = pts.length - 2; i >= 0; i--) {
-    const [t0, v0] = pts[i], [t1, v1] = pts[i + 1];
-    e = `if(lt(${v},${t1}),${v0}+(${v1}-${v0})*(${v}-${t0})/${Math.max(1e-6, t1 - t0)},${e})`;
-  }
-  return `if(lt(${v},${pts[0][0]}),${pts[0][1]},${e})`;
+export function kfExpr(kfs: any[], v = "t"): string {
+  const pts = parseKfs(kfs), tail = `${pts[pts.length - 1][1]}`;
+  // first segment i with v < t[i+1] (times are sorted, so that test is monotone in i): binary search keeps the nesting at ~log2(N), as ffmpeg rejects expressions nested ~100 deep
+  const seg = (lo: number, hi: number): string => {
+    if (lo === hi) return tail;
+    if (hi - lo === 1) {
+      const [t0, v0] = pts[lo], [t1, v1] = pts[lo + 1];
+      return `if(lt(${v},${t1}),${v0}+(${v1}-${v0})*(${v}-${t0})/${Math.max(1e-6, t1 - t0)},${tail})`;
+    }
+    const mid = (lo + hi) >> 1;
+    return `if(lt(${v},${pts[mid][0]}),${seg(lo, mid)},${seg(mid, hi)})`;
+  };
+  return `if(lt(${v},${pts[0][0]}),${pts[0][1]},${seg(0, pts.length - 1)})`;
 }
 
 interface Win { base: number; w0: number; w1: number; gain: number; track: Track }

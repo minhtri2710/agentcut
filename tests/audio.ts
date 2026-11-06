@@ -9,7 +9,7 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
-const { buildAudio } = await import("../src/audio.ts");
+const { buildAudio, kfExpr } = await import("../src/audio.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -196,6 +196,47 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   const many = buildAudio(tv, join(tmp, "many.wav"));
   const dips = [10, 69, 70, 100].map((t) => [rms(many, t + 1.1, t + 1.25), rms(many, t + 1.58, t + 1.72)]); // interval at 1+t.., gap after it
   check(`130 voice intervals: each sampled one ducks by ~20 dB and its gap does not (${dips.map(([a, b]) => `${a.toFixed(0)}/${b.toFixed(0)}`).join(" ")} dB)`, dips.every(([a, b]) => Math.abs(b - a - 20) < 1.5), dips);
+
+  // 130 volume keyframes on one clip (beat-pumped volume): 65 plateaus of 0.1 s, alternating 1 and 0.25, joined by 0.1 s ramps (ffmpeg rejects an expression nested ~100 deep)
+  const W = join(tmp, "pump");
+  api.create(W, { width: 320, height: 240, fps: 24 });
+  const plateau = (j: number) => (j % 2 ? 0.25 : 1);
+  await api.apply(W, [
+    { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 0, duration: 14 },
+    { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: Array.from({ length: 130 }, (_, i) => [Math.round((Math.floor(i / 2) * 0.2 + (i % 2) * 0.1) * 100) / 100, plateau(Math.floor(i / 2))]) },
+  ]);
+  const pw = api.openProject(W), tw = pw.absolutized(pw.load());
+  tw.settings.loudness = null;
+  let pump: string | null = null;
+  try { pump = buildAudio(tw, join(tmp, "pump.wav")); } catch (e: any) { check("130 volume keyframes: the mix succeeds", false, e.message); }
+  if (pump) {
+    const js = [0, 1, 2, 31, 63, 64].map((j) => rms(pump!, j * 0.2 + 0.02, j * 0.2 + 0.08) - rms(pump!, 0.02, 0.08)); // dB relative to plateau 0 (gain 1)
+    check(`130 volume keyframes: sampled plateaus sit at their keyframe value (${js.map((x) => x.toFixed(1)).join(" ")} dB)`, [0, 1, 2, 31, 63, 64].every((j, k) => Math.abs(js[k] - 20 * Math.log10(plateau(j))) < 1), js);
+  }
+
+  // the expression is a binary tree over the keyframe times: same value as the plain definition (first segment with t < its end time, linear; before the first / after the last: held) for every t
+  const evalExpr = (e: string, t: number): number => new Function("lt", "iff", "t", `return ${e.replace(/\bif\(/g, "iff(")}`)((a: number, b: number) => (a < b ? 1 : 0), (c: number, a: number, b: number) => (c ? a : b), t);
+  const plain = (pts: number[][], t: number): number => {
+    if (t < pts[0][0]) return pts[0][1];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [t0, v0] = pts[i], [t1, v1] = pts[i + 1];
+      if (t < t1) return v0 + (v1 - v0) * (t - t0) / Math.max(1e-6, t1 - t0);
+    }
+    return pts[pts.length - 1][1];
+  };
+  const depth = (e: string): number => { let d = 0, max = 0; for (const ch of e) { if (ch === "(") max = Math.max(max, ++d); else if (ch === ")") d--; } return max; };
+  const sets: number[][][] = [
+    [[0.5, 0.7]], [[0, 1], [2, 0.2]], [[0, 1], [1, 0.5], [3, 0]], [[1, 0.2], [2, 1], [2.5, 1], [4, 0.1]], [[0, 0], [1, 1], [2, 0], [3, 1], [4, 0]],
+    [[0, 1], [1, 1], [1, 0], [2, 0]], [[0.5, 1], [0.5, 0.3], [0.5, 0.9]], // zero-length segments: the step lands on the later keyframe's side at t = 1 / 0.5
+  ];
+  let worst = 0;
+  for (const pts of sets) {
+    const e = kfExpr(pts), times = [-1, ...pts.map(([t]) => t), ...pts.flatMap(([t]) => [t - 1e-9, t + 1e-9, t + 0.123]), 9];
+    for (const t of times) worst = Math.max(worst, Math.abs(evalExpr(e, t) - plain(pts, t)));
+  }
+  check(`kfExpr: 1-5 keyframes (also at every keyframe time, duplicates, before the first, after the last) match the plain definition (max diff ${worst.toExponential(1)})`, worst < 1e-9);
+  const big = Array.from({ length: 130 }, (_, i) => [i * 0.1, i % 2]), eb = kfExpr(big);
+  check(`kfExpr: 130 keyframes nest ${depth(eb)} deep (<= 30) and still match at every keyframe and midway`, depth(eb) <= 30 && big.every(([t], i) => [t, t + 0.05].every((x) => Math.abs(evalExpr(eb, x) - plain(big, x)) < 1e-9)), depth(eb));
 }
 
 const el = ((performance.now() - t0) / 1000).toFixed(1);
