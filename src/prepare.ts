@@ -14,6 +14,7 @@ const pendingOps = (tl: Timeline) => ORDER.flatMap((op) =>
 
 /** Derived assets the timeline still lacks, plus the pending ops (re-run here so their validation runs on the current edit). */
 export function missingFor(p: Project, tl: Timeline) {
+  p.requireValid(tl); // the asset record and the clip values are checked before any job is built
   const ops = pendingOps(tl);
   const [, analyses] = collectMissing(() => {
     try { return applyOps(p, tl, ops); }

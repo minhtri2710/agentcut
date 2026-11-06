@@ -10,7 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
-const { noiseFloor, denoiseFilters } = await import("../src/audiofx.ts");
+const { noiseFloor, denoiseFilters, eqFilters, compressorFilter } = await import("../src/audiofx.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -364,6 +364,14 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   check(`kfExpr: 1-5 keyframes (also at every keyframe time, duplicates, before the first, after the last) match the plain definition (max diff ${worst.toExponential(1)})`, worst < 1e-9);
   const big = Array.from({ length: 130 }, (_, i) => [i * 0.1, i % 2]), eb = kfExpr(big);
   check(`kfExpr: 130 keyframes nest ${depth(eb)} deep (<= 30) and still match at every keyframe and midway`, depth(eb) <= 30 && big.every(([t], i) => [t, t + 0.05].every((x) => Math.abs(evalExpr(eb, x) - plain(big, x)) < 1e-9)), depth(eb));
+}
+
+{
+  const throws = (f: () => unknown) => { try { f(); return false; } catch { return true; } };
+  check("eq and compressor build the same filters from numbers", eqFilters({ type: "peak", f: 1000, q: 2, gain: 3 })[0] === "equalizer=f=1000:t=q:w=2:g=3"
+    && compressorFilter("voice")[0].startsWith("acompressor=threshold=0.100000:ratio=4:"), [eqFilters({ type: "peak", f: 1000, q: 2, gain: 3 }), compressorFilter("voice")]);
+  check("eq refuses a non-numeric value", throws(() => eqFilters({ type: "peak", f: "1000,more" })) && throws(() => eqFilters([{ type: "high_pass", f: Number.NaN }])) && throws(() => eqFilters({ type: "de_ess", intensity: Infinity })));
+  check("compressor refuses a non-numeric value", throws(() => compressorFilter({ ratio: "4,more" })) && throws(() => compressorFilter({ type: "voice", threshold: Number.NaN })));
 }
 
 const el = ((performance.now() - t0) / 1000).toFixed(1);

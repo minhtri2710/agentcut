@@ -240,6 +240,11 @@ export class Project {
     const t = this.absolutized(resolve(clone(tl ?? this.load())));
     return validate(t, { exists: (p) => existsSync(p), fontCheck });
   }
+  /** Throws invalid_timeline when the timeline has validation errors: render, preview and prepare all stop here before any media tool runs. */
+  requireValid(tl: Timeline) {
+    const errs = this.validate(tl).filter((i) => i.level === "error");
+    if (errs.length) throw new EditError(`timeline has ${errs.length} error(s); first: ${errs[0].path}: ${errs[0].message}`, "invalid_timeline", errs[0].hint ?? "run validate for the full list");
+  }
   defaultOutput(ext = ".mp4", tag = "") {
     const name = this.load().name || "video";
     const d = new Date(), pad = (n: number) => String(n).padStart(2, "0");

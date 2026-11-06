@@ -142,8 +142,19 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
 
 export interface Sample { t: number; x?: number; y?: number; w?: number; h?: number; kind?: string; score?: number; ok?: boolean }
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
-const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict, pkgs: string[], root: string | undefined, frames: number, extra: Partial<Derived> = {}): Derived =>
-  ({ kind, file: join(cacheDir(root), `${kind}-${cacheKey(path, params)}${ext}`), job: { ...params, path }, pkgs, root, frames: Math.max(1, Math.round(frames)), ...extra });
+/** The numbers a job hands to the helper's ffmpeg commands must be real numbers: finite, and fps and the frame size positive. Every job builder goes through derived. */
+function checkJob(params: Dict) {
+  for (const k of ["fps", "start", "duration", "at", "w", "h", "frames"]) {
+    const v = params[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || (["fps", "w", "h"].includes(k) && v <= 0))
+      throw new EditError(`vision job: ${k} must be a ${["fps", "w", "h"].includes(k) ? "number > 0" : "finite number"}, got ${JSON.stringify(v)}`, "bad_media", "check the asset record (fps, width, height) in project.json");
+  }
+}
+const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict, pkgs: string[], root: string | undefined, frames: number, extra: Partial<Derived> = {}): Derived => {
+  checkJob({ ...params, frames });
+  return { kind, file: join(cacheDir(root), `${kind}-${cacheKey(path, params)}${ext}`), job: { ...params, path }, pkgs, root, frames: Math.max(1, Math.round(frames)), ...extra };
+};
 
 /** Subject centre over time (largest face, else saliency centroid); x/y are 0..1 of the full source frame. */
 export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; srcW: number; srcH: number; root?: string }) {
@@ -176,8 +187,9 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   const model = o.model ?? "u2netp";
   if (!MATTE_MODELS.includes(model)) throw new EditError(`unknown matte model '${model}'`, "bad_value", `models: ${MATTE_MODELS.join(", ")}`);
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
-  const params = { cmd: "matte", kind: o.kind, fps: o.fps ?? null, w, h, model };
-  return derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, o.kind === "image" ? 1 : (o.duration ?? 1) * (o.fps ?? 30), { w, h });
+  const fps = o.kind === "image" ? null : o.fps ?? 30; // a video of unknown rate is matted at 30
+  const params = { cmd: "matte", kind: o.kind, fps, w, h, model };
+  return derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
 }
 
 // ---------------------------------------------------------------- path smoothing (pure)

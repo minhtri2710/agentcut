@@ -85,17 +85,24 @@ export function audioFxIssues(o: Record<string, any>, path: string): FxIssue[] {
 
 // ------------------------------------------------------------------ filter strings
 const f3 = (x: number) => +x.toFixed(3);
+/** An audio parameter as the only form that enters a filter graph: a finite number (null/undefined gives the default). */
+function fin(v: unknown, dflt: number | undefined, what: string): number {
+  const n = Number(v ?? dflt);
+  if (!Number.isFinite(n)) throw new Error(`${what} must be a finite number`); // validation rejects this earlier
+  return n;
+}
 export function eqFilters(eq: unknown): string[] {
   if (eq == null || eq === false) return [];
   const bands = (Array.isArray(eq) ? eq : [eq]).flatMap((b: any) => (typeof b === "string" ? EQ_PRESETS[b] : [b]));
   return bands.map((b: Band) => {
+    const n = (k: "f" | "q" | "gain" | "intensity", d: number) => fin(b[k], d, `eq ${b.type} ${k}`);
     switch (b.type) {
-      case "high_pass": return `highpass=f=${b.f ?? 80}:p=2`;
-      case "low_pass": return `lowpass=f=${b.f ?? 12000}:p=2`;
-      case "peak": return `equalizer=f=${b.f ?? 1000}:t=q:w=${b.q ?? 1}:g=${b.gain ?? 0}`;
-      case "low_shelf": return `lowshelf=f=${b.f ?? 120}:g=${b.gain ?? 0}`;
-      case "high_shelf": return `highshelf=f=${b.f ?? 8000}:g=${b.gain ?? 0}`;
-      case "de_ess": return `deesser=i=${b.intensity ?? 0.5}:m=0.5:f=0.5`;
+      case "high_pass": return `highpass=f=${n("f", 80)}:p=2`;
+      case "low_pass": return `lowpass=f=${n("f", 12000)}:p=2`;
+      case "peak": return `equalizer=f=${n("f", 1000)}:t=q:w=${n("q", 1)}:g=${n("gain", 0)}`;
+      case "low_shelf": return `lowshelf=f=${n("f", 120)}:g=${n("gain", 0)}`;
+      case "high_shelf": return `highshelf=f=${n("f", 8000)}:g=${n("gain", 0)}`;
+      case "de_ess": return `deesser=i=${n("intensity", 0.5)}:m=0.5:f=0.5`;
       default: throw new Error(`unknown eq band '${b.type}'`); // validation rejects this earlier
     }
   });
@@ -104,8 +111,9 @@ export function eqFilters(eq: unknown): string[] {
 export function compressorFilter(c: unknown): string[] {
   if (!c) return [];
   const p: Comp = typeof c === "string" ? COMPRESSORS[c] : { ...COMPRESSORS[(c as any).type ?? "gentle"], ...(c as object) };
+  const n = (k: keyof Comp) => fin(p[k], undefined, `compressor ${k}`);
   const lin = (db: number) => (10 ** (db / 20)).toFixed(6);
-  return [`acompressor=threshold=${lin(p.threshold)}:ratio=${p.ratio}:attack=${p.attack}:release=${p.release}:makeup=${lin(p.makeup)}:knee=${p.knee}`];
+  return [`acompressor=threshold=${lin(n("threshold"))}:ratio=${n("ratio")}:attack=${n("attack")}:release=${n("release")}:makeup=${lin(n("makeup"))}:knee=${n("knee")}`];
 }
 
 /** Balance: the far side is attenuated linearly, centre stays at unity gain. */

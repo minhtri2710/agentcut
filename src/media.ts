@@ -47,8 +47,8 @@ export function probe(path: string): any {
   if (ext === ".json" || ext === ".lottie") {
     let j: any;
     try { j = JSON.parse(readFileSync(path, "utf8")); } catch { throw new EditError(`${path} is not valid JSON`, "bad_media"); }
-    if (!j || !Array.isArray(j.layers) || !j.fr) throw new EditError(`${path} is not a Lottie animation`, "bad_media");
-    info = { path, kind: "lottie", width: j.w, height: j.h, fps: j.fr, duration: +((j.op - j.ip) / j.fr).toFixed(3), has_audio: false, alpha: true };
+    if (!j || !Array.isArray(j.layers) || !(j.fr > 0) || !(j.w > 0) || !(j.h > 0) || !Number.isFinite(j.op - j.ip)) throw new EditError(`${path} is not a Lottie animation`, "bad_media");
+    info = { path, kind: "lottie", width: Math.round(j.w), height: Math.round(j.h), fps: +j.fr, duration: Math.max(0, +((j.op - j.ip) / j.fr).toFixed(3)), has_audio: false, alpha: true };
   } else {
     needFfmpeg();
     const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { encoding: "utf8", maxBuffer: 32 << 20 });
@@ -57,7 +57,7 @@ export function probe(path: string): any {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
-    const dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0);
+    const dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
     info = { path, has_audio: !!a };
     if (v) {
       let w = +v.width, h = +v.height, rot = 0;
@@ -70,7 +70,7 @@ export function probe(path: string): any {
       const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && dur < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
-        fps: still ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif",
+        fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif",
       });
       if (!still) info.duration = +dur.toFixed(3);
     } else if (a || AUDIO_EXT.has(ext)) {
@@ -187,6 +187,7 @@ export class FrameSource {
   private still: Buffer | null = null;
   private hw = HWACCEL;
   constructor(private o: SourceOpts) {
+    if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));

@@ -451,6 +451,50 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   } finally { process.env.AGENTCUT_UV = fake; delete process.env.FAKE_UV_FAIL; delete process.env.FAKE_UV_HANG; delete process.env.FAKE_UV_LOCK; }
 }
 
+// ---------------------------------------------------------------- asset values are typed and validated before they reach ffmpeg
+console.log("asset record");
+{
+  const { FrameSource } = await import("../src/media.ts");
+  const W = join(tmp, "assetfps");
+  api.create(W, { preset: "720p" });
+  await apply(W, [{ op: "add_clip", track: "main", src: join(m, "green.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
+  const file = join(W, "project.json"), good = readFileSync(file, "utf8"), tlj = JSON.parse(good), aid = Object.keys(tlj.assets)[0];
+  const rev0 = api.info(W, "json").revision;
+  // 1. validate types the asset record; apply and replace_timeline reject the batch and change nothing
+  const badFps = { ...tlj, assets: { [aid]: { ...tlj.assets[aid], fps: "30,more" } } };
+  const rejected = await api.apply(W, [{ op: "replace_timeline", timeline: badFps }]).catch((e) => e);
+  check("a non-numeric asset fps is rejected by replace_timeline and nothing changes", rejected.code === "validation_failed" && rejected.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.fps`) && api.info(W, "json").revision === rev0, rejected.details ?? rejected);
+  for (const [what, patch, key] of [["a zero fps", { fps: 0 }, "fps"], ["a fractional width", { width: 320.5 }, "width"], ["a negative duration", { duration: -1 }, "duration"],
+    ["an unknown kind", { kind: "movie" }, "kind"], ["a string sample rate", { sample_rate: "48000" }, "sample_rate"], ["an unknown asset field", { zoom: 2 }, "zoom"]] as const) {
+    const r = await api.apply(W, [{ op: "replace_timeline", timeline: { ...tlj, assets: { [aid]: { ...tlj.assets[aid], ...patch } } } }]).catch((e) => e);
+    check(`${what} in the asset record is rejected`, r.code === "validation_failed" && r.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.${key}`), r.details ?? r);
+  }
+  check("a valid asset record has no asset issues", api.validate(W).valid === true);
+  // 2. a project.json edited by hand: validate reports it, prepare refuses before any job is built
+  const calls0 = nCalls();
+  writeFileSync(file, JSON.stringify({ ...tlj, assets: { [aid]: { ...tlj.assets[aid], fps: "30,more" } } }));
+  check("validate reports a non-numeric asset fps in project.json", api.validate(W).valid === false);
+  const pe: any = await api.prepare(W).catch((e) => e);
+  check("prepare refuses an invalid asset record before any job is built", pe.code === "invalid_timeline" && nCalls() === calls0, { code: pe.code, calls: nCalls() - calls0 });
+  const ps: any = (() => { try { return api.prepareStatus(W); } catch (e) { return e; } })();
+  check("prepare status refuses the same record", ps.code === "invalid_timeline", ps);
+  const rf: any = await api.frame(W, 0.5, { scale: 0.25 }).catch((e) => e);
+  check("preview refuses the same record", rf.code === "invalid_timeline", rf);
+  writeFileSync(file, good);
+  check("the restored project prepares again", (await api.prepare(W)).ready === true);
+  // 3. fail closed where the values are built, whatever validate saw
+  const code = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
+  const base = { srcW: 640, srcH: 360 };
+  for (const bad of ["30,more", Number.NaN, Infinity, 0, -5]) {
+    check(`matteJob refuses fps ${String(bad)}`, code(() => V.matteJob(join(m, "green.mp4"), { kind: "video", fps: bad as any, duration: 2, ...base })) === "bad_media");
+    check(`subjectJob refuses fps ${String(bad)}`, code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: bad as any, ...base })) === "bad_media");
+    check(`trackJob refuses fps ${String(bad)}`, code(() => V.trackJob(join(m, "green.mp4"), { start: 0, duration: 2, at: 0, box: [0, 0, 0.1, 0.1], fps: bad as any, ...base })) === "bad_media");
+    check(`FrameSource refuses rate ${String(bad)}`, code(() => new FrameSource({ path: join(m, "green.mp4"), kind: "video", ...base, rate: bad as any, fit: "fill", box: [64, 64] })) === "bad_media");
+  }
+  check("subjectJob refuses a non-numeric start", code(() => V.subjectJob(join(m, "green.mp4"), { start: "1,more" as any, duration: 2, fps: 6, ...base })) === "bad_media");
+  check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", fps: null, duration: 2, ...base }).job.fps === 30);
+}
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");

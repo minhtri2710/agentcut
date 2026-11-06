@@ -86,11 +86,6 @@ export function validate(project?: string) {
   return { valid: !issues.some((i) => i.level === "error"), ...brief(issues, 100) };
 }
 
-function requireValid(p: Project, tl: M.Timeline) {
-  const errs = p.validate(tl).filter((i) => i.level === "error");
-  if (errs.length) throw new M.EditError(`timeline has ${errs.length} error(s); first: ${errs[0].path}: ${errs[0].message}`, "invalid_timeline", errs[0].hint ?? "run validate for the full list");
-}
-
 const stillFmt = (out: string) => (/\.png$/i.test(out) ? "png" : "jpeg");
 const outPath = (p: Project, out: string | undefined, dflt: string) => (out ? (isAbsolute(out) ? out : presolve(out)) : join(p.root, dflt));
 
@@ -98,7 +93,7 @@ const outPath = (p: Project, out: string | undefined, dflt: string) => (out ? (i
 export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg" } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
   return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, !!o.guides, o.format ?? "jpeg") };
@@ -116,7 +111,7 @@ export async function frame(project: string | undefined, t: number | string, o: 
 export async function scopes(project: string | undefined, t: number | string, o: { out?: string; scale?: number } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
@@ -130,7 +125,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
 export async function sheet(project: string | undefined, o: { times?: (number | string)[] | string; every?: number; count?: number; cols?: number; out?: string; tileWidth?: number; guides?: boolean } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const T = M.totalDuration(M.resolve(tl));
   let ts: number[];
   if (o.times) ts = (typeof o.times === "string" ? o.times.split(",") : o.times).map((x) => M.parseTime(x));
@@ -149,7 +144,7 @@ const inspectMod = async () => { await loadCanvas(); return import("./inspect.ts
 export async function audioCheck(project: string | undefined, o: { source?: string; spectrogram?: boolean; start?: number | string; end?: number | string; width?: number; minSilence?: number; out?: string } = {}) {
   const p = o.source ? null : openProject(project);
   const tl = p ? p.load() : null;
-  if (p && tl) requireValid(p, tl);
+  if (p && tl) p.requireValid(tl);
   await loadCanvas();
   const { inspectAudio } = await import("./inspect-audio.ts");
   const res = await inspectAudio(p && tl ? p.absolutized(tl) : null, {
@@ -165,7 +160,7 @@ export async function audioCheck(project: string | undefined, o: { source?: stri
 export async function motion(project: string | undefined, o: { start?: number | string; end?: number | string; frames?: number; pad?: number; out?: string; tileWidth?: number } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const { motionStrips, transitionWindows } = await inspectMod();
   const at = drawable(p, M.resolve(tl));
   const windows = o.start !== undefined || o.end !== undefined
@@ -186,7 +181,7 @@ export async function review(project: string | undefined, o: { beats?: number[] 
   const p = openProject(project);
   const tl = p.load();
   const issues = p.validate(tl);
-  requireValid(p, tl);
+  p.requireValid(tl);
   const { review: rv } = await inspectMod();
   const beats = typeof o.beats === "string" && o.beats !== "music" ? o.beats.split(",").map((x) => M.parseTime(x)) : o.beats as number[] | "music" | undefined;
   return rv(drawable(p, M.resolve(tl)), p.root, { ...o, beats, issues });
@@ -198,7 +193,7 @@ const INTERCHANGE: Record<string, "fcpxml" | "otio"> = { ".fcpxml": "fcpxml", ".
 export async function exportTimeline(project: string | undefined, o: { format?: string; out?: string } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const ext = o.out ? o.out.slice(o.out.lastIndexOf(".")).toLowerCase() : "";
   const format = (o.format ?? INTERCHANGE[ext] ?? "fcpxml").toLowerCase();
   if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
@@ -212,7 +207,7 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
 export function exportCaptions(project: string | undefined, o: { out?: string; format?: string; ids?: string[] } = {}) {
   const p = openProject(project);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   const ext = o.out ? extname(o.out).toLowerCase() : "";
   const format = (o.format ?? SUB.SUB_FORMATS[ext] ?? "srt").toLowerCase();
   if (format !== "srt" && format !== "vtt") throw new M.EditError(`unknown subtitle format '${o.format ?? ext}'`, "bad_format", "use .srt or .vtt");
@@ -235,7 +230,7 @@ export async function render(project: string | undefined, o: {
   const p = openProject(project);
   CACHE.sweepStale(p);
   const tl = p.load();
-  requireValid(p, tl);
+  p.requireValid(tl);
   let scale = o.scale ?? 1, quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(".mp4", o.draft ? "draft" : "");

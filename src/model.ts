@@ -93,6 +93,18 @@ export function filterParam(type: string, key: string, v: unknown): number | str
   if (!c.every((q) => Number.isFinite(q) && q >= 0 && q <= 255)) throw new EditError(`${type}.${key} must be a colour (#RRGGBB)`, "bad_filter", FILTERS[type]);
   return "0x" + c.map((q) => Math.round(q).toString(16).padStart(2, "0")).join("");
 }
+export const ASSET_KINDS = ["video", "image", "audio", "lottie"];
+/** The asset record (filled by import_media). Every field some code path reads is typed here; fps, width, height and the rest reach ffmpeg or its helper, so validate checks them. */
+export const ASSET_FIELDS: Record<string, [string[], string]> = {
+  path: [["string"], "file path"], kind: [["string"], ASSET_KINDS.join("|")],
+  duration: [["number"], "seconds, a number >= 0"], width: [["number"], "px, a positive integer"], height: [["number"], "px, a positive integer"],
+  fps: [["number"], "a number > 0 (null: a still or unknown)"], has_audio: [["boolean"], "has an audio stream"], alpha: [["boolean"], "has an alpha channel"],
+  codec: [["string"], "video codec name"], sample_rate: [["number"], "Hz, a positive integer"], channels: [["number"], "audio channels, a positive integer"],
+};
+const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
+const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
+  duration: [(n) => n >= 0, "a number >= 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
+};
 export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 
@@ -514,8 +526,16 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   }
   if (typeof st.fps !== "number" || st.fps < 1 || st.fps > 120) issues.push({ level: "error", path: "$.settings.fps", message: "fps must be 1..120" });
   const assets = tl.assets || {};
-  for (const [aid, a] of Object.entries(assets))
-    if (o.exists && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `$.assets.${aid}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
+  for (const [aid, a] of Object.entries(assets)) {
+    const ap = `$.assets.${aid}`;
+    if (!a || typeof a !== "object" || Array.isArray(a)) { issues.push({ level: "error", path: ap, message: "asset must be an object" }); continue; }
+    checkFields(a, ASSET_FIELDS, ap, issues, "asset");
+    if (typeof a.path !== "string" || !a.path) issues.push({ level: "error", path: `${ap}.path`, message: "asset needs a path" });
+    if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
+    for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
+      if (typeof a[k] === "number" && !(Number.isFinite(a[k]) && ok(a[k]))) issues.push({ level: "error", path: `${ap}.${k}`, message: `${k} must be ${what}` });
+    if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
+  }
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$");
   if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
@@ -567,7 +587,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
         } else {
           const a = assets[aid];
-          if ((c.type === "video" || c.type === "audio") && a.duration && !c.loop && !c.freeze && !(c.keyframes?.speed)) {
+          if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !c.freeze && !(c.keyframes?.speed)) {
             const need = parseTime(c.in ?? 0) + dur * Number(c.speed ?? 1);
             if (need > a.duration + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration.toFixed(2)}s; the last frame is held`, hint: "shorten duration, lower 'in', or set loop: true" });
           }
