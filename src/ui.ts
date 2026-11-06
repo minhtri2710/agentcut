@@ -2,7 +2,7 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, realpathSync, renameSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
+import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
@@ -119,17 +119,14 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); return job; }
     if (out && playing.has(out)) { jobs.delete(id); return playing.get(out)!; } // same range already rendering: share that job
-    // play renders go to a .part-<pid>- file (the name cache.ts treats as in flight) and are renamed when complete, so the cache check above never serves a half-written file
-    const part = out?.replace(/\.mp4$/, `.part-${process.pid}-${id}.mp4`);
+    // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
     if (out) playing.set(out, job);
     let last = 0;
     api.render(root, {
-      out: part, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined,
+      out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined,
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
-    }).then((r: Dict) => {
-      if (out) { renameSync(part!, out); r.output = out; }
-      finish(r);
-    }).catch((e) => { if (part) rmSync(part, { force: true }); Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); })
+    }).then(finish)
+      .catch((e) => { Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); })
       .finally(() => { if (out) playing.delete(out); });
     return job;
   }

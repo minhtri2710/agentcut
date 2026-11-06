@@ -102,7 +102,7 @@ export function buildServer() {
 
   const waitJob = async (id: string, secs: number) => {
     const j = jobs.get(id);
-    if (!j) return { content: [text({ ok: false, error: { code: "not_found", message: `no job ${id}` } })], isError: true };
+    if (!j) return { content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true };
     const until = Date.now() + secs * 1000;
     while (j.status === "running" && Date.now() < until) await new Promise((r) => setTimeout(r, 300));
     const { promise, ...pub } = j;

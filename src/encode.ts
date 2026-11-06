@@ -3,8 +3,9 @@
 // Output options: codec (h264 | hevc | prores | prores_4444 | vp9 | auto by extension), alpha (transparent video in
 // .mov ProRes 4444 / .webm VP9), and audio-only exports (.wav .mp3 .m4a .aac .flac) that skip video entirely.
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,6 +123,10 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
 
 export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDirs: string[]; t0: number; i0: number; i1: number; v: string[]; out: string }
 
+/** Where a render writes before it is renamed to `output`: `<name>.part-<pid>-<rand><ext>` (ext kept so ffmpeg picks the muxer;
+ *  cache.ts treats the name as in flight while the pid lives). `output` itself never holds a partial or truncated file. */
+const partPath = (output: string) => { const ext = extname(output); return `${output.slice(0, output.length - ext.length)}.part-${process.pid}-${randomBytes(3).toString("hex")}${ext}`; };
+
 /** Render frames [i0, i1) to `out` (video only, or muxed with audio when given). */
 export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: number, v: string[], out: string,
   audio?: { wav: string; a: string[] }, onFrame?: (done: number) => void) {
@@ -133,7 +138,7 @@ export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: numb
   let err = "";
   enc.stderr!.on("data", (d) => { if (err.length < 4000) err += d; });
   const exited = once(enc, "exit");
-  let broken = false;
+  let broken = false, failed = true;
   enc.stdin!.on("error", () => { broken = true; });
   try {
     for (let i = i0; i < i1 && !broken; i++) {
@@ -141,9 +146,12 @@ export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: numb
       if (!enc.stdin!.write(r.pixels())) await once(enc.stdin!, "drain");
       onFrame?.(i - i0 + 1);
     }
+    failed = false;
   } finally {
     enc.stdin!.end();
     r.close();
+    // a frame/progress error: stop the encoder and wait for it, so the caller can delete `out` without ffmpeg touching it again
+    if (failed) { enc.kill(); await exited; }
   }
   const [code] = await exited;
   if (code !== 0) throw new EditError(`encoder failed: ${err.slice(-600)}`, "encode_failed");
@@ -184,13 +192,15 @@ async function renderAudio(tl: Timeline, output: string, ext: string, o: RenderO
   if (!audioSources(tl).length) warnings.push("timeline has no audible clips: the export is silence");
   mkdirSync(dirname(output), { recursive: true });
   const began = performance.now();
-  const tmp = mkdtempSync(join(tmpdir(), "agentcut-"));
+  const tmp = mkdtempSync(join(tmpdir(), "agentcut-")), part = partPath(output);
   try {
     const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
-    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", wav, "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), output], { encoding: "utf8" });
+    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-i", wav, "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
     if (r.status !== 0) throw new EditError(`audio encode failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
+    renameSync(part, output);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+    rmSync(part, { force: true });
   }
   const el = (performance.now() - began) / 1000;
   const res: Record<string, unknown> = {
@@ -222,11 +232,11 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const n = Math.round((end - start) * fps);
   const workers = Math.max(1, o.workers ?? defaultWorkers(n, fps));
   const began = performance.now();
-  const tmp = mkdtempSync(join(tmpdir(), "agentcut-"));
+  const tmp = mkdtempSync(join(tmpdir(), "agentcut-")), part = partPath(output);
   try {
     const wav = join(tmp, "mix.wav");
     const audioJob = Promise.resolve().then(() => buildAudio(structuredClone(tl), wav, start, end));
-    const target = gif ? join(tmp, "tmp.mp4") : output;
+    const target = gif ? join(tmp, "tmp.mp4") : part;
     if (workers <= 1) {
       await audioJob;
       await encodeFrames(new Renderer(structuredClone(rtl), root, scale), start, 0, n, [...v, ...mux], target, { wav, a }, (d) => o.progress?.(d, n));
@@ -261,11 +271,13 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
     }
     if (gif) {
       const g = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", target, "-vf",
-        `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, output], { encoding: "utf8" });
+        `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, part], { encoding: "utf8" });
       if (g.status !== 0) throw new EditError(`gif conversion failed: ${(g.stderr || "").slice(-400)}`, "encode_failed");
     }
+    renameSync(part, output);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+    rmSync(part, { force: true });
   }
   const el = (performance.now() - began) / 1000;
   const res: Record<string, unknown> = {

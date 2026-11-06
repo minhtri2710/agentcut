@@ -56,6 +56,8 @@ const sum = await call("feedback_summary", {});
 check("summary has auto-logged guess 'fly_in'", sum.json.naming_misses?.some((m: any) => m.guess === "fly_in"), sum.json.naming_misses);
 check("summary ranks the note", sum.json.recommendations?.[0]?.text.includes("detach audio"), sum.json.recommendations);
 check("markdown report", String((await call("feedback_summary", { markdown: true })).json).includes("# AgentCut improvement backlog"));
+const gone = await call("render_status", { job_id: "nope", wait_seconds: 0 });
+check("render_status of an unknown job: not_found with a hint to re-run prepare/render", !gone.json.ok && gone.json.error.code === "not_found" && /prepare|render/.test(gone.json.error.hint ?? ""), gone.json);
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });

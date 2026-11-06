@@ -261,6 +261,52 @@ console.log("prepare vs concurrent edits");
   check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && (api.info(P3) as any).revision === rev, { code: r.code, rev, now: (api.info(P3) as any).revision });
 }
 
+// a render never leaves a partial or truncated file at the output path: it writes <out>.part-<pid>-<rand><ext> and renames on success
+console.log("render output is atomic");
+{
+  const P4 = join(tmp, "proj-atomic"), dir = join(tmp, "atomic-out"), partsIn = (d: string) => readdirSync(d).filter((f) => f.includes(".part-"));
+  mkdirSync(dir);
+  api.create(P4, { preset: "720p" });
+  await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }]);
+  const failAfter = (k: number) => (d: number) => { if (d >= k) throw new Error("progress callback failed"); };
+  // R1: a mid-render failure (single worker) leaves nothing at the output path and no part file
+  const o1 = join(dir, "fail.mp4");
+  const f1: any = await api.render(P4, { out: o1, quality: "draft", sheet: false, workers: 1, progress: failAfter(5) }).catch((e) => e);
+  check("R1: render failing mid-way rejects and leaves no output and no part file", f1?.message === "progress callback failed" && !existsSync(o1) && !partsIn(dir).length, { f1: f1?.message, files: readdirSync(dir) });
+  // an existing output survives a failed re-render untouched (it is replaced only when the new one is complete)
+  const o2 = join(dir, "keep.mp4");
+  writeFileSync(o2, "previous render");
+  await api.render(P4, { out: o2, quality: "draft", sheet: false, workers: 1, progress: failAfter(5) }).catch(() => {});
+  check("a failed re-render keeps the previous output as it was", readFileSync(o2, "utf8") === "previous render" && !partsIn(dir).length, readdirSync(dir));
+  // success: complete file at the output path, no part left (video, gif, audio-only)
+  for (const [name, o] of [["mp4", { workers: 1 }], ["mp4 with workers", { workers: 2 }], ["gif", { workers: 1 }], ["wav", {}]] as const) {
+    const f = join(dir, `ok-${name.replace(/\W+/g, "-")}.${name.split(" ")[0]}`);
+    const r: any = await api.render(P4, { out: f, quality: "draft", sheet: false, ...o });
+    check(`${name}: output is complete and no part file is left`, r.output === f && statSync(f).size === r.size_bytes && r.size_bytes > 0 && !partsIn(dir).length, { r: r.output, files: readdirSync(dir) });
+  }
+
+  // R1b: the server is stopped (SIGTERM) while a one-worker render runs: the output path holds no truncated file
+  const big = join(m, "big.mp4"), killed = join(tmp, "killed-out"), ko = join(killed, "out.mp4");
+  ff("-f", "lavfi", "-i", "testsrc2=s=3840x2160:r=30:d=6", "-pix_fmt", "yuv420p", big);
+  const client = new Client({ name: "jobs-test-term", version: "1" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve(import.meta.dir, "../src/mcp.ts")], env: { ...(process.env as Record<string, string>), AGENTCUT_UV: fake } });
+  await client.connect(transport);
+  const pid = transport.pid!;
+  const call = async (name: string, args: Record<string, unknown> = {}) => JSON.parse(((await client.callTool({ name, arguments: args })) as any).content.find((c: any) => c.type === "text").text);
+  const P5 = join(tmp, "proj-term");
+  await call("create_project", { path: P5, preset: "4k" });
+  await call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }] });
+  const job = await call("render", { output: ko, wait_seconds: 0 });
+  const t = performance.now();
+  while (performance.now() - t < 30_000 && !(existsSync(killed) && partsIn(killed).length)) await new Promise((r) => setTimeout(r, 25));
+  const sawPart = existsSync(killed) && partsIn(killed).length > 0;
+  process.kill(pid, "SIGTERM");
+  while (performance.now() - t < 40_000) { try { process.kill(pid, 0); } catch { break; } await new Promise((r) => setTimeout(r, 25)); }
+  await new Promise((r) => setTimeout(r, 700)); // the encoder finishes its (truncated) part after its stdin closed
+  await client.close().catch(() => {});
+  check("R1b: SIGTERM mid-render: a part file was in progress, and nothing exists at the output path", job.ok && sawPart && !existsSync(ko), { job, sawPart, files: existsSync(killed) ? readdirSync(killed) : null });
+}
+
 // containment: symlinks inside or in place of an area are never walked, counted or deleted
 console.log("cache containment (symlinks)");
 {
