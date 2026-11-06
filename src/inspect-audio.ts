@@ -38,7 +38,9 @@ function readWindows(path: string): Win {
         const nw = Math.ceil(dur / WIN), w = Math.max(1, Math.round(WIN * sr)), per = 500; // windows per block
         const rms = new Float64Array(nw), peak = new Float64Array(nw), buf = Buffer.allocUnsafeSlow(per * w * nch * 2);
         for (let k0 = 0; k0 < nw; k0 += per) {
-          const f0 = k0 * w, nf = Math.min(frames - f0, per * w), got = readSync(fd, buf, 0, nf * nch * 2, o + 8 + f0 * nch * 2);
+          const f0 = k0 * w;
+          if (f0 >= frames) break; // the 20 ms window rounds up at some rates (11025 Hz: 221 frames), so the last windows can lie past the data: they stay 0
+          const nf = Math.min(frames - f0, per * w), got = readSync(fd, buf, 0, nf * nch * 2, o + 8 + f0 * nch * 2);
           const x = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(got / 2));
           for (let k = k0; k < Math.min(nw, k0 + per); k++) {
             let sum = 0, pk = 0, cnt = 0;

@@ -131,6 +131,17 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   check("music above the voice: hint says 'above', not a negative 'under'", hot.length === 1 && /dB above the voice/.test(hot[0].hint) && !/-\d+(\.\d+)? dB under/.test(hot[0].hint), hot);
 }
 
+// a sample rate whose 20 ms window rounds up (11025 Hz: 220.5 -> 221 frames) makes the last read block start past the data
+ff("-f", "lavfi", "-i", "sine=f=220:d=11", "-ac", "2", f("bed11.wav"));
+{
+  const Q = f("q-11025");
+  cli("init", Q, "--preset", "reels");
+  cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "set_settings", sample_rate: 11025, loudness: null }, { op: "add_clip", track: "music", src: f("bed11.wav"), at: 0, duration: 10.01 }]));
+  let odd: any = null, err = "";
+  try { odd = cli("audio", "-p", Q); } catch (e: any) { err = String(e.message); }
+  check("audio_check at sample_rate 11025 on a 10.01 s project: mix lane present, no throw", !!odd && odd.lanes.some((l: any) => l.track === "mix"), err || odd?.lanes);
+}
+
 const src = cli("audio", "--source", f("clip.wav"), "-o", f("clip.png"));
 check("source file: clipping found at 0-1s", src.findings.some((x: any) => x.type === "clipping" && x.start < 0.1 && x.end > 0.9), src.findings);
 check("source file: 2s silence found at 1-3s", src.findings.some((x: any) => x.type === "silence" && Math.abs(x.start - 1) < 0.05 && Math.abs(x.end - 3) < 0.05), src.findings);
