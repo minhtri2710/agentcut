@@ -130,10 +130,13 @@ export function pitchFilters(semitones: unknown, sr: number): string[] {
 }
 
 /** Two afftdn stages (white-noise model, then a model that follows coloured noise) with the floor set just above the measured noise,
- * then a soft expander 6 dB above the measured floor: pauses lose the residual (musical) noise, speech passes untouched. */
-export function denoiseFilters(strength: number, floorDb: number): string[] {
-  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)), lin = (db: number) => (10 ** (db / 20)).toFixed(5);
-  return [`afftdn=nr=${(6 + 24 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`, `afftdn=nt=v:nr=${(12 + 12 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`,
+ * then a soft expander 6 dB above the measured floor: pauses lose the residual (musical) noise, speech passes untouched.
+ * Each afftdn stage delays its output by sr/40 samples (25 ms) and keeps the length, so the end is padded by the delay and the start
+ * trimmed after the stages: the clip stays sample-aligned and keeps its last 50 ms. agate, EQ and compressor add no delay (measured). */
+export function denoiseFilters(strength: number, floorDb: number, sr: number): string[] {
+  const nf = Math.max(-80, Math.min(-20, floorDb + 6 * strength)), lin = (db: number) => (10 ** (db / 20)).toFixed(5), delay = Math.round(sr / 20);
+  return [`apad=pad_len=${delay}`, `afftdn=nr=${(6 + 24 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`, `afftdn=nt=v:nr=${(12 + 12 * strength).toFixed(1)}:nf=${nf.toFixed(1)}`,
+    `atrim=start_sample=${delay}`, "asetpts=PTS-STARTPTS",
     `agate=threshold=${lin(Math.min(-20, floorDb + 6))}:ratio=2:range=${lin(-6 - 12 * strength)}:attack=10:release=250`];
 }
 

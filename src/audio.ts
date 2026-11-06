@@ -112,7 +112,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
     const dn = FX.denoiseStrength(fx("denoise"));
     if (dn) {
       const floor = FX.noiseFloor(s.path, cin, dur * speed);
-      if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor));
+      if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor, sr));
     }
     ch.push(...FX.eqFilters(c.eq), ...FX.compressorFilter(c.compressor), ...FX.panFilter(c.pan));
     const target = FX.normalizeTarget(fx("normalize"));

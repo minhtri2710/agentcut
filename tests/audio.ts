@@ -139,6 +139,30 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   check(`noiseFloor with pauses is the noise level (${tflo?.toFixed(1)} dBFS, true -50)`, tflo !== null && Math.abs(tflo + 50) < 1.5, tflo);
 }
 
+console.log("denoise: the clip stays aligned and complete (afftdn delays its output by 25 ms per stage)");
+{
+  const SR = 48000;
+  let seed = 99;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+  // 1 s: noise at -60 dBFS, a 1 kHz tone 0.5-0.8 s with a hard start, and a 1 kHz burst in the final 10 ms (inside the gate's release)
+  const x = new Float32Array(SR);
+  for (let i = 0; i < SR; i++) {
+    const tone = (i >= 0.5 * SR && i < 0.8 * SR) || i >= SR - 0.01 * SR;
+    x[i] = 10 ** (-60 / 20) * Math.sqrt(3) * rnd() + (tone ? 0.3 * Math.sin(2 * Math.PI * 1000 * i / SR) : 0);
+  }
+  const src = wavOf("align.wav", x);
+  const raw = await project("align-raw", src, 1, false), dnA = await project("align-dn", src, 1, true);
+  const onset = (f: string) => {
+    const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-af", "pan=mono|c0=c0", "-f", "f32le", "-ar", "48000", "-"], { maxBuffer: 1 << 26 });
+    const y = new Float32Array(r.stdout.buffer.slice(r.stdout.byteOffset, r.stdout.byteOffset + r.stdout.length));
+    return y.findIndex((v) => Math.abs(v) > 0.05);
+  };
+  const shift = onset(dnA) - onset(raw);
+  check(`tone onset lands where it does without denoise (${shift} samples, tolerance 48 = 1 ms)`, Math.abs(shift) <= 48, shift);
+  const tailKept = rms(dnA, 0.99, 1) - rms(raw, 0.99, 1);
+  check(`a burst in the final 10 ms survives (${tailKept.toFixed(1)} dB, tolerance 3)`, Math.abs(tailKept) <= 3, tailKept);
+}
+
 console.log("pan");
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: null, pan: -0.8 } }]);
 const pl = mix("pan");
