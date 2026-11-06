@@ -3,9 +3,9 @@
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
@@ -14,8 +14,8 @@ import { VISION_PY } from "./vision-py.ts";
 const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
 
-export const cacheDir = (root?: string) =>
-  root ? join(root, ".agentcut", "cache") : join(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"), "vision");
+const userCache = () => resolve(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"));
+export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
 
 const hashes = new Map<string, string>();
 /** sha256 of the file content (memoized per path + size + mtime). */
@@ -43,7 +43,36 @@ export interface Derived { kind: "subject" | "track" | "matte"; file: string; jo
 export const isReady = (d: Derived) => existsSync(d.file);
 export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(readFileSync(d.file, "utf8"));
 
-/** The helper is only ever run from a private temp dir that this process just created, never from a cache or project path.
+/** `<user cache>/helper-runs`, where every run dir lives. Resolved to a canonical absolute path, then checked before anything is written:
+ *  every directory from there up to the home dir (or the filesystem root, when the cache is outside it) must be a real directory
+ *  owned by this user or root and not writable by others (group/world write is allowed only with the sticky bit), and `helper-runs`
+ *  itself must be a real directory owned by this user with mode 0700 (created so if missing). Anything else is refused with
+ *  `unsafe_helper_dir`. Windows has no uid or mode bits: there only the real-directory checks apply. */
+function helperRoot(): string {
+  const base = userCache(), uid = process.getuid?.(), posix = uid !== undefined;
+  const refuse = (what: string) => new EditError(`the vision helper's run dir is refused: ${what}`, "unsafe_helper_dir",
+    "nothing was written or run; the helper runs only under a directory in the user cache (~/.cache/agentcut, or AGENTCUT_CACHE) that only you can write");
+  let top = base; // the deepest part of the cache path that exists; what is missing below it is created here, under a checked parent
+  while (!lstatSync(top, { throwIfNoEntry: false })) top = dirname(top);
+  const real = realpathSync(top);
+  let home: string | undefined;
+  try { home = realpathSync(homedir()); } catch { /* no home: check up to the filesystem root */ }
+  const inHome = home !== undefined && (real === home || real.startsWith(home + sep));
+  for (let d = real; ; d = dirname(d)) {
+    const st = lstatSync(d), isHome = inHome && d === home;
+    // the home dir may be group-writable (user-private groups); any other directory on the way may not be, unless sticky
+    const loose = posix && (st.mode & (isHome ? 0o002 : 0o022)) !== 0 && (st.mode & 0o1000) === 0;
+    if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(`${d} is not a directory that only you can write`);
+    if (isHome || d === dirname(d)) break;
+  }
+  const root = join(real, relative(top, base), "helper-runs");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const st = lstatSync(root);
+  if (!st.isDirectory() || (posix && (st.uid !== uid || (st.mode & 0o777) !== 0o700))) throw refuse(`${root} is not a private directory (owner you, mode 0700)`);
+  return root;
+}
+
+/** The helper is only ever run from a private dir that this process just created under helperRoot(), never from a cache or project path.
  *  This check runs right before every spawn: the bytes on disk must be exactly the embedded script. */
 export function checkHelper(script: string) {
   let sha: string | undefined;
@@ -54,18 +83,20 @@ export function checkHelper(script: string) {
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
 const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
 
-/** Runs the helper from a fresh private (0700) temp dir, removed afterwards even on failure or abort (a SIGKILL leaves it for the OS to clear).
- *  The dir is also the spawn's cwd, and uv gets --no-config, so no folder the user is in chooses uv's settings. */
+/** Runs the helper from a fresh private (0700) run dir `helper-runs/vision-<pid>-xxxxxx`, removed afterwards even on failure or abort
+ *  (best effort: a cleanup error never replaces the result; a SIGKILL leaves the dir behind). The dir is also the spawn's cwd, and uv gets
+ *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
 async function runHelper(d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
+  const root = helperRoot();
   mkdirSync(cacheDir(d.root), { recursive: true });
   const uvEnv = process.env.AGENTCUT_UV || "uv", uv = /[\\/]/.test(uvEnv) ? resolve(uvEnv) : uvEnv; // the cwd changes below: keep a relative path meaning what the user typed
   const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
-  const dir = mkdtempSync(join(tmpdir(), "agentcut-vision-"));
+  const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {
     const script = join(dir, "helper.py");
     writeFileSync(script, VISION_PY, { flag: "wx", mode: 0o600 });
     return await spawnHelper(uv, dir, script, d, job, onFrames, signal);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort: never mask the result or the abort reason */ } }
 }
 
 function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {

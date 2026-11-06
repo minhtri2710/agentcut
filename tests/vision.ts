@@ -260,16 +260,17 @@ check("export-pending: nothing pending after prepare", !JSON.stringify(eDone.ski
 
 // ---------------------------------------------------------------- helper location
 // A recording uv: logs where the helper script lives (and its hash), the spawn's cwd and argv, then hands over to the fake above.
-console.log("the vision helper always runs from a private temp dir");
+console.log("the vision helper always runs from a private per-user dir");
 {
   const { VISION_PY } = await import("../src/vision-py.ts");
   const { createHash } = await import("node:crypto");
-  const { dirname, sep } = await import("node:path");
+  const { chmodSync: chmod, lstatSync, realpathSync, symlinkSync } = await import("node:fs");
+  const { dirname, basename, isAbsolute, relative, sep } = await import("node:path");
   const want = createHash("sha256").update(VISION_PY).digest("hex");
   const log = join(tmp, "helper-runs.jsonl");
   const rec = join(tmp, "recording-uv.mjs");
   writeFileSync(rec, `#!/usr/bin/env node
-import { appendFileSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -278,17 +279,30 @@ let sha = null; try { sha = createHash("sha256").update(readFileSync(script)).di
 let mode = null; try { mode = statSync(dirname(script)).mode & 0o777; } catch {}
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, script, sha, mode, cwd: process.cwd() }) + "\\n");
 if (process.env.FAKE_UV_FAIL) { process.stderr.write("boom\\n"); process.exit(3); }
+if (process.env.FAKE_UV_HANG) setInterval(() => {}, 1000), await new Promise(() => {});
+if (process.env.FAKE_UV_LOCK) chmodSync(dirname(script), 0o500); // the run dir can no longer be emptied
 const r = spawnSync(${JSON.stringify(fake)}, argv, { encoding: "utf8" });
 process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.status ?? 1);
 `);
   chmodSync(rec, 0o755);
-  const runs = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as { argv: string[]; script: string; sha: string | null; mode: number | null; cwd: string }[];
+  type Run = { argv: string[]; script: string; sha: string | null; mode: number | null; cwd: string };
+  const runs = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as Run[];
   const within = (p: string, dir: string) => p === dir || p.startsWith(dir + sep);
+  const posix = process.platform !== "win32";
   const staleScript = "# stale helper\nraise SystemExit(99)\n", oldPath = (dir: string) => join(dir, `vision-${want.slice(0, 12)}.py`);
+  const cacheEnv = process.env.AGENTCUT_CACHE!;
+  mkdirSync(cacheEnv, { recursive: true });
+  /** analyze_subject against its own user cache dir `cache` (a fresh cache never hits a stored result); resolves to "ok" or the error code */
+  const subject = async (cache: string, fps = 5) => {
+    const keep = process.env.AGENTCUT_CACHE;
+    process.env.AGENTCUT_CACHE = cache;
+    try { await api.analyze.subject(join(m, "rb.mp4"), fps); return "ok"; } catch (e: any) { return e.code as string; } finally { process.env.AGENTCUT_CACHE = keep; }
+  };
+  const fresh = (name: string) => { const d = join(tmp, `hc-${name}`); mkdirSync(d, { recursive: true }); return d; };
   process.env.AGENTCUT_UV = rec;
   try {
-    // with a project: a file already sitting where the helper used to be cached is neither used nor changed
-    const H = join(tmp, "helper-proj");
+    // with a project: a file at the old cache path is not used and not changed; the helper lives under the per-user root
+    const H = join(tmp, "helper-proj"), root = join(realpathSync(cacheEnv), "helper-runs");
     api.create(H, { preset: "reels" });
     await apply(H, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "auto_reframe", id: "vid1" }]);
     mkdirSync(join(H, ".agentcut", "cache"), { recursive: true });
@@ -296,25 +310,88 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     await api.prepare(H);
     const r1 = runs()[0];
     check("project: the helper ran once", runs().length === 1, runs());
-    check("project: script is outside the project and the cache", !!r1 && !within(r1.script, H) && !within(r1.script, process.env.AGENTCUT_CACHE!) && r1.script !== oldPath(join(H, ".agentcut", "cache")), r1?.script);
+    check("project: script is outside the project and the cache dirs and is not the old cache path", !!r1 && !within(r1.script, H) && !within(r1.script, join(cacheEnv, "vision")) && r1.script !== oldPath(join(H, ".agentcut", "cache")), r1?.script);
     check("project: the script that ran is exactly the embedded helper", r1?.sha === want, r1?.sha);
-    check("project: a stale helper at the old cache path is left alone and not used", readFileSync(oldPath(join(H, ".agentcut", "cache")), "utf8") === staleScript);
-    check("project: spawn cwd is not under the project", !!r1 && !within(r1.cwd, H) && !within(r1.cwd, process.cwd()) , r1?.cwd);
+    check("project: a pre-existing file at the old cache path is not modified", readFileSync(oldPath(join(H, ".agentcut", "cache")), "utf8") === staleScript);
+    check("project: the run dir is <cache>/helper-runs/vision-<pid>-xxxxxx, the script and cwd are absolute paths in it",
+      !!r1 && dirname(dirname(r1.script)) === root && basename(dirname(r1.script)).startsWith(`vision-${process.pid}-`) && isAbsolute(r1.script) && r1.cwd === dirname(r1.script), r1);
     check("project: uv is told not to read config files", !!r1 && r1.argv.includes("--no-config"), r1?.argv);
-    if (process.platform !== "win32") check("project: the helper dir is mode 0700", r1?.mode === 0o700, r1?.mode?.toString(8));
-    check("project: the helper dir is removed after the run", !!r1 && !existsSync(dirname(r1.script)), r1?.script);
-    check("project: no helper script is written to the project cache", readdirSync(join(H, ".agentcut", "cache")).filter((f) => f.endsWith(".py")).length === 1);
+    if (posix) check("project: the run dir is mode 0700", r1?.mode === 0o700, r1?.mode?.toString(8));
+    if (posix) check("project: helper-runs is mode 0700", existsSync(root) && (lstatSync(root).mode & 0o777) === 0o700);
+    check("project: the run dir is removed after the run", !!r1 && !existsSync(dirname(r1.script)), r1?.script);
+
+    // no helper script is written to a project cache: a project with no file there to begin with
+    const H2 = join(tmp, "helper-proj-clean");
+    api.create(H2, { preset: "reels" });
+    await apply(H2, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "auto_reframe", id: "vid1" }]);
+    await api.prepare(H2);
+    check("project: no helper script is written to the project cache", runs().length === 2 && readdirSync(join(H2, ".agentcut", "cache")).every((f) => !f.endsWith(".py")), readdirSync(join(H2, ".agentcut", "cache")));
 
     // without a project (analyze_subject): same, against the user cache
-    const userCache = join(process.env.AGENTCUT_CACHE!, "vision");
+    const userCache = join(cacheEnv, "vision");
     mkdirSync(userCache, { recursive: true });
     writeFileSync(oldPath(userCache), staleScript);
     const s: any = await api.analyze.subject(join(m, "rb.mp4"), 3);
-    const r2 = runs()[1];
-    check("no project: analyze_subject computed through the helper", s.cached === false && runs().length === 2, s);
-    check("no project: script is outside the user cache and runs unchanged", !!r2 && !within(r2.script, process.env.AGENTCUT_CACHE!) && r2.sha === want && r2.script !== oldPath(userCache), r2);
-    check("no project: a stale helper at the old cache path is left alone and not used", readFileSync(oldPath(userCache), "utf8") === staleScript);
-    check("no project: the helper dir is removed after the run", !!r2 && !existsSync(dirname(r2.script)));
+    const r2 = runs()[2];
+    check("no project: analyze_subject computed through the helper", s.cached === false && runs().length === 3, s);
+    check("no project: script is in the per-user root, unchanged, and not the old cache path", !!r2 && dirname(dirname(r2.script)) === root && r2.sha === want && r2.script !== oldPath(userCache), r2);
+    check("no project: a pre-existing file at the old cache path is not modified", readFileSync(oldPath(userCache), "utf8") === staleScript);
+    check("no project: the run dir is removed after the run", !!r2 && !existsSync(dirname(r2.script)));
+
+    // the run dir does not depend on the temp dir
+    const otherTmp = fresh("tmpdir"), keepTmp = process.env.TMPDIR;
+    process.env.TMPDIR = otherTmp;
+    const codeTmp = await subject(fresh("c-tmpdir"));
+    process.env.TMPDIR = keepTmp;
+    const rt = runs().at(-1)!;
+    check("a different TMPDIR changes nothing: the script and cwd are not under it", codeTmp === "ok" && !within(rt.script, otherTmp) && !within(rt.cwd, otherTmp), { codeTmp, rt });
+
+    // a relative AGENTCUT_CACHE is resolved once: the checked path and the run path are the same absolute string
+    const relCache = fresh("c-rel"), before = runs().length;
+    const codeRel = await subject(relative(process.cwd(), relCache));
+    const rr = runs().at(-1)!;
+    check("relative AGENTCUT_CACHE: one absolute script path, checked and run", codeRel === "ok" && runs().length === before + 1 && isAbsolute(rr.script) && isAbsolute(rr.cwd) && rr.sha === want && within(rr.script, join(realpathSync(relCache), "helper-runs")), { codeRel, rr });
+
+    // refusals come before anything is written and before uv runs
+    const refused = async (name: string, cache: string, watch: string[]) => {
+      const n = runs().length, code = await subject(cache);
+      check(`${name}: refused with unsafe_helper_dir, uv not run, nothing written`, code === "unsafe_helper_dir" && runs().length === n && watch.every((d) => !existsSync(d) || readdirSync(d).length === 0), { code, ran: runs().length - n });
+    };
+    if (posix) {
+      const cSym = fresh("c-symlink"), elsewhere = fresh("elsewhere");
+      symlinkSync(elsewhere, join(cSym, "helper-runs"));
+      await refused("helper-runs is a symlink", cSym, [elsewhere]);
+      const cMode = fresh("c-mode");
+      mkdirSync(join(cMode, "helper-runs"));
+      chmod(join(cMode, "helper-runs"), 0o755);
+      await refused("helper-runs has mode 0755", cMode, [join(cMode, "helper-runs")]);
+      const open = fresh("open");
+      mkdirSync(join(open, "sub"));
+      chmod(open, 0o777);
+      await refused("an ancestor is world-writable without the sticky bit", join(open, "sub", "cache"), [join(open, "sub", "cache")]);
+      chmod(open, 0o1777);
+      check("an ancestor that is world-writable with the sticky bit is accepted", (await subject(join(open, "sub", "cache"))) === "ok");
+      chmod(open, 0o755);
+    }
+
+    // without AGENTCUT_CACHE the root is ~/.cache/agentcut/helper-runs and the walk stops at the home dir (which may be group-writable, not
+    // world-writable). A child process: the runtime reads HOME at start, and this suite must never touch the real home.
+    if (posix) {
+      const home = fresh("home"), cli = join(import.meta.dir, "../src/cli.ts");
+      const inHome = () => {
+        const e: Record<string, string | undefined> = { ...process.env, HOME: home, AGENTCUT_UV: rec };
+        delete e.AGENTCUT_CACHE;
+        return JSON.parse(spawnSync(process.execPath, [cli, "subject", join(m, "rb.mp4"), "--fps", "7"], { encoding: "utf8", env: e as NodeJS.ProcessEnv }).stdout || "{}");
+      };
+      chmod(home, 0o775);
+      const nHome = runs().length, okHome = inHome(), rh = runs().at(-1)!;
+      check("default root: ~/.cache/agentcut/helper-runs under a group-writable home", okHome.ok === true && runs().length === nHome + 1 && dirname(dirname(rh.script)) === join(realpathSync(home), ".cache", "agentcut", "helper-runs"), { okHome, rh });
+      chmod(home, 0o777);
+      rmSync(join(home, ".cache"), { recursive: true, force: true });
+      const openHome = inHome();
+      check("default root: a world-writable home dir is refused (unsafe_helper_dir), nothing created", openHome.ok === false && openHome.error?.code === "unsafe_helper_dir" && !existsSync(join(home, ".cache", "agentcut", "helper-runs")), openHome);
+      chmod(home, 0o755);
+    }
 
     // the check run before every spawn refuses any file that is not the embedded helper
     const odd = join(tmp, "odd-helper.py");
@@ -330,10 +407,33 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     let code = "";
     try { await api.prepare(H); } catch (e: any) { code = e.code; }
     delete process.env.FAKE_UV_FAIL;
-    const r3 = runs()[2];
-    check("project: a failed run reports vision_failed and removes the helper dir", code === "vision_failed" && !!r3 && !existsSync(dirname(r3.script)), { code, r3 });
+    const r3 = runs().at(-1)!;
+    check("project: a failed run reports vision_failed and removes the helper dir", code === "vision_failed" && !existsSync(dirname(r3.script)), { code, r3 });
     await api.undo(H);
-  } finally { process.env.AGENTCUT_UV = fake; }
+
+    // an aborted run rejects with the abort reason and removes its dir
+    process.env.FAKE_UV_HANG = "1";
+    await apply(H, [{ op: "auto_reframe", id: "vid1", fps: 2 }]);
+    const n0 = runs().length, ac = new AbortController(), pr = api.prepare(H, { signal: ac.signal }).then(() => "done", (e: any) => e.name ?? e.code);
+    for (let i = 0; i < 100 && runs().length === n0; i++) await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const outcome = await pr;
+    delete process.env.FAKE_UV_HANG;
+    const r4 = runs().at(-1)!;
+    check("project: an aborted run rejects (not a cleanup error) and removes the helper dir", outcome === "AbortError" && !existsSync(dirname(r4.script)) && runs().length === n0 + 1, { outcome, r4 });
+    await api.undo(H);
+
+    // a cleanup that fails (the run dir cannot be emptied) never replaces the result
+    if (posix && process.getuid?.() !== 0) {
+      process.env.FAKE_UV_LOCK = "1";
+      const codeLock = await subject(fresh("c-lock"));
+      delete process.env.FAKE_UV_LOCK;
+      const r5 = runs().at(-1)!, left = existsSync(dirname(r5.script));
+      if (left) { chmod(dirname(r5.script), 0o700); rmSync(dirname(r5.script), { recursive: true, force: true }); }
+      check("a failing cleanup does not mask the result", codeLock === "ok" && left, { codeLock, left });
+    }
+  } finally { process.env.AGENTCUT_UV = fake; delete process.env.FAKE_UV_FAIL; delete process.env.FAKE_UV_HANG; delete process.env.FAKE_UV_LOCK; }
 }
 
 // ---------------------------------------------------------------- missing tool
