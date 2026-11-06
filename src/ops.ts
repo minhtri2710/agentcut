@@ -422,6 +422,7 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
 op("duplicate_clip", "Copy a clip (optionally to another track/time).", { id: "clip id", track: "track id", at: "start" }, (p, tl, a) => {
   const [tr, , c] = findClip(tl, a.id);
   const dup: Clip = { ...structuredClone(c), id: newId(tl, PREFIX[c.type]) };
+  delete dup.group; // a copy is not part of the expanded compound's regroup set
   const dest = a.track ? findTrack(tl, a.track) : tr;
   place(tl, dest, dup, dest.magnetic ? (dest === tr ? { after: c.id } : {}) : { at: a.at ?? clipEnd(c) });
   renameNested(tl, dup);

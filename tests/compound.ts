@@ -105,6 +105,67 @@ const txt = api.info(P, "json").timeline.tracks.find((t: any) => t.id === "text"
 const t1 = txt.find((c: any) => c.id === "txt1"), t2 = txt.find((c: any) => c.id === "txt2");
 check("trimmed to the visible window", e2.dropped.length === 0 && Math.abs(t2.start - 0.2) < 1e-6 && Math.abs(t2.duration - 0.5) < 1e-6 && Math.abs(t1.start - 2.5) < 1e-6 && Math.abs(t1.duration - 0.3) < 1e-6, { t1, t2, e2 });
 
+console.log("regroup: expand_compound stamps what it places, make_compound from=<id> takes it back");
+const Q = join(tmp, "regroup");
+api.create(Q, { preset: "720p" });
+const col = (track: string, id: string, color: string, extra: object = {}) => ({ op: "add_clip", track, type: "color", color, id, duration: 2, ...extra });
+await api.apply(Q, [col("main", "c1", "red"), col("main", "c2", "blue"), col("main", "c3", "green"), col("ov", "o1", "white", { at: 0, duration: 1 }), col("ov", "o2", "gray", { at: 1, duration: 1 })]);
+const all = () => api.info(Q, "json").timeline.tracks.flatMap((t: any) => t.clips) as any[];
+const byId = (id: string) => all().find((c: any) => c.id === id);
+const groupOf = (id: string) => byId(id)?.group;
+const nestedIds = (id: string) => byId(id).tracks.flatMap((t: any) => t.clips.map((c: any) => c.id)).sort().join();
+await api.apply(Q, [{ op: "make_compound", ids: ["c1", "c2"], id: "gA", name: "alpha" }, { op: "make_compound", ids: ["c3"], id: "gB" }]);
+await api.apply(Q, [{ op: "update_clip", id: "gB", set: { duration: 3 } }]);
+const xa = (await api.apply(Q, [{ op: "expand_compound", id: "gA" }])).results[0];
+const xb = (await api.apply(Q, [{ op: "expand_compound", id: "gB" }])).results[0];
+check("expand stamps every clip it places", xa.ids.every((i: string) => JSON.stringify(groupOf(i)) === JSON.stringify({ id: "gA", name: "alpha", track: "main" })), xa.ids.map(groupOf));
+check("expand stamps its gaps too (unnamed compound: no name)", xb.gaps.length === 1 && [...xb.ids, ...xb.gaps].every((i: string) => JSON.stringify(groupOf(i)) === JSON.stringify({ id: "gB", track: "main" })), [...xb.ids, ...xb.gaps].map(groupOf));
+check("two expands give two separate groups", all().filter((c: any) => c.group?.id === "gA").length === 2 && all().filter((c: any) => c.group?.id === "gB").length === 2);
+check("the stamped timeline validates", api.info(Q, "json").errors === 0, api.info(Q, "json").issues);
+const sp = (await api.apply(Q, [{ op: "split_clip", id: "c2", at: 3 }])).results[0];
+check("split keeps the stamp on both halves", groupOf("c2")?.id === "gA" && groupOf(sp.right)?.id === "gA", [groupOf("c2"), groupOf(sp.right)]);
+const dup = (await api.apply(Q, [{ op: "duplicate_clip", id: "c1" }])).results[0];
+check("duplicate_clip clears the stamp on the copy and keeps it on the original", groupOf(dup.id) === undefined && groupOf("c1")?.id === "gA", [groupOf(dup.id), groupOf("c1")]);
+await api.apply(Q, [{ op: "remove_clip", id: dup.id }]);
+const ra = (await api.apply(Q, [{ op: "make_compound", from: "gA" }])).results[0];
+check("from regroups both halves on the storyline, with the old id and name", ra.id === "gA" && byId("gA")?.name === "alpha" && nestedIds("gA") === `c1,c2,${sp.right}`.split(",").sort().join(), { ra, nested: byId("gA") && nestedIds("gA") });
+check("  the stamps are cleared inside the compound, and gB's are untouched", !JSON.stringify(byId("gA").tracks).includes('"group"') && all().filter((c: any) => c.group?.id === "gB").length === 2);
+check("  nothing is left over from gA", !all().some((c: any) => c.group?.id === "gA"));
+check("  validates", api.info(Q, "json").errors === 0, api.info(Q, "json").issues);
+
+await api.apply(Q, [{ op: "make_compound", ids: ["o1", "o2"], id: "gC" }]);
+const xc = (await api.apply(Q, [{ op: "expand_compound", id: "gC" }])).results[0];
+const spo = (await api.apply(Q, [{ op: "split_clip", id: "o2", at: 1.5 }])).results[0];
+check("non-magnetic track: stamped, and split keeps it", xc.ids.every((i: string) => groupOf(i)?.id === "gC") && groupOf(spo.right)?.id === "gC");
+const rc = (await api.apply(Q, [{ op: "make_compound", from: "gC" }])).results[0];
+check("non-magnetic track: from regroups all three clips", rc.id === "gC" && rc.track === "ov" && nestedIds("gC") === ["o1", "o2", spo.right].sort().join() && !all().some((c: any) => c.group?.id === "gC"), { rc, n: nestedIds("gC") });
+
+console.log("regroup: detached audio stays paired and stamped");
+await api.apply(Q, [
+  { op: "add_clip", track: "vt", src: join(m, "a.mp4"), id: "v1", at: 0, duration: 2 },
+  { op: "detach_audio", id: "v1" },
+]);
+const au1 = all().find((c: any) => c.type === "audio" && c.attach_to === "v1").id;
+await api.apply(Q, [{ op: "make_compound", ids: ["v1", au1], id: "gD" }]);
+const xd = (await api.apply(Q, [{ op: "expand_compound", id: "gD" }])).results[0];
+check("expand stamps the detached audio it places", xd.ids.includes(au1) && groupOf("v1")?.id === "gD" && groupOf(au1)?.id === "gD", xd);
+const spv = (await api.apply(Q, [{ op: "split_clip", id: "v1", at: 1 }])).results[0];
+const au2 = all().find((c: any) => c.type === "audio" && c.attach_to === spv.right)?.id;
+check("split keeps the audio paired with its picture, and every half stamped", !!au2 && [ "v1", au1, spv.right, au2 ].every((i) => groupOf(i)?.id === "gD"), all().map((c: any) => [c.id, c.attach_to, c.group?.id]));
+const rd = (await api.apply(Q, [{ op: "make_compound", from: "gD" }])).results[0];
+const nested = byId("gD").tracks.flatMap((t: any) => t.clips) as any[];
+check("from takes both pictures and both audio clips, pairs intact", rd.id === "gD" && nested.length === 4 && nested.find((c: any) => c.id === au1).attach_to === "v1" && nested.find((c: any) => c.id === au2).attach_to === spv.right, nested.map((c: any) => [c.id, c.attach_to]));
+check("  the regrouped project validates", api.info(Q, "json").errors === 0, api.info(Q, "json").issues);
+await api.apply(Q, [{ op: "add_clip", track: "vt", src: join(m, "a.mp4"), id: "v2", at: 5, duration: 1, group: { id: "gE", track: "vt" } }, { op: "detach_audio", id: "v2" }]);
+check("detach_audio gives the new audio clip its picture's stamp", all().filter((c: any) => c.group?.id === "gE").length === 2, all().map((c: any) => [c.id, c.group?.id]));
+
+console.log("regroup: arguments");
+check("ids and from together are rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", ids: ["v2"], from: "gE" }]), "bad_arg"));
+check("neither ids nor from is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound" }]), "missing_arg"));
+check("from with no stamped clips is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "nope" }]), "no_group"));
+check("from while that compound is on the timeline is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "gD" }]), "exists"));
+check("a group without an id is rejected by validation", await rejects(() => api.apply(Q, [{ op: "update_clip", id: "v2", set: { group: { id: null } } }]), "validation_failed"));
+
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

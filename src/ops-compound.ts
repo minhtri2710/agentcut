@@ -39,15 +39,34 @@ export function registerCompoundOps(h: OpHelpers) {
   h.PREFIX.compound ??= "cmp";
   const fillGaps = (tl: Timeline, gaps: Clip[]) => gaps.map((g) => (g.id = newId(tl, "gap")));
 
+  /** the clips (and gaps) expand_compound stamped with `group.id === from`, on the group's home track first (the first id picks the compound's track) */
+  const stampedIds = (tl: Timeline, from: string): { ids: string[]; name?: string } => {
+    const found = tl.tracks.flatMap((tr) => tr.clips.filter((c) => c.group?.id === from).map((c) => ({ tr, c })));
+    if (!found.length) throw new EditError(`no clips are stamped with group '${from}'`, "no_group", "from regroups the clips expand_compound placed; see each clip's 'group' field, or pass ids");
+    const home = found[0].c.group.track, rank = (f: { tr: Track }) => (f.tr.id === home ? 0 : 1);
+    return { ids: found.map((f, i) => ({ f, i })).sort((x, y) => rank(x.f) - rank(y.f) || x.i - y.i).map((x) => x.f.c.id), name: found.find((f) => f.c.group.name)?.c.group.name };
+  };
+
   h.op("make_compound", "Group clips into one compound clip (Final Cut compound clip / CapCut group) that moves, trims, fades and gets effects as one " +
     "layer. Nested tracks mirror the source tracks; the compound goes where the first listed clip was (selected clips on a magnetic track must be " +
     "contiguous; there the selection must not extend before/after them). Other magnetic tracks keep their timing with a gap; clips outside the " +
-    "selection attached to selected clips are detached (reported). Undo with expand_compound.",
-    { ids: "clip ids or refs like 'main#1' (first one picks the track)", id: "compound id (auto cmpN)", name: "label" }, (p, tl, a) => {
+    "selection attached to selected clips are detached (reported). Undo with expand_compound. `from` regroups an expanded compound: it takes every " +
+    "top-level clip and gap that expand_compound stamped with that compound id (field group; it survives split_clip), gives the compound that id and " +
+    "name, and clears the stamps.",
+    { ids: "clip ids or refs like 'main#1' (first one picks the track); or use from", from: "id of an expanded compound: regroup the clips its expand_compound stamped (instead of ids)",
+      id: "compound id (auto cmpN; with from: that id)", name: "label (with from: the compound's old name)" }, (p, tl, a) => {
       resolve(tl);
       const refs: unknown[] = Array.isArray(a.ids) ? a.ids : typeof a.ids === "string" ? a.ids.split(",") : [];
-      if (!refs.length) throw new EditError("missing 'ids'", "missing_arg", "ids: [clip ids or refs like 'main#1'], at least one");
-      const ids = [...new Set(refs.map((r) => h.resolveRef(tl, String(r).trim())))];
+      if (a.from !== undefined && refs.length) throw new EditError("pass either 'ids' or 'from', not both", "bad_arg", "ids groups the clips you list; from regroups an expanded compound");
+      if (a.from === undefined && !refs.length) throw new EditError("missing 'ids' or 'from'", "missing_arg", "ids: [clip ids or refs like 'main#1'], at least one; or from: the id of an expanded compound");
+      let regroup: { ids: string[]; name?: string } | undefined;
+      if (a.from !== undefined) {
+        const from = String(a.from);
+        if ([...allClips(tl.tracks)].some((c) => c.id === from)) throw new EditError(`compound '${from}' is already on the timeline`, "exists", "nothing to regroup: expand_compound it first, or pass ids");
+        regroup = stampedIds(tl, from);
+        a = { ...a, id: a.id ?? from, name: a.name ?? regroup.name };
+      }
+      const ids = [...new Set((regroup?.ids ?? refs.map(String)).map((r) => h.resolveRef(tl, r.trim())))];
       const picked = ids.map((id) => findClip(tl, id)[2]), sel = new Set(ids);
       const home = findClip(tl, ids[0])[0];
       if (a.id && (tl.tracks.some((t) => t.id === a.id) || [...allClips(tl.tracks)].some((c) => c.id === a.id))) throw new EditError(`id '${a.id}' already exists`, "exists");
@@ -63,7 +82,7 @@ export function registerCompoundOps(h: OpHelpers) {
         const clips = idx.map((i) => {
           const n = structuredClone(tr.clips[i]);
           n.start = round6(clipStart(n) - s0);
-          delete n.until_end;
+          delete n.until_end; delete n.group;
           if (tr.magnetic || (n.attach_to && !sel.has(n.attach_to))) detach(n);
           return n;
         });
@@ -96,7 +115,7 @@ export function registerCompoundOps(h: OpHelpers) {
 
   h.op("expand_compound", "Break a compound clip apart: its nested clips go back onto the same-id tracks (created if missing) at their current " +
     "timeline positions, trimmed to the visible part (in/duration). On the compound's magnetic track they are spliced in its place (gaps fill holes). " +
-    "Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
+    "Every clip and gap it places gets a `group` stamp {id, name, track}; make_compound from=<id> regroups them. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
@@ -106,6 +125,7 @@ export function registerCompoundOps(h: OpHelpers) {
       if (home.magnetic) pin(next, base + dur - clipStart(next ?? c));
       home.clips.splice(ci, 1);
       const placed = new Map<string, Clip>(), dropped: string[] = [], created: string[] = [], gaps: Clip[] = [];
+      const stamp = () => ({ id: c.id, ...(c.name ? { name: c.name } : {}), track: home.id }); // make_compound from=<id> regroups what carries it
       const lists: [Track, Clip[]][] = [];
       for (const nt of (c.tracks ?? []) as Track[]) {
         const clips: Clip[] = [];
@@ -114,6 +134,7 @@ export function registerCompoundOps(h: OpHelpers) {
           if (x1 - x0 < 1e-3) { dropped.push(n0.id); continue; }
           const n = structuredClone(n0);
           trim(n, x0 - s, e - x1);
+          n.group = stamp();
           n.start = round6(base + x0 - w0);
           clips.push(n); placed.set(n.id, n);
         }
@@ -156,6 +177,7 @@ export function registerCompoundOps(h: OpHelpers) {
         tr.clips.push(...clips);
         tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
       }
+      for (const g of gaps) g.group = stamp();
       fillGaps(tl, gaps);
       const detached: string[] = [];
       for (const [, , , x] of iterClips(tl)) if (x.attach_to === c.id) { detach(x); detached.push(x.id); }

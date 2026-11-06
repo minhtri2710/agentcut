@@ -166,12 +166,12 @@ try {
   await until("expand button", `$("expc").style.display === ""`);
   await js(`$("expc").click()`);
   check("Expand -> expand_compound", await untilFile((tl) => !clipOf(tl, cmpId) && clipOf(tl, "img1") && clipOf(tl, "vid2")));
-  await until("regroup", `$("regroup").style.display === ""`);
+  await until("regroup", `!!document.querySelector('#regroups button[data-group="${cmpId}"]')`);
   await click(`[data-id="img1"]`);
   await js(`(function(){var c=JSON.parse($("insp").value); c.duration=1.2; $("insp").value=JSON.stringify(c); $("applyc").click();})()`);
   check("edit the expanded clip", await untilFile((tl) => clipOf(tl, "img1")?.duration === 1.2));
-  await until("regroup after edit", `$("regroup").style.display === "" && S.revision === ${load().revision}`);
-  await js(`$("regroup").click()`);
+  await until("regroup after edit", `!!document.querySelector('#regroups button') && S.revision === ${load().revision}`);
+  await js(`document.querySelector('#regroups button[data-group="${cmpId}"]').click()`);
   check("Regroup -> make_compound with the same id + name", await untilFile((tl) => {
     const c = clipOf(tl, cmpId);
     return c?.type === "compound" && c.name === "tail" && c.tracks.flatMap((t: any) => t.clips).some((x: any) => x.id === "img1" && x.duration === 1.2);
@@ -182,6 +182,39 @@ try {
   await until("group", `$("group").style.display === "" && $("group").textContent.indexOf("2") > 0`) || console.log(await js(`[sel, picked.join(), $("group").textContent]`));
   await js(`$("group").click()`);
   check("shift-select + Group -> make_compound", await untilFile((tl) => tl.tracks.find((t: any) => t.id === "main").clips.length === 2 && !clipOf(tl, "vid1")));
+
+  console.log("regroup buttons come from the project");
+  const btns = `[].map.call(document.querySelectorAll("#regroups button"), function (b) { return b.dataset.group; }).sort().join()`;
+  check("no button once everything is regrouped", await until("none", `${btns} === ""`), await js(btns));
+  await api.apply(dir, [
+    { op: "add_clip", track: "q", type: "color", color: "red", id: "qa", at: 0, duration: 1 },
+    { op: "add_clip", track: "q", type: "color", color: "blue", id: "qb", at: 1, duration: 1 },
+    { op: "add_clip", track: "q", type: "color", color: "green", id: "qc", at: 2, duration: 1 },
+    { op: "make_compound", ids: ["qa", "qb"], id: "ga" },
+    { op: "make_compound", ids: ["qc"], id: "gb", name: "solo" },
+  ]);
+  await until("compounds", `!!findIn(S.timeline.tracks, "ga") && !!findIn(S.timeline.tracks, "gb")`);
+  await click(`[data-id="ga"]`);
+  await until("expand ga", `$("expc").style.display === ""`);
+  await js(`$("expc").click()`);
+  await untilFile((tl) => !clipOf(tl, "ga") && clipOf(tl, "qa"));
+  await until("one button", `${btns} === "ga" && S.revision === ${load().revision}`);
+  // an expand made through the API (an agent, not the page) shows its button too
+  await api.apply(dir, [{ op: "expand_compound", id: "gb" }]);
+  check("two expands (page + agent) give two Regroup buttons", await until("two buttons", `${btns} === "ga,gb"`), await js(btns));
+  await js(`location.reload()`);
+  check("the buttons survive a page reload", await until("reloaded", `S && ${btns} === "ga,gb"`), await js(`S ? ${btns} : "no state"`));
+  await api.apply(dir, [{ op: "split_clip", id: "qb", at: 1.5 }]);
+  await until("split seen", `document.querySelectorAll('[data-id="qb"]').length === 1 && S.revision === ${load().revision}`);
+  await js(`document.querySelector('#regroups button[data-group="ga"]').click()`);
+  check("split, then Regroup takes both halves", await untilFile((tl) => {
+    const c = clipOf(tl, "ga");
+    return c?.type === "compound" && c.tracks.flatMap((t: any) => t.clips).length === 3 && !tl.tracks.flatMap((t: any) => t.clips).some((x: any) => x.group?.id === "ga");
+  }), clipOf(load(), "ga"));
+  check("the other group keeps its button", await until("gb only", `${btns} === "gb"`), await js(btns));
+  await js(`document.querySelector('#regroups button[data-group="gb"]').click()`);
+  check("Regroup keeps the compound's name", await untilFile((tl) => clipOf(tl, "gb")?.name === "solo"), clipOf(load(), "gb"));
+  await until("regrouped all", `${btns} === "" && S.revision === ${load().revision}`);
 
   console.log("retimed compounds in the nested view");
   // expected placement = render's formula (render.ts subT): a nested time u plays at s + (u - in) / speed, level by level

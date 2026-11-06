@@ -84,9 +84,10 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
 {"op":"make_compound","ids":["main#1","main#2","txt1"],"name":"intro"}   group clips into ONE compound clip (move/trim/fade/mask/effects as a unit)
-{"op":"expand_compound","id":"cmp1"}                put the clips back
+{"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track})
+{"op":"make_compound","from":"cmp1"}                regroup: takes every clip/gap stamped group.id "cmp1" (also after split_clip), same id + name, clears the stamps
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
-     regroup. Nested audio is mixed (compound volume/muted apply) at compound speed 1.
+     regroup (from, not ids; duplicate_clip drops the stamp). Nested audio is mixed (compound volume/muted apply) at compound speed 1.
 
 ## Audio (pro)
 Clip fields (video/audio): denoise true|0..1 · eq "voice_clarity"|"low_cut"|"de_ess" or bands [{type:"high_pass",f:80},{type:"peak",f:3000,gain:3,q:1},

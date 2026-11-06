@@ -96,6 +96,7 @@ export function registerEditOps(h: OpHelpers) {
       if ((AUDIO_FX_KEYS as readonly string[]).includes(k)) delete v[k]; // the sound now lives on aud; the muted video keeps no audio fields
     }
     if (v.keyframes?.volume) aud.keyframes = { volume: structuredClone(v.keyframes.volume) };
+    if (v.group) aud.group = structuredClone(v.group); // the sound belongs to the same expanded compound
     tr.clips.push(aud);
     v.muted = true;
     resolve(tl);

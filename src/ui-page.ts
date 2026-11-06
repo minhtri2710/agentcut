@@ -65,7 +65,7 @@ progress{width:100%}
     <textarea id="insp" spellcheck="false" placeholder="clip JSON"></textarea>
     <div><button id="applyc" disabled>Apply clip</button> <button id="delc" disabled>Delete clip</button></div>
     <div id="cbtns"><button id="openc" style="display:none">Open compound</button> <button id="expc" style="display:none">Expand</button>
-      <button id="group" style="display:none">Group</button> <button id="regroup" style="display:none">Regroup</button></div>
+      <button id="group" style="display:none">Group</button> <span id="regroups"></span></div>
     <div id="kfbox"></div>
     <div id="msg"></div>
     <div class="mut">Ops batch (JSON list), applied atomically:</div>
@@ -84,7 +84,7 @@ progress{width:100%}
 "use strict";
 var $ = function (id) { return document.getElementById(id); };
 var ENUM = ${JSON.stringify({ animatable: ANIMATABLE, easings: EASINGS })};
-var S = null, V = null, kfProp = "opacity", path = [], picked = [], regroup = null, sel = null, inspBase = "", t = 0, pps = 80, LABEL = 90, LANE = 44;
+var S = null, V = null, kfProp = "opacity", path = [], picked = [], sel = null, inspBase = "", t = 0, pps = 80, LABEL = 90, LANE = 44;
 var COL = { video: "#3b6fb6", image: "#2f8f83", text: "#a35bb8", captions: "#b8865b", shape: "#7b8f2f", color: "#8f2f5a",
   lottie: "#2f5a8f", audio: "#2f8f4a", gap: "#444", compound: "#b85b5b" };
 
@@ -201,7 +201,7 @@ function drawTimeline() {
     dot.setAttribute("cx", x); dot.setAttribute("cy", y2); dot.setAttribute("r", 3); dot.setAttribute("fill", "#fc3");
     svg.appendChild(ln); svg.appendChild(dot);
   }); });
-  $("ph").style.height = (H + 20) + "px"; movePlayhead();
+  $("ph").style.height = (H + 20) + "px"; movePlayhead(); drawRegroup();
 }
 function resolveRef(ref) {
   var m = /^(.+)#(-?\\d+)$/.exec(ref);
@@ -335,35 +335,31 @@ function select(id) {
   $("openc").style.display = cmp ? "" : "none";
   $("expc").style.display = cmp && !V.nested ? "" : "none";
   var g = groupIds(); $("group").style.display = g.length && !V.nested ? "" : "none"; $("group").textContent = "Group " + g.length + " clip(s)";
-  var rg = regroupIds(); $("regroup").style.display = rg ? "" : "none"; if (rg) $("regroup").textContent = "Regroup " + regroup.id;
   drawKf(c);
 }
 
 // ------------------------------------------------------------ compound clips (nested edits: expand, edit, regroup)
 function groupIds() { return picked.length ? picked.slice() : sel && findClip(sel) && !V.nested ? [sel] : []; }
-/** ids of the last expanded compound still on the timeline, the ones on its home track first (make_compound: first id picks the track) */
-function regroupIds() {
-  if (!regroup || V.nested) return null;
-  var ids = regroup.ids.filter(function (id) { return findIn(S.timeline.tracks, id); });
-  if (!ids.length || findIn(S.timeline.tracks, regroup.id)) return null;
-  var home = function (id) { return findIn(S.timeline.tracks, id).tr.id === regroup.track ? 0 : 1; };
-  return ids.sort(function (a, b) { return home(a) - home(b); });
+/** one "Regroup <id>" button per expanded compound still on the timeline: expand_compound stamps what it places with group.id, make_compound from=<id> takes it back */
+function drawRegroup() {
+  var box = $("regroups"), seen = {}; box.innerHTML = "";
+  if (V.nested) return;
+  S.timeline.tracks.forEach(function (tr) { tr.clips.forEach(function (c) {
+    var g = c.group && c.group.id; if (!g || seen[g] || findIn(S.timeline.tracks, g)) return;
+    seen[g] = 1;
+    var b = el("button", { textContent: "Regroup " + g, onclick: function () {
+      ops([{ op: "make_compound", from: g }], "regroup " + g).then(function (r) { if (r) select(r.results[0].id); }); } });
+    b.dataset.group = g; box.appendChild(b);
+  }); });
 }
 $("openc").addEventListener("click", function () { openPath(path.concat([sel])); });
 $("expc").addEventListener("click", function () {
-  var c = findClip(sel), home = trackOf(sel).id;
-  ops([{ op: "expand_compound", id: c.id }], "expand " + c.id).then(function (r) {
-    if (!r) return; var x = r.results[0];
-    regroup = { id: c.id, name: c.name, track: home, ids: x.ids.concat(x.gaps) }; picked = []; select(null);
-  });
+  var c = findClip(sel);
+  ops([{ op: "expand_compound", id: c.id }], "expand " + c.id).then(function (r) { if (r) { picked = []; select(null); } });
 });
 $("group").addEventListener("click", function () {
   var ids = groupIds();
   ops([{ op: "make_compound", ids: ids }], "group " + ids.join(",")).then(function (r) { if (r) { picked = []; select(r.results[0].id); } });
-});
-$("regroup").addEventListener("click", function () {
-  var o = { op: "make_compound", ids: regroupIds(), id: regroup.id }; if (regroup.name) o.name = regroup.name;
-  ops([o], "regroup " + regroup.id).then(function (r) { if (r) { regroup = null; select(r.results[0].id); } });
 });
 
 // ------------------------------------------------------------ keyframes (every edit = one set_keyframes op per prop)

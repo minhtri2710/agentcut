@@ -76,6 +76,7 @@ export const COMMON_FIELDS: F = {
   duration: [T("number", "string"), "seconds on the timeline"],
   enabled: [T("boolean"), "false hides/mutes the clip"],
   note: [T("string"), "free-form note, ignored by the renderer"],
+  group: [T("object"), "{id, name?, track}: written by expand_compound on every clip and gap it places; make_compound from=<id> regroups them (split_clip keeps it, duplicate_clip drops it)"],
   preset: [T("string"), "style preset expanded when the clip is added (see capabilities.presets)"],
   until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark)"],
   attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
@@ -504,6 +505,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      if (c.group && typeof c.group === "object" && (typeof c.group.id !== "string" || !c.group.id)) issues.push({ level: "error", path: `${p}.group.id`, message: "group needs an id (the expanded compound's id)", hint: "group: {id, name?, track}" });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
       if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
       else if (dup(c.id)) issues.push({ level: "error", path: `${p}.id`, message: `duplicate id '${c.id}' (also ${dup(c.id)})`, hint: "clip ids must be unique across the project, including inside compound clips" });
