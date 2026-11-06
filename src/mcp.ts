@@ -105,15 +105,16 @@ export function buildServer() {
     if (!j) return { content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true };
     const until = Date.now() + secs * 1000;
     while (j.status === "running" && Date.now() < until) await new Promise((r) => setTimeout(r, 300));
-    const { promise, ...pub } = j;
+    const { promise, ctl, ...pub } = j;
     return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })] };
   };
-  /** background job (render, prepare): progress 0..1, polled with render_status */
-  const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void) => Promise<unknown>) => {
+  /** background job (render, prepare): progress 0..1, polled with render_status; `ctl` aborts it (shutdown) */
+  const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void, signal: AbortSignal) => Promise<unknown>) => {
     const id = Math.random().toString(36).slice(2, 10);
-    const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project };
+    const ctl = new AbortController();
+    const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project, ctl };
     jobs.set(id, job);
-    job.promise = run((d, n) => { job.progress = +(d / n).toFixed(3); })
+    job.promise = run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal)
       .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
       .finally(() => { job.finished = Date.now(); });
     return id;
@@ -124,7 +125,7 @@ export function buildServer() {
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
-    const id = startJob("render", project, (progress) => api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress }));
+    const id = startJob("render", project, (progress, signal) => api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress, signal }));
     return waitJob(id, a.wait_seconds);
   });
   s.registerTool("prepare", {
@@ -133,7 +134,7 @@ export function buildServer() {
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); if (a.status_only) return ok(api.prepareStatus(project)); } catch (e) { return fail(e); }
-    return waitJob(startJob("prepare", project, (progress) => api.prepare(project, { progress })), a.wait_seconds);
+    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal })), a.wait_seconds);
   });
   s.registerTool("cache", {
     description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes; action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'). previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",
@@ -181,8 +182,24 @@ export function buildServer() {
   return s;
 }
 
+// Inside the SDK client's close sequence (stdin end, 2 s, SIGTERM, 2 s, SIGKILL); children get 1.5 s of it (media.ts stopOnAbort).
+const SHUTDOWN_MS = 1900;
+let stopping: Promise<void> | undefined;
+/** The one stop path (stdin EOF, SIGTERM, SIGINT, SIGHUP): abort every running job, wait a bounded time for their cleanup
+ *  (children stopped, part files and render temp removed), then exit. Idempotent: a second signal during shutdown does nothing. */
+export function shutdown(code: number) {
+  stopping ??= (async () => {
+    const running = [...jobs.values()].filter((j) => j.status === "running");
+    for (const j of running) j.ctl.abort(new EditError("the server is shutting down", "aborted"));
+    await Promise.race([Promise.allSettled(running.map((j) => j.promise)), new Promise((r) => setTimeout(r, SHUTDOWN_MS))]);
+    process.exit(code);
+  })();
+}
+
 export async function startMcp() {
   const server = buildServer();
+  for (const [sig, n] of [["SIGTERM", 15], ["SIGINT", 2], ["SIGHUP", 1]] as const) process.on(sig, () => shutdown(128 + n));
+  process.stdin.on("end", () => shutdown(0)).on("close", () => shutdown(0));
   await server.connect(new StdioServerTransport());
 }
 

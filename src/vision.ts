@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
 import { VISION_PY } from "./vision-py.ts";
 
@@ -45,7 +46,7 @@ export const helperScript = (root?: string) => join(cacheDir(root), `vision-${sc
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
 const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
 
-function runHelper(d: Derived, out: string, onFrames?: (n: number) => void): Promise<any> {
+function runHelper(d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   const dir = cacheDir(d.root);
   mkdirSync(dir, { recursive: true });
   const script = helperScript(d.root);
@@ -53,7 +54,10 @@ function runHelper(d: Derived, out: string, onFrames?: (n: number) => void): Pro
   const uv = process.env.AGENTCUT_UV || "uv";
   const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
   return new Promise((res, rej) => {
-    const ch = spawn(uv, ["run", "--no-project", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { stdio: ["ignore", "pipe", "pipe"] });
+    const ch = spawn(uv, ["run", "--no-project", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { stdio: ["pipe", "pipe", "pipe"] });
+    // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)
+    ch.stdin.on("error", () => {});
+    stopOnAbort(ch, signal);
     let stdout = "", err = "", partial = "";
     ch.stdout.on("data", (b) => { stdout += b; });
     ch.stderr.on("data", (b) => {
@@ -67,6 +71,7 @@ function runHelper(d: Derived, out: string, onFrames?: (n: number) => void): Pro
         (job.cmd === "matte" ? "rembg + onnxruntime and a ~5 MB segmentation model" : "opencv (~40 MB)"))
       : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
     ch.on("close", (code) => {
+      if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
         "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"));
       try { res(JSON.parse(stdout)); } catch { rej(new EditError(`vision helper printed no JSON: ${stdout.slice(0, 200)}`, "vision_failed")); }
@@ -75,11 +80,12 @@ function runHelper(d: Derived, out: string, onFrames?: (n: number) => void): Pro
 }
 
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file. */
-export async function compute(d: Derived, onFrames?: (n: number) => void): Promise<{ cached: boolean }> {
+export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<{ cached: boolean }> {
+  signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const tmp = d.file.replace(/(\.\w+)$/, `.part-${process.pid}-${randomBytes(3).toString("hex")}$1`);
   try {
-    const r = await runHelper(d, tmp, onFrames);
+    const r = await runHelper(d, tmp, onFrames, signal);
     if (d.kind === "matte") renameSync(tmp, d.file);
     else writeAtomic(d.file, JSON.stringify(r));
   } finally { rmSync(tmp, { force: true }); }

@@ -261,10 +261,35 @@ console.log("prepare vs concurrent edits");
   check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && (api.info(P3) as any).revision === rev, { code: r.code, rev, now: (api.info(P3) as any).revision });
 }
 
+// ---------------------------------------------------------------- the server as a raw child (stdin EOF, signals, exit code)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const until = async (cond: () => unknown, ms: number) => { const t = performance.now(); while (performance.now() - t < ms && !cond()) await sleep(25); return !!cond(); };
+const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; } };
+const kids = (pid: number): number[] => spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).map(Number);
+const tree = (pid: number): number[] => kids(pid).flatMap((k) => [k, ...tree(k)]);
+const osTmp = join(tmp, "os-tmp"); // TMPDIR of every server below: nothing of AgentCut may land here
+mkdirSync(osTmp);
+function mcpProc(env: Record<string, string>) {
+  const child = spawn(process.execPath, [resolve(import.meta.dir, "../src/mcp.ts")], { env: { ...(process.env as Record<string, string>), TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+  let buf = "", id = 0, exit: { code: number | null; signal: string | null; at: number } | null = null;
+  const waiting = new Map<number, (m: any) => void>();
+  child.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { const m = JSON.parse(l); waiting.get(m.id)?.(m); waiting.delete(m.id); } } });
+  child.on("exit", (code, signal) => { exit = { code, signal, at: performance.now() }; });
+  const rpc = (method: string, params: unknown) => new Promise<any>((res) => { const i = ++id; waiting.set(i, res); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method, params }) + "\n"); });
+  return {
+    child, pid: child.pid!, get exit() { return exit; },
+    init: async () => { await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "jobs-test", version: "1" } }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n"); },
+    call: async (name: string, args: Record<string, unknown> = {}) => JSON.parse((await rpc("tools/call", { name, arguments: args })).result.content.find((c: any) => c.type === "text").text),
+  };
+}
+/** what a render left in <project>/.agentcut/tmp */
+const renderTmpLeft = (proj: string) => (existsSync(join(proj, ".agentcut", "tmp")) ? readdirSync(join(proj, ".agentcut", "tmp")) : []);
+const partsIn = (d: string) => (existsSync(d) ? readdirSync(d).filter((f) => f.includes(".part-")) : []);
+
 // a render never leaves a partial or truncated file at the output path: it writes <out>.part-<pid>-<rand><ext> and renames on success
 console.log("render output is atomic");
 {
-  const P4 = join(tmp, "proj-atomic"), dir = join(tmp, "atomic-out"), partsIn = (d: string) => readdirSync(d).filter((f) => f.includes(".part-"));
+  const P4 = join(tmp, "proj-atomic"), dir = join(tmp, "atomic-out");
   mkdirSync(dir);
   api.create(P4, { preset: "720p" });
   await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }]);
@@ -285,26 +310,115 @@ console.log("render output is atomic");
     check(`${name}: output is complete and no part file is left`, r.output === f && statSync(f).size === r.size_bytes && r.size_bytes > 0 && !partsIn(dir).length, { r: r.output, files: readdirSync(dir) });
   }
 
-  // R1b: the server is stopped (SIGTERM) while a one-worker render runs: the output path holds no truncated file
-  const big = join(m, "big.mp4"), killed = join(tmp, "killed-out"), ko = join(killed, "out.mp4");
+  // R1b: the server is stopped (SIGTERM) while a one-worker render runs: nothing is left at the output path, no part file, no render temp
+  const big = join(m, "big.mp4"), killed = join(tmp, "killed-out"), ko = join(killed, "out.mp4"), P5 = join(tmp, "proj-term");
   ff("-f", "lavfi", "-i", "testsrc2=s=3840x2160:r=30:d=6", "-pix_fmt", "yuv420p", big);
-  const client = new Client({ name: "jobs-test-term", version: "1" });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve(import.meta.dir, "../src/mcp.ts")], env: { ...(process.env as Record<string, string>), AGENTCUT_UV: fake } });
-  await client.connect(transport);
-  const pid = transport.pid!;
-  const call = async (name: string, args: Record<string, unknown> = {}) => JSON.parse(((await client.callTool({ name, arguments: args })) as any).content.find((c: any) => c.type === "text").text);
-  const P5 = join(tmp, "proj-term");
-  await call("create_project", { path: P5, preset: "4k" });
-  await call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }] });
-  const job = await call("render", { output: ko, wait_seconds: 0 });
-  const t = performance.now();
-  while (performance.now() - t < 30_000 && !(existsSync(killed) && partsIn(killed).length)) await new Promise((r) => setTimeout(r, 25));
-  const sawPart = existsSync(killed) && partsIn(killed).length > 0;
-  process.kill(pid, "SIGTERM");
-  while (performance.now() - t < 40_000) { try { process.kill(pid, 0); } catch { break; } await new Promise((r) => setTimeout(r, 25)); }
-  await new Promise((r) => setTimeout(r, 700)); // the encoder finishes its (truncated) part after its stdin closed
-  await client.close().catch(() => {});
-  check("R1b: SIGTERM mid-render: a part file was in progress, and nothing exists at the output path", job.ok && sawPart && !existsSync(ko), { job, sawPart, files: existsSync(killed) ? readdirSync(killed) : null });
+  const srv = mcpProc({ AGENTCUT_UV: fake });
+  await srv.init();
+  await srv.call("create_project", { path: P5, preset: "4k" });
+  await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }] });
+  const job = await srv.call("render", { output: ko, wait_seconds: 0 });
+  const sawPart = await until(() => partsIn(killed).length > 0, 30_000);
+  process.kill(srv.pid, "SIGTERM");
+  await until(() => srv.exit, 10_000);
+  await sleep(700);
+  check("R1b: SIGTERM mid-render: a part file was in progress; afterwards no output, no part file, no render temp", job.ok && sawPart && !existsSync(ko) && !partsIn(killed).length && !renderTmpLeft(P5).length, { job, sawPart, out: existsSync(killed) ? readdirSync(killed) : null, tmp: renderTmpLeft(P5), exit: srv.exit });
+}
+
+// the server stops (stdin EOF, SIGTERM) while a job runs: every job is aborted, children and temp files are gone, and it exits inside the SDK client's 2 s window
+console.log("shutdown while a job runs");
+const slowUv = join(tmp, "slow-uv.mjs"), uvLog = join(tmp, "slow-uv.log");
+// behaves like vision-py.ts matte(): decoder ffmpeg -> this process -> encoder ffmpeg -> job.out, ~25 s, no progress lines.
+// FAKE_UV_MODE: silent = exits on SIGTERM or stdin EOF; stubborn = ignores SIGTERM, exits on stdin EOF; deaf = ignores both (needs SIGKILL)
+writeFileSync(slowUv, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+const mode = process.env.FAKE_UV_MODE, job = JSON.parse(process.argv.at(-1));
+if (mode === "stubborn" || mode === "deaf") process.on("SIGTERM", () => {});
+if (mode !== "deaf") { process.stdin.on("end", () => process.exit(143)); process.stdin.resume(); }
+const dec = spawn("ffmpeg", ["-v", "error", "-nostdin", "-re", "-f", "lavfi", "-i", "testsrc2=s=" + job.w + "x" + job.h + ":r=30:d=25", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "ignore"] });
+const enc = spawn("ffmpeg", ["-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", job.w + "x" + job.h, "-framerate", "30", "-i", "-", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov", job.out], { stdio: ["pipe", "ignore", "ignore"] });
+appendFileSync(process.env.FAKE_UV_LOG, process.pid + " " + dec.pid + " " + enc.pid + "\\n");
+enc.stdin.on("error", () => {});
+dec.stdout.pipe(enc.stdin);
+enc.on("exit", () => { process.stdout.write(JSON.stringify({ out: job.out, frames: 750 })); process.exit(0); });
+`);
+chmodSync(slowUv, 0o755);
+const m12 = join(m, "long.mp4");
+ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=12", "-pix_fmt", "yuv420p", m12);
+let caseNo = 0;
+/** start `kind` (prepare: a slow matte; render: a multi-worker render), wait until it is visibly working, stop the server by `how`, report what is left */
+async function stopDuring(kind: "prepare" | "render", how: "term" | "eof", mode = "silent") {
+  const proj = join(tmp, `proj-stop-${++caseNo}`), outDir = join(tmp, `stop-out-${caseNo}`), out = join(outDir, "out.mp4"), cacheD = join(proj, ".agentcut", "cache");
+  rmSync(uvLog, { force: true });
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: mode, FAKE_UV_LOG: uvLog });
+  await srv.init();
+  await srv.call("create_project", { path: proj, preset: "720p" });
+  await srv.call("apply_ops", { ops: kind === "prepare"
+    ? [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]
+    : [{ op: "add_clip", track: "main", src: m12, duration: 12 }] });
+  const job = await srv.call(kind, kind === "prepare" ? { wait_seconds: 0 } : { output: out, wait_seconds: 0 });
+  const working = kind === "prepare"
+    ? await until(() => existsSync(uvLog) && partsIn(cacheD).length, 30_000)
+    : await until(() => renderTmpLeft(proj).some((d) => existsSync(join(proj, ".agentcut", "tmp", d)) && readdirSync(join(proj, ".agentcut", "tmp", d)).some((f) => f.startsWith("seg"))) && tree(srv.pid).length >= 3, 60_000);
+  const logged = existsSync(uvLog) ? readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number) : [];
+  const procs = [...new Set([...tree(srv.pid), ...logged])];
+  const t0 = performance.now();
+  if (how === "term") process.kill(srv.pid, "SIGTERM"); else srv.child.stdin.end();
+  const exited = await until(() => srv.exit, 10_000);
+  const exitMs = srv.exit ? srv.exit.at - t0 : Infinity;
+  const gone = await until(() => procs.every((p) => !isAlive(p)), Math.max(0, 3000 - (performance.now() - t0)));
+  const left = procs.filter(isAlive);
+  for (const p of left) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } } // a failing test must not leave processes behind
+  return { job, working, procs, exited, exitMs, code: srv.exit?.code, signal: srv.exit?.signal, gone, left, parts: partsIn(cacheD), tmpLeft: renderTmpLeft(proj), outLeft: existsSync(outDir) ? readdirSync(outDir) : [],
+    osTmpLeft: readdirSync(osTmp).filter((f) => f.startsWith("agentcut")) };
+}
+const clean = (r: Awaited<ReturnType<typeof stopDuring>>) => !r.parts.length && !r.tmpLeft.length && !r.outLeft.length && !r.osTmpLeft.length;
+const sec = (r: { exitMs: number }) => `${(r.exitMs / 1000).toFixed(2)}s`;
+for (const [kind, how, mode, name] of [
+  ["prepare", "term", "silent", "R2: SIGTERM during a slow prepare"],
+  ["render", "term", "silent", "R2: SIGTERM during a multi-worker render"],
+  ["prepare", "eof", "silent", "R6: stdin EOF during a slow prepare"],
+  ["render", "eof", "silent", "R6: stdin EOF during a multi-worker render"],
+] as const) {
+  const r = await stopDuring(kind, how, mode);
+  const want = how === "term" ? 143 : 0;
+  check(`${name}: exits with code ${want} in ${sec(r)}, children dead, no part file, no render temp, no output`,
+    r.working && r.exited && r.exitMs < 3000 && r.code === want && r.gone && clean(r), r);
+}
+for (const mode of ["silent", "stubborn", "deaf"]) {
+  const r = await stopDuring("prepare", "term", mode);
+  check(`R3: SIGTERM, helper '${mode}' (${{ silent: "dies on SIGTERM", stubborn: "ignores SIGTERM, leaves on stdin EOF", deaf: "ignores both: SIGKILL" }[mode]}): the helper and its ffmpeg children (${r.procs.length} processes) are dead, server exited in ${sec(r)}`,
+    r.working && r.procs.length >= 3 && r.exited && r.exitMs < 3000 && r.code === 143 && r.gone && clean(r), r);
+}
+
+// a dead process's leftovers are swept at the next prepare and render; nothing else is touched
+console.log("sweep of a dead process's leftovers");
+{
+  const P6 = join(tmp, "proj-atomic"), cacheD = join(P6, ".agentcut", "cache"), tmpD = join(P6, ".agentcut", "tmp");
+  const dead = deadPid(), me = process.pid, outside = join(tmp, "sweep-outside");
+  mkdirSync(cacheD, { recursive: true }); mkdirSync(tmpD, { recursive: true }); mkdirSync(join(outside, "d"), { recursive: true });
+  writeFileSync(join(outside, "d", "sentinel"), "x");
+  const gone = [join(cacheD, `matte-aaa.part-${dead}-1.mov`), join(cacheD, `subject-bbb.part-${dead}-abcdef.json`), join(tmpD, `render-${dead}-abc123`)];
+  const kept = [join(cacheD, `matte-aaa.part-${me}-1.mov`), join(cacheD, `matte-aaa.part-99999999999-1.mov`), join(tmpD, `render-${me}-abc123`), join(tmpD, `render-99999999999-abc123`),
+    join(tmpD, `render-${dead}-abc123.txt`), join(tmpD, `render-${dead}-abc12`), join(tmpD, "other"), join(P6, `stray.part-${dead}-1.mov`),
+    join(P6, "previews", `p.part-${dead}-1.bin`), join(P6, "renders", `r.part-${dead}-1.mp4`), join(P6, "media", `media.part-${dead}-1.mp4`)];
+  const plant = (fs: string[]) => { for (const f of fs) { mkdirSync(join(f, ".."), { recursive: true }); if (/render-\d+-abc123$|other$|abc12$/.test(f)) { mkdirSync(f, { recursive: true }); writeFileSync(join(f, "seg000.mkv"), "x".repeat(2000)); } else writeFileSync(f, "x"); } };
+  const info0: any = api.cache.info(P6);
+  plant([join(tmpD, `render-${me}-abc123`), join(tmpD, "other")]);
+  const info1: any = api.cache.info(P6);
+  check("cache info does not count .agentcut/tmp", info1.total.files === info0.total.files && info1.total.mb === info0.total.mb, { info0: info0.total, info1: info1.total });
+  plant([...gone, ...kept]);
+  symlinkSync(join(outside, "d"), join(tmpD, `render-${dead}-lnk123`)); // a symlink with a dead pid in its name: never followed, never removed
+  for (const [what, run] of [["prepare", () => api.prepare(P6)], ["render", () => api.render(P6, { out: join(tmp, "sweep-out.mp4"), quality: "draft", sheet: false, workers: 1, end: 0.5 })]] as const) {
+    if (what === "render") plant(gone); // plant again for the second entry point
+    await run();
+    check(`R5: ${what} sweeps the dead pid's .part files and render dirs`, gone.every((f) => !existsSync(f)), gone.filter(existsSync));
+    check(`R5: ${what} keeps a live pid's, impossible pids, near-miss names, symlinks and anything outside the cache and .agentcut/tmp`,
+      kept.every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), kept.filter((f) => !existsSync(f)));
+  }
+  api.cache.prune(P6, { maxMb: 0 });
+  check("cache prune (max_mb=0) leaves .agentcut/tmp alone", existsSync(join(tmpD, `render-${me}-abc123`)) && existsSync(join(tmpD, "other")) && existsSync(join(tmpD, `render-${dead}-lnk123`)));
 }
 
 // containment: symlinks inside or in place of an area are never walked, counted or deleted

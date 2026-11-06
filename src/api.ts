@@ -227,10 +227,13 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
 export async function render(project: string | undefined, o: {
   out?: string; start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean;
   sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; progress?: (d: number, n: number) => void;
+  /** abort the render (MCP shutdown): children are stopped, temp files removed, the call rejects with signal.reason */
+  signal?: AbortSignal;
 } = {}) {
   if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
   if (o.out && SUB.SUB_FORMATS[extname(o.out).toLowerCase()]) return exportCaptions(project, { out: o.out });
   const p = openProject(project);
+  CACHE.sweepStale(p);
   const tl = p.load();
   requireValid(p, tl);
   let scale = o.scale ?? 1, quality = o.quality ?? "standard";
@@ -248,8 +251,9 @@ export async function render(project: string | undefined, o: {
   // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
   const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
     start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
-    hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha,
+    hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
   });
+  o.signal?.throwIfAborted();
   if (res.audio_only) return res;
   if (o.subtitles) {
     const [t0, t1] = res.range as [number, number];
@@ -318,7 +322,11 @@ export const feedback = {
 
 /** Compute the derived assets the timeline needs (mattes, vision analyses) and apply the pending vision requests. Slow:
  *  MCP runs it as a background job (render_status); preview/render fail with not_prepared until it ran. */
-export const prepare = (project?: string, o: { progress?: (done: number, total: number) => void } = {}) => PREP.prepare(openProject(project), o);
+export const prepare = (project?: string, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal } = {}) => {
+  const p = openProject(project);
+  CACHE.sweepStale(p);
+  return PREP.prepare(p, o);
+};
 export const prepareStatus = (project?: string) => PREP.prepareStatus(openProject(project));
 export const cache = {
   info: (project?: string) => CACHE.cacheInfo(openProject(project)),

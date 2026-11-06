@@ -2,7 +2,7 @@
 // UI play drafts). "Referenced" = still needed by the current timeline (mattes of remove_background clips, analyses of
 // pending vision requests, the current helper script); everything else can be rebuilt and is pruned first.
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { mattesFor } from "./ops-vision.ts";
@@ -74,11 +74,38 @@ export function parseAge(v: string | number): number {
 }
 
 /** the file's parent still resolves under its area root (a directory swapped for a symlink since the walk would not); false if already gone */
-function contained(e: Entry) {
+function contained(e: Pick<Entry, "root" | "path">) {
   let dir: string;
   try { dir = realpathSync(dirname(e.path)); } catch (err: any) { if (err.code === "ENOENT") return false; throw err; }
   if (dir !== e.root && !dir.startsWith(e.root + sep)) throw new EditError(`${relative(e.root, e.path)} resolves outside its cache area`, "unsafe_cache_dir", "AgentCut never deletes through symlinks");
   return true;
+}
+
+const PART_FILE = /\.part-(\d+)-/;                // vision.ts / encode.ts / ui.ts: <name>.part-<pid>-<rand><ext>
+const RENDER_TMP = /^render-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp: render-<pid>-<mkdtemp suffix>
+
+/** Remove what a dead process left behind (SIGKILL, crash, power loss; catchable stops clean up after themselves), run at the
+ *  start of prepare and of render. Deletes only (a) `.part-<pid>-` files in the project cache dir and (b) `render-<pid>-xxxxxx`
+ *  directories in <project>/.agentcut/tmp, only when `alive(pid)` is false (ESRCH only). Every target is a direct child of a
+ *  directory that realpath-resolves to where it claims to be under the project (symlinked areas are skipped, never followed),
+ *  is re-checked with `contained` right before the delete, and is never a symlink. A pid that was reused by an unrelated live
+ *  process looks alive and keeps its file: the safe direction. Names carry no host, so a project shared over a network
+ *  filesystem by several machines is out of scope. */
+export function sweepStale(p: Project) {
+  const plain = (dir: string) => { try { return areaRoot(p, dir); } catch (e) { if (e instanceof EditError && e.code === "unsafe_cache_dir") return null; throw e; } };
+  const rm = (e: Pick<Entry, "root" | "path">, recursive: boolean) => {
+    try { if (contained(e)) rmSync(e.path, { recursive, force: true }); } catch (err) { if (!(err instanceof EditError)) throw err; }
+  };
+  const cache = cacheDir(p.root), cacheRoot = plain(cache);
+  if (cacheRoot) for (const f of files(cache)) {
+    const m = PART_FILE.exec(basename(f));
+    if (m && !alive(Number(m[1]))) rm({ root: cacheRoot, path: f }, false);
+  }
+  const tmp = join(p.root, ".agentcut", "tmp"), tmpRoot = plain(tmp);
+  if (tmpRoot) for (const d of readdirSync(tmp, { withFileTypes: true })) {
+    const m = RENDER_TMP.exec(d.name);
+    if (d.isDirectory() && m && !alive(Number(m[1]))) rm({ root: tmpRoot, path: join(tmp, d.name) }, true);
+  }
 }
 
 /** Delete cache/preview files. Only files older than olderThan (if given) are eligible. Without maxMb: every eligible

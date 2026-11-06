@@ -2,7 +2,13 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
-import json, subprocess, sys
+import json, os, subprocess, sys, threading
+
+def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it): leave at once, no cleanup
+    try: sys.stdin.buffer.read()
+    except Exception: pass
+    os._exit(143)
+threading.Thread(target=_stop_on_eof, daemon=True).start()
 
 def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     args = ["ffmpeg", "-v", "error", "-nostdin"]

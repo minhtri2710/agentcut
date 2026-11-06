@@ -31,17 +31,19 @@ export function missingFor(p: Project, tl: Timeline) {
 
 // one computation per cache file per process, however many prepare calls ask for it
 const inflight = new Map<string, Promise<{ cached: boolean }>>();
-function computeOnce(d: V.Derived, onFrames: (n: number) => void) {
+// (the first caller's abort signal governs a shared computation: the only abort is the server stopping, which stops every job)
+function computeOnce(d: V.Derived, onFrames: (n: number) => void, signal?: AbortSignal) {
   let job = inflight.get(d.file);
-  if (!job) { job = V.compute(d, onFrames).finally(() => inflight.delete(d.file)); inflight.set(d.file, job); }
+  if (!job) { job = V.compute(d, onFrames, signal).finally(() => inflight.delete(d.file)); inflight.set(d.file, job); }
   return job;
 }
 
-export async function prepare(p: Project, o: { progress?: (done: number, total: number) => void } = {}) {
+export async function prepare(p: Project, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal } = {}) {
   const computed: Dict[] = [];
   let applied: Dict[] = [], revision = p.load().revision;
   // a round computes what is missing now; a pending track_to on a pending reframe only shows its job in the next round
   for (let round = 0; ; round++) {
+    o.signal?.throwIfAborted();
     const tl = p.load(), { ops, jobs } = missingFor(p, tl);
     if (!jobs.length) {
       if (ops.length) {
@@ -63,7 +65,7 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
     let base = 0;
     for (const d of jobs) {
       const t0 = performance.now();
-      const r = await computeOnce(d, (n) => o.progress?.(base + Math.min(n, d.frames), total));
+      const r = await computeOnce(d, (n) => o.progress?.(base + Math.min(n, d.frames), total), o.signal);
       base += d.frames;
       o.progress?.(base, total);
       computed.push({ kind: d.kind, source: d.job.path, file: d.file, cached: r.cached, seconds: +((performance.now() - t0) / 1000).toFixed(2) });
