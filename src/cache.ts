@@ -114,10 +114,10 @@ export function sweepStale(p: Project) {
 /** Delete cache/preview files. Only files older than olderThan (if given) are eligible. Without maxMb: every eligible
  *  unreferenced file. With maxMb: eligible files until the total is <= maxMb - unreferenced first, oldest first, and
  *  referenced ones (rebuilt by prepare) only if that is not enough. */
-export function prune(p: Project, o: { maxMb?: number; olderThan?: string | number; area?: "cache" | "previews"; keep?: string } = {}) {
+export function prune(p: Project, o: { maxMb?: number; olderThan?: string | number; area?: "cache" | "previews"; keep?: string[] } = {}) {
   if (o.maxMb !== undefined && !(o.maxMb >= 0)) throw new EditError("max_mb must be a number >= 0", "bad_value");
   const es = entries(p, o.area), cutoff = o.olderThan !== undefined ? Date.now() - parseAge(o.olderThan) : Infinity;
-  const eligible = es.filter((e) => e.mtime < cutoff && e.path !== o.keep).sort((a, b) => Number(a.referenced) - Number(b.referenced) || a.mtime - b.mtime);
+  const eligible = es.filter((e) => e.mtime < cutoff && !o.keep?.includes(e.path)).sort((a, b) => Number(a.referenced) - Number(b.referenced) || a.mtime - b.mtime);
   let total = es.reduce((n, e) => n + e.bytes, 0);
   const removed: Entry[] = [];
   for (const e of eligible) {
@@ -133,8 +133,8 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
 }
 
 /** Automatic bound on previews/ after writing `written` (AGENTCUT_PREVIEWS_MAX_MB, default 200; 0 disables): oldest
- *  previews go first, the file just written stays. Outputs elsewhere (-o) are not touched. */
-export function capPreviews(p: Project, written: string) {
+ *  previews go first, the files just written stay. Outputs elsewhere (-o) are not touched. */
+export function capPreviews(p: Project, ...written: string[]) {
   const max = PREVIEWS_MAX_MB(), dir = join(p.root, "previews");
-  if (max > 0 && written.startsWith(dir + sep)) prune(p, { maxMb: max, area: "previews", keep: written });
+  if (max > 0 && written.some((w) => w.startsWith(dir + sep))) prune(p, { maxMb: max, area: "previews", keep: written });
 }

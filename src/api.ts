@@ -288,12 +288,12 @@ export async function render(project: string | undefined, o: {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
       const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
       const sp = join(p.root, "previews", `render-${basename(out, extname(out))}-${Date.now()}.sheet.jpg`);
-      writeOut(p, sp, png);
+      writeFile(sp, png, p.root); // capped below together with the output, so neither evicts the other
       res.contact_sheet = sp;
     } catch (e: any) { res.contact_sheet_error = e.message; }
     if (loud) res.loudness = await loud;
   }
-  CACHE.capPreviews(p, out); // UI play drafts are rendered into previews/
+  CACHE.capPreviews(p, out, ...(res.contact_sheet ? [res.contact_sheet as string] : [])); // UI play drafts are rendered into previews/
   return res;
 }
 

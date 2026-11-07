@@ -44,7 +44,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    audio_check   image of every track's waveform + the rendered mix (+ spectrogram) with clip boundaries and markers;
                  findings: clipping/overs, true peak, long silences, audio cut off without fade, music not ducked under voice
    motion_strip  10 consecutive frames per transition (or start/end for any animation) to judge motion
-5. render draft=true first, then final. The result has has_audio, a contact sheet (previews/render-<name>-<time>.sheet.jpg, never next to the output) + loudness (~ -14 LUFS). A timeline with no audible clip renders without an audio track (has_audio false, a warning, no loudness). Re-render a section with start/end.
+5. render draft=true first, then final. The result has has_audio, a contact sheet (previews/render-<name>-<time>.sheet.jpg) + loudness (~ -14 LUFS). A timeline with no audible clip renders without an audio track (has_audio false, a warning, no loudness). Re-render a section with start/end.
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac,
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.

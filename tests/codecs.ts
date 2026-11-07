@@ -3,7 +3,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
@@ -209,6 +209,14 @@ console.log("timeline without an audible clip: no audio track");
     const rs: any = await timed(`silent .mp4, ${workers} worker(s)`, () => api.render(SP, { out: so(`mute${workers}.mp4`), workers }));
     check(`silent .mp4, ${workers} worker(s): no audio stream, has_audio false, warned, no loudness`, kinds(so(`mute${workers}.mp4`)) === "video" && mute(rs), { k: kinds(so(`mute${workers}.mp4`)), rs });
   }
+  // an output in previews/ and its sheet are capped together: neither evicts the other, the older sheets go
+  process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.001";
+  try {
+    const pv: any = await api.render(SP, { out: join(SP, "previews", "capped.mp4"), workers: 1, end: 1 });
+    const left = readdirSync(join(SP, "previews")).sort();
+    check("an output in previews/ under the cap keeps itself and its sheet; older previews go", existsSync(pv.output) && existsSync(pv.contact_sheet ?? "")
+      && JSON.stringify(left) === JSON.stringify([basename(pv.contact_sheet), "capped.mp4"].sort()), { left, pv });
+  } finally { delete process.env.AGENTCUT_PREVIEWS_MAX_MB; }
   for (const f of ["mute.mov", "mute.webm", "mute.mkv"]) {
     const rs: any = await api.render(SP, { out: so(f), workers: 2, end: 1, sheet: false });
     check(`silent ${f}, joined segments: no audio stream, has_audio false`, kinds(so(f)) === "video" && rs.has_audio === false, { k: kinds(so(f)), rs });
