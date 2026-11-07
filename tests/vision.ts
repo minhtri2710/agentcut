@@ -672,7 +672,7 @@ console.log("subject results: what was followed");
     ["faces at or above 0.9", [face(0.9), face(0.97)], "face", []],
     ["no face, saliency (and an empty sample)", [sal, sal, none], "saliency", [WARN.saliency]],
     ["some faces, the rest saliency", [face(0.95), sal, sal, face(0.95)], "mixed", [WARN.mixed(2, 4)]],
-    ["faces and an empty sample", [face(0.95), none], "mixed", [WARN.mixed(1, 2)]],
+    ["faces and an empty sample", [face(0.95), none], "mixed", ["a face was found in 1 of 2 samples; 0 follow the most salient region and 1 found nothing to follow"]],
     ["a face under 0.9", [face(0.95), face(0.62), face(0.7)], "face", [WARN.low(0.62)]],
     ["several faces in a frame", [face(0.95), face(0.95, 3), face(0.95, 2)], "face", [WARN.several(3)]],
     ["only empty samples", [none, none], "none", [WARN.none]],
@@ -756,6 +756,12 @@ console.log("the face model: descriptor, job, gate, download");
     const cli = (cache: string, ...a: string[]) => spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "subject", rb, "--fps", "8.5", ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } });
     const c1 = cli(G), c1j = JSON.parse(c1.stdout || "{}");
     check("CLI subject without --allow-download and without the model: model_not_cached, non-zero exit, uv not started", c1.status !== 0 && c1j.error?.code === "model_not_cached" && nCalls() === calls0, { status: c1.status, out: c1.stdout.slice(0, 300) });
+    // with allow_download, compute fetches the face model first; a failed fetch stops it before the helper (fetch stubbed: no network)
+    const realFetch = globalThis.fetch, fetched: string[] = [];
+    globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
+    const df = await inCache(G, () => caught(() => api.analyze.subject(rb, 7.5, true))).finally(() => { globalThis.fetch = realFetch; });
+    check("analyze_subject with allow_download and no model: compute fetches the face model; a failed fetch -> model_download_failed, uv not started, nothing written",
+      df?.code === "model_download_failed" && fetched.length === 1 && fetched[0] === FACE_MODEL.url && nCalls() === calls0 && !existsSync(join(G, "models")), { code: df?.code, fetched, calls: nCalls() - calls0 });
     seedFaceIn(G);
     const stOk: any = await inCache(G, () => api.prepareStatus(E));
     check("once the model file is in place nothing is left to download", stOk.models_to_download.length === 0, stOk);
@@ -784,6 +790,7 @@ console.log("the face model: descriptor, job, gate, download");
     const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
     const server = createServer((req, res) => {
       const send = (code: number, body: Buffer) => { res.writeHead(code, { "content-length": body.length }); res.end(body); };
+      if (req.url === "/hold") { res.writeHead(200, { "content-length": good.length }); res.write(good.subarray(0, 5)); return; } // never finishes
       if (req.url === "/ok") send(200, good);
       else if (req.url === "/other") send(200, other);
       else if (req.url === "/short") send(200, good.subarray(0, 10));
@@ -802,10 +809,19 @@ console.log("the face model: descriptor, job, gate, download");
           check(`downloadModel: ${what} -> model_download_failed, hint names the URL and the target path, nothing left`,
             e?.code === "model_download_failed" && e.hint.includes(desc("x", path).url) && e.hint.includes(join(D, "models", "test_model_bad", "test_model_bad.onnx")) && !existsSync(join(D, "models")), { code: e?.code, message: e?.message, hint: e?.hint, models: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
         }
+        // runs without AbortSignal.any, which Node before 20.3 lacks (package.json engines: >=20)
+        const any = AbortSignal.any;
+        (AbortSignal as any).any = undefined;
         const ok = await caught(() => V.downloadModel(desc("test_model_ok", "/ok")));
+        (AbortSignal as any).any = any;
         const file = join(D, "models", "test_model_ok", "test_model_ok.onnx");
-        check("downloadModel: the right bytes are written, and only that file", ok === null && existsSync(file) && readFileSync(file).equals(good) && readdirSync(join(D, "models", "test_model_ok")).join() === "test_model_ok.onnx" && V.modelCached("test_model_ok") && V.modelFile("test_model_ok") === file, { ok, listing: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
+        check("downloadModel: the right bytes are written, and only that file (without AbortSignal.any)", ok === null && existsSync(file) && readFileSync(file).equals(good) && readdirSync(join(D, "models", "test_model_ok")).join() === "test_model_ok.onnx" && V.modelCached("test_model_ok") && V.modelFile("test_model_ok") === file, { ok, listing: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
       });
+      const H = fresh("download-abort"), ac = new AbortController(), reason = new Error("stopped by the caller");
+      setTimeout(() => ac.abort(reason), 100);
+      const ab = await inCache(H, () => caught(() => V.downloadModel(desc("test_model_hold", "/hold"), ac.signal)));
+      check("downloadModel: a caller abort mid-body rejects with the caller's reason, nothing left", ab === reason && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), models: existsSync(join(H, "models")) });
+      server.closeAllConnections();
     } finally { await new Promise((r) => server.close(r)); }
     const refused = await inCache(fresh("download-closed"), () => caught(() => V.downloadModel(desc("test_model_closed", "/ok"))));
     check("downloadModel: a server that is gone -> model_download_failed", refused?.code === "model_download_failed", { code: refused?.code, message: refused?.message });

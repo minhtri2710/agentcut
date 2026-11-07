@@ -54,9 +54,14 @@ export async function downloadModel(m: { name: string; url: string; sha256: stri
   signal?.throwIfAborted();
   const file = modelFile(m.name);
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
-  let body: Buffer;
+  // one controller for the timeout and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
+  const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);
+  let timedOut = false, body: Buffer;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 60_000);
+  timer.unref?.();
+  signal?.addEventListener("abort", stop, { once: true });
   try {
-    const res = await fetch(m.url, { signal: AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]) });
+    const res = await fetch(m.url, { signal: ctl.signal });
     if (!res.ok) throw fail(`HTTP ${res.status}`);
     const chunks: Buffer[] = [];
     let n = 0;
@@ -67,8 +72,8 @@ export async function downloadModel(m: { name: string; url: string; sha256: stri
     body = Buffer.concat(chunks);
   } catch (e: any) {
     if (signal?.aborted) throw signal.reason;
-    throw e instanceof EditError ? e : fail(e?.name === "TimeoutError" ? "timed out after 60 s" : String(e?.message ?? e));
-  }
+    throw e instanceof EditError ? e : fail(timedOut ? "timed out after 60 s" : String(e?.message ?? e));
+  } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); }
   if (body.length !== m.bytes) throw fail(`got ${body.length} bytes, expected ${m.bytes}`);
   if (createHash("sha256").update(body).digest("hex") !== m.sha256) throw fail("the sha256 does not match");
   const tmp = tmpSibling(file, userCache());
@@ -265,7 +270,8 @@ export function subjectSummary(samples: Sample[]): { subject: "face" | "saliency
   const subject = !placed.length ? "none" : faces.length === samples.length ? "face" : faces.length ? "mixed" : "saliency";
   const warnings: string[] = [];
   if (subject === "saliency") warnings.push("no face found: followed the most salient region; check the framing with preview_frame and set focus by hand if it is wrong");
-  if (subject === "mixed") warnings.push(`a face was found in ${faces.length} of ${samples.length} samples; the others follow the most salient region`);
+  const empty = samples.length - placed.length, salient = placed.length - faces.length;
+  if (subject === "mixed") warnings.push(`a face was found in ${faces.length} of ${samples.length} samples; ${empty ? `${salient} follow the most salient region and ${empty} found nothing to follow` : "the others follow the most salient region"}`);
   const lowest = Math.min(...faces.map((s) => s.score ?? 1)), most = Math.max(0, ...faces.map((s) => s.faces ?? 1));
   if (faces.length && lowest < FACE_SURE) warnings.push(`lowest face confidence ${lowest} (under ${FACE_SURE}): it may not be a face; check with preview_frame`);
   if (most > 1) warnings.push(`up to ${most} faces in frame: following the largest`);
