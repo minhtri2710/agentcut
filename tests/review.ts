@@ -37,7 +37,7 @@ console.log("tts: script text never reaches argv");
   const bin = join(tmp, "bin"); mkdirSync(bin);
   const exe = process.platform === "darwin" ? "say" : "espeak-ng";
   const outFlag = process.platform === "darwin" ? "-o" : "-w";
-  writeFileSync(join(bin, exe), `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\nprintf '%s\\n' "$@" > "${tmp}/tts.args"\n` +
+  writeFileSync(join(bin, exe), `#!/bin/sh\nprintf '%s\\n' "$@" > "${tmp}/tts.args"\n` +
     `while [ $# -gt 0 ]; do [ "$1" = "-f" ] && cp "$2" "${tmp}/tts.text"; [ "$1" = "${outFlag}" ] && cp "${join(m, "reply.wav")}" "$2"; shift; done\n`);
   chmodSync(join(bin, exe), 0o755);
   const PATH = process.env.PATH;

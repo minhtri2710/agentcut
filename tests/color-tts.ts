@@ -282,26 +282,34 @@ try {
 
   // piper: fake binary on PATH records argv/stdin and writes a wav
   const bin = join(tmp, "bin"); mkdirSync(bin);
-  writeFileSync(join(bin, "piper"), `#!/bin/sh\n[ "$1" = "--version" ] && exit 0\necho "$@" > "${tmp}/piper.args"\ncat > "${tmp}/piper.stdin"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && cp "${tmp}/reply.wav" "$2"; shift; done\n`);
+  writeFileSync(join(bin, "piper"), `#!/bin/sh\necho "$1" >> "${tmp}/piper.calls"\necho "$@" > "${tmp}/piper.args"\ncat > "${tmp}/piper.stdin"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && cp "${tmp}/reply.wav" "$2"; shift; done\n`);
   chmodSync(join(bin, "piper"), 0o755);
   writeFileSync(join(tmp, "vi.onnx"), ""); writeFileSync(join(tmp, "vi.onnx.json"), JSON.stringify({ language: { code: "vi_VN" } }));
   Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENTCUT_PIPER_MODEL: join(tmp, "vi.onnx"), AGENTCUT_TTS_PROVIDER: "piper" });
   const pr = AN.tts("Chào bạn", join(tmp, "piper.wav"), undefined, 350);
   const args = readFileSync(join(tmp, "piper.args"), "utf8");
   check("piper via env default: model, length_scale, text on stdin", pr.provider === "piper" && args.includes(`--model ${join(tmp, "vi.onnx")}`) && args.includes("--length_scale 0.500") && readFileSync(join(tmp, "piper.stdin"), "utf8") === "Chào bạn", args);
+  const piperCalls = () => readFileSync(join(tmp, "piper.calls"), "utf8").trim().split("\n");
+  check("piper is found on PATH without being started: the one tts call is the only invocation", JSON.stringify(piperCalls()) === JSON.stringify(["--model"]), piperCalls());
   check("voices lists piper with its model language", api.voices("vi").voices.some((v: any) => v.provider === "piper" && v.lang === "vi_VN"));
+  check("provider detection (voices) starts no piper", JSON.stringify(piperCalls()) === JSON.stringify(["--model"]) && api.voices().providers.find((p: any) => p.name === "piper")?.available === true, piperCalls());
 
-  { // per-sentence synthesis: a fake piper that records each call and speaks 0.5 s per word without any pause
+  { // per-sentence synthesis: a fake piper that records each call and speaks 0.5 s per word without any pause (a sentence with a comma has a clause pause and a silent tail)
     const binS = join(tmp, "bin-sentences"); mkdirSync(binS);
     writeFileSync(join(binS, "piper"), `#!/bin/sh
-[ "$1" = "--version" ] && exit 0
 n=$(cat "${tmp}/ps.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${tmp}/ps.n"
 cat > "${tmp}/ps.in.$n"
 printf '%s' "$ORT_DISABLE_TELEMETRY" > "${tmp}/ps.ort.$n"
 [ "$(cat "${tmp}/ps.fail" 2>/dev/null)" = "$n" ] && { echo "boom" >&2; exit 1; }
 while [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done
 w=$(wc -w < "${tmp}/ps.in.$n" | tr -d ' ')
-ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $w*0.5}")" -ar 22050 "$o"
+if grep -q , "${tmp}/ps.in.$n"; then
+  # a clause sentence: 1.2 s, a 0.5 s pause, 0.6 s, then a 0.5 s silent tail
+  S="-f lavfi -t 0.5 -i anullsrc=r=22050:cl=mono"
+  ffmpeg -v error -y -f lavfi -t 1.2 -i "sine=frequency=400:sample_rate=22050" $S -f lavfi -t 0.6 -i "sine=frequency=400:sample_rate=22050" $S -filter_complex "[0][1][2][3]concat=n=4:v=0:a=1" "$o"
+else
+  ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $w*0.5}")" -ar 22050 "$o"
+fi
 `);
     chmodSync(join(binS, "piper"), 0o755);
     const pathWas = process.env.PATH;
@@ -331,6 +339,28 @@ ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $
       writeFileSync(join(tmp, "ps.n"), "0");
       const o1: any = AN.tts("Chỉ một câu", join(tmp, "ps1.wav"));
       check("piper: a one-sentence script is one invocation and one sentence", calls() === 1 && o1.sentences?.length === 1 && o1.sentences[0].start === 0 && Math.abs(o1.sentences[0].end - o1.duration) < 1 / 30, { calls: calls(), s: o1.sentences });
+
+      { // clause pause and silent tail inside one sentence: captions follow the detected speech, not a spread over the whole span
+        const T2 = "Một hai ba. Bốn năm, sáu bảy. Chín mười.";
+        const C = join(tmp, "vo-clause");
+        api.create(C, { preset: "720p" });
+        await api.apply(C, [{ op: "add_voiceover", text: T2, voice: "piper", captions: "clean" }]);
+        const cw = api.info(C, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions").words;
+        const w = (txt: string) => cw.find((x: any) => x.text === txt);
+        check("clause pause: the second clause starts at its detected speech (3.2 s), not at a spread time", w("sáu") && Math.abs(w("sáu").start - 3.2) < 0.05 && Math.abs(w("Bốn").start - 1.5) < 0.05, cw);
+        check("silent tail: the sentence's last word ends before its tail (3.8 s, span ends 4.3 s)", w("bảy.") && Math.abs(w("bảy.").end - 3.8) < 0.05 && Math.abs(w("Chín").start - 4.3) < 0.05, cw);
+      }
+      { // the join step fails (an ffmpeg wrapper refuses the concat demuxer): tts_failed "join", no output
+        const real = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
+        const binJ = join(tmp, "bin-join"); mkdirSync(binJ);
+        writeFileSync(join(binJ, "ffmpeg"), `#!/bin/sh\ncase " $* " in *" concat "*) echo "refused" >&2; exit 1;; esac\nexec "${real}" "$@"\n`);
+        chmodSync(join(binJ, "ffmpeg"), 0o755);
+        const joined = join(tmp, "ps-join.wav");
+        process.env.PATH = `${binJ}:${process.env.PATH}`;
+        let err: any;
+        try { AN.tts("Một hai. Ba bốn.", joined); } catch (e: any) { err = e; } finally { process.env.PATH = `${binS}:${pathWas}`; }
+        check("a failing join is tts_failed 'tts join failed' and leaves no output", err?.code === "tts_failed" && err.message.startsWith("tts join failed") && !existsSync(joined) && readdirSync(tmp).every((f) => !f.startsWith("ps-join")), err && { code: err.code, msg: err.message });
+      }
 
       // a failing second part: an error, no output file, nothing left beside it, an unchanged timeline
       const F = join(tmp, "vo-fail");

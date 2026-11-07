@@ -1,8 +1,8 @@
 // Text-to-speech providers besides the OS voice: piper (local neural TTS) and OpenAI-compatible HTTP /v1/audio/speech.
 // Selected by voice prefix ("piper", "piper:/m.onnx", "openai:nova", "system:Linh") or AGENTCUT_TTS_PROVIDER.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { basename, delimiter, join } from "node:path";
 import { EditError, ORT_ENV } from "./model.ts";
 import { createFile } from "./safe-write.ts";
 
@@ -12,7 +12,14 @@ type Env = Record<string, string | undefined>;
 const NORMAL_WPM = 175; // `rate` is words/min like macOS say; other engines get a speed factor relative to this
 export const OPENAI_VOICES = ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"];
 
-export const has = (bin: string) => !spawnSync(bin, ["--version"], { stdio: "ignore" }).error || !spawnSync("which", [bin], { stdio: "ignore" }).status;
+/** Is `bin` an executable file on PATH? A lookup only: the binary is never started. */
+export function has(bin: string): boolean {
+  const exts = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  return (process.env.PATH || "").split(delimiter).some((dir) => dir && exts.some((e) => {
+    const f = join(dir, bin + e);
+    try { accessSync(f, constants.X_OK); return statSync(f).isFile(); } catch { return false; }
+  }));
+}
 
 export function pickProvider(voice?: string, env: Env = process.env): { provider: Provider; voice?: string } {
   const m = /^(system|piper|openai)(?::(.*))?$/s.exec(voice ?? "");

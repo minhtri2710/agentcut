@@ -43,13 +43,11 @@ export function splitSentences(text: string): string[] {
   return parts.length ? parts : [text];
 }
 
-/** Word timings for text read aloud: sentences (else clauses) map 1:1 onto detected speech segments when the counts
- * agree, so captions pause with the voice; otherwise the words spread over first..last speech. */
+/** Word timings for one sentence read aloud: its clauses map 1:1 onto detected speech segments when the counts agree,
+ * so captions pause with the voice; otherwise the words spread over first..last speech. */
 export function scriptToWords(text: string, speech: number[][]): CWord[] {
-  for (const re of [SENTENCE_BREAK, /(?<=[.!?…,;:])\s+/]) {
-    const parts = text.trim().split(re).filter(Boolean);
-    if (parts.length > 1 && parts.length === speech.length) return phrasesToWords(parts.map((p, i) => ({ text: p, start: speech[i][0], end: speech[i][1] })));
-  }
+  const parts = text.trim().split(/(?<=[.!?…,;:])\s+/).filter(Boolean);
+  if (parts.length > 1 && parts.length === speech.length) return phrasesToWords(parts.map((p, i) => ({ text: p, start: speech[i][0], end: speech[i][1] })));
   return phrasesToWords([{ text, start: speech[0][0], end: speech[speech.length - 1][1] }]);
 }
 
