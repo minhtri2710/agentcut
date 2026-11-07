@@ -403,14 +403,16 @@ fi
   // transcribe range: only [start, end] of the media goes to the engine, and the word times stay in media seconds
   {
     const src = join(tmp, "range.wav"), given = join(tmp, "whisper.wav"), fake = join(tmp, "fake.bin"), calls = () => readFileSync(join(tmp, "whisper.calls"), "utf8").split("\n").filter(Boolean).length;
-    ff("-f", "lavfi", "-i", "sine=frequency=300:duration=6", "-ar", "24000", src);
+    ff("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-f", "lavfi", "-i", "sine=frequency=300:duration=4:sample_rate=24000", "-filter_complex", "concat=n=2:v=0:a=1", src); // 2 s of silence, then 4 s of tone
     const dur = (f: string) => +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout;
+    /** peak level (dB) over the first 0.5 s of a wav: about -18 for the tone, -91 or lower for digital silence */
+    const startDb = (f: string) => { const m = /max_volume: (\S+) dB/.exec(spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-t", "0.5", "-i", f, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" }).stderr); return m ? (m[1] === "-inf" ? -Infinity : +m[1]) : NaN; };
     const engine = [[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]], shifted = (by: number) => engine.map(([a, b]) => [+(a + by).toFixed(3), +(b + by).toFixed(3)]);
     const times = (ws: any[]) => JSON.stringify(ws.map((w) => [w.start, w.end]));
-    const plain = AN.transcribe(src, "vi", fake);
-    check("no range: the engine gets the whole media and the word times are the engine's", Math.abs(dur(given) - 6) < 0.05 && times(plain.words) === JSON.stringify(engine), { dur: dur(given), t: times(plain.words) });
+    AN.transcribe(src, "vi", fake);
+    check("no range: the engine gets the whole media, from its silent start", Math.abs(dur(given) - 6) < 0.05 && startDb(given) < -60, { dur: dur(given), db: startDb(given) });
     const ranged = AN.transcribe(src, "vi", fake, [2, 5]);
-    check("range [2, 5]: the engine gets end - start seconds", Math.abs(dur(given) - 3) < 0.05, dur(given));
+    check("range [2, 5]: the engine gets end - start seconds, starting at start (not silent)", Math.abs(dur(given) - 3) < 0.05 && startDb(given) > -30, { dur: dur(given), db: startDb(given) });
     check("range [2, 5]: every word start and end is the engine's time + start", times(ranged.words) === JSON.stringify(shifted(2)), times(ranged.words));
     const before = calls();
     const bads: any[] = [[-1, 2], [2, 2], [3, 2], [NaN, 2], [0, Infinity], [0], [0, 1, 2], ["1", 2], "2-5", 3];
