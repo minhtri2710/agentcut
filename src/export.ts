@@ -234,8 +234,10 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   }
   for (const [k, v] of Object.entries(tl.settings || {}))
     if (k === "effects" && Array.isArray(v) && v.length) skipped.push({ id: "settings", type: "effects", reason: "whole-frame effects are not exported" });
-  for (const tr of tracks) if (tr.duck) skipped.push({ id: tr.id, type: "duck", reason: "auto-ducking is not exported (set volume keyframes in the NLE)" });
-  for (const tr of tracks) {
+  // track settings matter only on a track with clips: an empty track's duck or audio processing changes nothing
+  const used = tracks.filter((tr) => tr.clips.length);
+  for (const tr of used) if (tr.duck) skipped.push({ id: tr.id, type: "duck", reason: "auto-ducking is not exported (set volume keyframes in the NLE)" });
+  for (const tr of used) {
     const fx = AUDIO_FX_KEYS.filter((k) => tr[k] !== undefined && tr[k] !== null && tr[k] !== false);
     if (fx.length) skipped.push({ id: tr.id, type: "audio_fx", reason: `track audio processing not exported: ${fx.join(", ")}` });
   }
