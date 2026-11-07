@@ -9,6 +9,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
 import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV } from "./model.ts";
 import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
+import { has, isExecutable } from "./tts.ts";
 import { VISION_PY } from "./vision-py.ts";
 
 // pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
@@ -91,11 +92,25 @@ export function checkHelper(script: string) {
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
 const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
 
+/** The uv to run: AGENTCUT_UV or `uv` on PATH. A path is made absolute here, because the cwd changes before the spawn. */
+const uvCommand = () => { const u = process.env.AGENTCUT_UV || "uv"; return /[\\/]/.test(u) ? resolve(u) : u; };
+
+/** What `capabilities` says about the vision engine. A file or PATH lookup: uv is never started and nothing is downloaded. */
+export function visionEngine() {
+  const uv = uvCommand();
+  return {
+    available: /[\\/]/.test(uv) ? isExecutable(uv) : has(uv),
+    features: ["analyze_subject", "auto_reframe", "track_to", "remove_background"].map((o) => `${o} (needs prepare)`),
+    matte_models: "see matte_models",
+    models_note: "no model is downloaded without allow_download",
+  };
+}
+
 /** Runs the helper (`root` = helperRoot()) from a fresh private (0700) run dir `helper-runs/vision-<pid>-xxxxxx`, removed afterwards even on failure or abort
  *  (best effort: a cleanup error never replaces the result; a SIGKILL leaves the dir behind). The dir is also the spawn's cwd, and uv gets
  *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
 async function runHelper(root: string, d: Derived, out: string, allowDownload: boolean, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
-  const uvEnv = process.env.AGENTCUT_UV || "uv", uv = /[\\/]/.test(uvEnv) ? resolve(uvEnv) : uvEnv; // the cwd changes below: keep a relative path meaning what the user typed
+  const uv = uvCommand();
   const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out, allow_download: allowDownload } : d.job;
   const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {

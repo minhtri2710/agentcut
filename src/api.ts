@@ -14,7 +14,7 @@ import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { attachPrepared } from "./ops-vision.ts";
 import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
-import { analyzeSubject, matteCached } from "./vision.ts";
+import { analyzeSubject, matteCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
@@ -320,6 +320,7 @@ export function capabilities() {
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
     matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: matteCached(name) })),
+    engines: { transcribe: AN.transcribeEngine(), tts: { ...AN.ttsProviders(), voices: "list_voices" }, vision: visionEngine() },
     ops: Object.keys(OPS),
   };
 }

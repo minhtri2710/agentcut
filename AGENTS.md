@@ -28,6 +28,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 ## Fastest path: templates
 {"op":"apply_template","name":"promo","media":["/abs/a.mp4","/abs/b.jpg","/abs/c.mp4"],"hook":"Ra mắt sản phẩm","points":["Nhẹ hơn 30%","Pin 2 ngày"],"cta":"Mua ngay","music":"/abs/song.mp3"}
 Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.templates). They expand into normal clips -> keep editing.
+capabilities.engines says which transcription, TTS and vision engines are usable now.
 
 ## Workflow that works
 1. create_project (CLI: agentcut init DIR --preset reels).

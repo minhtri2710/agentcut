@@ -12,13 +12,15 @@ type Env = Record<string, string | undefined>;
 const NORMAL_WPM = 175; // `rate` is words/min like macOS say; other engines get a speed factor relative to this
 export const OPENAI_VOICES = ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"];
 
+/** Is `f` an executable file? A lookup only: it is never started. */
+export function isExecutable(f: string): boolean {
+  try { accessSync(f, constants.X_OK); return statSync(f).isFile(); } catch { return false; }
+}
+
 /** Is `bin` an executable file on PATH? A lookup only: the binary is never started. */
 export function has(bin: string): boolean {
   const exts = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  return (process.env.PATH || "").split(delimiter).some((dir) => dir && exts.some((e) => {
-    const f = join(dir, bin + e);
-    try { accessSync(f, constants.X_OK); return statSync(f).isFile(); } catch { return false; }
-  }));
+  return (process.env.PATH || "").split(delimiter).some((dir) => dir && exts.some((e) => isExecutable(join(dir, bin + e))));
 }
 
 export function pickProvider(voice?: string, env: Env = process.env): { provider: Provider; voice?: string } {

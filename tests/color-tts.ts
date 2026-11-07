@@ -390,7 +390,7 @@ fi
   const tok = (text: string, from: number, to: number) => ({ text, offsets: { from, to } });
   writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok("“", 100, 200), tok(" Xin", 200, 500), tok(" chào", 500, 900), tok(" các", 900, 1100), tok(" bạn", 1100, 1400), tok(",", 1400, 1450),
     tok(" hôm", 1800, 2100), tok(" nay", 2100, 2400), tok("...", 2400, 2500), tok(" nhé", 3000, 3300), tok("!", 3300, 3350)] }));
-  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\n[ "$1" = "--help" ] && exit 0\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; shift; done\n`);
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho "$1" >> "${tmp}/whisper.calls"\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; shift; done\n`);
   chmodSync(join(bin, "whisper-cli"), 0o755);
   const tr = AN.transcribe(join(tmp, "reply.wav"), "vi", join(tmp, "fake.bin"));
   const wargs = readFileSync(join(tmp, "whisper.args"), "utf8").split("\n");
@@ -398,6 +398,38 @@ fi
   check("transcribe: punctuation-only tokens join the previous word (a leading one the next)", JSON.stringify(tr.words.map((w: any) => w.text)) === JSON.stringify(["“Xin", "chào", "các", "bạn,", "hôm", "nay...", "nhé!"]), tr.words);
   check("transcribe: a word with punctuation ends where the punctuation ends, starts are untouched", JSON.stringify(tr.words.map((w: any) => [w.start, w.end])) === JSON.stringify([[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]]), tr.words);
   check("transcribe: text has no space before punctuation", tr.text === "“Xin chào các bạn, hôm nay... nhé!" && tr.language === "vi", tr.text);
+  check("transcribe starts whisper-cli once, for the transcription itself (no probe call)", readFileSync(join(tmp, "whisper.calls"), "utf8") === "-m\n", readFileSync(join(tmp, "whisper.calls"), "utf8"));
+
+  // capabilities.engines: found by a PATH / env / file lookup, never by starting the binary (fakes record every start)
+  {
+    const eng = join(tmp, "eng"), started = join(tmp, "eng.started");
+    mkdirSync(eng);
+    for (const n of ["whisper-cli", "piper", "uv"]) { writeFileSync(join(eng, n), `#!/bin/sh\necho "${n} $*" >> "${started}"\n`); chmodSync(join(eng, n), 0o755); }
+    writeFileSync(join(eng, "ggml.bin"), ""); writeFileSync(join(eng, "v.onnx"), "");
+    const keys = ["PATH", "AGENTCUT_WHISPER_MODEL", "AGENTCUT_PIPER_MODEL", "AGENTCUT_UV", "AGENTCUT_TTS_PROVIDER"], was = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    const setEnv = (o: Record<string, string | undefined>) => { for (const [k, v] of Object.entries(o)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
+    const engines = () => ({ transcribe: {}, tts: { providers: [] }, vision: { features: [] }, ...(api.capabilities() as any).engines }) as any; // an absent key fails its checks, not the run
+    try {
+      setEnv({ PATH: eng, AGENTCUT_WHISPER_MODEL: join(eng, "ggml.bin"), AGENTCUT_PIPER_MODEL: join(eng, "v.onnx"), AGENTCUT_UV: join(eng, "uv"), AGENTCUT_TTS_PROVIDER: undefined });
+      let e = engines();
+      check("engines.transcribe: whisper-cli on PATH + an existing model is available", e.transcribe.available === true && e.transcribe.engine === "whisper-cli" && e.transcribe.model === join(eng, "ggml.bin") && /auto/.test(e.transcribe.languages) && !e.transcribe.hint, e.transcribe);
+      check("engines.tts: piper with a model is available, the default provider and the voices tool are named",
+        e.tts.default_provider === "system" && e.tts.providers.find((p: any) => p.name === "piper")?.available === true && e.tts.voices === "list_voices", e.tts);
+      check("engines.vision: AGENTCUT_UV pointing at a uv is available, with its ops and the matte_models pointer",
+        e.vision.available === true && ["analyze_subject", "auto_reframe", "track_to", "remove_background"].every((o) => e.vision.features.join().includes(o)) && e.vision.matte_models === "see matte_models" && /allow_download/.test(e.vision.models_note), e.vision);
+      setEnv({ AGENTCUT_UV: undefined });
+      check("engines.vision: without AGENTCUT_UV, uv on PATH is used", engines().vision.available === true);
+      setEnv({ AGENTCUT_UV: join(eng, "missing-uv") });
+      check("engines.vision: AGENTCUT_UV pointing at a missing file is not available", engines().vision.available === false);
+      setEnv({ AGENTCUT_WHISPER_MODEL: undefined, AGENTCUT_PIPER_MODEL: join(eng, "missing.onnx") });
+      e = engines();
+      check("engines.transcribe: a CLI without a model is not available, with a hint", e.transcribe.available === false && e.transcribe.model === null && /AGENTCUT_WHISPER_MODEL/.test(e.transcribe.hint), e.transcribe);
+      check("engines.tts: piper without its model file is not available, with a hint", e.tts.providers.find((p: any) => p.name === "piper")?.available === false && !!e.tts.providers.find((p: any) => p.name === "piper")?.hint, e.tts);
+      setEnv({ AGENTCUT_WHISPER_MODEL: join(eng, "missing.bin") });
+      check("engines.transcribe: a model path that does not exist is not available", engines().transcribe.available === false && engines().transcribe.model === null);
+      check("capabilities started no engine binary", !existsSync(started), existsSync(started) && readFileSync(started, "utf8"));
+    } finally { setEnv(was); }
+  }
 } finally { srv.kill(); }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });

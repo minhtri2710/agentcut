@@ -1,6 +1,6 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
@@ -203,14 +203,19 @@ function systemVoices(): Voice[] {
   return [];
 }
 
-/** Every TTS provider (available or not, with a setup hint) and the voices usable now. */
-export function ttsVoices() {
-  const sys = systemVoices(), extra = providerInfo();
+/** Every TTS provider (available or not, with a setup hint) and the default one. A lookup only: no engine is started. */
+export function ttsProviders(extra = providerInfo()) {
+  const win = process.platform === "win32", mac = process.platform === "darwin", bin = mac ? "say" : win ? "powershell" : ["espeak-ng", "espeak"].find(has);
   return {
     default_provider: pickProvider().provider,
-    providers: [{ name: "system", available: sys.length > 0, engine: process.platform === "darwin" ? "say" : process.platform === "win32" ? "sapi" : "espeak" }, ...extra.providers],
-    voices: [...sys, ...extra.voices],
+    providers: [{ name: "system", available: !!bin && has(bin), engine: mac ? "say" : win ? "sapi" : "espeak" }, ...extra.providers],
   };
+}
+
+/** The providers and the voices usable now (lists the system voices, which may run `say`). */
+export function ttsVoices() {
+  const extra = providerInfo();
+  return { ...ttsProviders(extra), voices: [...systemVoices(), ...extra.voices] };
 }
 
 /** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
@@ -287,6 +292,26 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
   return raw;
 }
 
+const WHISPER_CLIS = ["whisper-cli", "whisper-cpp", "main"];
+
+/** The engine transcribe() uses: whisper.cpp when a CLI is on PATH and a model is set, else OpenAI whisper on PATH, else none. A lookup only. */
+function asrEngine(model = process.env.AGENTCUT_WHISPER_MODEL): { cli: string; model: string } | { python: true } | null {
+  const cli = WHISPER_CLIS.find(has);
+  if (cli && model) return { cli, model };
+  return has("whisper") ? { python: true } : null;
+}
+
+/** What `capabilities` says about transcription (same selection as transcribe(); nothing is started). */
+export function transcribeEngine() {
+  const e = asrEngine(), model = process.env.AGENTCUT_WHISPER_MODEL;
+  const modelOk = !!model && existsSync(model), available = !!e && ("python" in e || modelOk);
+  return {
+    available, engine: e ? ("cli" in e ? e.cli : "whisper") : null, model: e && "cli" in e && modelOk ? model : null,
+    languages: "auto, or a whisper language code such as vi or en",
+    ...(available ? {} : { hint: e && "cli" in e ? `AGENTCUT_WHISPER_MODEL=${model} does not exist: point it at a ggml model file` : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`" }),
+  };
+}
+
 /** Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed. */
 export function transcribe(path: string, language?: string, model?: string) {
   needFfmpeg();
@@ -294,9 +319,9 @@ export function transcribe(path: string, language?: string, model?: string) {
   try {
     const wav = join(tmp, "a.wav");
     spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(path), "-ar", "16000", "-ac", "1", wav]);
-    const cli = ["whisper-cli", "whisper-cpp", "main"].find((b) => !spawnSync(b, ["--help"], { stdio: "ignore" }).error);
-    const mdl = model ?? process.env.AGENTCUT_WHISPER_MODEL;
-    if (cli && mdl) {
+    const asr = asrEngine(model);
+    if (asr && "cli" in asr) {
+      const { cli, model: mdl } = asr;
       // -ml 1 alone splits inside a syllable ("ch","ào"); -sow splits only on whole words
       const r = spawnSync(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { encoding: "utf8", maxBuffer: 1 << 28 });
       if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
@@ -314,7 +339,7 @@ export function transcribe(path: string, language?: string, model?: string) {
       }
       return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words };
     }
-    if (!spawnSync("whisper", ["--help"], { stdio: "ignore" }).error) {
+    if (asr) {
       const r = spawnSync("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { encoding: "utf8", maxBuffer: 1 << 28 });
       if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));

@@ -63,7 +63,7 @@ export function buildServer() {
 
   s.registerTool("guide", { description: "Read first: how AgentCut works (tracks, magnetic timeline, templates, ops cheat-sheet, vocabulary, rules)." },
     async () => ({ content: [text(GUIDE.trim())] }));
-  s.registerTool("capabilities", { description: "Every clip type, transition, animation, motion, effect, filter/look, mask, text & caption preset, template, canvas preset and op name." },
+  s.registerTool("capabilities", { description: "Every clip type, transition, animation, motion, effect, filter/look, mask, text & caption preset, template, canvas preset and op name. `engines` says which transcription, TTS and vision engines are usable now." },
     wrap(() => api.capabilities()));
   s.registerTool("ops_reference", { description: "Every edit op accepted by apply_ops, with arguments." }, wrap(() => api.opsDoc()));
   s.registerTool("timeline_schema", { description: "The timeline JSON format (fields per clip type, units, enums)." }, wrap(() => api.schema()));
