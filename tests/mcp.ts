@@ -109,6 +109,48 @@ else {
   check("MCP prepare with allow_download reaches the same download", p1.json.error?.code === "model_download_failed" && fetched().length === 2 && fetched()[1] === FACE_MODEL.url, { p1: p1.json, fetched: fetched() });
   await c2.close();
 }
+// analyze_subject caches in the project (the project arg, else the one the server remembers) and in the user cache with none; auto_reframe then reuses
+// the project's result. This server runs a stand-in for uv (AGENTCUT_UV) that answers every subject job with a fixed track, so no real helper runs.
+{
+  const { readdirSync, mkdirSync, chmodSync } = await import("node:fs");
+  const { FACE_MODEL } = await import("../src/vision.ts");
+  const cache3 = join(tmp, "cache3"), uv = join(tmp, "mcp-fake-uv.mjs"), uvLog = join(tmp, "mcp-fake-uv.log");
+  writeFileSync(uv, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const job = JSON.parse(process.argv.at(-1)), n = job.fps ? Math.max(2, Math.round((job.duration ?? 4) * job.fps)) : 1;
+appendFileSync(${JSON.stringify(uvLog)}, job.cmd + "\\n");
+process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) => ({ t: +((job.start ?? 0) + i / (job.fps ?? 6)).toFixed(4), x: 0.5, y: 0.5, kind: "saliency", score: 0.5 })) }));
+`);
+  chmodSync(uv, 0o755);
+  mkdirSync(join(cache3, "models", FACE_MODEL.name), { recursive: true });
+  writeFileSync(join(cache3, "models", FACE_MODEL.name, `${FACE_MODEL.name}.onnx`), "");
+  const env3: Record<string, string | undefined> = { ...env, AGENTCUT_CACHE: cache3, AGENTCUT_UV: uv };
+  delete env3.AGENTCUT_PROJECT;
+  const c3 = new Client({ name: "agentcut-test-3", version: "1" });
+  await c3.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: env3 as Record<string, string> }));
+  const call3 = callOn(c3), runs = () => { try { return readFileSync(uvLog, "utf8").split("\n").filter(Boolean).length; } catch { return 0; } };
+  const subj = (dir: string) => { try { return readdirSync(dir).filter((f) => f.startsWith("subject-")); } catch { return []; } };
+  const userVision = join(cache3, "vision"), pcache = (d: string) => join(d, ".agentcut", "cache"), a4 = join(tmp, "a.mp4");
+  const n0 = await call3("analyze_subject", { path: a4 });
+  check("MCP analyze_subject with no project open: ok, cached in the user cache",
+    n0.json.ok === true && n0.json.cached === false && runs() === 1 && subj(userVision).length === 1, n0.json);
+  const D3 = join(tmp, "subj3"), D4 = join(tmp, "subj4");
+  await call3("create_project", { path: D3, preset: "reels" });
+  await call3("apply_ops", { ops: [{ op: "add_clip", track: "main", src: a4 }] });
+  const n1 = await call3("analyze_subject", { path: a4 });
+  check("MCP analyze_subject with a remembered project: cached in that project, not read from or written to the user cache",
+    n1.json.ok === true && n1.json.cached === false && runs() === 2 && subj(pcache(D3)).length === 1 && subj(userVision).length === 1, n1.json);
+  const rf = await call3("apply_ops", { ops: [{ op: "auto_reframe", id: "vid1" }] });
+  check("MCP auto_reframe on the whole clip reuses it: applied at once, no pending, helper not run", rf.json.ok === true && !rf.json.results[0].pending && runs() === 2, rf.json);
+  await call3("create_project", { path: D4, preset: "reels" });
+  await call3("open_project", { path: D3 });
+  const n2 = await call3("analyze_subject", { path: a4, fps: 5, project: D4 });
+  check("MCP analyze_subject with a project arg: cached in that project, not the remembered one",
+    n2.json.ok === true && n2.json.cached === false && runs() === 3 && subj(pcache(D4)).length === 1 && subj(pcache(D3)).length === 1 && subj(userVision).length === 1, n2.json);
+  const n3 = await call3("analyze_subject", { path: a4, project: join(tmp, "no-such-project") });
+  check("MCP analyze_subject with a project arg that is not a project -> no_project, helper not run", n3.json.ok === false && n3.json.error.code === "no_project" && runs() === 3, n3.json);
+  await c3.close();
+}
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });

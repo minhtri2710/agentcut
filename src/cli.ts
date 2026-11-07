@@ -25,7 +25,8 @@ Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--from S 
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
 Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F · subject F [--fps 6] [--allow-download]
-             (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download)
+             (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download;
+             cached in the project when one is found, so auto_reframe on a clip covering the same range at the same fps reuses it)
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
 Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits)
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
@@ -147,7 +148,11 @@ export async function main(argv = process.argv.slice(2)) {
       case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
       case "loudness": res = api.analyze.loudness(pos[0]); break;
       case "transcribe": res = api.analyze.transcribe(pos[0], f.language); break;
-      case "subject": res = await api.analyze.subject(pos[0], num(f.fps), f["allow-download"]); break;
+      case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
+        let root: string | undefined;
+        try { root = api.openProject(P).root; } catch (e: any) { if (e.code !== "no_project" || P || process.env.AGENTCUT_PROJECT) throw e; }
+        res = await api.analyze.subject(pos[0], num(f.fps), f["allow-download"], root); break;
+      }
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
         let last = 0;

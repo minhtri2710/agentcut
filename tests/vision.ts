@@ -154,6 +154,61 @@ check("prepare with nothing pending is a no-op", (await api.prepare(P)).computed
 await applyPrep(P, [{ op: "auto_reframe", id: "vid1", fps: 4 }]);
 check("other params -> new analysis", nCalls("subject") === 2);
 
+// analyze_subject with a project fills that project's cache; auto_reframe on a clip covering the same range at the same fps reuses it.
+// Without a project it fills the user cache and leaves every project cache alone.
+{
+  const subjFiles = (dir: string) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith("subject-")).sort() : []);
+  const userVision = join(process.env.AGENTCUT_CACHE!, "vision"), rbPath = join(m, "rb.mp4"), stillPath = join(m, "still.png");
+  const S = join(tmp, "reel-subject"), S2 = join(tmp, "reel-subject-none"), pcache = (root: string) => join(root, ".agentcut", "cache");
+  api.create(S, { preset: "reels" });
+  api.create(S2, { preset: "reels" });
+  await apply(S, [{ op: "add_clip", track: "main", src: stillPath, duration: 2 }, { op: "add_clip", track: "main", src: rbPath }]);
+  const u0 = subjFiles(userVision), c0 = nCalls("subject");
+  const sv: any = await api.analyze.subject(rbPath, 6, false, S), si: any = await api.analyze.subject(stillPath, undefined, false, S);
+  check("project: analyze_subject computes into the project's cache and leaves the user cache alone",
+    sv.cached === false && si.cached === false && nCalls("subject") === c0 + 2 && subjFiles(pcache(S)).length === 2 && subjFiles(userVision).join() === u0.join(), { sv: sv.cached, si: si.cached, project: subjFiles(pcache(S)), user: subjFiles(userVision) });
+  const again: any = await api.analyze.subject(rbPath, 6, false, S);
+  check("project: the same analysis again is cached, helper not run", again.cached === true && nCalls("subject") === c0 + 2, again);
+  const rf = await apply(S, [{ op: "auto_reframe", id: "img1" }, { op: "auto_reframe", id: "vid1" }]);
+  check("project: auto_reframe on the still and on the whole video at in 0 applies at once, reusing the analyses",
+    rf.every((r: any) => !r.pending) && rf[0].samples === 1 && rf[1].samples === sv.samples.length && nCalls("subject") === c0 + 2, { rf, calls: nCalls("subject") - c0 });
+  const st: any = api.prepareStatus(S), pp: any = await api.prepare(S);
+  check("project: nothing is missing and prepare computes nothing", st.missing.length === 0 && pp.computed.length === 0 && nCalls("subject") === c0 + 2, { st, pp });
+  const none: any = await api.analyze.subject(rbPath, 6);
+  check("no project: analyze_subject computes into the user cache and creates no project cache",
+    none.cached === false && nCalls("subject") === c0 + 3 && subjFiles(userVision).length === u0.length + 1 && !existsSync(pcache(S2)) && subjFiles(pcache(S)).length === 2, { none: none.cached, user: subjFiles(userVision), s2: existsSync(pcache(S2)) });
+  const noProj = await api.analyze.subject(rbPath, 6, false, join(tmp, "no-such-project")).catch((e) => e);
+  check("a project that does not exist -> no_project, helper not run", noProj.code === "no_project" && nCalls("subject") === c0 + 3, noProj.code);
+
+  // CLI (a child, fake uv): -p, the nearest project.json and no project at all
+  const cli = join(import.meta.dir, "../src/cli.ts"), S3 = join(tmp, "reel-subject-cli"), sub = join(S3, "sub"), outside = join(tmp, "outside-any-project");
+  api.create(S3, { preset: "reels" });
+  mkdirSync(sub);
+  mkdirSync(outside);
+  const runRaw = (cwd: string, fps: string, envProject: string | undefined, ...a: string[]) => {
+    const e: Record<string, string | undefined> = { ...process.env };
+    delete e.AGENTCUT_PROJECT;
+    if (envProject) e.AGENTCUT_PROJECT = envProject;
+    const r = spawnSync(process.execPath, ["--no-install", cli, "subject", rbPath, "--fps", fps, ...a], { cwd, encoding: "utf8", env: e as NodeJS.ProcessEnv });
+    return { status: r.status, json: JSON.parse(r.stdout || "{}") };
+  };
+  const run = (cwd: string, fps: string, ...a: string[]) => runRaw(cwd, fps, undefined, ...a).json;
+  const k0 = nCalls("subject"), u1 = subjFiles(userVision), cp = run(outside, "6", "-p", S3);
+  check("CLI subject -p <project>: computed into that project's cache, user cache unchanged",
+    cp.ok === true && cp.cached === false && nCalls("subject") === k0 + 1 && subjFiles(pcache(S3)).length === 1 && subjFiles(userVision).join() === u1.join(), { cp, project: subjFiles(pcache(S3)) });
+  const cn = run(sub, "6");
+  check("CLI subject with no -p inside a project folder uses the nearest project.json: same project cache, cached", cn.ok === true && cn.cached === true && nCalls("subject") === k0 + 1, cn);
+  // an explicit project that is not one fails closed: no_project, non-zero exit, nothing computed or written
+  const bare = join(tmp, "folder-without-project"), u2 = subjFiles(userVision), k1 = nCalls("subject");
+  mkdirSync(bare);
+  const bp = runRaw(outside, "4", undefined, "-p", bare), be = runRaw(outside, "4", bare);
+  check("CLI subject -p <folder without a project> or $AGENTCUT_PROJECT naming one: no_project, non-zero exit, helper not run, nothing written to either cache",
+    [bp, be].every((x) => x.status !== 0 && x.json.ok === false && x.json.error?.code === "no_project") && nCalls("subject") === k1 && subjFiles(userVision).join() === u2.join() && !existsSync(pcache(bare)), { bp, be, user: subjFiles(userVision) });
+  const cu = run(outside, "5");
+  check("CLI subject outside any project: computed into the user cache, no project cache created",
+    cu.ok === true && cu.cached === false && nCalls("subject") === k0 + 2 && subjFiles(userVision).length === u1.length + 1 && !existsSync(pcache(outside)) && subjFiles(pcache(S3)).length === 1, { cu, user: subjFiles(userVision) });
+}
+
 const f0 = await api.frame(P, 0.05, { scale: 0.25, out: join(tmp, "rf0.png") });
 const f1 = await api.frame(P, 3.9, { scale: 0.25, out: join(tmp, "rf1.png") });
 check("render follows: start shows the left (red) side", isColor(px(f0.image, 135, 240), [255, 0, 0]), px(f0.image, 135, 240));
