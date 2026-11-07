@@ -183,8 +183,8 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   };
   const vL = stemLufs("voice"), mL = stemLufs("music");
   check(`voice ${vL} LUFS vs ducked bed ${mL} LUFS over the voiced span: >= 15 LU`, vL - mL >= 15, { vL, mL });
-  if (!(api.capabilities() as any).engines.transcribe.available)
-    console.log("  - transcribe round-trip skipped: no whisper (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");
+  if ((api.capabilities() as any).engines.transcribe.engine === null) // a CLI with a missing model still runs, and fails loudly
+    console.log("  - transcribe round-trip skipped: no whisper engine selected (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");
   else {
     const tr = AN.transcribe(out, "vi");
     // Share of script words returned as whole tokens, in order (LCS over normalised words). Measured on this mix with whisper base,

@@ -2,7 +2,7 @@
 // Selected by voice prefix ("piper", "piper:/m.onnx", "openai:nova", "system:Linh") or AGENTCUT_TTS_PROVIDER.
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { basename, delimiter, join } from "node:path";
+import { basename, delimiter, extname, join } from "node:path";
 import { EditError, ORT_ENV } from "./model.ts";
 import { createFile } from "./safe-write.ts";
 
@@ -17,9 +17,9 @@ export function isExecutable(f: string): boolean {
   try { accessSync(f, constants.X_OK); return statSync(f).isFile(); } catch { return false; }
 }
 
-/** Is `bin` an executable file on PATH? A lookup only: the binary is never started. On Windows, the names a spawn without a shell resolves: bin, bin.com, bin.exe. */
+/** Is `bin` an executable file on PATH? A lookup only: the binary is never started. On Windows, the names a spawn without a shell resolves: bin as given when it has an extension, else bin.com and bin.exe. */
 export function has(bin: string): boolean {
-  const exts = process.platform === "win32" ? ["", ".com", ".exe"] : [""];
+  const exts = process.platform === "win32" ? (extname(bin) ? ["", ".com", ".exe"] : [".com", ".exe"]) : [""];
   return (process.env.PATH || "").split(delimiter).some((dir) => dir && exts.some((e) => isExecutable(join(dir, bin + e))));
 }
 
