@@ -17,6 +17,8 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Connected clips (Final Cut): attach_to "vid3" (or "main#2" = 3rd clip of main, "main#-1" = last) + offset (+ match_duration,
   end_offset) pins a title/overlay to a clip: retiming (snap_to_beats, trims, reorders) keeps it in sync; removing the
   clip removes what is attached. PREFER this over absolute 'at' for anything that belongs to a specific shot.
+  Ops that place an attached clip (move_clip, trim_clip trim_start, update_clip start, add_transition) change its offset, so it lands
+  where asked and stays attached; a magnetic track refuses an attached clip (attached_magnetic): update_clip attach_to=null first.
 - Length that follows a clip: match_duration "voice#-1" (a clip id or track#n) sets duration = that clip's duration - end_offset
   (negative holds longer), keeps the start (so it works on the magnetic main track) and follows later changes to that clip.
   Removing the followed clip keeps the length as a plain number; splitting a follower keeps both halves' lengths. A clip whose length

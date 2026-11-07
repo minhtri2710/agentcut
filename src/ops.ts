@@ -247,22 +247,31 @@ function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
   else if (!tr.magnetic) piece.start = round6(start);
 }
 
+/** An attached clip cannot sit on a magnetic track: starts there are computed from order, so an offset has no meaning. */
+function refuseAttachedMagnetic(c: Clip, dest: Track) {
+  if (c.attach_to && dest.magnetic) throw new EditError(`'${c.id}' is attached to '${c.attach_to}' and track '${dest.id}' is magnetic`, "attached_magnetic", `update_clip id=${c.id} attach_to=null first, or choose a non-magnetic track`);
+}
+
 /**
  * Shift `moved` clips of the non-magnetic track `tr` by d seconds; the other clips of `tr` keep their timeline place.
  * A moved clip with no moving ancestor in its attach_to chain moves by start (attached: by offset, clamped at 0); with one, it follows.
- * A clip of `tr` outside `moved` whose target moves gets its offset compensated. Clips on other tracks that follow a moved clip move with it.
+ * A clip of `tr` outside `moved` whose target moves gets its offset reset so it stays where it was. Clips on other tracks that follow a moved clip move with it.
+ * Leaves the timeline resolved.
  */
 function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
   const byId = new Map<string, Clip>([...allClips(tl.tracks)].map((x) => [x.id, x]));
   const inSet = new Set(moved), onTrack = new Set(tr.clips);
   const moves = (c: Clip | undefined, n = 0): boolean => !!c && (inSet.has(c) || (!onTrack.has(c) && !!c.attach_to && n < 16 && moves(byId.get(c.attach_to), n + 1)));
+  const stay: [Clip, number][] = [];
   for (const x of tr.clips) {
     const t = x.attach_to ? byId.get(x.attach_to) : undefined;
     if (!x.attach_to) { if (inSet.has(x)) x.start = round6(Math.max(0, clipStart(x) + d)); }
     else if (!t) continue;
     else if (inSet.has(x)) { if (!moves(t)) x.offset = round6(Math.max(0, clipStart(t) + parseTime(x.offset ?? 0) + d) - clipStart(t)); }
-    else if (moves(t)) x.offset = round6(parseTime(x.offset ?? 0) - d);
+    else if (moves(t)) stay.push([x, clipStart(x)]);
   }
+  resolve(tl); // the targets' real new starts (a shift can stop at 0)
+  for (const [x, s] of stay) placeAt(tl, tr, x, s);
 }
 
 function addClip(p: Project, tl: Timeline, a: Dict): Dict {
@@ -278,13 +287,14 @@ function addClip(p: Project, tl: Timeline, a: Dict): Dict {
   const c = makeClip(p, tl, a);
   lengthOnce(c);
   const tr = ensureTrack(tl, a.track, c.type);
+  refuseAttachedMagnetic(c, tr);
   place(tl, tr, c, a);
   resolve(tl);
   return { id: c.id, type: c.type, track: tr.id, start: c.start, duration: c.duration };
 }
 
 op("add_clip", "Add a clip. Type is inferred (src/asset -> video|image|audio|lottie, text -> text, words/srt -> captions). " +
-  "Magnetic tracks append back-to-back (index/after/before); other tracks use 'at' (seconds, or 'end'/'end-2'). " +
+  "Magnetic tracks append back-to-back (index/after/before) and refuse attach_to (attached_magnetic); other tracks use 'at' (seconds, or 'end'/'end-2'). " +
   "preset expands a text/caption style (see capabilities). Any clip field may be passed directly.",
   { track: "track id (created if missing)", src: "file path (auto-import)", asset: "asset id", type: "clip type", at: "start", "index|after|before": "magnetic position", duration: "s", end: "alt. to duration", preset: "text/caption preset", "...": "any clip field" },
   addClip);
@@ -305,7 +315,7 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
 
-op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. Shorthand: pass fields directly.",
+op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. Shorthand: pass fields directly. start on an attached clip sets its offset (start with offset is refused); a clip on a magnetic track cannot be attached (attached_magnetic).",
   { id: "clip id", set: "fields (dicts merge; keyframes replace)" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
     const patch: Dict = { ...(a.set ?? Object.fromEntries(Object.entries(a).filter(([k]) => k !== "op" && k !== "id"))) };
@@ -324,6 +334,11 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     if ("duration" in patch && !("match_duration" in patch)) ownDuration(c);
     deepMerge(c, patch);
     lengthOnce(c);
+    if (patch.attach_to) refuseAttachedMagnetic(c, tr);
+    if (c.attach_to && patch.start != null) { // an attached clip is placed by its offset, against the (new) target
+      if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
+      placeAt(tl, tr, c, clipStart(c));
+    }
     if (!tr.magnetic) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
     resolve(tl);
     return { id: c.id, start: c.start, duration: c.duration };
@@ -345,9 +360,10 @@ op("remove_clip", "Remove a clip (and clips attached to it; clips whose match_du
   return { removed: c.id, removed_attached: attached, unlinked_durations: unlinked };
 });
 
-op("move_clip", "Move a clip in time and/or to another track.", { id: "clip id", at: "start (non-magnetic)", shift: "+/- seconds", track: "destination", index: "magnetic position" }, (p, tl, a) => {
+op("move_clip", "Move a clip in time and/or to another track. An attached clip moves by its offset and stays attached; a magnetic track refuses it (attached_magnetic).", { id: "clip id", at: "start (non-magnetic)", shift: "+/- seconds", track: "destination", index: "magnetic position" }, (p, tl, a) => {
   const [tr, ci, c] = findClip(tl, a.id);
   const dest = a.track ? findTrack(tl, a.track) : tr;
+  refuseAttachedMagnetic(c, dest);
   const old = clipStart(c);
   tr.clips.splice(ci, 1);
   const b: Dict = {};
@@ -355,11 +371,12 @@ op("move_clip", "Move a clip in time and/or to another track.", { id: "clip id",
   if (!dest.magnetic) b.at = a.shift !== undefined ? Math.max(0, old + parseTime(a.shift)) : a.at ?? old;
   if (dest.magnetic && b.index === 0) delete c.transition;
   place(tl, dest, c, b);
+  if (c.attach_to) placeAt(tl, dest, c, clipStart(c));
   resolve(tl);
   return { id: c.id, track: dest.id, start: c.start };
 });
 
-op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_end from the tail; or set in/duration/end.",
+op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_end from the tail; or set in/duration/end. An attached clip keeps its target and moves by its offset.",
   { id: "clip id", trim_start: "s", trim_end: "s", in: "source in", duration: "s", end: "timeline end" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
     if (a.duration !== undefined || a.end !== undefined || a.trim_start || a.trim_end) ownDuration(c);
@@ -372,7 +389,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
       const d = parseTime(a.trim_start);
       c.in = round6(parseTime(c.in ?? 0) + d * speed);
       c.duration = round6(clipDur(c) - d);
-      if (!tr.magnetic) c.start = round6(clipStart(c) + d);
+      if (!tr.magnetic) placeAt(tl, tr, c, clipStart(c) + d);
     }
     if (a.trim_end) c.duration = round6(clipDur(c) - parseTime(a.trim_end));
     if (clipDur(c) <= 0) throw new EditError("trim leaves a non-positive duration", "bad_trim");
@@ -480,18 +497,19 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];
     dropFollow(fz);
-    if (!tr.magnetic) { shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz)); resolve(tl); } // placeAt reads the target's shifted start
+    if (!tr.magnetic) shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz)); // leaves the target's shifted start resolved for placeAt
     placeAt(tl, tr, fz, t);
     tr.clips.splice(tr.clips.indexOf(insertAfter) + 1, 0, fz);
     resolve(tl);
     return { id: fz.id, start: fz.start, duration: fz.duration };
   });
 
-op("duplicate_clip", "Copy a clip (optionally to another track/time).", { id: "clip id", track: "track id", at: "start" }, (p, tl, a) => {
+op("duplicate_clip", "Copy a clip (optionally to another track/time). A magnetic track refuses a copy of an attached clip (attached_magnetic).", { id: "clip id", track: "track id", at: "start" }, (p, tl, a) => {
   const [tr, , c] = findClip(tl, a.id);
   const dup: Clip = { ...structuredClone(c), id: newId(tl, PREFIX[c.type]) };
   delete dup.group; // a copy is not part of the expanded compound's regroup set
   const dest = a.track ? findTrack(tl, a.track) : tr;
+  refuseAttachedMagnetic(c, dest);
   place(tl, dest, dup, dest.magnetic ? (dest === tr ? { after: c.id } : {}) : { at: a.at ?? clipEnd(c) });
   if (!dest.magnetic) {
     placeAt(tl, dest, dup, clipStart(dup));
@@ -511,7 +529,7 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
     return { id: c.id, keyframes: c.keyframes ?? {} };
   });
 
-op("add_transition", "Set the transition into a clip from the previous clip on its track.",
+op("add_transition", "Set the transition into a clip from the previous clip on its track. An attached clip moves by its offset and stays attached.",
   { to: "incoming clip id", type: TRANSITIONS.join("|"), duration: "s (0.5)" }, (p, tl, a) => {
     const [tr, ci, c] = findClip(tl, a.to ?? a.id);
     if (ci === 0) throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead");
@@ -520,7 +538,7 @@ op("add_transition", "Set the transition into a clip from the previous clip on i
     else {
       if (!TRANSITIONS.includes(t)) { const s = suggest(t, TRANSITIONS); throw new EditError(`unknown transition '${t}'`, "bad_transition", s ? `did you mean '${s}'?` : TRANSITIONS.join(", ")); }
       c.transition = { type: t, duration: parseTime(a.duration ?? 0.5) };
-      if (!tr.magnetic) c.start = round6(Math.max(0, clipEnd(tr.clips[ci - 1]) - c.transition.duration));
+      if (!tr.magnetic) placeAt(tl, tr, c, Math.max(0, clipEnd(tr.clips[ci - 1]) - c.transition.duration));
     }
     resolve(tl);
     return { id: c.id, transition: c.transition ?? null, start: c.start };

@@ -473,6 +473,83 @@ console.log("pieces of an attached clip keep their place and length");
   const aj = tj.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio").sort((x: any, y: any) => x.start - y.start);
   check("splitting a video with J-cut audio: the audio is split at the same time", aj.length === 2 && near(aj[0].start, 5.5) && near(aj[0].duration, 1.5) && near(aj[1].start, 7) && near(aj[1].duration, 1) && aj[1].attach_to === sj.right, aj);
   valid("split of a J-cut video", tj);
+  // ops that place an attached clip set its offset: it lands where asked and stays attached
+  console.log("ops that place an attached clip move it by offset");
+  const refused = (name: string, t: any, ops: any[], code: string) => {
+    const before = JSON.stringify(t);
+    try { run(t, ops); check(name, false, "no error"); }
+    catch (e: any) { check(name, e.code === code && !!e.hint && JSON.stringify(t) === before, { code: e.code, message: e.message, hint: e.hint }); }
+  };
+  const [m1, [r1]] = run(base(), [{ op: "move_clip", id: "ovl", at: 1 }]);
+  check("move_clip at on an attached clip: it lands at the asked time, stays attached, offset updated, result reports the start", near(at(m1, "ovl").start, 1) && at(m1, "ovl").attach_to === "img1" && near(at(m1, "ovl").offset, 1) && near(r1.start, 1), [at(m1, "ovl"), r1]);
+  valid("move_clip at on an attached clip", m1);
+  const [m2, [r2]] = run(m1, [{ op: "move_clip", id: "ovl", shift: 0.5 }]);
+  check("move_clip shift on an attached clip: moves by the amount, offset updated", near(at(m2, "ovl").start, 1.5) && near(at(m2, "ovl").offset, 1.5) && near(r2.start, 1.5), [at(m2, "ovl"), r2]);
+  const [m3] = run(m2, [{ op: "move_clip", id: "img1", index: 1 }]);
+  check("  and a later move of the target carries it", near(at(m3, "img1").start, 2) && near(at(m3, "ovl").start, 3.5), [at(m3, "img1"), at(m3, "ovl")]);
+  valid("move_clip then target move", m3);
+  const [m4] = run(base(), [{ op: "move_clip", id: "ovl", shift: -5 }]);
+  check("move_clip shift before 0 stops at 0, still attached", near(at(m4, "ovl").start, 0) && near(at(m4, "ovl").offset, 0) && at(m4, "ovl").attach_to === "img1", at(m4, "ovl"));
+  const [m5, [r5]] = run(base(), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty", at: 2 }]);
+  check("move_clip of an attached clip to another non-magnetic track: lands there, stays attached, offset updated", m5.tracks.find((x: any) => x.id === "ty")!.clips.some((c: any) => c.id === "ovl") && near(at(m5, "ovl").start, 2) && near(at(m5, "ovl").offset, 2) && at(m5, "ovl").attach_to === "img1" && r5.track === "ty", [at(m5, "ovl"), r5]);
+  const [m6] = run(m5, [{ op: "move_clip", id: "img1", index: 1 }]);
+  check("  and a later move of the target carries it", near(at(m6, "ovl").start, 4), at(m6, "ovl"));
+  valid("move_clip to another track", m6);
+  const [m7] = run(base(), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty" }]);
+  check("move_clip to another track without a time keeps the place", near(at(m7, "ovl").start, 0.5) && near(at(m7, "ovl").offset, 0.5), at(m7, "ovl"));
+  // magnetic destinations refuse an attached clip
+  refused("move_clip of an attached clip into a magnetic track is refused, batch atomic", base(), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "move_clip", id: "ovl", track: "main", index: 1 }], "attached_magnetic");
+  refused("duplicate_clip of an attached clip into a magnetic track is refused, batch atomic", base(), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "duplicate_clip", id: "ovl", track: "main" }], "attached_magnetic");
+  const hand = base();
+  at(hand, "img2").attach_to = "img1";
+  refused("move_clip within a magnetic track of an attached clip (hand-edited) is refused", hand, [{ op: "move_clip", id: "img2", index: 0 }], "attached_magnetic");
+  refused("add_clip with attach_to onto a magnetic track is refused", base(), [{ op: "add_clip", track: "main", asset: "i", id: "bad", attach_to: "img1", offset: 1, duration: 1 }], "attached_magnetic");
+  refused("update_clip attach_to on a clip of a magnetic track is refused", base(), [{ op: "update_clip", id: "img2", attach_to: "img1", offset: 1 }], "attached_magnetic");
+  const [m8] = run(base(), [{ op: "update_clip", id: "ovl", attach_to: null }, { op: "move_clip", id: "ovl", track: "main", index: 1 }]);
+  check("  after attach_to=null the clip can join the magnetic track", at(m8, "ovl").attach_to === undefined && m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id).join() === "img1,ovl,img2", m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id));
+  valid("detached then moved", m8);
+  const [m9] = run(base(), [{ op: "move_clip", id: "img2", index: 0 }]);
+  check("move_clip within a magnetic track of a plain clip is unchanged", m9.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id).join() === "img2,img1", m9.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id));
+  // trim_start
+  const [n1, [q1]] = run(base(), [{ op: "trim_clip", id: "ovl", trim_start: 0.5 }]);
+  check("trim_clip trim_start on an attached clip: start moves by d, in-point by d, the end stays, still attached", near(at(n1, "ovl").start, 1) && near(at(n1, "ovl").in, 1.5) && near(at(n1, "ovl").duration, 1.5) && near(at(n1, "ovl").start + at(n1, "ovl").duration, 2.5) && near(at(n1, "ovl").offset, 1) && at(n1, "ovl").attach_to === "img1" && near(q1.start, 1), [at(n1, "ovl"), q1]);
+  valid("trim_start on an attached clip", n1);
+  const [n2] = run(base(), [{ op: "update_clip", id: "ovl", speed: 2 }, { op: "trim_clip", id: "ovl", trim_start: 0.5 }]);
+  check("  with speed 2 the in-point moves by d*speed", near(at(n2, "ovl").in, 2) && near(at(n2, "ovl").start, 1) && near(at(n2, "ovl").start + at(n2, "ovl").duration, 2.5), at(n2, "ovl"));
+  // update_clip start
+  const [u1, [s1]] = run(base(), [{ op: "update_clip", id: "ovl", start: 1.5 }]);
+  check("update_clip start on an attached clip moves it: offset updated, still attached", near(at(u1, "ovl").start, 1.5) && near(at(u1, "ovl").offset, 1.5) && at(u1, "ovl").attach_to === "img1" && near(s1.start, 1.5), [at(u1, "ovl"), s1]);
+  valid("update_clip start on an attached clip", u1);
+  refused("update_clip start with offset on an attached clip is refused", base(), [{ op: "update_clip", id: "ovl", set: { start: 1, offset: 1 } }], "bad_value");
+  const [u2] = run(base(), [{ op: "update_clip", id: "ovl", set: { start: 5, attach_to: "img2" } }]);
+  check("update_clip start with a new attach_to computes the offset against the new target", near(at(u2, "ovl").start, 5) && near(at(u2, "ovl").offset, 1) && at(u2, "ovl").attach_to === "img2", at(u2, "ovl"));
+  valid("update_clip start with a new attach_to", u2);
+  const [u3] = run(base(), [{ op: "update_clip", id: "ovl", set: { start: 3, attach_to: null } }]);
+  check("update_clip start with attach_to null places the plain clip", at(u3, "ovl").attach_to === undefined && near(at(u3, "ovl").start, 3), at(u3, "ovl"));
+  // add_transition
+  const tbase = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ov0", at: 0, duration: 2 }])[0];
+  const [x1, [y1]] = run(tbase, [{ op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]);
+  check("add_transition on an attached clip: start = previous end - duration, offset updated, still attached", near(at(x1, "ovl").start, 1.5) && near(at(x1, "ovl").offset, 1.5) && at(x1, "ovl").attach_to === "img1" && near(y1.start, 1.5), [at(x1, "ovl"), y1]);
+  valid("add_transition on an attached clip", x1);
+  const [x2] = run(tbase, [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]);
+  check("  a computed length is kept: it still ends at the target's end", near(at(x2, "ovl").start, 1.5) && near(at(x2, "ovl").start + at(x2, "ovl").duration, 4) && at(x2, "ovl").match_duration === true, at(x2, "ovl"));
+  // computed length
+  const [c1] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "move_clip", id: "ovl", at: 1 }]);
+  check("move_clip of an attached clip with a computed length: it keeps the rule and ends at the target's end", near(at(c1, "ovl").start, 1) && near(at(c1, "ovl").duration, 3) && at(c1, "ovl").match_duration === true && at(c1, "ovl").attach_to === "img1", at(c1, "ovl"));
+  valid("move_clip with a computed length", c1);
+  const [c2] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "update_clip", id: "ovl", start: 1 }]);
+  check("update_clip start of an attached clip with a computed length: same", near(at(c2, "ovl").start, 1) && near(at(c2, "ovl").duration, 3) && at(c2, "ovl").match_duration === true, at(c2, "ovl"));
+  // ripple with a clamped target: an attached clip outside the set keeps its place
+  const lbase = run(base(), [
+    { op: "add_track", id: "x", kind: "video" },
+    { op: "add_clip", track: "x", asset: "i", id: "xc", at: 1, duration: 4 },
+    { op: "add_clip", track: "x", asset: "i", id: "xt", at: 2, duration: 1 },
+    { op: "add_clip", track: "x", asset: "i", id: "xb", attach_to: "xt", offset: -1.5, duration: 0.5 },
+  ])[0];
+  check("ripple setup: xb sits before its target", near(at(lbase, "xb").start, 0.5) && near(at(lbase, "xt").start, 2), [at(lbase, "xb"), at(lbase, "xt")]);
+  const [lr] = run(lbase, [{ op: "remove_clip", id: "xc", ripple: true }]);
+  check("remove_clip ripple when the target's shift stops at 0: the attached clip outside the set keeps its place", near(at(lr, "xt").start, 0) && near(at(lr, "xb").start, 0.5) && at(lr, "xb").attach_to === "xt", [at(lr, "xt"), at(lr, "xb")]);
+  valid("remove_clip ripple with a clamped target", lr);
   // remove_silence on an attached clip (real media with a silent stretch)
   const S = join(tmp, "proj-attached");
   api.create(S, { preset: "720p" });
