@@ -51,15 +51,17 @@ const real = (p: string) => { try { return realpathSync.native(p); } catch (e: a
 
 /** `dir` as a path below `base`, or null when it is not in the project. A path counts as inside when `base` or any ancestor of it
  *  is the same directory as `base` (compared by realpath): the project under another spelling (a link to it, a link to its parent,
- *  /private/var for /var, another letter case) is the project. The part below that ancestor is returned relative to `base`, so it
- *  is walked from the project root with lstat, whatever links its own components are. */
+ *  /private/var for /var, another letter case) is the project. The SHALLOWEST such ancestor is used, so the part below it is walked
+ *  from the project root with lstat whatever links its own components are: a link inside the project that points at the root itself
+ *  (previews/ -> root) must still be walked and refused, which the deepest match would skip. */
 function below(base: string, dir: string): string | null {
   base = resolve(base);
   const root = real(base);
   if (root === null) { const rel = relative(base, dir); return outside(rel) ? null : dir; } // not made yet: only the spelling given can be judged
+  let hit: string | null = null;
   for (let a = dir; ; a = dirname(a)) {
-    if (real(a) === root) return join(base, relative(a, dir));
-    if (dirname(a) === a) return null;
+    if (real(a) === root) hit = a;
+    if (dirname(a) === a) return hit === null ? null : join(base, relative(hit, dir));
   }
 }
 

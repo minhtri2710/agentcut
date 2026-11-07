@@ -4,7 +4,7 @@
 // a link at the final name of an output is replaced by a regular file and its target is left alone.
 // Run: bun tests/writes.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -147,6 +147,26 @@ console.log("an output path that names the project another way is checked like o
   }
 }
 
+// ------------------------------------------------------------------ a directory of the project that is a link to the project root
+console.log("a project directory that is a link to the project root: refused, nothing new in the root");
+{
+  const cases: [string, string, (p: string) => unknown][] = [
+    ["previews", "preview_frame, default output", (p) => api.frame(p, 1)],
+    ["previews", "preview_frame, out typed as <root>/previews/x.jpg", (p) => api.frame(p, 1, { out: join(p, "previews", "x.jpg") })],
+    ["renders", "export_timeline, default output", (p) => api.exportTimeline(p, {})],
+    ["media", "import_media copy=true", (p) => api.apply(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }])],
+  ];
+  for (const [dir, what, act] of cases) {
+    const p = await project(`rootlink-${dir}-${++n}`);
+    link(p, dir, p);
+    utimesSync(p, 1e9, 1e9);
+    const before = `${readdirSync(p).sort().join()}|${lstatSync(p).mtimeMs}`;
+    const c = await code(() => act(p));
+    const now = `${readdirSync(p).sort().join()}|${lstatSync(p).mtimeMs}`;
+    check(`${dir}/ as a link to the project root: ${what} -> unsafe_path, nothing new in the root`, c === "unsafe_path" && now === before, { c, before, now });
+  }
+}
+
 // ------------------------------------------------------------------ a directory at the output's name
 console.log("an output path that is a directory: refused with unsafe_path, no temp file is left");
 {
@@ -192,7 +212,7 @@ console.log("volumes without hard links: a named error, and init leaves nothing 
     // a root that cannot be written to makes the first write fail the way the link probe does on such a volume: the root init made is removed again
     const root = join(tmp, "init-no-skeleton"), keep = process.umask(0o777);
     let c: string;
-    try { c = await code(() => api.create(root, { preset: "reels" })); } finally { process.umask(keep); }
+    try { c = await code(() => api.create(root, { preset: "reels" })); } finally { process.umask(keep); if (existsSync(root)) chmodSync(root, 0o700); } // a regression must not leave a dir the suite cannot remove
     check("init that cannot use its new root fails and removes the root it made", c !== "ok" && !existsSync(root), { c, exists: existsSync(root) });
   }
 }
