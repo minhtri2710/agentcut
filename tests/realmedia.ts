@@ -186,18 +186,31 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   if ((api.capabilities() as any).engines.transcribe.engine === null) // a CLI with a missing model still runs, and fails loudly
     console.log("  - transcribe round-trip skipped: no whisper engine selected (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");
   else {
-    const tr = AN.transcribe(out, "vi");
+    const norm = (s: string) => s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
     // Share of script words returned as whole tokens, in order (LCS over normalised words). Measured on this mix with whisper base,
     // -ml 1: 10/21 (48%) when words split mid-syllable (no -sow), 21/21 (100%) with -sow. 80% sits between, 4 words under the green result.
     // Fixed before the fix; a miss is a measurement limit of the model, not a reason to retune it.
     const MIN_SHARE = 0.8;
-    const norm = (s: string) => s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
-    const want = norm(text), got = tr.words.map((w: any) => norm(w.text).join(" ")).filter(Boolean);
-    const lcs = want.map(() => new Array(got.length + 1).fill(0)).concat([new Array(got.length + 1).fill(0)]);
-    for (let i = want.length - 1; i >= 0; i--) for (let j = got.length - 1; j >= 0; j--) lcs[i][j] = want[i] === got[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-    const share = lcs[0][0] / want.length;
-    check(`whisper returns ${lcs[0][0]}/${want.length} script words whole and in order (${(share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%): ${tr.text.slice(0, 80)}`, share >= MIN_SHARE);
+    const scriptShare = (words: any[]) => {
+      const want = norm(text), got = words.map((w: any) => norm(w.text).join(" ")).filter(Boolean);
+      const lcs = want.map(() => new Array(got.length + 1).fill(0)).concat([new Array(got.length + 1).fill(0)]);
+      for (let i = want.length - 1; i >= 0; i--) for (let j = got.length - 1; j >= 0; j--) lcs[i][j] = want[i] === got[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      return { hit: lcs[0][0], of: want.length, share: lcs[0][0] / want.length };
+    };
+    const tr = AN.transcribe(out, "vi");
+    const s1 = scriptShare(tr.words);
+    check(`whisper returns ${s1.hit}/${s1.of} script words whole and in order (${(s1.share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%): ${tr.text.slice(0, 80)}`, s1.share >= MIN_SHARE);
     check("no transcribed word is punctuation only", tr.words.every((w: any) => !/^\p{P}+$/u.test(w.text)), tr.words.filter((w: any) => /^\p{P}+$/u.test(w.text)));
+
+    // a music-only stretch after the voice (> 30 s, past whisper's first window): the range keeps only the speech span
+    const tailed = join(tmp, "tts-tail.wav"), spanEnd = segs[segs.length - 1][1];
+    ff("-i", out, "-stream_loop", "-1", "-t", "35", "-i", music, "-filter_complex",
+      "[0:a]aresample=48000,aformat=channel_layouts=stereo[a];[1:a]aresample=48000,aformat=channel_layouts=stereo[b];[a][b]concat=n=2:v=0:a=1", "-ar", "48000", tailed);
+    const dt = +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", tailed], { encoding: "utf8" }).stdout;
+    check(`the mix has more than 30 s of music-only tail after the speech span end ${spanEnd.toFixed(2)} s (file ${dt.toFixed(1)} s)`, dt - spanEnd > 30, { dt, spanEnd });
+    const cut = AN.transcribe(tailed, "vi", undefined, [0, spanEnd + 0.3]), s2 = scriptShare(cut.words);
+    check(`range [0, ${(spanEnd + 0.3).toFixed(2)}]: no word starts after the speech span end`, cut.words.length > 0 && cut.words.every((w: any) => w.start <= spanEnd), cut.words.filter((w: any) => w.start > spanEnd));
+    check(`range [0, ${(spanEnd + 0.3).toFixed(2)}]: ${s2.hit}/${s2.of} script words (${(s2.share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%)`, s2.share >= MIN_SHARE);
   }
 }
 

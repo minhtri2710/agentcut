@@ -390,7 +390,7 @@ fi
   const tok = (text: string, from: number, to: number) => ({ text, offsets: { from, to } });
   writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok("“", 100, 200), tok(" Xin", 200, 500), tok(" chào", 500, 900), tok(" các", 900, 1100), tok(" bạn", 1100, 1400), tok(",", 1400, 1450),
     tok(" hôm", 1800, 2100), tok(" nay", 2100, 2400), tok("...", 2400, 2500), tok(" nhé", 3000, 3300), tok("!", 3300, 3350)] }));
-  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho "$1" >> "${tmp}/whisper.calls"\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; shift; done\n`);
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho "$1" >> "${tmp}/whisper.calls"\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; [ "$1" = "-f" ] && cp "$2" "${tmp}/whisper.wav"; shift; done\n`);
   chmodSync(join(bin, "whisper-cli"), 0o755);
   const tr = AN.transcribe(join(tmp, "reply.wav"), "vi", join(tmp, "fake.bin"));
   const wargs = readFileSync(join(tmp, "whisper.args"), "utf8").split("\n");
@@ -399,6 +399,37 @@ fi
   check("transcribe: a word with punctuation ends where the punctuation ends, starts are untouched", JSON.stringify(tr.words.map((w: any) => [w.start, w.end])) === JSON.stringify([[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]]), tr.words);
   check("transcribe: text has no space before punctuation", tr.text === "“Xin chào các bạn, hôm nay... nhé!" && tr.language === "vi", tr.text);
   check("transcribe starts whisper-cli once, for the transcription itself (no probe call)", readFileSync(join(tmp, "whisper.calls"), "utf8") === "-m\n", readFileSync(join(tmp, "whisper.calls"), "utf8"));
+
+  // transcribe range: only [start, end] of the media goes to the engine, and the word times stay in media seconds
+  {
+    const src = join(tmp, "range.wav"), given = join(tmp, "whisper.wav"), fake = join(tmp, "fake.bin"), calls = () => readFileSync(join(tmp, "whisper.calls"), "utf8").split("\n").filter(Boolean).length;
+    ff("-f", "lavfi", "-i", "sine=frequency=300:duration=6", "-ar", "24000", src);
+    const dur = (f: string) => +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout;
+    const engine = [[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]], shifted = (by: number) => engine.map(([a, b]) => [+(a + by).toFixed(3), +(b + by).toFixed(3)]);
+    const times = (ws: any[]) => JSON.stringify(ws.map((w) => [w.start, w.end]));
+    const plain = AN.transcribe(src, "vi", fake);
+    check("no range: the engine gets the whole media and the word times are the engine's", Math.abs(dur(given) - 6) < 0.05 && times(plain.words) === JSON.stringify(engine), { dur: dur(given), t: times(plain.words) });
+    const ranged = AN.transcribe(src, "vi", fake, [2, 5]);
+    check("range [2, 5]: the engine gets end - start seconds", Math.abs(dur(given) - 3) < 0.05, dur(given));
+    check("range [2, 5]: every word start and end is the engine's time + start", times(ranged.words) === JSON.stringify(shifted(2)), times(ranged.words));
+    const before = calls();
+    const bads: any[] = [[-1, 2], [2, 2], [3, 2], [NaN, 2], [0, Infinity], [0], [0, 1, 2], ["1", 2], "2-5", 3];
+    check("a bad range is bad_value and starts no engine", bads.every((r) => throwsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value") === true) && calls() === before, bads.map((r) => throwsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value")));
+
+    const was = process.env.AGENTCUT_WHISPER_MODEL;
+    process.env.AGENTCUT_WHISPER_MODEL = fake;
+    try {
+      const Q = join(tmp, "cap-range");
+      api.create(Q, { preset: "720p" });
+      const caps = () => api.info(Q, "json").timeline.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "captions");
+      await api.apply(Q, [{ op: "add_captions", transcribe: src, language: "vi", transcribe_range: [2, 5] }]);
+      check("add_captions transcribe_range: the captions clip holds the shifted times and no range field", caps().length === 1 && times(caps()[0].words) === JSON.stringify(shifted(2)) && !("transcribe_range" in caps()[0]), caps()[0]?.words);
+      const was2 = JSON.stringify(api.info(Q, "json").timeline);
+      const e1: any = await api.apply(Q, [{ op: "add_captions", words: [{ text: "Hi", start: 0, end: 0.4 }], transcribe_range: [0, 2] }]).catch((x) => x);
+      const e2: any = await api.apply(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
+      check("add_captions: transcribe_range without transcribe, and a bad range, are bad_value and leave the timeline unchanged", e1.code === "bad_value" && e2.code === "bad_value" && JSON.stringify(api.info(Q, "json").timeline) === was2, { e1: e1.code, e2: e2.code });
+    } finally { if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
+  }
 
   // capabilities.engines: found by a PATH / env / file lookup, never by starting the binary (fakes record every start)
   {

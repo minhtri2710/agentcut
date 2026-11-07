@@ -570,11 +570,12 @@ op("clear_markers", "Remove markers (all, or those whose label contains match)."
 // ---------------------------------------------------------------- captions / voice / beats / templates
 function addCaptions(p: Project, tl: Timeline, a: Dict) {
   a = { ...a };
+  if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
   if (a.transcribe) {
     const s = a.transcribe;
     const path = tl.assets[s] ? p.abs(tl.assets[s].path) : absPath(s);
-    a.words = AN.transcribe(path, a.language).words;
-    delete a.transcribe; delete a.language;
+    a.words = AN.transcribe(path, a.language, undefined, a.transcribe_range).words;
+    delete a.transcribe; delete a.language; delete a.transcribe_range;
   }
   if (!(a.words?.length || a.srt)) throw new EditError("add_captions needs words, srt or transcribe", "missing_input");
   if (a.srt) a.srt = absPath(a.srt);
@@ -586,7 +587,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict) {
   return addClip(p, tl, spec);
 }
 op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by transcribing media (needs whisper). preset: tiktok (default), bold_pop, pill, clean, reveal, neon.",
-  { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
+  { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", transcribe_range: "[start, end] seconds of the media to transcribe: only the speech; whisper may invent text over a long music-only stretch and times words early after a music lead-in", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
   addCaptions);
 
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",

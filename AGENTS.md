@@ -69,6 +69,8 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"add_clip","track":"music","src":"/abs/song.mp3","until_end":true,"fade_out":1.5}
 {"op":"add_sequence","track":"main","items":["/a.jpg","/b.jpg"],"defaults":{"duration":2,"transition":"crossfade","motion":"ken_burns"}}
 {"op":"add_captions","words":[{"text":"Hello","start":0,"end":0.4}],"preset":"tiktok"}       or "srt":"/abs/subs.srt" / "transcribe":"/abs/talk.mp4"
+   "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch: pass the speech only, since whisper may invent text
+   over a long music-only stretch and times words early after a music lead-in; analyze_silence or the voiceover's length gives the span
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default

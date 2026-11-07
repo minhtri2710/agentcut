@@ -312,13 +312,21 @@ export function transcribeEngine() {
   };
 }
 
-/** Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed. */
-export function transcribe(path: string, language?: string, model?: string) {
+/**
+ * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
+ * range = [start, end] seconds of the media: only that stretch is transcribed and the word times stay in media seconds.
+ * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
+ */
+export function transcribe(path: string, language?: string, model?: string, range?: [number, number]) {
+  if (range !== undefined && !(Array.isArray(range) && range.length === 2 && range.every((x) => typeof x === "number" && Number.isFinite(x)) && range[0] >= 0 && range[1] > range[0]))
+    throw new EditError("transcribe range must be [start, end] in seconds with 0 <= start < end", "bad_value", "e.g. [0, 12.5]: the speech only; analyze_silence or the voiceover's length gives it");
+  const [from, to] = range ?? [0, undefined];
+  const shift = (x: number) => +(x + from).toFixed(3);
   needFfmpeg();
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const wav = join(tmp, "a.wav");
-    spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(path), "-ar", "16000", "-ac", "1", wav]);
+    spawnSync("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", wav]);
     const asr = asrEngine(model);
     if (asr && "cli" in asr) {
       const { cli, model: mdl } = asr;
@@ -333,8 +341,8 @@ export function transcribe(path: string, language?: string, model?: string) {
         const text = String(s.text).trim();
         if (!text) continue;
         const prev = words[words.length - 1];
-        if (!/^\p{P}+$/u.test(text)) { words.push({ text: lead + text, start: s.offsets.from / 1000, end: s.offsets.to / 1000 }); lead = ""; }
-        else if (prev) { prev.text += text; prev.end = s.offsets.to / 1000; }
+        if (!/^\p{P}+$/u.test(text)) { words.push({ text: lead + text, start: shift(s.offsets.from / 1000), end: shift(s.offsets.to / 1000) }); lead = ""; }
+        else if (prev) { prev.text += text; prev.end = shift(s.offsets.to / 1000); }
         else lead += text;
       }
       return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words };
@@ -343,7 +351,7 @@ export function transcribe(path: string, language?: string, model?: string) {
       const r = spawnSync("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { encoding: "utf8", maxBuffer: 1 << 28 });
       if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
-      const words = j.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ text: String(w.word).trim(), start: +w.start.toFixed(3), end: +w.end.toFixed(3) })));
+      const words = j.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ text: String(w.word).trim(), start: shift(w.start), end: shift(w.end) })));
       return { source: path, language: j.language, text: j.text, words };
     }
     throw new EditError("transcription needs whisper", "missing_dependency",
