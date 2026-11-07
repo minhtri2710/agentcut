@@ -557,11 +557,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     }
     seedModel(MODEL);
     check("cached model: capabilities say so and prepare status lists nothing to download", caps().find((x) => x.name === MODEL)?.cached === true && (api.prepareStatus(G) as any).models_to_download.length === 0);
-    const ok: any = await api.prepare(G);
+    process.env.ORT_DISABLE_TELEMETRY = "0"; // an inherited value must not win over the helper's own
+    let ok: any;
+    try { ok = await api.prepare(G); } finally { delete process.env.ORT_DISABLE_TELEMETRY; }
     const run = gateRuns();
     check("cached model: the gate passes, the helper ran with allow_download false and U2NET_HOME = the user cache (models live in <cache>/models)",
       ok.computed[0]?.kind === "matte" && run.length === 1 && run[0].allow === false && run[0].home === cacheRoot, { ok: ok.ready, run });
-    check("the helper is spawned with ORT_DISABLE_TELEMETRY=1", run[0].ort === "1", run);
+    check("the helper is spawned with ORT_DISABLE_TELEMETRY=1, whatever the inherited value", run[0].ort === "1", run);
     rmSync(modelFile(MODEL)); rmSync(join(G, ".agentcut", "cache"), { recursive: true });
     const al: any = await api.prepare(G, { allowDownload: true });
     check("allow_download with the model missing: the gate passes and the helper is told allow_download true", al.computed[0]?.kind === "matte" && gateRuns().length === 2 && gateRuns()[1].allow === true, { al: al.ready, run: gateRuns() });
@@ -613,8 +615,8 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       const { VISION_PY } = await import("../src/vision-py.ts");
       const script = join(run, "helper.py");
       writeFileSync(script, VISION_PY);
-      // python -I -S (no PYTHON* variables, no user site, no site-packages, no script dir) + only the stub dir on sys.path: the stubs are the only onnxruntime / rembg
-      // this child can find. HOME is set at spawn into the test tmp; the environment is spelled out key by key.
+      // python -I -S (no PYTHON* variables, no user site, no site-packages, no script dir) + only the stub dir on sys.path: the stub rembg is the only rembg; onnxruntime is not findable at all.
+      // HOME is set at spawn into the test tmp; the environment is spelled out key by key.
       const boot = "import sys, runpy; sys.path.insert(0, sys.argv[1]); s = sys.argv[2]; sys.argv = sys.argv[2:]; runpy.run_path(s, run_name='__main__')";
       const childEnv = (extra: Record<string, string>) => ({ PATH: process.env.PATH ?? "", HOME: join(run, "home"), ...extra });
       const guarded = (allow: boolean) => {
