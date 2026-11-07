@@ -215,7 +215,7 @@ if [ -f "$d/unknown" ]; then printf 'Alpha Voice\\nBeta Voice\\n'; exit 3; fi
     check("sapi: a voice name with a NUL is a bad_voice", sapi("Zq\0Zq").err?.code === "bad_voice");
     writeFileSync(join(fakeDir, "unknown"), "");
     const bad = sapi("Alpha Voic");
-    check("sapi: the unknown-voice exit is a bad_voice that names the installed voices", bad.err?.code === "bad_voice" && /Alpha Voice/.test(bad.err.hint) && /Beta Voice/.test(bad.err.hint) && /Alpha Voice/.test(bad.err.hint), bad.err && { code: bad.err.code, msg: bad.err.message, hint: bad.err.hint });
+    check("sapi: the unknown-voice exit is a bad_voice that names the installed voices", bad.err?.code === "bad_voice" && /Alpha Voice/.test(bad.err.hint) && /Beta Voice/.test(bad.err.hint) && /installed voices:/.test(bad.err.hint), bad.err && { code: bad.err.code, msg: bad.err.message, hint: bad.err.hint });
     check("sapi: the unknown-voice error carries the voice and a suggestion", /Alpha Voic/.test(bad.err?.message ?? "") && /did you mean 'Alpha Voice'/.test(bad.err?.hint ?? ""), bad.err && { msg: bad.err.message, hint: bad.err.hint });
   } finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
 }
