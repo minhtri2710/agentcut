@@ -558,12 +558,22 @@ export class Renderer {
   }
 }
 
-/** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. */
-export const encodeStill = (cv: Canvas, fmt: string) => (fmt === "png" ? cv.encodeSync("png") : cv.encodeSync("jpeg", 88));
+/** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. webp keeps alpha: lossy at 90, or lossless (quality 100 makes the encoder write VP8L). */
+export const encodeStill = (cv: Canvas, fmt: string) =>
+  fmt === "png" ? cv.encodeSync("png") : fmt === "webp" ? cv.encodeSync("webp", 90) : fmt === "webp_lossless" ? cv.encodeSync("webp", 100) : cv.encodeSync("jpeg", 88);
 
 export async function renderFrame(tl: Timeline, root: string, t: number, scale = 1, guides = false, fmt = "jpeg"): Promise<Buffer> {
   const r = new Renderer(tl, root, scale);
   try { const cv = await r.frame(t, guides); return encodeStill(cv, fmt); } finally { r.close(); }
+}
+
+/** One frame at t (EditError bad_value outside [0, duration)) with the size it was drawn at. */
+export async function renderStill(tl: Timeline, root: string, t: number, scale: number, fmt: string) {
+  const r = new Renderer(tl, root, scale);
+  try {
+    if (!(t >= 0 && t < r.duration)) throw new EditError(`start ${t}s is outside the timeline`, "bad_value", `a still renders one frame: use 0 <= start < ${+r.duration.toFixed(3)} (the duration)`);
+    return { data: encodeStill(await r.frame(t), fmt), width: r.W, height: r.H };
+  } finally { r.close(); }
 }
 
 /** One time-labelled tile per time (same order as `times`). */

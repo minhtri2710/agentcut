@@ -204,6 +204,8 @@ const rb = (await apply(B, [{ op: "remove_background", id: "vid2" }]))[0];
 check("remove_background only sets the field (pending, no helper run)", rb.pending === true && clip(B, "vid2").remove_background === true && nCalls("matte") === 0, rb);
 const nr: any = await api.render(B, { out: join(tmp, "bg0.mp4"), quality: "draft" }).catch((e) => e);
 check("render before prepare -> not_prepared", nr.code === "not_prepared" && nr.details?.mattes?.[0] === "vid2" && !existsSync(join(tmp, "bg0.mp4")), nr);
+const nrs: any = await api.render(B, { out: join(tmp, "bg0.png") }).catch((e) => e);
+check("a still render before prepare -> not_prepared, no file", nrs.code === "not_prepared" && !existsSync(join(tmp, "bg0.png")), nrs);
 const pm: any = await api.prepare(B);
 check("prepare writes the matte into the project cache dir", pm.computed[0]?.kind === "matte" && pm.computed[0].file.startsWith(join(B, ".agentcut", "cache")) && existsSync(pm.computed[0].file), pm);
 check("prepared matte is reported by a repeated op", (await apply(B, [{ op: "remove_background", id: "vid2" }]))[0].matte === pm.computed[0].file);

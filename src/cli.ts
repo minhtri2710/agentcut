@@ -19,7 +19,7 @@ Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cp
 Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
              preview and video render fail with code not_prepared until it ran)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
-Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
+Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N]
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)

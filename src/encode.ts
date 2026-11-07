@@ -85,6 +85,8 @@ export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean,
   }
 }
 
+export const ALPHA_ON_OPAQUE = "alpha is on but settings.background is opaque, so every pixel is opaque; set background to '#00000000' for a transparent export";
+
 export interface OutputPlan { codec: VideoCodec; alpha: boolean; v: string[]; mux: string[]; a: string[]; warnings: string[]; transparent: boolean }
 
 /** Resolve codec/alpha for a video output and validate the combination (throws EditError with a hint). */
@@ -111,8 +113,7 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
   const warnings: string[] = [];
   if (transparent && !alpha && o.alpha !== false)
     warnings.push(`background is transparent but ${gif ? "gif" : `${codec} in ${ext}`} has no alpha: alpha dropped, frames composited on black (export .mov with codec prores_4444, or .webm, to keep transparency)`);
-  if (alpha && !transparent)
-    warnings.push("alpha is on but settings.background is opaque, so every pixel is opaque; set background to '#00000000' for a transparent export");
+  if (alpha && !transparent) warnings.push(ALPHA_ON_OPAQUE);
   const { v, mux } = videoArgs(codec, o.quality ?? "standard", !!o.hwEncode, alpha, ext);
   return { codec, alpha, v, mux, a: [...(FORMATS[gif ? ".mp4" : ext]?.audio ?? [])], warnings, transparent };
 }

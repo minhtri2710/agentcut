@@ -39,7 +39,8 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
    motion_strip  10 consecutive frames per transition (or start/end for any animation) to judge motion
 5. render draft=true first, then final. The result has a contact sheet + loudness (~ -14 LUFS). Re-render a section with start/end.
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
-   .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac. Check result.warnings.
+   .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac,
+   or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high). Check result.warnings.
    Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio):
    cuts, in-points, crossfades,
    constant speed, volume, titles and connected clips carry over (media linked by absolute path); effects, looks, keyframes,

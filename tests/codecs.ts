@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,6 +132,58 @@ await bad("alpha:true with vp9 .mkv", { codec: "vp9", alpha: true }, "x.mkv");
 await bad("unknown codec", { codec: "av2" }, "x.mp4");
 await bad("codec on audio export", { codec: "hevc" }, "x.mp3");
 await bad("unknown extension", {}, "x.avi", "bad_format");
+
+console.log("still image (.png / .webp)");
+{
+  const S = join(tmp, "still");
+  api.create(S, { width: W, height: H, fps: 24 });
+  await api.apply(S, [{ op: "set_settings", background: "#00000000" },
+    { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#ff0000", at: 0, duration: 1 },
+    { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 1, duration: 1 }]);
+  const so = (f: string) => join(S, "renders", f);
+  const chunks = (f: string) => { const s = readFileSync(f).toString("latin1"); return ["VP8L", "ALPH"].filter((k) => s.includes(k)); };
+  const shot = async (f: string, o: any = {}) => ({ r: await api.render(S, { out: so(f), ...o }).catch((e: any) => e) as any, f: so(f) });
+  const corner = (f: string, t = 0) => px(rgbaFrame(f, t), 4, 4), centre = (f: string, t = 0) => px(rgbaFrame(f, t), W / 2, H / 2);
+  for (const [name, o, chunk] of [["png", {}, null], ["webp default (lossy)", {}, "ALPH"], ["webp quality=high (lossless)", { quality: "high" }, "VP8L"]] as const) {
+    const f = name.startsWith("png") ? "a.png" : name.includes("lossless") ? "hi.webp" : "lo.webp";
+    const { r } = await shot(f, o);
+    const i = existsSync(so(f)) ? api.probe(so(f)) : null;
+    check(`${name}: written, kind image, alpha, canvas size`, i?.kind === "image" && i.alpha === true && i.width === W && i.height === H && r.alpha === true && r.width === W && r.height === H, { r, i });
+    check(`${name}: transparent corner, opaque centre`, existsSync(so(f)) && corner(so(f))[3] === 0 && centre(so(f)).join() === "255,0,0,255", existsSync(so(f)) && { c: corner(so(f)), m: centre(so(f)) });
+    if (chunk) check(`${name}: ${chunk} chunk`, existsSync(so(f)) && chunks(so(f)).join() === chunk && (chunk === "VP8L" || !chunks(so(f)).includes("VP8L")), existsSync(so(f)) && chunks(so(f)));
+    const dir = join(tmp, `still-in-${f}`);
+    api.create(dir, { width: W, height: H, fps: 24 });
+    await api.apply(dir, [{ op: "set_settings", background: "#00ff00" }, { op: "add_clip", track: "overlay", src: so(f), at: 0, duration: 1 }]).catch(() => {});
+    const pv = join(dir, "previews", "x.png");
+    await api.frame(dir, 0.5, { out: pv, scale: 1 }).catch(() => {});
+    check(`${name}: re-imported, the transparent corner shows the background`, existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4).join() === "0,255,0,255" && px(rgbaFrame(pv, 0), W / 2, H / 2).join() === "255,0,0,255", existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4));
+  }
+  const { r: res, f: ff1 } = await shot("shape.png", { start: 0.25 });
+  check("result: exactly output/t/width/height/alpha/bytes, bytes = file size, no sheet", JSON.stringify(Object.keys(res).sort()) === JSON.stringify(["alpha", "bytes", "height", "output", "t", "width"])
+    && res.output === ff1 && res.t === 0.25 && existsSync(ff1) && res.bytes === statSync(ff1).size && !existsSync(so("shape.sheet.jpg")), res);
+  const at2 = await shot("t2.png", { start: 1.5 });
+  check("start picks the frame (red at 0.25, blue at 1.5)", existsSync(ff1) && existsSync(at2.f) && centre(ff1).join() === "255,0,0,255" && centre(at2.f).join() === "0,0,255,255" && at2.r.t === 1.5, { a: existsSync(ff1) && centre(ff1), b: existsSync(at2.f) && centre(at2.f) });
+  const flat = await shot("flat.png", { alpha: false });
+  check("alpha=false composites on opaque black", flat.r.alpha === false && !flat.r.warnings && existsSync(flat.f) && corner(flat.f).join() === "0,0,0,255" && centre(flat.f).join() === "255,0,0,255", flat.r);
+  const half = await shot("half.png", { scale: 0.5 }), draft = await shot("draft.png", { draft: true, scale: 1 });
+  check("scale applies; draft caps it at 0.5", half.r.width === W / 2 && half.r.height === H / 2 && draft.r.width === W / 2, { h: half.r, d: draft.r });
+  const wide = await shot("wide.png", { alpha: true, quality: "draft" });
+  check("alpha=true on a transparent background is silent", wide.r.alpha === true && !wide.r.warnings, wide.r);
+  for (const [label, o, code, file] of [["end", { end: 1 }, "bad_value", "e.png"], ["subtitles", { subtitles: true }, "bad_value", "s.webp"], ["codec h264", { codec: "h264" }, "bad_codec", "c.png"],
+    ["start = duration", { start: 2 }, "bad_value", "d.png"], ["start past duration", { start: 5 }, "bad_value", "d2.webp"], ["negative start", { start: -1 }, "bad_value", "n.png"]] as const) {
+    const { r, f } = await shot(file, o);
+    check(`refused: ${label} -> ${code}, no file`, r.code === code && !!r.hint && !existsSync(f) && !existsSync(f.replace(/\.[^.]+$/, ".sheet.jpg")), r instanceof Error ? { msg: r.message } : r);
+  }
+  const O = join(tmp, "still-opaque");
+  api.create(O, { width: W, height: H, fps: 24 });
+  await api.apply(O, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 0, duration: 1 }]);
+  const op = await api.render(O, { out: join(O, "renders", "o.png") }).catch((e: any) => e) as any;
+  const opf = join(O, "renders", "o.png");
+  check("opaque background: alpha false, no warning, every pixel opaque", op.alpha === false && !op.warnings && existsSync(opf) && corner(opf).join() === "255,0,0,255", op);
+  check("opaque background png is still stored as RGBA, so probe reports alpha (pinned)", existsSync(opf) && api.probe(opf).alpha === true);
+  const forced = await api.render(O, { out: join(O, "renders", "o2.webp"), alpha: true }).catch((e: any) => e) as any;
+  check("alpha=true on an opaque background warns (the video text)", forced.alpha === true && /settings\.background is opaque/.test(forced.warnings?.[0] ?? ""), forced);
+}
 
 console.log("audio only");
 for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix.m4a", "aac"], ["mix.flac", "flac"], ["mix.aac", "aac"]]) {

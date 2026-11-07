@@ -215,6 +215,29 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
   return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
 }
 
+/** .png / .webp: one frame at `start`; alpha follows encode.ts planOutput (on with a transparent background, off composites on black). webp is lossless at quality=high. */
+async function renderStill(project: string | undefined, out: string, o: { start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean }) {
+  const p = openProject(project);
+  const tl = p.load();
+  p.requireValid(tl);
+  const ext = extname(out).toLowerCase();
+  if (o.codec && o.codec.toLowerCase() !== "auto") throw new M.EditError(`codec '${o.codec}' doesn't apply to ${ext}`, "bad_codec", "omit codec for a still image, or render a video");
+  if (o.end !== undefined) throw new M.EditError(`end doesn't apply to ${ext}: a still renders one frame at start`, "bad_value", "omit end, or render a video");
+  if (o.subtitles) throw new M.EditError(`subtitles don't apply to ${ext}`, "bad_value", "omit subtitles, or render .mp4/.mov/.mkv/.webm");
+  let scale = o.scale ?? 1, quality = o.quality ?? "standard";
+  if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
+  const transparent = M.parseColor(tl.settings.background ?? "#000000")[3] === 0;
+  const alpha = o.alpha ?? transparent;
+  const at = drawable(p, tl);
+  const { renderStill: draw } = await renderMod();
+  const { ALPHA_ON_OPAQUE } = await import("./encode.ts");
+  const flat = transparent && !alpha ? { ...at, settings: { ...at.settings, background: "#000000" } } : at; // alpha off: composite on black, as video does
+  const t = M.parseTime(o.start ?? 0);
+  const img = await draw(flat, p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
+  writeOut(p, out, img.data);
+  return { output: out, t, width: img.width, height: img.height, alpha, bytes: img.data.length, ...(alpha && !transparent ? { warnings: [ALPHA_ON_OPAQUE] } : {}) };
+}
+
 export async function render(project: string | undefined, o: {
   out?: string; start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean;
   sheet?: boolean; workers?: number; fast?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; progress?: (d: number, n: number) => void;
@@ -223,6 +246,7 @@ export async function render(project: string | undefined, o: {
 } = {}) {
   if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
   if (o.out && SUB.SUB_FORMATS[extname(o.out).toLowerCase()]) return exportCaptions(project, { out: o.out });
+  if (o.out && /^\.(png|webp)$/.test(extname(o.out).toLowerCase())) return renderStill(project, isAbsolute(o.out) ? o.out : presolve(o.out), o);
   const p = openProject(project);
   CACHE.sweepStale(p);
   const tl = p.load();
@@ -287,7 +311,8 @@ export function capabilities() {
     templates: Object.fromEntries(Object.entries(TEMPLATES).map(([k, v]) => [k, { doc: v.doc, args: v.args }])),
     canvas_presets: Object.fromEntries(Object.entries(M.PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])),
     output_formats: [".mp4 (H.264; codec=hevc for H.265)", ".mov (ProRes 422; codec=prores_4444 keeps alpha)", ".webm (VP9, alpha ok)", ".mkv", ".gif",
-      ".wav/.mp3/.m4a/.aac/.flac (audio only)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
+      ".wav/.mp3/.m4a/.aac/.flac (audio only)",
+      ".png / .webp (one still frame at start; alpha kept with a transparent background; webp lossless at quality=high)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
