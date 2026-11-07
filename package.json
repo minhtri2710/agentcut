@@ -17,11 +17,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "bun scripts/build.ts",
-    "test": "bun tests/smoke.ts && bun tests/mcp.ts && bun tests/edit-ops.ts && bun tests/compound.ts && bun tests/codecs.ts && bun tests/export.ts && bun tests/ui.ts && bun tests/audio.ts && bun tests/color-tts.ts && bun tests/verify.ts && bun tests/writes.ts && bun tests/vision.ts && bun tests/review.ts && bun tests/jobs.ts && bun tests/ui-browser.ts && bun tests/realmedia.ts && bun tests/launchers.ts",
-    "docs": "bun -e \"import {GUIDE} from './src/docs.ts'; require('node:fs').writeFileSync('AGENTS.md', GUIDE.trim() + '\\n')\"",
+    "build": "bun --no-install scripts/build.ts",
+    "test": "bun --no-install tests/smoke.ts && bun --no-install tests/mcp.ts && bun --no-install tests/edit-ops.ts && bun --no-install tests/compound.ts && bun --no-install tests/codecs.ts && bun --no-install tests/export.ts && bun --no-install tests/ui.ts && bun --no-install tests/audio.ts && bun --no-install tests/color-tts.ts && bun --no-install tests/verify.ts && bun --no-install tests/writes.ts && bun --no-install tests/vision.ts && bun --no-install tests/review.ts && bun --no-install tests/jobs.ts && bun --no-install tests/ui-browser.ts && bun --no-install tests/realmedia.ts && bun --no-install tests/launchers.ts",
+    "docs": "bun --no-install -e \"import {GUIDE} from './src/docs.ts'; require('node:fs').writeFileSync('AGENTS.md', GUIDE.trim() + '\\n')\"",
     "typecheck": "tsc --noEmit -p .",
-    "prepublishOnly": "bun scripts/build.ts"
+    "prepublishOnly": "bun --no-install scripts/build.ts"
   },
   "license": "MIT",
   "dependencies": {

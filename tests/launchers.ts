@@ -1,5 +1,5 @@
 // Launchers: bun runs of scripts/ac, the .mcp.json command, the segment worker and the compiled binary ignore the bunfig.toml and .env in the working dir.
-// A source tree without node_modules makes no registry request. Run: bun tests/launchers.ts
+// A source tree without node_modules makes no registry request, and neither do the package.json scripts. Run: bun tests/launchers.ts
 // (AGENTCUT_BIN=<compiled binary> checks that binary instead of the source launchers; the no-registry case needs a source tree and is skipped)
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -79,6 +79,12 @@ reset();
   ignored("mcp", "home");
 }
 
+// every bun command in a package.json script is `bun --no-install ...`: --no-install given to `bun run` does not reach the bun processes a script starts
+const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts as Record<string, string>;
+const bareBun = Object.entries(scripts).flatMap(([n, line]) => line.split("&&").map((c) => c.trim().split(/\s+/)).filter((w) => w[0] === "bun" && w[1] !== "--no-install").map((w) => `${n}: ${w.slice(0, 3).join(" ")}`));
+const scriptsOk = bareBun.length === 0;
+check(`package.json scripts: every bun command passes --no-install${bareBun.length ? ` (missing in: ${[...new Set(bareBun.map((b) => b.split(":")[0]))].join(", ")})` : ""}`, scriptsOk, bareBun);
+
 // a source tree without node_modules, and a registry on 127.0.0.1 that records every request: no launch may ask it for a package
 if (bin) console.log("no registry request: skipped (a compiled binary resolves no packages)");
 else {
@@ -94,8 +100,8 @@ else {
   writeFileSync(join(bare, ".npmrc"), `registry=http://127.0.0.1:${(registry.address() as any).port}/\n`);
   const e: Record<string, string> = { ...env(), BUN_INSTALL_CACHE_DIR: join(tmp, "bun-cache"), NO_PROXY: "127.0.0.1,localhost", HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9" };
   delete e.BUN_INSTALL; delete e.XDG_CACHE_HOME;
-  const launch = (cmd: string[]) => new Promise<void>((done) => {
-    const p = spawn(cmd[0], cmd.slice(1), { cwd: bare, env: e, stdio: "ignore" });
+  const launch = (cmd: string[], cwd = bare) => new Promise<void>((done) => {
+    const p = spawn(cmd[0], cmd.slice(1), { cwd, env: e, stdio: "ignore" });
     const poll = setInterval(() => { if (hits.length) p.kill(); }, 50);
     const limit = setTimeout(() => p.kill(), 30000);
     p.on("exit", () => { clearInterval(poll); clearTimeout(limit); done(); });
@@ -104,6 +110,16 @@ else {
     hits.length = 0;
     await launch([...cmd]);
     check(`${name}: no registry request (${hits.join(" ") || "none"})`, hits.length === 0, hits);
+  }
+  // a script's inner bun does not inherit --no-install from `bun --no-install run`: run the docs script from the tree root, whose .npmrc names the registry
+  if (!scriptsOk) console.log("docs script: skipped (a package.json script lacks --no-install, so the run could install)");
+  else {
+    writeFileSync(join(copy, ".npmrc"), readFileSync(join(bare, ".npmrc")));
+    writeFileSync(join(copy, "AGENTS.md"), "placeholder\n"); // the script must replace it
+    hits.length = 0;
+    await launch(["bun", "--no-install", "run", "docs"], copy);
+    check(`docs script from a tree without node_modules: no registry request (${hits.join(" ") || "none"})`, hits.length === 0, hits);
+    check("docs script from a tree without node_modules: AGENTS.md is regenerated as committed", readFileSync(join(copy, "AGENTS.md"), "utf8") === readFileSync(join(root, "AGENTS.md"), "utf8"));
   }
   registry.close();
 }
