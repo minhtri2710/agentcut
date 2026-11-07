@@ -183,8 +183,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   };
   const vL = stemLufs("voice"), mL = stemLufs("music");
   check(`voice ${vL} LUFS vs ducked bed ${mL} LUFS over the voiced span: >= 15 LU`, vL - mL >= 15, { vL, mL });
-  const hasWhisper = ["whisper-cli", "whisper-cpp", "whisper"].some((b) => !spawnSync(b, ["--help"], { stdio: "ignore" }).error);
-  if (!hasWhisper || (!process.env.AGENTCUT_WHISPER_MODEL && spawnSync("whisper", ["--help"], { stdio: "ignore" }).error))
+  if (!(api.capabilities() as any).engines.transcribe.available)
     console.log("  - transcribe round-trip skipped: no whisper (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");
   else {
     const tr = AN.transcribe(out, "vi");

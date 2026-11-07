@@ -100,7 +100,7 @@ export function visionEngine() {
   const uv = uvCommand();
   return {
     available: /[\\/]/.test(uv) ? isExecutable(uv) : has(uv),
-    features: ["analyze_subject", "auto_reframe", "track_to", "remove_background"].map((o) => `${o} (needs prepare)`),
+    features: ["analyze_subject (runs uv when called)", ...["auto_reframe", "track_to", "remove_background"].map((o) => `${o} (records a request; prepare computes it with uv)`)],
     matte_models: "see matte_models",
     models_note: "no model is downloaded without allow_download",
   };

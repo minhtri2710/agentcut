@@ -404,7 +404,11 @@ fi
   {
     const eng = join(tmp, "eng"), started = join(tmp, "eng.started");
     mkdirSync(eng);
-    for (const n of ["whisper-cli", "piper", "uv"]) { writeFileSync(join(eng, n), `#!/bin/sh\necho "${n} $*" >> "${started}"\n`); chmodSync(join(eng, n), 0o755); }
+    const fake = (dir: string, n: string, extra = "") => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, n), `#!/bin/sh\necho "${n} $*" >> "${started}"\n${extra}`); chmodSync(join(dir, n), 0o755); };
+    for (const n of ["whisper-cli", "piper", "uv"]) fake(eng, n);
+    const sysBin = process.platform === "darwin" ? "say" : "espeak-ng", engSys = join(tmp, "eng-sys"), engPy = join(tmp, "eng-py"); // separate dirs: PATH decides which of these exist
+    fake(engSys, sysBin);
+    fake(engPy, "whisper", `while [ $# -gt 0 ]; do [ "$1" = "--output_dir" ] && printf '%s' '{"language":"vi","text":"Xin chào","segments":[{"words":[{"word":" Xin","start":0.1,"end":0.4},{"word":" chào","start":0.4,"end":0.8}]}]}' > "$2/a.json"; shift; done\n`);
     writeFileSync(join(eng, "ggml.bin"), ""); writeFileSync(join(eng, "v.onnx"), "");
     const keys = ["PATH", "AGENTCUT_WHISPER_MODEL", "AGENTCUT_PIPER_MODEL", "AGENTCUT_UV", "AGENTCUT_TTS_PROVIDER"], was = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     const setEnv = (o: Record<string, string | undefined>) => { for (const [k, v] of Object.entries(o)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
@@ -415,19 +419,35 @@ fi
       check("engines.transcribe: whisper-cli on PATH + an existing model is available", e.transcribe.available === true && e.transcribe.engine === "whisper-cli" && e.transcribe.model === join(eng, "ggml.bin") && /auto/.test(e.transcribe.languages) && !e.transcribe.hint, e.transcribe);
       check("engines.tts: piper with a model is available, the default provider and the voices tool are named",
         e.tts.default_provider === "system" && e.tts.providers.find((p: any) => p.name === "piper")?.available === true && e.tts.voices === "list_voices", e.tts);
+      const system = () => engines().tts.providers.find((p: any) => p.name === "system")?.available;
+      check("engines.tts: the system provider is not available without its engine on PATH", system() === false);
+      setEnv({ PATH: `${eng}:${engSys}` });
+      check("engines.tts: the system provider is available with its engine on PATH", system() === true);
+      setEnv({ PATH: eng });
       check("engines.vision: AGENTCUT_UV pointing at a uv is available, with its ops and the matte_models pointer",
         e.vision.available === true && ["analyze_subject", "auto_reframe", "track_to", "remove_background"].every((o) => e.vision.features.join().includes(o)) && e.vision.matte_models === "see matte_models" && /allow_download/.test(e.vision.models_note), e.vision);
+      check("engines.vision: analyze_subject is labelled as running on call, the other three as computed by prepare",
+        /runs uv when called/.test(e.vision.features.find((f: string) => f.startsWith("analyze_subject"))) && ["auto_reframe", "track_to", "remove_background"].every((o) => new RegExp(`^${o} .*prepare`).test(e.vision.features.find((f: string) => f.startsWith(o)))), e.vision.features);
       setEnv({ AGENTCUT_UV: undefined });
       check("engines.vision: without AGENTCUT_UV, uv on PATH is used", engines().vision.available === true);
       setEnv({ AGENTCUT_UV: join(eng, "missing-uv") });
       check("engines.vision: AGENTCUT_UV pointing at a missing file is not available", engines().vision.available === false);
       setEnv({ AGENTCUT_WHISPER_MODEL: undefined, AGENTCUT_PIPER_MODEL: join(eng, "missing.onnx") });
       e = engines();
-      check("engines.transcribe: a CLI without a model is not available, with a hint", e.transcribe.available === false && e.transcribe.model === null && /AGENTCUT_WHISPER_MODEL/.test(e.transcribe.hint), e.transcribe);
+      check("engines.transcribe: a CLI without a model is not available, with a hint", e.transcribe.available === false && e.transcribe.model === null && /^whisper-cli found: set AGENTCUT_WHISPER_MODEL=/.test(e.transcribe.hint), e.transcribe);
+      setEnv({ PATH: `${eng}:${engPy}` });
+      check("engines.transcribe: python whisper on PATH without a model is available, with no model",
+        engines().transcribe.available === true && engines().transcribe.engine === "whisper" && engines().transcribe.model === null && !engines().transcribe.hint, engines().transcribe);
+      setEnv({ PATH: eng });
       check("engines.tts: piper without its model file is not available, with a hint", e.tts.providers.find((p: any) => p.name === "piper")?.available === false && !!e.tts.providers.find((p: any) => p.name === "piper")?.hint, e.tts);
       setEnv({ AGENTCUT_WHISPER_MODEL: join(eng, "missing.bin") });
       check("engines.transcribe: a model path that does not exist is not available", engines().transcribe.available === false && engines().transcribe.model === null);
-      check("capabilities started no engine binary", !existsSync(started), existsSync(started) && readFileSync(started, "utf8"));
+      check("capabilities started no engine binary (whisper-cli, piper, uv, the system engine, whisper)", !existsSync(started), existsSync(started) && readFileSync(started, "utf8"));
+      // transcribe(), python branch: the one start of `whisper` is the transcription itself
+      setEnv({ PATH: `${eng}:${engPy}:${was.PATH}`, AGENTCUT_WHISPER_MODEL: undefined });
+      const py = AN.transcribe(join(tmp, "reply.wav"), "vi"), runs = existsSync(started) ? readFileSync(started, "utf8").trim().split("\n") : [];
+      check("transcribe (python whisper): started once, for the transcription itself (no probe call)", runs.length === 1 && runs[0].startsWith("whisper ") && runs[0].includes("--word_timestamps") && !runs[0].includes("--help")
+        && py.text === "Xin chào" && py.words.map((w: any) => w.text).join() === "Xin,chào", { runs, py });
     } finally { setEnv(was); }
   }
 } finally { srv.kill(); }

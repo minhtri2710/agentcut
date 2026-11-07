@@ -17,9 +17,9 @@ export function isExecutable(f: string): boolean {
   try { accessSync(f, constants.X_OK); return statSync(f).isFile(); } catch { return false; }
 }
 
-/** Is `bin` an executable file on PATH? A lookup only: the binary is never started. */
+/** Is `bin` an executable file on PATH? A lookup only: the binary is never started. On Windows, the names a spawn without a shell resolves: bin, bin.com, bin.exe. */
 export function has(bin: string): boolean {
-  const exts = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  const exts = process.platform === "win32" ? ["", ".com", ".exe"] : [""];
   return (process.env.PATH || "").split(delimiter).some((dir) => dir && exts.some((e) => isExecutable(join(dir, bin + e))));
 }
 

@@ -205,10 +205,10 @@ function systemVoices(): Voice[] {
 
 /** Every TTS provider (available or not, with a setup hint) and the default one. A lookup only: no engine is started. */
 export function ttsProviders(extra = providerInfo()) {
-  const win = process.platform === "win32", mac = process.platform === "darwin", bin = mac ? "say" : win ? "powershell" : ["espeak-ng", "espeak"].find(has);
+  const win = process.platform === "win32", mac = process.platform === "darwin", bins = mac ? ["say"] : win ? ["powershell"] : ["espeak-ng", "espeak"];
   return {
     default_provider: pickProvider().provider,
-    providers: [{ name: "system", available: !!bin && has(bin), engine: mac ? "say" : win ? "sapi" : "espeak" }, ...extra.providers],
+    providers: [{ name: "system", available: bins.some(has), engine: mac ? "say" : win ? "sapi" : "espeak" }, ...extra.providers],
   };
 }
 
@@ -303,12 +303,12 @@ function asrEngine(model = process.env.AGENTCUT_WHISPER_MODEL): { cli: string; m
 
 /** What `capabilities` says about transcription (same selection as transcribe(); nothing is started). */
 export function transcribeEngine() {
-  const e = asrEngine(), model = process.env.AGENTCUT_WHISPER_MODEL;
+  const e = asrEngine(), model = process.env.AGENTCUT_WHISPER_MODEL, cli = WHISPER_CLIS.find(has);
   const modelOk = !!model && existsSync(model), available = !!e && ("python" in e || modelOk);
   return {
     available, engine: e ? ("cli" in e ? e.cli : "whisper") : null, model: e && "cli" in e && modelOk ? model : null,
     languages: "auto, or a whisper language code such as vi or en",
-    ...(available ? {} : { hint: e && "cli" in e ? `AGENTCUT_WHISPER_MODEL=${model} does not exist: point it at a ggml model file` : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`" }),
+    ...(available ? {} : { hint: e && "cli" in e ? `AGENTCUT_WHISPER_MODEL=${model} does not exist: point it at a ggml model file` : cli ? `${cli} found: set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin` : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`" }),
   };
 }
 
