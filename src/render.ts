@@ -567,13 +567,10 @@ export async function renderFrame(tl: Timeline, root: string, t: number, scale =
   try { const cv = await r.frame(t, guides); return encodeStill(cv, fmt); } finally { r.close(); }
 }
 
-/** One frame at t (EditError bad_value outside [0, duration)) with the size it was drawn at. */
-export async function renderStill(tl: Timeline, root: string, t: number, scale: number, fmt: string) {
+/** One encoded frame at t with the size it was drawn at. */
+export async function stillFrame(tl: Timeline, root: string, t: number, scale: number, fmt: string) {
   const r = new Renderer(tl, root, scale);
-  try {
-    if (!(t >= 0 && t < r.duration)) throw new EditError(`start ${t}s is outside the timeline`, "bad_value", `a still renders one frame: use 0 <= start < ${+r.duration.toFixed(3)} (the duration)`);
-    return { data: encodeStill(await r.frame(t), fmt), width: r.W, height: r.H };
-  } finally { r.close(); }
+  try { return { data: encodeStill(await r.frame(t), fmt), width: r.W, height: r.H }; } finally { r.close(); }
 }
 
 /** One time-labelled tile per time (same order as `times`). */

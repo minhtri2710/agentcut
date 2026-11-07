@@ -174,6 +174,9 @@ console.log("still image (.png / .webp)");
     const { r, f } = await shot(file, o);
     check(`refused: ${label} -> ${code}, no file`, r.code === code && !!r.hint && !existsSync(f) && !existsSync(f.replace(/\.[^.]+$/, ".sheet.jpg")), r instanceof Error ? { msg: r.message } : r);
   }
+  const reason = new Error("stop"), ab = so("aborted.png");
+  const aborted: any = await api.render(S, { out: ab, signal: AbortSignal.abort(reason) }).catch((e: any) => e);
+  check("an already-aborted signal rejects with its reason and writes no file", aborted === reason && !existsSync(ab), aborted);
   const O = join(tmp, "still-opaque");
   api.create(O, { width: W, height: H, fps: 24 });
   await api.apply(O, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 0, duration: 1 }]);

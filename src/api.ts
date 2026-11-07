@@ -216,7 +216,8 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
 }
 
 /** .png / .webp: one frame at `start`; alpha follows encode.ts planOutput (on with a transparent background, off composites on black). webp is lossless at quality=high. */
-async function renderStill(project: string | undefined, out: string, o: { start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean }) {
+async function renderStill(project: string | undefined, out: string, o: { start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; signal?: AbortSignal }) {
+  o.signal?.throwIfAborted();
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
@@ -224,16 +225,18 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   if (o.codec && o.codec.toLowerCase() !== "auto") throw new M.EditError(`codec '${o.codec}' doesn't apply to ${ext}`, "bad_codec", "omit codec for a still image, or render a video");
   if (o.end !== undefined) throw new M.EditError(`end doesn't apply to ${ext}: a still renders one frame at start`, "bad_value", "omit end, or render a video");
   if (o.subtitles) throw new M.EditError(`subtitles don't apply to ${ext}`, "bad_value", "omit subtitles, or render .mp4/.mov/.mkv/.webm");
+  const t = M.parseTime(o.start ?? 0), T = M.totalDuration(M.resolve(M.clone(tl)));
+  if (!(t >= 0 && t < T)) throw new M.EditError(`start ${t}s is outside the timeline`, "bad_value", `a still renders one frame: use 0 <= start < ${+T.toFixed(3)} (the duration)`);
   let scale = o.scale ?? 1, quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const transparent = M.parseColor(tl.settings.background ?? "#000000")[3] === 0;
   const alpha = o.alpha ?? transparent;
   const at = drawable(p, tl);
-  const { renderStill: draw } = await renderMod();
+  const { stillFrame } = await renderMod();
   const { ALPHA_ON_OPAQUE } = await import("./encode.ts");
   const flat = transparent && !alpha ? { ...at, settings: { ...at.settings, background: "#000000" } } : at; // alpha off: composite on black, as video does
-  const t = M.parseTime(o.start ?? 0);
-  const img = await draw(flat, p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
+  const img = await stillFrame(flat, p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
+  o.signal?.throwIfAborted();
   writeOut(p, out, img.data);
   return { output: out, t, width: img.width, height: img.height, alpha, bytes: img.data.length, ...(alpha && !transparent ? { warnings: [ALPHA_ON_OPAQUE] } : {}) };
 }
