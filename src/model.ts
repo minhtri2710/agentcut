@@ -451,6 +451,15 @@ function resolveFollowers(tl: Timeline) {
   }
 }
 
+/** A clip whose duration is computed, not stored: it follows a clip (match_duration names one) or its attach_to target (match_duration true). */
+export const computedDuration = (c: Clip) => typeof c.match_duration === "string" || (c.match_duration === true && !!c.attach_to);
+
+/** An explicit duration edit of a computed-duration clip would be overwritten by resolve(): refuse it. */
+export function ownDuration(c: Clip) {
+  if (typeof c.match_duration === "string") throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows '${c.match_duration}': change end_offset, or update_clip id=${c.id} match_duration=null first`);
+  if (c.match_duration === true && c.attach_to) throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows its attach_to target '${c.attach_to}': change offset or end_offset, or update_clip id=${c.id} match_duration=null first`);
+}
+
 /** Stop following: clips whose match_duration names a clip for which gone(id) is true keep the length they last resolved to. Returns their ids. */
 export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): string[] {
   const out: string[] = [];
@@ -686,11 +695,12 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       if (typeof c.match_duration === "string") {
         const at = `${p}.match_duration`, clips = tl.tracks.flatMap((x) => x.clips ?? []), byId = (id: string) => clips.find((x) => x.id === id);
+        if (c.until_end) issues.push({ level: "error", path: at, message: "until_end and match_duration both set the length", hint: "keep one" });
         const t = byId(c.match_duration), bad = (message: string, hint: string) => issues.push({ level: "error", path: at, message, hint });
-        if (!t) bad(`follows missing clip '${c.match_duration}'`, "name an existing clip id, or set match_duration to true or remove it");
+        if (!t) bad(`follows missing clip '${c.match_duration}'`, "name an existing clip id, or remove match_duration");
         else if (t === c) bad("a clip cannot follow its own duration", "name another clip");
         else if (t.until_end) bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
-        else if (t.match_duration === true) bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
+        else if (t.match_duration === true && t.attach_to) bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
         else for (let x: Clip | undefined = t, seen = new Set<Clip>(); typeof x?.match_duration === "string" && !seen.has(x); x = byId(x.match_duration)) {
           seen.add(x);
           if (x.match_duration === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }

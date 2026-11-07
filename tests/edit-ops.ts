@@ -10,7 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { applyOps } = await import("../src/ops.ts");
-const { newTimeline, validate } = await import("../src/model.ts");
+const { newTimeline, validate, resolve } = await import("../src/model.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -247,11 +247,22 @@ console.log("match_duration by clip reference");
     check(`validate: ${name}`, e.length === 1, validate(x).filter((i: any) => i.level === "error"));
   };
   bad("a missing clip", (x) => { at(x, "img2").match_duration = "ghost"; });
+  { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "img2").match_duration = "ghost";
+    check("validate: the missing-clip hint does not offer true", validate(x).find((i: any) => /<img2>\.match_duration$/.test(i.path))?.hint === "name an existing clip id, or remove match_duration"); }
+  bad("until_end together with a followed length", (x) => { at(x, "img2").until_end = true; });
   bad("itself", (x) => { at(x, "img2").match_duration = "img2"; });
   bad("a cycle", (x) => { at(x, "vo1").match_duration = "img2"; at(x, "img2").match_duration = "vo1"; });
   bad("an until_end target", (x) => { at(x, "vo1").until_end = true; });
   bad("a match_duration:true target", (x) => { at(x, "vo1").attach_to = "img1"; at(x, "vo1").match_duration = true; });
+  { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "vo1").match_duration = true;
+    check("validate: match_duration:true without attach_to is a plain length, so a good target", !validate(x).some((i: any) => i.level === "error"), validate(x)); }
   bad("a number", (x) => { at(x, "img2").match_duration = 5; });
+  { // one resolve() of a hand-edited project: followers settle before the magnetic layout, so the clip after a follower moves with it
+    const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+    at(x, "vo1").duration = 5;
+    resolve(x);
+    check("resolve once: a follower settles before the magnetic layout", at(x, "img2").duration === 5 && at(x, "img3").start === 7, [at(x, "img2"), at(x, "img3")]);
+  }
   const ok = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
   check("validate: a good reference is clean", !validate(ok).some((i: any) => i.level === "error"), validate(ok));
 
@@ -260,6 +271,95 @@ console.log("match_duration by clip reference");
   check("match_duration:true with attach_to: target - offset - end_offset", near(at(t, "ovl").duration, 1.5) && near(at(t, "ovl").start, 0.3), at(t, "ovl"));
   t = run(t, [{ op: "update_clip", id: "img1", duration: 4 }])[0];
   check("  and it follows the target", near(at(t, "ovl").duration, 3.5), at(t, "ovl"));
+
+  // computed durations are not silently overwritten
+  const refuses = (tt: any, ops: any[], name: string, hint: RegExp) => {
+    try { run(tt, ops); check(name, false, "no error"); }
+    catch (e: any) { check(name, e.code === "computed_duration" && hint.test(e.hint ?? ""), { code: e.code, message: e.message, hint: e.hint }); }
+  };
+  const fol = run(base(), [{ op: "add_clip", track: "main", asset: "i", id: "img4", duration: 2 }, { op: "update_clip", id: "img2", match_duration: "vo1" },
+    { op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true }])[0];
+  const R1 = /follows 'vo1'.*end_offset.*match_duration=null/;
+  refuses(fol, [{ op: "update_clip", id: "img2", duration: 1 }], "update_clip duration on a follower is refused", R1);
+  refuses(fol, [{ op: "update_clip", id: "img2", set: { duration: 1 } }], "  also through set", R1);
+  refuses(fol, [{ op: "update_clip", id: "ovl", duration: 1 }], "update_clip duration on an attached match_duration:true clip is refused", /attach_to target 'img1'.*match_duration=null/);
+  for (const [k, v] of [["duration", 1], ["end", 1], ["trim_start", 0.5], ["trim_end", 0.5]] as const)
+    refuses(fol, [{ op: "trim_clip", id: "img2", [k]: v }], `trim_clip ${k} on a follower is refused`, R1);
+  refuses(fol, [{ op: "roll_edit", id: "img1", by: 0.2 }], "roll_edit with a follower on the right is refused", R1);
+  refuses(fol, [{ op: "roll_edit", id: "img2", by: 0.2 }], "roll_edit with a follower on the left is refused", R1);
+  refuses(fol, [{ op: "slide_clip", id: "img3", by: 0.2 }], "slide_clip next to a follower is refused", R1);
+  {
+    const [x, [u]] = run(fol, [{ op: "update_clip", id: "img2", duration: 1, match_duration: null, end_offset: null }]);
+    check("update_clip may set duration while it drops match_duration", u.duration === 1 && at(x, "img2").match_duration === undefined && at(x, "img3").start === 3, [u, at(x, "img3")]);
+    const [, [u2]] = run(fol, [{ op: "update_clip", id: "img2", end_offset: 1 }]);
+    check("end_offset is the allowed edit, and the result is post-resolve", u2.duration === 2, u2);
+    const [y, [sl]] = run(fol, [{ op: "slide_clip", id: "img2", by: 0.2 }]);
+    check("slide_clip of the follower itself still works", sl.id === "img2" && sl.duration === at(y, "img2").duration, sl);
+  }
+  {
+    const t0 = base();
+    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    const [x1] = run(t0, [{ op: "add_clip", track: "main", asset: "v", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }]);
+    const aud = x1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "vid1").id;
+    const [x2] = run(x1, [{ op: "update_clip", id: aud, match_duration: "vo1" }]);
+    refuses(x2, [{ op: "j_cut", id: "vid1", seconds: 0.5 }], "j_cut on a computed-length audio clip is refused", R1);
+  }
+  {
+    const [x, [sn]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2, 3, 4, 5, 6] }]);
+    check("snap_to_beats keeps computed clips and lists them", JSON.stringify(sn.kept_computed) === '["img2"]' && x && at(x, "img2").match_duration === "vo1" && at(x, "img2").duration === 3, sn);
+    check("  and retimed lists the values that were applied", sn.retimed.length > 0 && sn.retimed.every((r: any) => at(x, r.id).duration === r.duration) && !sn.retimed.some((r: any) => r.id === "img2"), sn);
+  }
+
+  // match_duration:true without attach_to is a plain length, so a clip can follow it
+  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "plain", at: 0, duration: 2, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "plain" }])[0];
+  check("a match_duration:true clip without attach_to can be followed", at(t, "img2").duration === 2, at(t, "img2"));
+
+  // until_end and a followed length
+  for (const [name, ops] of [
+    ["add_clip", [{ op: "add_clip", track: "overlay", asset: "i", id: "u1", until_end: true, match_duration: "vo1" }]],
+    ["update_clip until_end on a follower", [{ op: "update_clip", id: "img2", match_duration: "vo1" }, { op: "update_clip", id: "img2", until_end: true }]],
+    ["update_clip a reference on an until_end clip", [{ op: "add_clip", track: "overlay", asset: "i", id: "u1", until_end: true }, { op: "update_clip", id: "u1", match_duration: "vo1" }]],
+  ] as [string, any[]][]) {
+    try { run(base(), ops); check(`${name}: until_end with a followed length is refused`, false, "no error"); }
+    catch (e: any) { check(`${name}: until_end with a followed length is refused`, e.code === "bad_value" && /until_end and match_duration both set the length; keep one/.test(e.message) && !!e.hint, { code: e.code, message: e.message }); }
+  }
+
+  // clips that lose their target by remove_track / remove_asset force keep their length
+  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }])[0];
+  let [t4, [rt]] = run(t, [{ op: "remove_track", id: "voice" }]);
+  check("remove_track: a follower of a removed clip keeps its length", JSON.stringify(rt.unlinked_durations) === '["img2"]' && at(t4, "img2").match_duration === undefined && at(t4, "img2").end_offset === undefined && near(at(t4, "img2").duration, 2.5), { rt, c: at(t4, "img2") });
+  check("  and the timeline is valid", !validate(t4).some((i: any) => i.level === "error"), validate(t4));
+  [t4, [rt]] = run(t, [{ op: "remove_asset", id: "s", force: true }]);
+  check("remove_asset force: a follower of a removed clip keeps its length", JSON.stringify(rt.unlinked_durations) === '["img2"]' && at(t4, "img2").match_duration === undefined && near(at(t4, "img2").duration, 2.5), { rt, c: at(t4, "img2") });
+  check("  and the timeline is valid", !validate(t4).some((i: any) => i.level === "error"), validate(t4));
+
+  // freeze_frame and remove_silence: what they create from a follower is a plain clip
+  {
+    const t0 = base();
+    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false };
+    const [x, rs] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
+      { op: "freeze_frame", id: "vid1", at: 0, duration: 1.5 }]);
+    const fz = rs[2];
+    check("freeze_frame: the freeze clip is plain and keeps its length", at(x, fz.id).match_duration === undefined && at(x, fz.id).end_offset === undefined && at(x, fz.id).duration === 1.5 && at(x, "vid1").match_duration === "vo1", { fz, c: at(x, fz.id) });
+    const [x2, rs2] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
+      { op: "freeze_frame", id: "vid1", at: 1.5, duration: 1 }]);
+    const fz2 = rs2[2];
+    check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
+  }
+  {
+    await api.apply(Q, [{ op: "add_clip", track: "overlay", src: join(m, "a.mp4"), id: "vs1", at: 0, duration: 2 }, { op: "update_clip", id: "vs1", match_duration: "vo1", end_offset: 0.5 }]);
+    const r = (await api.apply(Q, [{ op: "remove_silence", id: "vs1" }])).results[0];
+    const vs = api.info(Q, "json").timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => r.segments.includes(c.id));
+    check("remove_silence: the segments of a follower are plain clips", vs.length > 0 && vs.every((c: any) => c.match_duration === undefined && c.end_offset === undefined && typeof c.duration === "number"), { r, vs });
+  }
+  {
+    const text = (id: string) => String(api.info(Q).summary).split("\n").find((l: string) => l.includes(` ${id} `) || l.includes(` ${id}  `)) ?? "";
+    await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: 0.5 }]);
+    const a1 = text("img2");
+    await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: -0.3 }]);
+    const a2 = text("img2");
+    check("the summary shows end_offset with its sign", a1.includes("length→vo1-0.5") && a2.includes("length→vo1+0.3"), [a1, a2]);
+  }
 }
 
 console.log("validity + render");

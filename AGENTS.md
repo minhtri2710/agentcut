@@ -19,7 +19,9 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
   clip removes what is attached. PREFER this over absolute 'at' for anything that belongs to a specific shot.
 - Length that follows a clip: match_duration "voice#-1" (a clip id or track#n) sets duration = that clip's duration - end_offset
   (negative holds longer), keeps the start (so it works on the magnetic main track) and follows later changes to that clip.
-  Removing the followed clip keeps the length as a plain number; splitting a follower keeps both halves' lengths.
+  Removing the followed clip keeps the length as a plain number; splitting a follower keeps both halves' lengths. A clip whose length
+  is computed (match_duration a clip, or true with attach_to) refuses duration edits (code computed_duration): change end_offset,
+  or set match_duration null first.
 
 ## Fastest path: templates
 {"op":"apply_template","name":"promo","media":["/abs/a.mp4","/abs/b.jpg","/abs/c.mp4"],"hook":"Ra mắt sản phẩm","points":["Nhẹ hơn 30%","Pin 2 ngày"],"cta":"Mua ngay","music":"/abs/song.mp3"}

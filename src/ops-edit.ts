@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, newId, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
+import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, newId, ownDuration, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -37,6 +37,7 @@ function extend(c: Clip, side: Side, e: number) {
   c.duration = round6(clipDur(c) + e);
 }
 function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
+  for (const [c] of edges) ownDuration(c); // a computed length would be overwritten
   for (const [c, side, sg] of edges) {
     const r = room(tl, c, side), d = clipDur(c);
     if (sg > 0) { lo = Math.max(lo, MIN - d); hi = Math.min(hi, r); } else { lo = Math.max(lo, -r); hi = Math.min(hi, d - MIN); }
@@ -134,6 +135,7 @@ export function registerEditOps(h: OpHelpers) {
         const [, , c] = get(tl, a);
         const req = amount(a, ["seconds", "by", "lead", "duration"], true);
         const [v, aud, detached] = audioOf(tl, c, a.track);
+        ownDuration(aud);
         resolve(tl);
         const side: Side = lead ? "head" : "tail";
         const limit = Math.min(room(tl, aud, side), lead ? clipStart(aud) : Infinity);

@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -65,10 +65,16 @@ op("remove_asset", "Remove an asset (force=true also removes clips using it).", 
   if (!tl.assets[a.id]) throw new EditError(`asset '${a.id}' not found`, "not_found");
   const users = [...allClips(tl.tracks)].filter((c) => c.asset === a.id).map((c) => c.id); // incl. clips inside compounds
   if (users.length && !a.force) throw new EditError(`asset '${a.id}' is used by ${users.join(", ")}`, "in_use", "remove those clips or pass force=true");
-  const strip = (tracks: Track[]) => { for (const t of tracks) { t.clips = t.clips.filter((c) => c.asset !== a.id); for (const c of t.clips) if (c.type === "compound") strip(c.tracks ?? []); } };
+  const unlinked: string[] = [];
+  const strip = (tracks: Track[]) => { // followers of a removed clip (same level) keep their last length
+    const gone = new Set<string>();
+    for (const t of tracks) t.clips = t.clips.filter((c) => { if (c.asset !== a.id) return true; gone.add(c.id); return false; });
+    unlinked.push(...unfollow(tracks.flatMap((t) => t.clips), (id) => gone.has(id)));
+    for (const t of tracks) for (const c of t.clips) if (c.type === "compound") strip(c.tracks ?? []);
+  };
   strip(tl.tracks);
   delete tl.assets[a.id];
-  return { removed: a.id, removed_clips: users };
+  return { removed: a.id, removed_clips: users, unlinked_durations: unlinked };
 });
 
 // ---------------------------------------------------------------- settings / tracks
@@ -112,7 +118,8 @@ op("update_track", "Update track properties (set: {...}).", { id: "track id", se
 op("remove_track", "Delete a track and its clips.", { id: "track id" }, (p, tl, a) => {
   const tr = findTrack(tl, a.id);
   tl.tracks.splice(tl.tracks.indexOf(tr), 1);
-  return { removed: tr.id, clips: tr.clips.map((c) => c.id) };
+  const gone = new Set(tr.clips.map((c) => c.id));
+  return { removed: tr.id, clips: [...gone], unlinked_durations: unfollow(tl.tracks.flatMap((t) => t.clips), (id) => gone.has(id)) };
 });
 op("move_track", "Reorder a track (draw order).", { id: "track id", index: "new index" }, (p, tl, a) => {
   const tr = findTrack(tl, a.id);
@@ -216,13 +223,19 @@ function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   const bad = (why: string, fix: string) => new EditError(`match_duration '${ref}': ${why}`, "bad_ref", fix);
   if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
   if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
-  if (t.match_duration === true) throw bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
+  if (t.match_duration === true && t.attach_to) throw bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
   const clips = tl.tracks.flatMap((x) => x.clips);
   for (let x: Clip | undefined = t, seen = new Set<Clip>(); c && typeof x?.match_duration === "string" && !seen.has(x); x = clips.find((y) => y.id === x!.match_duration)) {
     seen.add(x);
     if (x.match_duration === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
   }
   return t.id;
+}
+
+/** until_end and a followed length both set the duration */
+function lengthOnce(c: Clip) {
+  if (c.until_end && typeof c.match_duration === "string")
+    throw new EditError("until_end and match_duration both set the length; keep one", "bad_value", `update_clip id=${c.id} until_end=null, or match_duration=null`);
 }
 
 /** a clip that followed another clip's duration becomes a plain-duration clip (its resolved length stays) */
@@ -239,6 +252,7 @@ function addClip(p: Project, tl: Timeline, a: Dict): Dict {
   // "at" relative to end must be computed before this clip exists
   if (typeof a.at === "string" && /^end/i.test(a.at)) a = { ...a, at: parseAt(tl, a.at) };
   const c = makeClip(p, tl, a);
+  lengthOnce(c);
   const tr = ensureTrack(tl, a.track, c.type);
   place(tl, tr, c, a);
   resolve(tl);
@@ -283,7 +297,9 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
       delete patch.preset;
     }
     if (typeof patch.start === "string") patch.start = parseAt(tl, patch.start);
+    if ("duration" in patch && !("match_duration" in patch)) ownDuration(c);
     deepMerge(c, patch);
+    lengthOnce(c);
     if (!tr.magnetic) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
     resolve(tl);
     return { id: c.id, start: c.start, duration: c.duration };
@@ -322,6 +338,7 @@ op("move_clip", "Move a clip in time and/or to another track.", { id: "clip id",
 op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_end from the tail; or set in/duration/end.",
   { id: "clip id", trim_start: "s", trim_end: "s", in: "source in", duration: "s", end: "timeline end" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
+    if (a.duration !== undefined || a.end !== undefined || a.trim_start || a.trim_end) ownDuration(c);
     const speed = Number(c.speed ?? 1) || 1;
     const in0 = parseTime(c.in ?? 0), d0 = clipDur(c);
     if (a.in !== undefined) c.in = round6(parseTime(a.in));
@@ -341,11 +358,11 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
     if (la && !c.reverse) {
       const au = la[1], head = a.trim_start ? parseTime(a.trim_start) : 0, tail = d0 - head - clipDur(c);
       const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0) * ((Number(au.speed ?? 1) || 1) / speed);
-      if (nd > 0.04 && ni >= 0) { au.in = round6(ni); au.duration = round6(nd); out.audio = au.id; }
-      else out.warning = `detached audio '${au.id}' was not trimmed (it would become empty); trim it yourself`;
+      if (nd > 0.04 && ni >= 0 && !computedDuration(au)) { au.in = round6(ni); au.duration = round6(nd); out.audio = au.id; }
+      else out.warning = `detached audio '${au.id}' was not trimmed (it would become empty, or its length is computed); trim it yourself`;
     }
     resolve(tl);
-    return { ...out, start: c.start };
+    return { ...out, start: c.start, duration: c.duration };
   });
 
 /** Give every clip nested in a copied compound a fresh id (ids are unique project-wide); fixes nested attach_to and match_duration references. */
@@ -555,7 +572,7 @@ function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   return beatCache.get(path)!;
 }
 
-op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id.",
+op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. Clips with a computed length (match_duration) are kept as they are (kept_computed).",
   { track: "main", beats: "required", every: "cut every N beats (1)", offset: "first beat index (0)" }, (p, tl, a) => {
     const tr = findTrack(tl, a.track ?? "main");
     if (!tr.magnetic) throw new EditError("snap_to_beats works on magnetic tracks", "magnetic");
@@ -565,16 +582,17 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     if (cuts.length < 2) throw new EditError("not enough beats", "not_enough");
     resolve(tl);
     const starts = [0, ...cuts.slice(1, tr.clips.length)];
-    const changed: Dict[] = [];
+    const changed: Clip[] = [], kept: string[] = [];
     tr.clips.forEach((c, i) => {
       if (i + 1 >= starts.length) return;
+      if (computedDuration(c)) { kept.push(c.id); return; } // its length is computed; retiming it would be overwritten
       const nxt = tr.clips[i + 1];
       const td = nxt?.transition ? normAnim(nxt.transition, 0.5)!.duration : 0;
       const dur = starts[i + 1] - starts[i] + td;
-      if (dur > 0.05) { c.duration = round6(dur); changed.push({ id: c.id, duration: c.duration }); }
+      if (dur > 0.05) { c.duration = round6(dur); changed.push(c); }
     });
     resolve(tl);
-    return { retimed: changed, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
+    return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
   });
 
 op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapCut 'remove pauses'): the clip becomes its speech segments.",

@@ -264,6 +264,30 @@ console.log("match_duration by clip reference");
   check("expand_compound: the kept reference still follows", byId("tA").duration === 2.5, byId("tA"));
   check("the by-reference project validates", api.info(S, "json").errors === 0, api.info(S, "json").issues);
 }
+{ // a follower on the magnetic track, inside the selected run: the reference is not an attachment, so it survives both ops
+  const S2 = join(tmp, "by-reference-run");
+  api.create(S2, { preset: "720p" });
+  await api.apply(S2, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("main", "m3", "green", { duration: 1 }), { op: "update_clip", id: "m2", match_duration: "m1", end_offset: 0.5 }]);
+  const flat2 = () => api.openProject(S2).load().tracks.flatMap((t: any) => t.clips) as any[];
+  const mk = (await api.apply(S2, [{ op: "make_compound", ids: ["m1", "m2"], id: "K2" }])).results[0];
+  const n2 = flat2().find((c: any) => c.id === "K2").tracks[0].clips.find((c: any) => c.id === "m2");
+  check("make_compound: a main-track follower inside the run keeps its reference and end_offset", n2.match_duration === "m1" && n2.end_offset === 0.5 && n2.duration === 1.5 && mk.unlinked_durations.length === 0, { mk, n2 });
+  const ex2 = (await api.apply(S2, [{ op: "expand_compound", id: "K2" }])).results[0];
+  const m2 = flat2().find((c: any) => c.id === "m2");
+  check("expand_compound: it survives the expand too", m2.match_duration === "m1" && m2.end_offset === 0.5 && m2.duration === 1.5 && ex2.unlinked_durations.length === 0, { ex2, m2 });
+  await api.apply(S2, [{ op: "update_clip", id: "m1", duration: 3 }]);
+  check("  and still follows its target on the magnetic track", flat2().find((c: any) => c.id === "m2").duration === 2.5 && flat2().find((c: any) => c.id === "m3").start === 5.5, flat2().map((c: any) => [c.id, c.start, c.duration]));
+}
+{ // remove_asset force inside a compound: a follower of a removed nested clip keeps its length
+  const S3 = join(tmp, "by-reference-asset");
+  api.create(S3, { preset: "720p" });
+  await api.apply(S3, [{ op: "add_clip", track: "t3", src: join(m, "p.png"), id: "pa", at: 0, duration: 2 }, col("t4", "fb", "blue", { at: 0, duration: 1 }), { op: "update_clip", id: "fb", match_duration: "pa" },
+    { op: "make_compound", ids: ["pa", "fb"], id: "K3" }]);
+  const ra = (await api.apply(S3, [{ op: "remove_asset", id: Object.keys(api.info(S3, "json").timeline.assets)[0], force: true }])).results[0];
+  const fb = api.openProject(S3).load().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "K3").tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "fb");
+  check("remove_asset force: a nested follower of a removed nested clip keeps its length", JSON.stringify(ra.unlinked_durations) === '["fb"]' && fb.match_duration === undefined && fb.duration === 2, { ra, fb });
+  check("  and the project validates", api.info(S3, "json").errors === 0, api.info(S3, "json").issues);
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
