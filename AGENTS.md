@@ -124,7 +124,7 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
      or you run prepare with allow_download=true (CLI: prepare --allow-download; analyze_subject takes allow_download too, CLI: subject --allow-download);
      capabilities.matte_models, engines.vision.face_model and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
   -> analyze_subject with a project open (project arg, the one MCP remembered, or CLI -p / $AGENTCUT_PROJECT / the nearest project.json) caches its result in that project;
-     auto_reframe on a clip covering the same range at the same fps reuses it (no pending, nothing to prepare). With no project it caches in the user cache (CLI: a -p / $AGENTCUT_PROJECT that is not a project fails with no_project).
+     auto_reframe on a clip covering the same range at the same fps reuses it (no pending, nothing to prepare). With no project it caches in the user cache. A named project that is not one fails with no_project (MCP: the project arg or the remembered project; CLI: -p / $AGENTCUT_PROJECT).
   -> auto_reframe, track_to without box and analyze_subject say what they followed: subject = face|saliency|mixed|none, and warnings when it may be wrong
      (no face found, low confidence, several faces); read them and check the framing with preview_frame.
   -> AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry).
