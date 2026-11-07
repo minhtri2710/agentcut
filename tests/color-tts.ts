@@ -166,6 +166,59 @@ check("piper without a model is a missing_dependency", throwsCode(() => AN.tts("
     check("espeak voice names like en-us and en+f3 pass the voice check", ["en-us", "en+f3", "vi", "mb-en1"].every((v) => bv(v)?.code !== "bad_voice"));
   } finally { Object.defineProperty(process, "platform", platform); }
 }
+if (process.platform !== "win32") {
+  // the SAPI branch: the platform is presented as win32 and a fake `powershell` (in the test tmp, first on PATH) stands in for the real one.
+  // The voice and the output path must reach it as the two named variables, never as script text.
+  const fakeDir = join(tmp, "fake-ps");
+  mkdirSync(fakeDir);
+  ff("-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", "-ar", "22050", join(fakeDir, "ok.wav"));
+  const fake = join(fakeDir, "powershell");
+  writeFileSync(fake, `#!/bin/sh
+d=$(dirname "$0")
+cat > /dev/null
+printf '%s\\0' "$@" > "$d/argv"
+printf '%s' "$AGENTCUT_SAPI_VOICE" > "$d/voice"
+printf '%s' "$AGENTCUT_SAPI_OUT" > "$d/out"
+if [ -f "$d/unknown" ]; then printf 'Alpha Voice\\nBeta Voice\\n'; exit 3; fi
+[ -n "$AGENTCUT_SAPI_OUT" ] && cp "$d/ok.wav" "$AGENTCUT_SAPI_OUT"
+`);
+  chmodSync(fake, 0o755);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const pathWas = process.env.PATH;
+  const sapi = (voice?: string, rate?: number) => {
+    const out = join(tmp, "sapi.wav");
+    rmSync(out, { force: true });
+    for (const f of ["argv", "voice", "out"]) rmSync(join(fakeDir, f), { force: true });
+    Object.defineProperty(process, "platform", { value: "win32" });
+    process.env.PATH = `${fakeDir}:${pathWas}`;
+    try { AN.tts("hello", out, voice, rate); return { out, err: null as any }; }
+    catch (err: any) { return { out, err }; }
+    finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
+  };
+  const seen = (f: string) => readFileSync(join(fakeDir, f), "utf8");
+  const script = () => seen("argv").split("\0")[2] ?? "";
+  try {
+    const plain = sapi();
+    check("sapi: a normal run produces the output file", plain.err === null && existsSync(plain.out), plain.err && plain.err.message);
+    check("sapi: the output path reaches powershell as the variable, not in the script text",
+      seen("out").endsWith("tts.wav") && seen("out").includes("agentcut-tts-") && !script().includes("agentcut-tts-") && !script().includes(seen("out")), { out: seen("out"), script: script() });
+    check("sapi: no voice leaves the voice variable empty", seen("voice") === "");
+    sapi(undefined, 225);
+    check("sapi: rate stays an integer in the script", /\$s\.Rate=2;/.test(script()), script());
+    const chars: [string, string][] = [["apostrophe", "'"], ["U+2018", "‘"], ["U+2019", "’"], ["U+201A", "‚"], ["U+201B", "‛"], ["dollar", "$"], ["backtick", "`"], ["semicolon", ";"], ["newline", "\n"]];
+    const names: [string, string][] = [...chars.map(([n, c]): [string, string] => [n, `Zq${c}Marker${c}Zq`]), ["300 chars", `Marker${"x".repeat(294)}`]];
+    for (const [label, voice] of names) {
+      const r = sapi(voice);
+      check(`sapi: a voice name with ${label} stays out of the script text and arrives byte for byte`,
+        r.err === null && !script().includes("Marker") && seen("voice") === voice && Buffer.from(seen("voice")).equals(Buffer.from(voice)), r.err ? r.err.message : { script: script(), voice: seen("voice") });
+    }
+    check("sapi: a voice name with a NUL is a bad_voice", sapi("Zq\0Zq").err?.code === "bad_voice");
+    writeFileSync(join(fakeDir, "unknown"), "");
+    const bad = sapi("Alpha Voic");
+    check("sapi: the unknown-voice exit is a bad_voice that names the installed voices", bad.err?.code === "bad_voice" && /Alpha Voice/.test(bad.err.hint) && /Beta Voice/.test(bad.err.hint) && /Alpha Voice/.test(bad.err.hint), bad.err && { code: bad.err.code, msg: bad.err.message, hint: bad.err.hint });
+    check("sapi: the unknown-voice error carries the voice and a suggestion", /Alpha Voic/.test(bad.err?.message ?? "") && /did you mean 'Alpha Voice'/.test(bad.err?.hint ?? ""), bad.err && { msg: bad.err.message, hint: bad.err.hint });
+  } finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
+}
 check("openai without config is a missing_dependency", throwsCode(() => AN.tts("x", join(tmp, "o.wav"), "openai:nova"), "missing_dependency") === true);
 
 console.log("tts over http (local server)");

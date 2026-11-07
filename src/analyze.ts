@@ -228,6 +228,8 @@ export function tts(text: string, outPath: string, voice?: string, rate?: number
   return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider };
 }
 
+const SAPI_VOICE = "AGENTCUT_SAPI_VOICE", SAPI_OUT = "AGENTCUT_SAPI_OUT", SAPI_NO_VOICE = 3; // SAPI_NO_VOICE: PowerShell exit code for a voice that is not installed
+
 /** OS voice: macOS `say`, Windows SAPI, Linux espeak. Returns the raw audio path in tmp. */
 function systemSpeech(text: string, tmp: string, voice?: string, rate?: number): string {
   let raw = join(tmp, "tts.aiff");
@@ -249,8 +251,16 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
     r = spawnSync("say", [...args, "-f", txt], { encoding: "utf8" });
   } else if (process.platform === "win32") {
     raw = join(tmp, "tts.wav");
-    const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? `$s.SelectVoice('${voice.replace(/'/g, "''")}');` : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile('${raw.replace(/'/g, "''")}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
-    r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8" });
+    if (voice?.includes("\0")) throw new EditError("invalid voice: contains a NUL character", "bad_voice", "voice names are plain text");
+    // the voice and the output path reach PowerShell as data (two environment variables), never as script text; only the integer rate is interpolated
+    const pick = `$n=@($s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }); if ($n -cnotcontains $env:${SAPI_VOICE}) { [Console]::Out.Write($n -join "\`n"); exit ${SAPI_NO_VOICE} }; $s.SelectVoice($env:${SAPI_VOICE});`;
+    const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? pick : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile($env:${SAPI_OUT}); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
+    r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8", env: { ...process.env, [SAPI_VOICE]: voice ?? "", [SAPI_OUT]: raw } });
+    if (r.status === SAPI_NO_VOICE) {
+      const installed = (r.stdout || "").split("\n").map((n) => n.trim()).filter(Boolean);
+      const s = suggest(voice!, installed);
+      throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}installed voices: ${installed.join(", ") || "none"}`);
+    }
   } else {
     raw = join(tmp, "tts.wav");
     if (voice && !/^[A-Za-z0-9][A-Za-z0-9_+.-]*$/.test(voice)) throw new EditError(`invalid voice '${voice}'`, "bad_voice", "espeak voice names are letters, digits and _ + . - (for example en-us, vi)");
