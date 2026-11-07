@@ -10,7 +10,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
-import { needFfmpeg, stopOnAbort } from "./media.ts";
+import { hasCodec, needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
 import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
@@ -49,14 +49,9 @@ export const QUALITY: Record<string, { crf: number; preset: string; vp9: number;
 };
 const ALL_EXTS = [...Object.keys(FORMATS), ".gif", ...Object.keys(AUDIO_FORMATS)].join(", ");
 
-let encoderList: string | null = null;
-function hasEncoder(name: string) {
-  if (encoderList === null) encoderList = spawnSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" }).stdout || "";
-  return new RegExp(`^\\s*\\S+\\s+${name.replace(/[-]/g, "\\-")}\\s`, "m").test(encoderList);
-}
-const hasVideoToolbox = (enc: string) => process.platform === "darwin" && hasEncoder(enc);
+const hasVideoToolbox = (enc: string) => process.platform === "darwin" && hasCodec("encoders", enc);
 function needEncoder(name: string, what: string) {
-  if (!hasEncoder(name)) throw new EditError(`this FFmpeg build has no ${name} encoder (needed for ${what})`, "encoder_missing",
+  if (!hasCodec("encoders", name)) throw new EditError(`this FFmpeg build has no ${name} encoder (needed for ${what})`, "encoder_missing",
     "install an FFmpeg build with it (e.g. a full static build) or pick another codec/format");
 }
 

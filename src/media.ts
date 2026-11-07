@@ -37,16 +37,26 @@ export function needFfmpeg() {
 }
 
 /** FFmpeg's native vp8/vp9 decoders drop the alpha plane of a webm; the libvpx decoders keep it. */
-const VPX_DECODER: Record<string, string> = { vp8: "libvpx", vp9: "libvpx-vp9" };
+const VPX_DECODER = new Map([["vp8", "libvpx"], ["vp9", "libvpx-vp9"]]);
 
-let decoderList: string | null = null;
+const codecLists: Partial<Record<"encoders" | "decoders", string>> = {};
+/** Whether this FFmpeg build lists `name` among its encoders or decoders. The list is read once per process, and only a successful read is kept. */
+export function hasCodec(kind: "encoders" | "decoders", name: string): boolean {
+  if (codecLists[kind] === undefined) {
+    needFfmpeg();
+    const r = spawnSync("ffmpeg", ["-hide_banner", `-${kind}`], { encoding: "utf8" });
+    if (r.status !== 0) return false;
+    codecLists[kind] = r.stdout;
+  }
+  return new RegExp(`^\\s*\\S+\\s+${name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")}\\s`, "m").test(codecLists[kind]!);
+}
+
 /** The decoder to force (before -i) for a source whose alpha the default decoder would lose, else null. Fails closed when this FFmpeg lacks it. */
 export function alphaDecoder(codec: string | undefined, alpha: boolean | undefined, path: string): string | null {
-  const name = alpha && codec ? VPX_DECODER[codec] : undefined;
+  const name = alpha && codec ? VPX_DECODER.get(codec) : undefined;
   if (!name) return null;
-  if (decoderList === null) decoderList = spawnSync("ffmpeg", ["-hide_banner", "-decoders"], { encoding: "utf8" }).stdout || "";
-  if (!new RegExp(`^\\s*\\S+\\s+${name}\\s`, "m").test(decoderList)) throw new EditError(`this FFmpeg build has no ${name} decoder (needed for the alpha channel of ${path})`,
-    "missing_dependency", "install an FFmpeg build with libvpx (e.g. a full static build)");
+  if (!hasCodec("decoders", name)) throw new EditError(`this FFmpeg build has no ${name} decoder (needed for the alpha channel of ${path})`,
+    "missing_dependency", `install an FFmpeg build with the ${name} decoder (e.g. a full static build)`);
   return name;
 }
 
@@ -86,7 +96,7 @@ export function probe(path: string): any {
       const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && dur < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
-        fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (v.codec_name in VPX_DECODER && hasAlphaTag(v.tags)),
+        fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
       if (!still) info.duration = +dur.toFixed(3);
     } else if (a || AUDIO_EXT.has(ext)) {

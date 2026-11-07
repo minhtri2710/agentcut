@@ -193,12 +193,27 @@ console.log("alpha in vp8/vp9 webm sources");
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\nif [ "$2" = "-decoders" ]; then "${real}" "$@" | grep -v libvpx; exit 0; fi\nexec "${real}" "$@"\n`, { mode: 0o755 });
     const code = `const {FrameSource}=await import(${JSON.stringify(join(import.meta.dir, "../src/media.ts"))});` +
       `const o={kind:"video",srcW:64,srcH:64,rate:24,fit:"fill",box:[64,64]};const t=(x)=>{try{new FrameSource({path:"a.webm",...o,...x});return "ok"}catch(e){return e.code+"|"+e.hint}};` +
-      `console.log(JSON.stringify([t({codec:"vp9",alpha:true}),t({codec:"vp8",alpha:true}),t({codec:"vp9",alpha:false}),t({codec:"h264",alpha:true})]))`;
+      `console.log(JSON.stringify([t({codec:"vp9",alpha:true}),t({codec:"vp8",alpha:true}),t({codec:"vp9",alpha:false}),t({codec:"h264",alpha:true}),t({codec:"constructor",alpha:true})]))`;
     const c = spawnSync(process.execPath, ["--no-install", "-e", code], { cwd: tmp, encoding: "utf8",
       env: { PATH: `${bin}:${process.env.PATH}`, HOME: tmp, AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") } });
-    const [a9, a8, op, h2] = JSON.parse(c.stdout || "[]");
-    check("no libvpx decoder: alpha vp9 and vp8 fail with missing_dependency and a hint", /^missing_dependency\|.*libvpx/.test(a9) && /^missing_dependency\|.*libvpx/.test(a8), { a9, a8, err: c.stderr.slice(0, 300) });
+    const [a9, a8, op, h2, inherited] = JSON.parse(c.stdout || "[]");
+    const hint = (x: string) => x.slice(x.indexOf("|") + 1);
+    check("no libvpx decoder: alpha vp9 fails with missing_dependency and a hint naming libvpx-vp9",
+      a9?.startsWith("missing_dependency|") && hint(a9).includes("libvpx-vp9"), { a9, err: c.stderr.slice(0, 300) });
+    check("no libvpx decoder: alpha vp8 fails with missing_dependency and a hint naming libvpx",
+      a8?.startsWith("missing_dependency|") && hint(a8).includes("libvpx") && !hint(a8).includes("libvpx-vp9"), { a8 });
     check("no libvpx decoder: opaque sources are unaffected", op === "ok" && h2 === "ok", { op, h2 });
+    check("an inherited object key is not a codec", inherited === "ok", { inherited });
+    { // a failed `-decoders` listing is not kept: the first alpha source fails closed, the next one works once the listing succeeds
+      const flaky = join(tmp, "flaky");
+      mkdirSync(flaky);
+      writeFileSync(join(flaky, "ffmpeg"), `#!/bin/sh\nif [ "$2" = "-decoders" ] && [ ! -e "${join(flaky, "tried")}" ]; then : > "${join(flaky, "tried")}"; exit 1; fi\nexec "${real}" "$@"\n`, { mode: 0o755 });
+      const two = code.replace(/console\.log\(JSON\.stringify\(\[.*$/, `console.log(JSON.stringify([t({codec:"vp9",alpha:true}),t({codec:"vp9",alpha:true})]))`);
+      const f = spawnSync(process.execPath, ["--no-install", "-e", two], { cwd: tmp, encoding: "utf8",
+        env: { PATH: `${flaky}:${process.env.PATH}`, HOME: tmp, AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") } });
+      const [first, second] = JSON.parse(f.stdout || "[]");
+      check("a failed decoder listing is not cached", first?.startsWith("missing_dependency|") && second === "ok", { first, second, err: f.stderr.slice(0, 300) });
+    }
   }
 }
 
