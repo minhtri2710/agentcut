@@ -107,7 +107,7 @@ async function runHelper(root: string, d: Derived, out: string, allowDownload: b
 
 function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   checkHelper(script);
-  const env = d.kind === "matte" ? { ...process.env, U2NET_HOME: userCache() } : process.env;
+  const env = { ...process.env, ORT_DISABLE_TELEMETRY: "1", ...(d.kind === "matte" && { U2NET_HOME: userCache() }) };
   return new Promise((res, rej) => {
     const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, env, stdio: ["pipe", "pipe", "pipe"] });
     // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)
@@ -128,10 +128,10 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
-        const model = d.kind === "matte" ? matteModelFile(String(d.job.model)) : null; // an existing model file is the likely cause of a load failure: rembg never re-checks it
+        const model = d.kind === "matte" && matteCached(String(d.job.model)) ? matteModelFile(String(d.job.model)) : null; // rembg never re-checks an existing model file
         return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
           "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
-          + (model && lstatSync(model, { throwIfNoEntry: false })?.isFile() ? `; the model file ${model} may be damaged: delete it and run prepare with allow_download=true` : "")));
+          + (model ? `; if the error is about loading the model, the model file ${model} may be damaged: delete it and run prepare with allow_download=true` : "")));
       }
       try { res(JSON.parse(stdout)); } catch { rej(new EditError(`vision helper printed no JSON: ${stdout.slice(0, 200)}`, "vision_failed")); }
     });
