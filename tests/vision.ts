@@ -12,6 +12,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const V = await import("../src/vision.ts");
+const A = await import("../src/anim.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -139,8 +140,11 @@ const r1 = pr1.applied[0];
 check("prepare computes, applies and clears pending (progress reaches 1)", pr1.computed.length === 1 && pr1.computed[0].cached === false && !clip(P, "vid1").pending && prog.at(-1) === 1, { pr1, prog });
 const fx = clip(P, "vid1").keyframes?.focus_x;
 check("writes focus_x keyframes (9:16 pans horizontally only)", Array.isArray(fx) && fx.length >= 2 && !clip(P, "vid1").keyframes.focus_y, clip(P, "vid1"));
-check("focus within 0..1 and moves right", fx && fx.every((k: any) => k[1] >= 0 && k[1] <= 1) && fx.at(-1)[1] > fx[0][1] + 0.5, fx);
-// subject 0.1 -> 0.9 of a 3413 px wide cover frame (640x360 into 1080x1920) seen through a 1080 px window
+// 640x360 into 1080x1920: the cover picture is 3413 px wide, seen through a 1080 px view. The view can centre a point from 540 to 2873 px: focus 0.1582..0.8418
+const lo = 540 / 3413, hi = 1 - lo;
+check("focus stays in the reachable range and moves right", fx && fx.every((k: any) => k[1] >= lo - 1e-3 && k[1] <= hi + 1e-3) && fx.at(-1)[1] > fx[0][1] + 0.5, fx);
+// the subject walks 0.1 -> 0.9 (sample 12 of 24 at 0.1 + 0.8 * 12 / 23): focus is that source point, clamped at both ends
+check("focus is the subject's source point (clamped to the reachable range at the ends)", near(fx[0][1], lo, 2e-3) && near(fx.at(-1)[1], hi, 2e-3) && near(A.kfValue(fx, 2), 0.1 + (0.8 * 12) / 23, 0.03), { fx, mid: A.kfValue(fx, 2) });
 const steps = fx ? fx.slice(1).map((k: any, i: number) => (k[1] - fx[i][1]) / (k[0] - fx[i][0])) : [];
 check("smooth: no backwards steps (jitter gone)", steps.every((s: number) => s >= -1e-6), steps);
 check("result reports samples", r1.samples === 24 && nCalls("subject") === 1, r1);
@@ -155,9 +159,24 @@ const f1 = await api.frame(P, 3.9, { scale: 0.25, out: join(tmp, "rf1.png") });
 check("render follows: start shows the left (red) side", isColor(px(f0.image, 135, 240), [255, 0, 0]), px(f0.image, 135, 240));
 check("render follows: end shows the right (blue) side", isColor(px(f1.image, 135, 240), [0, 0, 255]), px(f1.image, 135, 240));
 
+// focus is the source point the view centres on: the red/blue edge sits at source x 0.5 = 1706.5 px of the 3413 px cover picture; the view starts at
+// clamp(focus * 3413 - 540, 0, 2333), so the edge lands at 1706.5 - offset px of the 1080 px view (a quarter of that in the 0.25 scale frame)
+{
+  const F = join(tmp, "focus-pin"), edge = (focus: number) => (1706.5 - Math.min(2333, Math.max(0, focus * 3413 - 540))) / 4;
+  api.create(F, { preset: "reels" });
+  await apply(F, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4, focus: [0.4, 0.5] }]);
+  const side = async (t: number, x: number) => px((await api.frame(F, t, { scale: 0.25, out: join(tmp, `fp-${t}.png`) })).image, x, 240);
+  const e0 = edge(0.4); // 220
+  check("static focus 0.4: the view centres source x 0.4 (the red/blue edge is 10 px either side of the expected place)", isColor(await side(0.05, Math.round(e0 - 10)), [255, 0, 0]) && isColor(await side(0.05, Math.round(e0 + 10)), [0, 0, 255]), { e0 });
+  await apply(F, [{ op: "update_clip", id: "vid1", set: { focus: [0.5, 0.5], keyframes: { focus_x: [[0, 0.4], [4, 0.6]] } } }]);
+  const e1 = edge(0.4 + (0.2 * 3.9) / 4); // 54
+  check("animated focus 0.4 -> 0.6: the same place at the start", isColor(await side(0.05, Math.round(e0 - 10)), [255, 0, 0]) && isColor(await side(0.05, Math.round(e0 + 10)), [0, 0, 255]), { e0 });
+  check("animated focus: at 3.9 s (focus 0.595) the edge has moved to the expected place", isColor(await side(3.9, Math.round(e1 - 10)), [255, 0, 0]) && isColor(await side(3.9, Math.round(e1 + 10)), [0, 0, 255]), { e1 });
+}
+
 const ri = (await applyPrep(P, [{ op: "add_clip", track: "main", src: join(m, "still.png"), duration: 1 }, { op: "auto_reframe", id: "img1" }]))[1];
-// subject at 0.8 of 3413 px; window 1080 -> focus = (0.8 * 3413 - 540) / (3413 - 1080)
-check("image: one sample -> static focus, no keyframes", ri.samples === 1 && near(clip(P, "img1").focus[0], (0.8 * 3413 - 540) / 2333, 2e-3) && !clip(P, "img1").keyframes, { ri, c: clip(P, "img1") });
+// subject at 0.8 of the 3413 px picture, inside the reachable range [0.1582, 0.8418]: focus = 0.8
+check("image: one sample -> static focus, no keyframes", ri.samples === 1 && near(clip(P, "img1").focus[0], 0.8, 2e-3) && !clip(P, "img1").keyframes, { ri, c: clip(P, "img1") });
 await apply(P, [{ op: "remove_clip", id: "img1" }]);
 await prepFails(P, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 1 }, { op: "auto_reframe", id: "vid2" }], "vision_failed", "no decoded frames -> vision_failed at prepare");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { fit: "contain" } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "fit contain -> unsupported");
@@ -189,15 +208,23 @@ await fails(Y, [{ op: "add_track", id: "mag", kind: "video", magnetic: true }, {
 // both pending in one batch (new reframe params): track_to waits for the reframe, prepare runs them in order
 const both: any = await api.apply(P, [{ op: "update_clip", id: "vid1", set: { motion: null } }, { op: "auto_reframe", id: "vid1", fps: 5 },
   { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [20, 20], fill: "white", at: 0, duration: 4 },
-  { op: "track_to", id: "shp1", target: "vid1", box: [500, 900, 100, 100], at: 0 }]);
+  { op: "track_to", id: "shp1", target: "vid1", box: [500, 900, 100, 100], at: 2 }]);
 check("track_to on a pending reframe waits for it", both.results[3].waiting_for === "auto_reframe vid1", both.results[3]);
-const pb: any = await api.prepare(P);
+process.env.FAKE_JOB_LOG = join(tmp, "track-jobs.jsonl");
+const pb: any = await api.prepare(P).finally(() => { delete process.env.FAKE_JOB_LOG; });
 check("prepare resolves the chain (reframe, then track)", pb.applied.map((x: any) => x.op).join() === "auto_reframe,track_to" && !clip(P, "shp1").pending, pb);
 {
-  const v = clip(P, "vid1"), s = clip(P, "shp1"), A = await import("../src/anim.ts");
-  const full = Math.round(640 * (1920 / 360)), k = s.keyframes.x[0], t = k[0];
-  const u = 0.25 + (0.5 * t * 15) / 59, want = u * full - (full - 1080) * A.kfValue(v.keyframes.focus_x, t);
-  check("track_to on a reframed clip subtracts the pan", near(k[1], want, 2), { got: k[1], want });
+  const v = clip(P, "vid1"), s = clip(P, "shp1");
+  // the view's offset in the 3413 px cover picture for a focus f: clamp(f * 3413 - 540, 0, 2333); the follower's x is the tracked point (u * 3413) minus that offset
+  const full = Math.round(640 * (1920 / 360)), off = (T: number) => Math.min(full - 1080, Math.max(0, A.kfValue(v.keyframes.focus_x, T) * full - 1080 / 2));
+  for (const T of [1, 3]) {
+    const u = 0.25 + (0.5 * T * 15) / 59, want = u * full - off(T), got = A.kfValue(s.keyframes.x, T);
+    check(`track_to on a reframed clip subtracts the pan (at ${T} s)`, near(got, want, 3), { got, want });
+  }
+  // the box drawn at 'at' = 2 s maps to source fractions through the focus at that time: x = (X + offset) / 3413, y = Y / 1920 (the picture fills the height)
+  const job = readFileSync(join(tmp, "track-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((j) => j.cmd === "track");
+  const want = [(500 + off(2)) / full, 900 / 1920, 100 / full, 100 / 1920];
+  check("track_to maps the box to the source through the focus at 'at'", Array.isArray(job?.box) && want.every((w, i) => near(job.box[i], w, 2e-4)), { box: job?.box, want });
 }
 
 // ---------------------------------------------------------------- remove_background
@@ -673,6 +700,7 @@ console.log("subject results: what was followed");
     ["no face, saliency (and an empty sample)", [sal, sal, none], "saliency", [WARN.saliency]],
     ["some faces, the rest saliency", [face(0.95), sal, sal, face(0.95)], "mixed", [WARN.mixed(2, 4)]],
     ["faces and an empty sample", [face(0.95), none], "mixed", ["a face was found in 1 of 2 samples; 0 follow the most salient region and 1 found nothing to follow"]],
+    ["a face, one saliency and an empty sample (singular)", [face(0.95), sal, none], "mixed", ["a face was found in 1 of 3 samples; 1 follows the most salient region and 1 found nothing to follow"]],
     ["a face under 0.9", [face(0.95), face(0.62), face(0.7)], "face", [WARN.low(0.62)]],
     ["several faces in a frame", [face(0.95), face(0.95, 3), face(0.95, 2)], "face", [WARN.several(3)]],
     ["only empty samples", [none, none], "none", [WARN.none]],
@@ -697,12 +725,22 @@ console.log("subject results: what was followed");
       const r: any = (await applyPrep(S, [{ op: "auto_reframe", id: "vid1", fps }]).catch((e) => [e]))[0];
       delete process.env.FAKE_SUBJECT;
       check(`${sc}: analyze_subject says ${subject}${warnings.length ? " with its warning" : " without warnings"}`, shape(a.subject, a.warnings ?? []) === shape(subject, warnings) && a.samples?.length === Math.round(4 * fps) && "cached" in a && a.fps === fps, a);
-      check(`${sc}: auto_reframe says the same and keeps its fields`, shape(r.subject, r.warnings ?? []) === shape(subject, warnings) && r.samples === a.samples?.length && "faces" in r && r.id === "vid1", r);
+      check(`${sc}: auto_reframe says the same, counts its samples and its face samples (not "faces")`, shape(r.subject, r.warnings ?? []) === shape(subject, warnings) && r.samples === a.samples?.length && r.face_samples === (subject === "face" ? r.samples : subject === "mixed" ? r.samples / 2 : 0) && !("faces" in r) && r.id === "vid1", r);
     }
     process.env.FAKE_SUBJECT = "mixed";
     const tt: any = (await applyPrep(T, [{ op: "track_to", id: "shp1", target: "vid1", fps: 4 }]).catch((e) => [e]))[0];
     delete process.env.FAKE_SUBJECT;
     check("track_to without a box says what it followed", shape(tt.subject, tt.warnings ?? []) === shape("mixed", [WARN.mixed(8, 16)]) && tt.target === "vid1" && tt.attached_to === "vid1", tt);
+    // the summary covers the samples inside the follower's overlap only (the cached analysis spans 0..4 s: samples 0..7 are faces, 8..15 saliency, 4 per second)
+    const dot = (id: string, at: number) => ({ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at, duration: 1, id });
+    for (const [id, at, subject, warnings] of [
+      ["shp2", 3, "saliency", [WARN.saliency]], ["shp3", 0, "face", []], ["shp4", 1.5, "mixed", [WARN.mixed(2, 5)]],
+    ] as [string, number, string, string[]][]) {
+      process.env.FAKE_SUBJECT = "mixed";
+      const o: any = (await applyPrep(T, [dot(id, at), { op: "track_to", id, target: "vid1", fps: 4 }]).catch((e) => [e]))[1];
+      delete process.env.FAKE_SUBJECT;
+      check(`track_to without a box over ${at}-${at + 1} s: the summary describes the samples it followed (${subject})`, shape(o.subject, o.warnings ?? []) === shape(subject, warnings) && o.attached_to === "vid1", o);
+    }
     const tb: any = (await applyPrep(T, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1, fps: 10 }]).catch((e) => [e]))[0];
     check("track_to with a box has no subject fields", tb.subject === undefined && tb.warnings === undefined && tb.attached_to === "vid1", tb);
   } finally { delete process.env.FAKE_SUBJECT; }
@@ -731,11 +769,16 @@ console.log("the face model: descriptor, job, gate, download");
     const before = jobs().length, rb = join(m, "rb.mp4");
     const sub: any = await api.analyze.subject(rb, 6.5);
     const job = jobs()[before];
-    check("the helper job carries face_model = the cached model's path", sub.cached === false && jobs().length === before + 1 && job?.cmd === "subject" && job.face_model === faceFile(mainCache), { job, want: faceFile(mainCache) });
+    check("the helper job carries face_model = the cached model's path and face_min = FACE_MIN", sub.cached === false && jobs().length === before + 1 && job?.cmd === "subject" && job.face_model === faceFile(mainCache) && typeof job.face_min === "number" && job.face_min === V.FACE_MIN, { job, want: faceFile(mainCache) });
     const A = fresh("key-a"), B = fresh("key-b"), R = join(tmp, "key-root");
     const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, srcW: 640, srcH: 360, root: R }));
     const ja = await jobIn(A), jb = await jobIn(B);
     check("the cache key is the same under two cache roots, while face_model follows the root", basename(ja.file) === basename(jb.file) && ja.job.face_model === faceFile(A) && jb.job.face_model === faceFile(B), { a: ja.file, b: jb.file, fa: ja.job.face_model, fb: jb.job.face_model });
+    { // the key is the hash of the job's own parameters (the path and the model file excluded), face_min among them
+      const { path: _path, face_model: _model, ...params } = ja.job, keyOf = (p: unknown) => `subject-${V.cacheKey(rb, p)}.json`;
+      check("the cache key covers face_min: it is the key of the job's parameters, and another face_min gives another key",
+        typeof params.face_min === "number" && basename(ja.file) === keyOf(params) && basename(ja.file) !== keyOf({ ...params, face_min: V.FACE_MIN + 0.05 }), { params, file: ja.file });
+    }
     check("the key names no path of this machine", !ja.file.includes(A) && !basename(ja.file).includes(FACE) && JSON.stringify(ja.job).includes(FACE_MODEL?.sha256?.slice(0, 12) ?? "no-sha"), ja.job);
 
     // 3. the gate: no model and no allow_download -> model_not_cached, and uv is never started
@@ -753,9 +796,30 @@ console.log("the face model: descriptor, job, gate, download");
       const np = await inCache(G, () => caught(() => api.prepare(E, opts)));
       check(`prepare without allow_download${what}: model_not_cached, no job started`, np?.code === "model_not_cached" && np.message.includes(FACE) && !/remove_background/.test(np.message) && np.hint.includes("allow_download") && nCalls() === calls0 && jobs().length === jobs0, { code: np?.code, message: np?.message });
     }
-    const cli = (cache: string, ...a: string[]) => spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "subject", rb, "--fps", "8.5", ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } });
+    { // prepare's batch gate: a mixed batch (a job that needs the missing face model, a job that needs no model) is refused whole, before any job starts
+      const G2 = fresh("gate-mixed"), M2 = join(tmp, "gate-mixed-project");
+      await inCache(G2, () => seedModel("u2netp"));
+      api.create(M2, { preset: "reels" });
+      await apply(M2, [{ op: "add_clip", track: "main", src: rb, duration: 4 }, { op: "remove_background", id: "vid1" }, { op: "auto_reframe", id: "vid1", fps: 11 }]);
+      const tree = (d: string) => (existsSync(d) ? readdirSync(d, { recursive: true }).map(String).sort().join("|") : null);
+      const calls1 = nCalls(), jobs1 = jobs().length, g2 = tree(G2), m2 = tree(join(M2, ".agentcut"));
+      const mst: any = await inCache(G2, () => api.prepareStatus(M2));
+      check("a mixed batch: status lists the missing face model, the matte job needs no model", mst.missing.map((x: any) => x.kind).sort().join() === "matte,subject" && mst.models_to_download.map((x: any) => x.model).join() === FACE, mst);
+      const mp = await inCache(G2, () => caught(() => api.prepare(M2)));
+      check("a mixed batch: prepare -> model_not_cached for the face model only, and no job started (uv not run for either job, nothing new in either cache)",
+        mp?.code === "model_not_cached" && mp.message.includes(FACE) && !mp.message.includes("u2netp") && nCalls() === calls1 && jobs().length === jobs1 && tree(G2) === g2 && tree(join(M2, ".agentcut")) === m2,
+        { code: mp?.code, message: mp?.message, calls: nCalls() - calls1, g2: tree(G2), m2: tree(join(M2, ".agentcut")) });
+    }
+    // the CLI runs with a stub fetch loaded by --preload (the test's own file; no network, no product switch): it records the URL it was asked for
+    const fetchLog = join(tmp, "cli-fetch.log"), fetchStub = join(tmp, "cli-fetch-stub.ts");
+    writeFileSync(fetchStub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
+    const fetched1 = () => (existsSync(fetchLog) ? readFileSync(fetchLog, "utf8").split("\n").filter(Boolean) : []);
+    const cli = (cache: string, ...a: string[]) => spawnSync(process.execPath, ["--no-install", "--preload", fetchStub, join(import.meta.dir, "../src/cli.ts"), "subject", rb, "--fps", "8.5", ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } });
     const c1 = cli(G), c1j = JSON.parse(c1.stdout || "{}");
-    check("CLI subject without --allow-download and without the model: model_not_cached, non-zero exit, uv not started", c1.status !== 0 && c1j.error?.code === "model_not_cached" && nCalls() === calls0, { status: c1.status, out: c1.stdout.slice(0, 300) });
+    check("CLI subject without --allow-download and without the model: model_not_cached, non-zero exit, uv not started, nothing fetched", c1.status !== 0 && c1j.error?.code === "model_not_cached" && nCalls() === calls0 && fetched1().length === 0, { status: c1.status, out: c1.stdout.slice(0, 300), fetched: fetched1() });
+    const c1a = cli(G, "--allow-download"), c1aj = JSON.parse(c1a.stdout || "{}");
+    check("CLI subject --allow-download without the model: the request reaches the download of the face model (stub answers 404 -> model_download_failed), uv not started",
+      c1a.status !== 0 && c1aj.error?.code === "model_download_failed" && fetched1().join() === FACE_MODEL.url && nCalls() === calls0, { status: c1a.status, out: c1a.stdout.slice(0, 300), fetched: fetched1() });
     // with allow_download, compute fetches the face model first; a failed fetch stops it before the helper (fetch stubbed: no network)
     const realFetch = globalThis.fetch, fetched: string[] = [];
     globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;

@@ -147,6 +147,10 @@ export function fitBox(sw: number, sh: number, bw: number, bh: number, fit: stri
   return { w, h, ow: w, oh: h, crop: false };
 }
 
+/** Offset (px) of a `view`-wide window in a cover-scaled picture `full` px wide that centres the picture point `f` (0..1), clamped to the picture.
+ *  The one formula behind `focus`: the static crop, the animated pan and the vision mappings all use it. */
+export const coverOffset = (f: number, full: number, view: number) => Math.min(full - view, Math.max(0, f * full - view / 2));
+
 /** Accumulates a byte stream and hands out exact-size frames with back-pressure. */
 class FrameStream {
   private chunks: Buffer[] = [];
@@ -226,7 +230,7 @@ export class FrameSource {
     vf.push(`scale=${fb.w}:${fb.h}:flags=bicubic`);
     if (fb.crop && (fb.w > fb.ow || fb.h > fb.oh) && !o.pan) {
       const [fx, fy] = o.focus ?? [0.5, 0.5];
-      vf.push(`crop=${fb.ow}:${fb.oh}:${Math.round((fb.w - fb.ow) * fx)}:${Math.round((fb.h - fb.oh) * fy)}`);
+      vf.push(`crop=${fb.ow}:${fb.oh}:${Math.round(coverOffset(fx, fb.w, fb.ow))}:${Math.round(coverOffset(fy, fb.h, fb.oh))}`);
     }
     vf.push("format=rgba");
     this.vf = vf; this.view = [fb.ow, fb.oh];

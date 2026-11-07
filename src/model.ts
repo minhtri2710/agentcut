@@ -165,7 +165,7 @@ export const MEDIA_FIELDS: F = {
   fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
-  focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
+  focus: [T("array"), "[fx, fy] the source point (0..1 of the picture after crop) that cover keeps at the centre of the view, clamped at the picture edges; [0.5, 0.5] = centre (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
   remove_background: [T("boolean", "object"), `true or {model: ${MATTE_MODELS.join("|")}}: AI alpha matte (cached; needs uv; a model is downloaded only by prepare with allow_download: ${MATTE_SIZES}; see op remove_background)`],
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],

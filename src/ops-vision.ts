@@ -2,7 +2,7 @@
 // track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python), and
 // never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
 // sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
-import { fitBox } from "./media.ts";
+import { coverOffset, fitBox } from "./media.ts";
 import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
@@ -33,7 +33,7 @@ export function layout(tl: Timeline, c: Clip) {
   return { a, box, fit, cw, ch, cl, ct, sx, sy, w: fb.w, h: fb.h, ow: fb.ow, oh: fb.oh };
 }
 
-/** focus at clip-local time t (keyframed or static) */
+/** focus at clip-local time t (keyframed or static): the source point (0..1 of the picture after crop) the cover view centres on */
 const focusAt = (c: Clip, t: number): [number, number] => {
   const f = c.focus ?? [0.5, 0.5], k = c.keyframes ?? {};
   return [clamp01(k.focus_x ? kfValue(k.focus_x, t) : Number(f[0])), clamp01(k.focus_y ? kfValue(k.focus_y, t) : Number(f[1]))];
@@ -53,7 +53,7 @@ function srcToCanvas(tl: Timeline, c: Clip, L: ReturnType<typeof layout>, t: num
   const [fx, fy] = focusAt(c, t), s = Number(c.scale ?? 1);
   const cx = c.x !== undefined ? parseLen(c.x, tl.settings.width) : tl.settings.width / 2;
   const cy = c.y !== undefined ? parseLen(c.y, tl.settings.height) : tl.settings.height / 2;
-  const px = (u * L.a.width - L.cl * L.a.width) * L.sx - (L.w - L.ow) * fx, py = (v * L.a.height - L.ct * L.a.height) * L.sy - (L.h - L.oh) * fy;
+  const px = (u * L.a.width - L.cl * L.a.width) * L.sx - coverOffset(fx, L.w, L.ow), py = (v * L.a.height - L.ct * L.a.height) * L.sy - coverOffset(fy, L.h, L.oh);
   return [cx + (px - L.ow / 2) * s, cy + (py - L.oh / 2) * s];
 }
 function canvasToSrc(tl: Timeline, c: Clip, L: ReturnType<typeof layout>, t: number, X: number, Y: number): [number, number] {
@@ -82,11 +82,14 @@ function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
   return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
     : { start: in0, duration: len, fps, srcW: a.width, srcH: a.height, root: root(p) });
 }
-/** Cached subject samples as [clip-local t, source fraction x, y | undefined]. */
-function subjectTrack(tl: Timeline, c: Clip, d: V.Derived) {
-  const a = asset(tl, c), { in0, speed } = srcRange(c), samples = V.subjectSamples(d);
-  const pts = samples.map((s) => ({ t: a.kind === "image" ? 0 : (s.t - in0) / speed, x: s.kind === "none" ? undefined : s.x, y: s.kind === "none" ? undefined : s.y }));
-  return { pts, faces: samples.filter((s) => s.kind === "face").length, n: samples.length, ...V.subjectSummary(samples) };
+/** Cached subject samples as [clip-local t, source fraction x, y | undefined]. `within` = [from, to] clip-local seconds keeps only the samples
+ *  in that span; the counts and the summary describe exactly the samples kept. */
+function subjectTrack(tl: Timeline, c: Clip, d: V.Derived, within?: [number, number]) {
+  const a = asset(tl, c), { in0, speed } = srcRange(c);
+  const at = (s: V.Sample) => (a.kind === "image" ? 0 : (s.t - in0) / speed);
+  const samples = V.subjectSamples(d).filter((s) => !within || (at(s) >= within[0] - 1e-6 && at(s) <= within[1] + 1e-6));
+  const pts = samples.map((s) => ({ t: at(s), x: s.kind === "none" ? undefined : s.x, y: s.kind === "none" ? undefined : s.y }));
+  return { pts, face_samples: samples.filter((s) => s.kind === "face").length, n: samples.length, ...V.subjectSummary(samples) };
 }
 
 export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
@@ -119,7 +122,7 @@ export function registerVisionOps(h: OpHelpers) {
     return findClip(tl, h.resolveRef(tl, String(id)))[2];
   };
 
-  h.op("auto_reframe", "Follow the subject (the largest face found by YuNet, with a confidence score, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y so a 16:9 shot stays framed in 9:16 (or any crop). The result says what was followed: subject = face|saliency|mixed|none, plus warnings (no face found, low confidence, several faces) to check with preview_frame. Needs uv (downloads opencv on first use); the 0.23 MB face model is downloaded only by prepare with allow_download=true (CLI: prepare --allow-download), else prepare fails with code model_not_cached. The analysis is cached per file+range; when it is not cached yet the request is recorded (clip.pending, result pending=true) and prepare computes it and writes the keyframes.",
+  h.op("auto_reframe", "Follow the subject (the largest face found by YuNet, with a confidence score, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y (the subject position as the source point the view centres on, 0..1 after crop, kept within what the view can reach) so a 16:9 shot stays framed in 9:16 (or any crop). The result says what was followed: subject = face|saliency|mixed|none, plus warnings (no face found, low confidence, several faces) to check with preview_frame; samples counts the analysis samples and face_samples those with a face. Needs uv (downloads opencv on first use); the 0.23 MB face model is downloaded only by prepare with allow_download=true (CLI: prepare --allow-download), else prepare fails with code model_not_cached. The analysis is cached per file+range; when it is not cached yet the request is recorded (clip.pending, result pending=true) and prepare computes it and writes the keyframes.",
     { id: "video/image clip", fps: "analysis samples per second (6)", smooth: "smoothing sigma seconds (0.8; higher = calmer camera)", tolerance: "max focus error kept when thinning keyframes (0.01)", axis: "auto|x|y|both (auto = the axis that can pan)" },
     (p, tl, a) => {
       resolve(tl);
@@ -136,12 +139,14 @@ export function registerVisionOps(h: OpHelpers) {
       const d = subjectJob(p, tl, c, fps);
       if (!ready(c, "auto_reframe", pick(a, ["fps", "smooth", "tolerance", "axis"]), d)) return pendingResult(c.id);
       const tr = subjectTrack(tl, c, d), ts = tr.pts.map((q) => q.t);
-      // subject fraction -> focus that centres it in the visible window
-      const toFocus = (u: number, src: number, crop0: number, scale: number, full: number, view: number) =>
-        clamp01((((u * src - crop0 * src) * scale) - view / 2) / (full - view));
+      // subject fraction -> the focus (the source point the view centres on), kept in the range the view can reach so thinned keyframes do not move while it is pinned at an edge
+      const toFocus = (u: number, src: number, crop0: number, scale: number, full: number, view: number) => {
+        const lo = view / (2 * full);
+        return Math.min(1 - lo, Math.max(lo, ((u * src - crop0 * src) * scale) / full));
+      };
       const kf = (c.keyframes ??= {});
       delete kf.focus_x; delete kf.focus_y;
-      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, faces: tr.faces, subject: tr.subject, ...(tr.warnings && { warnings: tr.warnings }) };
+      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, face_samples: tr.face_samples, subject: tr.subject, ...(tr.warnings && { warnings: tr.warnings }) };
       const axes: [boolean, "x" | "y", 0 | 1][] = [[wantX, "x", 0], [wantY, "y", 1]];
       for (const [want, ax, i] of axes) {
         if (!want) continue;
@@ -203,9 +208,9 @@ export function registerVisionOps(h: OpHelpers) {
       } else {
         const d = subjectJob(p, tl, t, Math.min(fps, 10));
         if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
-        const tr = subjectTrack(tl, t, d);
+        const tr = subjectTrack(tl, t, d, [s0 - ts0, s1 - ts0]);
         followed = { subject: tr.subject, ...(tr.warnings && { warnings: tr.warnings }) };
-        pts = tr.pts.filter((q) => q.t + ts0 >= s0 - 1e-6 && q.t + ts0 <= s1 + 1e-6).map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
+        pts = tr.pts.map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
         if (!pts.length) throw new EditError("no subject samples in the overlap", "vision_failed", "pass box to track a specific object");
       }
       const Ts = pts.map((q) => q.T), sigma = num(a.smooth, 0.15, "smooth");

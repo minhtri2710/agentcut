@@ -112,7 +112,7 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   render subtitles=true (CLI --subtitles) adds a soft subtitle track to .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt).
 
 ## AI vision (optional: needs uv, packages download on first use; results cached in .agentcut/cache)
-{"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y follow the face (YuNet, with a confidence score), else the most salient region
+{"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y (the source point kept at the view centre) follow the face (YuNet, with a confidence score), else the most salient region
 {"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
@@ -143,7 +143,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}
 - filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip
 - masks: rect, circle, ellipse, heart, star, linear, mirror (+ feather, invert, x, y, width, height, angle)
-- layout: position+margin or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy]; radius; border; shadow; blend; opacity
+- layout: position+margin or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy] (the source point, 0..1 after crop, kept at the centre of the view; clamped at the picture edges; [0.5,0.5] = centre); radius; border; shadow; blend; opacity
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing
 - text presets: title_bold, subtitle_box, neon, gradient, lower_third, quote, typewriter, sticker, outline, cinematic
 - caption presets: tiktok, bold_pop, pill, clean, reveal, neon (styles: karaoke | word | reveal | line)

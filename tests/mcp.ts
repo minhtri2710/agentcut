@@ -20,11 +20,12 @@ await client.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice
 const t0 = performance.now();
 const tools = (await client.listTools()).tools;
 check(`lists tools (${tools.length})`, tools.length >= 20, tools.map((t) => t.name));
-const call = async (name: string, args: Record<string, unknown> = {}) => {
-  const r: any = await client.callTool({ name, arguments: args });
-  const txt = r.content.find((c: any) => c.type === "text")?.text;
-  return { r, json: txt?.startsWith("{") ? JSON.parse(txt) : txt, images: r.content.filter((c: any) => c.type === "image") };
+const callOn = (c: Client) => async (name: string, args: Record<string, unknown> = {}) => {
+  const r: any = await c.callTool({ name, arguments: args });
+  const txt = r.content.find((x: any) => x.type === "text")?.text;
+  return { r, json: txt?.startsWith("{") ? JSON.parse(txt) : txt, images: r.content.filter((x: any) => x.type === "image") };
 };
+const call = callOn(client);
 check("guide", String((await call("guide")).json).includes("Mental model"));
 check("create_project", (await call("create_project", { path: join(tmp, "p"), preset: "youtube" })).json.ok);
 const ap = await call("apply_ops", { ops: [
@@ -84,6 +85,29 @@ for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as co
       r.json.ok === false && r.json.error.code === "bad_version" && /op input/.test(r.json.error.message) && r.json.error.hint.includes(`"version": ${V}`), r.json);
   }
   check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
+}
+// allow_download reaches the face-model download (analyze_subject and prepare). This server runs with a stub fetch loaded by --preload
+// (the test's own file): every download attempt is recorded and answered 404, so nothing touches the network and no helper is started.
+if (process.env.AGENTCUT_MCP) console.log("  - allow_download pass-through skipped: a compiled server takes no --preload");
+else {
+  const { FACE_MODEL } = await import("../src/vision.ts");
+  const fetchLog = join(tmp, "mcp-fetch.log"), stub = join(tmp, "mcp-fetch-stub.ts");
+  writeFileSync(stub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
+  const fetched = () => { try { return readFileSync(fetchLog, "utf8").split("\n").filter(Boolean); } catch { return []; } };
+  const c2 = new Client({ name: "agentcut-test-2", version: "1" });
+  await c2.connect(new StdioClientTransport({ command: process.execPath, args: ["--no-install", "--preload", stub, resolve(import.meta.dir, "../src/mcp.ts")], env }));
+  const call2 = callOn(c2);
+  const D = join(tmp, "dl");
+  await call2("create_project", { path: D, preset: "reels" });
+  await call2("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(tmp, "a.mp4"), duration: 3 }, { op: "auto_reframe", id: "vid1" }] });
+  const code = (r: any) => r.json?.error?.code ?? r.json?.status;
+  const s0 = await call2("analyze_subject", { path: join(tmp, "a.mp4"), fps: 2 }), p0 = await call2("prepare", { wait_seconds: 20 });
+  check("MCP analyze_subject and prepare without allow_download: model_not_cached, nothing fetched", code(s0) === "model_not_cached" && p0.json.error?.code === "model_not_cached" && fetched().length === 0, { s0: s0.json, p0: p0.json, fetched: fetched() });
+  const s1 = await call2("analyze_subject", { path: join(tmp, "a.mp4"), fps: 2, allow_download: true }), n1 = fetched().length;
+  const p1 = await call2("prepare", { allow_download: true, wait_seconds: 20 });
+  check("MCP analyze_subject with allow_download reaches the face-model download (stub 404 -> model_download_failed)", code(s1) === "model_download_failed" && n1 === 1 && fetched()[0] === FACE_MODEL.url, { s1: s1.json, fetched: fetched() });
+  check("MCP prepare with allow_download reaches the same download", p1.json.error?.code === "model_download_failed" && fetched().length === 2 && fetched()[1] === FACE_MODEL.url, { p1: p1.json, fetched: fetched() });
+  await c2.close();
 }
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

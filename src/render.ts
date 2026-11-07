@@ -5,7 +5,7 @@ import { type Canvas, createCanvas, ImageData, LottieAnimation, type SKRSContext
 import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
 import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
-import { FrameSource } from "./media.ts";
+import { coverOffset, FrameSource } from "./media.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, type Timeline, totalDuration,
   type Track, VISUAL_TYPES,
@@ -203,7 +203,7 @@ export class Layer {
     const kf = this.c.keyframes, [vw, vh] = s.view, f0 = this.c.focus ?? [0.5, 0.5];
     const fx = Math.min(1, Math.max(0, kf.focus_x ? A.kfValue(kf.focus_x, tl) : Number(f0[0])));
     const fy = Math.min(1, Math.max(0, kf.focus_y ? A.kfValue(kf.focus_y, tl) : Number(f0[1])));
-    const x0 = Math.round((s.w - vw) * fx), y0 = Math.round((s.h - vh) * fy);
+    const x0 = Math.round(coverOffset(fx, s.w, vw)), y0 = Math.round(coverOffset(fy, s.h, vh));
     const out = (this.panBuf ??= Buffer.alloc(vw * vh * 4)); // consumed before the next frame of this layer
     for (let y = 0; y < vh; y++) buf.copy(out, y * vw * 4, ((y0 + y) * s.w + x0) * 4, ((y0 + y) * s.w + x0 + vw) * 4);
     return { buf: out, w: vw, h: vh };
