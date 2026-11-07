@@ -1,5 +1,5 @@
 // Launchers: bun runs of scripts/ac, the .mcp.json command, the segment worker and the compiled binary ignore the bunfig.toml and .env in the working dir.
-// A source tree without node_modules makes no registry request, and neither do the package.json scripts. Run: bun tests/launchers.ts
+// A source tree without node_modules makes no registry request. Every bun command in the package.json scripts passes --no-install (checked statically), and the docs script runs from a tree without node_modules and regenerates AGENTS.md as committed. Run: bun tests/launchers.ts
 // (AGENTCUT_BIN=<compiled binary> checks that binary instead of the source launchers; the no-registry case needs a source tree and is skipped)
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -111,15 +111,15 @@ else {
     await launch([...cmd]);
     check(`${name}: no registry request (${hits.join(" ") || "none"})`, hits.length === 0, hits);
   }
-  // a script's inner bun does not inherit --no-install from `bun --no-install run`: run the docs script from the tree root, whose .npmrc names the registry
+  // pins that the docs script runs from a tree without node_modules and that AGENTS.md is in sync with GUIDE. The registry assertion is a tripwire: src/docs.ts imports no package today, so it discriminates only if that changes; the --no-install pin is the static check above
   if (!scriptsOk) console.log("docs script: skipped (a package.json script lacks --no-install, so the run could install)");
   else {
     writeFileSync(join(copy, ".npmrc"), readFileSync(join(bare, ".npmrc")));
     writeFileSync(join(copy, "AGENTS.md"), "placeholder\n"); // the script must replace it
     hits.length = 0;
     await launch(["bun", "--no-install", "run", "docs"], copy);
-    check(`docs script from a tree without node_modules: no registry request (${hits.join(" ") || "none"})`, hits.length === 0, hits);
-    check("docs script from a tree without node_modules: AGENTS.md is regenerated as committed", readFileSync(join(copy, "AGENTS.md"), "utf8") === readFileSync(join(root, "AGENTS.md"), "utf8"));
+    check(`docs script from a tree without node_modules: no registry request (tripwire) (${hits.join(" ") || "none"})`, hits.length === 0, hits);
+    check("docs script from a tree without node_modules: AGENTS.md is in sync with GUIDE", readFileSync(join(copy, "AGENTS.md"), "utf8") === readFileSync(join(root, "AGENTS.md"), "utf8"));
   }
   registry.close();
 }
