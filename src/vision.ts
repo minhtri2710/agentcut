@@ -127,8 +127,12 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
-      if (code !== 0) return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
-        "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"));
+      if (code !== 0) {
+        const model = d.kind === "matte" ? matteModelFile(String(d.job.model)) : null; // an existing model file is the likely cause of a load failure: rembg never re-checks it
+        return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
+          "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
+          + (model && lstatSync(model, { throwIfNoEntry: false })?.isFile() ? `; the model file ${model} may be damaged: delete it and run prepare with allow_download=true` : "")));
+      }
       try { res(JSON.parse(stdout)); } catch { rej(new EditError(`vision helper printed no JSON: ${stdout.slice(0, 200)}`, "vision_failed")); }
     });
   });

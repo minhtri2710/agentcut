@@ -92,6 +92,8 @@ def matte(j):
         for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
         for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
     import numpy as np
+    import onnxruntime
+    onnxruntime.disable_telemetry_events()  # after the proxy guard, before any session is created
     from rembg import new_session, remove
     from PIL import Image
     sess = new_session(j.get("model", "u2netp"))

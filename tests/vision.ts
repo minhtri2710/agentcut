@@ -574,6 +574,25 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     const c2 = cli("--allow-download"), c2j = JSON.parse(c2.stdout || "{}");
     check("CLI prepare --allow-download passes the gate", c2.status === 0 && c2j.ready === true && gateRuns().at(-1)?.allow === true, { status: c2.status, out: c2.stdout.slice(0, 300) });
 
+    // a matte helper that fails: the hint names the model file only when that file exists (rembg does not re-check an existing file)
+    {
+      const failUv = join(tmp, "fail-uv.mjs");
+      writeFileSync(failUv, `#!/usr/bin/env node\nprocess.stderr.write("stub load failure\\n"); process.exit(1);\n`);
+      chmodSync(failUv, 0o755);
+      const F = join(tmp, "gate-fail");
+      api.create(F, { preset: "720p" });
+      await apply(F, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: MODEL }]);
+      process.env.AGENTCUT_UV = failUv;
+      rmSync(modelFile(MODEL), { force: true });
+      const gone: any = await api.prepare(F, { allowDownload: true }).catch((e) => e);
+      check("matte helper fails with the model file absent: vision_failed, the hint does not name a damaged file", gone.code === "vision_failed" && !/damaged/.test(gone.hint) && !gone.hint.includes(modelFile(MODEL)), { code: gone.code, hint: gone.hint });
+      seedModel(MODEL);
+      const bad: any = await api.prepare(F).catch((e) => e);
+      check("matte helper fails with the model file present: vision_failed, the hint names the file and allow_download", bad.code === "vision_failed" && bad.hint.includes(modelFile(MODEL)) && /damaged/.test(bad.hint) && bad.hint.includes("allow_download=true"), { code: bad.code, hint: bad.hint });
+      check("  the original hint text is kept", /probe_media/.test(bad.hint), bad.hint);
+      process.env.AGENTCUT_UV = gateUv;
+    }
+
     // the helper itself: with allow_download false it points the HTTP clients at an unreachable proxy before importing rembg.
     // The real helper text runs under system python3 against stub numpy / PIL / rembg modules; the stub rembg records the proxy
     // variables it sees when it is imported, so nothing here reaches a network.
@@ -585,26 +604,47 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       writeFileSync(join(stubs, "numpy.py"), "");
       writeFileSync(join(stubs, "PIL", "__init__.py"), "");
       writeFileSync(join(stubs, "PIL", "Image.py"), "");
+      // each stub appends to one event log: the proxy guard state at disable time, then new_session
+      writeFileSync(join(stubs, "onnxruntime.py"), `import json, os
+def disable_telemetry_events():
+    open(os.environ["STUB_OUT"], "a").write(json.dumps({"ev": "disable", "https_proxy": os.environ.get("HTTPS_PROXY"), "no_proxy": os.environ.get("NO_PROXY")}) + "\\n")
+`);
       writeFileSync(join(stubs, "rembg.py"), `import json, os
-open(os.environ["STUB_OUT"], "w").write(json.dumps({k: os.environ.get(k) for k in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "NO_PROXY", "no_proxy"]}))
-def new_session(model): raise SystemExit("stub rembg: " + model)
+open(os.environ["STUB_OUT"], "a").write(json.dumps({"ev": "import", **{k: os.environ.get(k) for k in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "NO_PROXY", "no_proxy"]}}) + "\\n")
+def new_session(model):
+    open(os.environ["STUB_OUT"], "a").write(json.dumps({"ev": "new_session", "model": model}) + "\\n")
+    raise SystemExit("stub rembg: " + model)
 def remove(*a, **k): raise SystemExit("stub rembg")
 `);
       const { VISION_PY } = await import("../src/vision-py.ts");
       const script = join(run, "helper.py");
       writeFileSync(script, VISION_PY);
+      // python -I (no PYTHON* variables, no user site, no script dir) + only the stub dir on sys.path: the stubs are the only onnxruntime / rembg
+      // this child can find. HOME is set at spawn into the test tmp; the environment is spelled out key by key.
+      const boot = "import sys, runpy; sys.path.insert(0, sys.argv[1]); s = sys.argv[2]; sys.argv = sys.argv[2:]; runpy.run_path(s, run_name='__main__')";
+      const childEnv = (extra: Record<string, string>) => ({ PATH: process.env.PATH ?? "", HOME: join(run, "home"), ...extra });
       const guarded = (allow: boolean) => {
-        const out = join(run, `seen-${allow}.json`);
+        const out = join(run, `seen-${allow}.jsonl`);
         const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: allow });
-        const r = spawnSync("python3", ["-B", script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
-          env: { ...process.env, PYTHONPATH: stubs, PYTHONDONTWRITEBYTECODE: "1", STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" } });
-        return { status: r.status, seen: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, stderr: r.stderr.slice(-200) };
+        const r = spawnSync("python3", ["-I", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
+          env: childEnv({ STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" }) });
+        const events = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+        return { status: r.status, events, seen: events.find((e: any) => e.ev === "import") ?? null, stderr: r.stderr.slice(-200) };
       };
+      mkdirSync(join(run, "home"));
+      const noStubs = spawnSync("python3", ["-I", "-B", "-c", "import importlib.util as u; print(u.find_spec('onnxruntime'), u.find_spec('rembg'))"], { cwd: run, encoding: "utf8", env: childEnv({}) });
+      check("the helper child cannot find the real onnxruntime or rembg without the stub dir", noStubs.status === 0 && noStubs.stdout.trim() === "None None", { out: noStubs.stdout, err: noStubs.stderr });
       const closed = guarded(false), open = guarded(true);
       const dead = (v: string | null) => typeof v === "string" && /^http:\/\/127\.0\.0\.1:9\/?$/.test(v);
       check("helper, allow_download false: the proxy variables point at an unreachable address and NO_PROXY is cleared when rembg is imported",
         !!closed.seen && ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].every((k) => dead(closed.seen[k])) && !closed.seen.NO_PROXY && !closed.seen.no_proxy, closed);
       check("helper, allow_download true: the proxy variables are left as they were", open.seen?.HTTPS_PROXY === "http://allowed.example:3128" && open.seen?.NO_PROXY === "*", open);
+      for (const [what, r] of [["false", closed], ["true", open]] as const) {
+        const order = r.events.map((e: any) => e.ev).join();
+        check(`helper, allow_download ${what}: telemetry events are disabled before rembg is imported and a session is created`, order === "disable,import,new_session", { order, status: r.status, stderr: r.stderr });
+      }
+      const d0 = closed.events.find((e: any) => e.ev === "disable");
+      check("  with allow_download false the proxy guard is already in place when telemetry events are disabled", /^http:\/\/127\.0\.0\.1:9\/?$/.test(d0?.https_proxy ?? "") && d0?.no_proxy === null, d0);
     }
   } finally { process.env.AGENTCUT_UV = fake; }
 }
