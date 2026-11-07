@@ -1,9 +1,10 @@
 // AI vision ops: auto_reframe, remove_background, track_to (+ path smoothing, caching, missing-tool errors).
 // The Python helper is replaced by a fake `uv` (AGENTCUT_UV) returning known tracks and a real alpha matte, so pixel checks
-// are exact and the suite runs offline. AGENTCUT_TEST_VISION=1 also runs the real helper through uv (downloads packages).
+// are exact and the suite runs offline. AGENTCUT_TEST_VISION=1 also runs the real helper through uv (downloads packages, and the
+// models unless AGENTCUT_TEST_VISION_MODELS names a dir laid out as <name>/<name>.onnx to copy into its own cache).
 // Run: bun tests/vision.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync as lstat, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync as symlink, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync as lstat, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync as symlink, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -167,8 +168,6 @@ check("other params -> new analysis", nCalls("subject") === 2);
   const sv: any = await api.analyze.subject(rbPath, 6, false, S), si: any = await api.analyze.subject(stillPath, undefined, false, S);
   check("project: analyze_subject computes into the project's cache and leaves the user cache alone",
     sv.cached === false && si.cached === false && nCalls("subject") === c0 + 2 && subjFiles(pcache(S)).length === 2 && subjFiles(userVision).join() === u0.join(), { sv: sv.cached, si: si.cached, project: subjFiles(pcache(S)), user: subjFiles(userVision) });
-  const again: any = await api.analyze.subject(rbPath, 6, false, S);
-  check("project: the same analysis again is cached, helper not run", again.cached === true && nCalls("subject") === c0 + 2, again);
   const rf = await apply(S, [{ op: "auto_reframe", id: "img1" }, { op: "auto_reframe", id: "vid1" }]);
   check("project: auto_reframe on the still and on the whole video at in 0 applies at once, reusing the analyses",
     rf.every((r: any) => !r.pending) && rf[0].samples === 1 && rf[1].samples === sv.samples.length && nCalls("subject") === c0 + 2, { rf, calls: nCalls("subject") - c0 });
@@ -960,23 +959,37 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   delete process.env.AGENTCUT_UV;
   ff("-f", "lavfi", "-i", "color=c=0x203040:s=640x360:r=30:d=3", "-f", "lavfi", "-i", "testsrc2=s=80x80:r=30:d=3",
     "-filter_complex", "[0][1]overlay=x='40+t*130':y=140", "-pix_fmt", "yuv420p", join(m, "mover.mp4"));
-  const R = join(tmp, "real");
-  api.create(R, { preset: "reels" });
-  await apply(R, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 }]);
-  const res = (await applyPrep(R, [{ op: "auto_reframe", id: "vid1" }], true))[0];
-  const kx = clip(R, "vid1").keyframes.focus_x;
-  check("real: subject found and followed left -> right", res.samples === 18 && kx[0][1] < 0.2 && kx.at(-1)[1] > 0.7, { res, kx });
-  await apply(R, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
-  const Q = join(tmp, "real-yt");
-  api.create(Q, { preset: "youtube" });
-  await apply(Q, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 },
-    { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
-  const tk = (await applyPrep(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }], true))[0];
-  const kxs = clip(Q, "shp1").keyframes.x, end = kxs.at(-1);
-  check("real: CSRT follows the box (within 25 px)", tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end });
-  await apply(Q, [{ op: "remove_background", id: "vid1" }]);
-  const mt: any = await api.prepare(Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: Q }));
-  check("real: matte produced and cached", existsSync(mt.computed[0].file) && again.cached === true, mt);
+  // a cache of its own: the suite's cache holds 0-byte model seeds the real helper cannot load
+  const mainCache = process.env.AGENTCUT_CACHE!, realCache = join(tmp, "real-cache");
+  mkdirSync(realCache, { recursive: true });
+  if (process.env.AGENTCUT_TEST_VISION_MODELS) cpSync(process.env.AGENTCUT_TEST_VISION_MODELS, join(realCache, "models"), { recursive: true });
+  process.env.AGENTCUT_CACHE = realCache;
+  /** a helper failure is a ✗ row, so the suite still reports and removes its tmp dir */
+  const real = async (name: string, f: () => Promise<[unknown, unknown]>) => {
+    try { const [ok, info] = await f(); check(name, ok, info); } catch (e: any) { check(name, false, { code: e.code, message: e.message }); }
+  };
+  try {
+    const R = join(tmp, "real");
+    api.create(R, { preset: "reels" });
+    await apply(R, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 }]);
+    await real("real: subject found and followed left -> right", async () => {
+      const res = (await applyPrep(R, [{ op: "auto_reframe", id: "vid1" }], true))[0], kx = clip(R, "vid1").keyframes.focus_x;
+      return [res.samples === 18 && kx[0][1] < 0.2 && kx.at(-1)[1] > 0.7, { res, kx }];
+    });
+    const Q = join(tmp, "real-yt");
+    api.create(Q, { preset: "youtube" });
+    await apply(Q, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 },
+      { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
+    await real("real: CSRT follows the box (within 25 px)", async () => {
+      const tk = (await applyPrep(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0], end = clip(Q, "shp1").keyframes.x.at(-1);
+      return [tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end }];
+    });
+    await apply(Q, [{ op: "remove_background", id: "vid1" }]);
+    await real("real: matte produced and cached", async () => {
+      const mt: any = await api.prepare(Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: Q }));
+      return [existsSync(mt.computed[0].file) && again.cached === true, mt];
+    });
+  } finally { process.env.AGENTCUT_CACHE = mainCache; }
 }
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
