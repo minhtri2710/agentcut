@@ -247,12 +247,21 @@ function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
   else if (!tr.magnetic) piece.start = round6(start);
 }
 
-/** Shift clips of one non-magnetic track by d seconds. An attached clip moves by offset, unless its target moves too (it then follows it). */
-function shiftClips(clips: Clip[], d: number) {
-  const moved = new Set(clips.map((x) => x.id));
-  for (const x of clips) {
-    if (!x.attach_to) x.start = round6(Math.max(0, clipStart(x) + d));
-    else if (!moved.has(x.attach_to)) x.offset = round6(parseTime(x.offset ?? 0) + d);
+/**
+ * Shift `moved` clips of the non-magnetic track `tr` by d seconds; the other clips of `tr` keep their timeline place.
+ * A moved clip with no moving ancestor in its attach_to chain moves by start (attached: by offset, clamped at 0); with one, it follows.
+ * A clip of `tr` outside `moved` whose target moves gets its offset compensated. Clips on other tracks that follow a moved clip move with it.
+ */
+function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
+  const byId = new Map<string, Clip>([...allClips(tl.tracks)].map((x) => [x.id, x]));
+  const inSet = new Set(moved), onTrack = new Set(tr.clips);
+  const moves = (c: Clip | undefined, n = 0): boolean => !!c && (inSet.has(c) || (!onTrack.has(c) && !!c.attach_to && n < 16 && moves(byId.get(c.attach_to), n + 1)));
+  for (const x of tr.clips) {
+    const t = x.attach_to ? byId.get(x.attach_to) : undefined;
+    if (!x.attach_to) { if (inSet.has(x)) x.start = round6(Math.max(0, clipStart(x) + d)); }
+    else if (!t) continue;
+    else if (inSet.has(x)) { if (!moves(t)) x.offset = round6(Math.max(0, clipStart(t) + parseTime(x.offset ?? 0) + d) - clipStart(t)); }
+    else if (moves(t)) x.offset = round6(parseTime(x.offset ?? 0) - d);
   }
 }
 
@@ -329,7 +338,7 @@ op("remove_clip", "Remove a clip (and clips attached to it; clips whose match_du
     if (a.keep_attached) { delete x.attach_to; return true; }
     attached.push(x.id); return false;
   });
-  if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); shiftClips(tr.clips.filter((x) => clipStart(x) >= s), -d); }
+  if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= s), -d); }
   const gone = new Set([c.id, ...attached]);
   const unlinked = unfollow(tl.tracks.flatMap((t) => t.clips), (id) => gone.has(id)); // a follower keeps its last length; it is not removed
   resolve(tl);
@@ -467,13 +476,13 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const srcT = parseTime(c0.in ?? 0) + (t - s) * (Number(c0.speed ?? 1) || 1);
     let insertAfter = c0;
     if (t > s + 1e-3 && t < s + clipDur(c0) - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
-    const [tr, ci] = findClip(tl, insertAfter.id);
+    const [tr] = findClip(tl, insertAfter.id);
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];
     dropFollow(fz);
+    if (!tr.magnetic) { shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz)); resolve(tl); } // placeAt reads the target's shifted start
     placeAt(tl, tr, fz, t);
-    if (!tr.magnetic) shiftClips(tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz));
-    tr.clips.splice(ci + 1, 0, fz);
+    tr.clips.splice(tr.clips.indexOf(insertAfter) + 1, 0, fz);
     resolve(tl);
     return { id: fz.id, start: fz.start, duration: fz.duration };
   });
@@ -484,7 +493,10 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time).", { id: "c
   delete dup.group; // a copy is not part of the expanded compound's regroup set
   const dest = a.track ? findTrack(tl, a.track) : tr;
   place(tl, dest, dup, dest.magnetic ? (dest === tr ? { after: c.id } : {}) : { at: a.at ?? clipEnd(c) });
-  if (!dest.magnetic) placeAt(tl, dest, dup, clipStart(dup));
+  if (!dest.magnetic) {
+    placeAt(tl, dest, dup, clipStart(dup));
+    if (dup.attach_to && dup.match_duration === true) { delete dup.match_duration; delete dup.end_offset; } // the copy sits elsewhere: it keeps the length it had
+  }
   renameNested(tl, dup);
   resolve(tl);
   return { id: dup.id, track: dest.id, start: dup.start };

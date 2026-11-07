@@ -418,6 +418,41 @@ console.log("pieces of an attached clip keep their place and length");
   const [td, [dp]] = run(base(), [{ op: "duplicate_clip", id: "ovl" }]);
   check("duplicate_clip of an attached clip lands after the original, attached to the same target", at(td, dp.id).attach_to === "img1" && near(at(td, dp.id).start, 2.5) && near(at(td, dp.id).offset, 2.5), at(td, dp.id));
   valid("duplicate_clip of an attached clip", td);
+  const [tdm, [, dpm]] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "duplicate_clip", id: "ovl" }]);
+  check("duplicate_clip of an attached clip with a computed length: the copy lands after it with the same length, as a plain duration", near(at(tdm, "ovl").duration, 3.5) && near(at(tdm, dpm.id).start, 4) && near(at(tdm, dpm.id).duration, 3.5) && at(tdm, dpm.id).match_duration === undefined && at(tdm, dpm.id).end_offset === undefined && at(tdm, "ovl").match_duration === true, [at(tdm, "ovl"), at(tdm, dpm.id)]);
+  valid("duplicate_clip with a computed length", tdm);
+  // chain: C and A on one track, B (on another track) attached to C, A attached to B: A follows C once
+  const cbase = run(base(), [
+    { op: "add_track", id: "ty", kind: "video" },
+    { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 1, duration: 1 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "cc", at: 2, duration: 1 },
+    { op: "add_clip", track: "ty", asset: "i", id: "bb", attach_to: "cc", offset: 0.5, duration: 2 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "aa", attach_to: "bb", offset: 3, duration: 1 },
+  ])[0];
+  const [tc] = run(cbase, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  check("remove_clip ripple: a clip attached through a clip of another track follows once", near(at(cbase, "aa").start, 5.5) && near(at(tc, "cc").start, 1) && near(at(tc, "bb").start, 1.5) && near(at(tc, "aa").start, 4.5), ["cc", "bb", "aa"].map((i) => at(tc, i)));
+  valid("remove_clip ripple through a chain", tc);
+  // the shifted offset is clamped at 0, so a later move of the target does not leave the clip behind
+  const kbase = run(base(), [
+    { op: "add_track", id: "ty", kind: "video" },
+    { op: "add_clip", track: "ty", asset: "i", id: "mm", at: 0, duration: 6 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 0, duration: 3 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "att", attach_to: "mm", offset: 1, duration: 1 },
+  ])[0];
+  const [tk] = run(kbase, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  check("remove_clip ripple: the shifted offset stops at the target's start", near(at(tk, "att").start, 0) && near(at(tk, "att").offset, 0), at(tk, "att"));
+  const [tk2] = run(tk, [{ op: "move_clip", id: "mm", at: 3 }]);
+  check("  and after the target moves the clip is at the target's new start", near(at(tk2, "att").start, 3), at(tk2, "att"));
+  // freeze_frame when the target is on the same track, after the freeze time
+  const sbase = run(base(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "tt", at: 5, duration: 1 },
+    { op: "add_clip", track: "overlay", asset: "v", id: "c0", attach_to: "tt", offset: -4, duration: 3 },
+  ])[0];
+  check("freeze setup: c0 sits before its target", near(at(sbase, "c0").start, 1) && near(at(sbase, "tt").start, 5), [at(sbase, "c0"), at(sbase, "tt")]);
+  const [ts, rsf] = run(sbase, [{ op: "freeze_frame", id: "c0", at: 2, duration: 1 }]);
+  const sr = ts.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.attach_to === "tt" && c.id !== "c0" && !c.freeze);
+  check("freeze_frame with the target later on the same track: left, freeze and right are contiguous", near(at(ts, "c0").start, 1) && near(at(ts, "c0").duration, 1) && near(at(ts, rsf[0].id).start, 2) && near(at(ts, rsf[0].id).duration, 1) && sr && near(sr.start, 3) && near(sr.duration, 2) && near(at(ts, "tt").start, 6), [at(ts, "c0"), at(ts, rsf[0].id), sr, at(ts, "tt")]);
+  valid("freeze_frame with the target on the same track", ts);
   // detached audio
   const abase = run(base(), [{ op: "add_clip", track: "main", asset: "av", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }])[0];
   const aud = abase.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").id;
@@ -430,6 +465,10 @@ console.log("pieces of an attached clip keep their place and length");
   const vr = at(tv, sv.right), al = at(tv, aud), ar = tv.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === sv.right);
   check("splitting the video: its audio splits with it, the right audio follows the right picture", ar && near(al.start, 6) && near(al.duration, 1) && near(ar.start, 7) && near(ar.duration, 1) && near(vr.start, 7) && near(ar.in, 2), { al, ar, vr });
   valid("split of a video with detached audio", tv);
+  const [tw, [, sw]] = run(abase, [{ op: "update_clip", id: aud, match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]);
+  const wl = at(tw, aud), wr = tw.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === sw.right);
+  check("splitting the video: audio with a computed length gets plain lengths on both pieces", wr && near(wl.start, 6) && near(wl.duration, 1) && near(wr.start, 7) && near(wr.duration, 0.5) && [wl, wr].every((c: any) => c.match_duration === undefined && c.end_offset === undefined), { wl, wr });
+  valid("split of a video whose audio has a computed length", tw);
   const [tj, [, sj]] = run(abase, [{ op: "j_cut", id: "vid1", seconds: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]);
   const aj = tj.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio").sort((x: any, y: any) => x.start - y.start);
   check("splitting a video with J-cut audio: the audio is split at the same time", aj.length === 2 && near(aj[0].start, 5.5) && near(aj[0].duration, 1.5) && near(aj[1].start, 7) && near(aj[1].duration, 1) && aj[1].attach_to === sj.right, aj);
