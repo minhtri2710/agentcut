@@ -36,7 +36,23 @@ export function needFfmpeg() {
   ffChecked = true;
 }
 
+/** FFmpeg's native vp8/vp9 decoders drop the alpha plane of a webm; the libvpx decoders keep it. */
+const VPX_DECODER: Record<string, string> = { vp8: "libvpx", vp9: "libvpx-vp9" };
+
+let decoderList: string | null = null;
+/** The decoder to force (before -i) for a source whose alpha the default decoder would lose, else null. Fails closed when this FFmpeg lacks it. */
+export function alphaDecoder(codec: string | undefined, alpha: boolean | undefined, path: string): string | null {
+  const name = alpha && codec ? VPX_DECODER[codec] : undefined;
+  if (!name) return null;
+  if (decoderList === null) decoderList = spawnSync("ffmpeg", ["-hide_banner", "-decoders"], { encoding: "utf8" }).stdout || "";
+  if (!new RegExp(`^\\s*\\S+\\s+${name}\\s`, "m").test(decoderList)) throw new EditError(`this FFmpeg build has no ${name} decoder (needed for the alpha channel of ${path})`,
+    "missing_dependency", "install an FFmpeg build with libvpx (e.g. a full static build)");
+  return name;
+}
+
 const probeCache = new Map<string, { mtime: number; info: any }>();
+/** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
+const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
 export function probe(path: string): any {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   const mtime = statSync(path).mtimeMs;
@@ -70,7 +86,7 @@ export function probe(path: string): any {
       const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && dur < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
-        fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif",
+        fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (v.codec_name in VPX_DECODER && hasAlphaTag(v.tags)),
       });
       if (!still) info.duration = +dur.toFixed(3);
     } else if (a || AUDIO_EXT.has(ext)) {
@@ -173,6 +189,7 @@ export interface SourceOpts {
   fit: string; box: [number, number]; focus?: [number, number]; crop?: any; filters?: any[]; color?: Grade;
   pan?: boolean; // animated focus: emit the whole cover-scaled frame (view = visible size), the caller crops per frame
   loop?: boolean; srcDuration?: number; reverse?: boolean; freeze?: boolean;
+  codec?: string; alpha?: boolean; // the asset's probe info: decides the decoder
 }
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
@@ -186,6 +203,7 @@ export class FrameSource {
   private eof = false;
   private still: Buffer | null = null;
   private hw = HWACCEL;
+  private input: string[];
   constructor(private o: SourceOpts) {
     if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
     const crop = o.crop || {};
@@ -205,6 +223,10 @@ export class FrameSource {
     [this.w, this.h] = o.pan ? [fb.w, fb.h] : this.view;
     // VideoToolbox saves ~2.6x CPU on 4K/HEVC but costs more than it saves on small sources
     if (o.kind === "image" || o.srcW * o.srcH < 2560 * 1440) this.hw = false;
+    // an alpha vp8/vp9 source needs libvpx, which hwaccel does not replace
+    const dec = alphaDecoder(o.codec, o.alpha, o.path);
+    if (dec) this.hw = false;
+    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path)];
   }
 
   private args(k: number, single: boolean): string[] {
@@ -214,14 +236,14 @@ export class FrameSource {
     if (o.reverse) {
       const len = o.segLen ?? 1;
       // reverse buffers the whole segment, so it always streams from its start
-      a.push("-ss", (o.srcIn ?? 0).toFixed(6), "-t", len.toFixed(6), ...inp(o.path), "-an", "-sn",
+      a.push("-ss", (o.srcIn ?? 0).toFixed(6), "-t", len.toFixed(6), ...this.input, "-an", "-sn",
         "-vf", [`fps=${o.rate}`, "reverse", ...this.vf].join(","));
       return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     }
     let t0 = (o.srcIn ?? 0) + k / o.rate;
     if (o.loop && o.srcDuration) t0 %= o.srcDuration;
     if (o.loop) a.push("-stream_loop", "-1");
-    a.push("-ss", t0.toFixed(6), ...inp(o.path), "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","));
+    a.push("-ss", t0.toFixed(6), ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","));
     if (single) a.push("-frames:v", "1");
     return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
   }
@@ -239,7 +261,7 @@ export class FrameSource {
 
   private async decodeStill(t: number): Promise<Buffer> {
     const o = this.o;
-    const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), ...inp(o.path), "-frames:v", "1",
+    const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), ...this.input, "-frames:v", "1",
       "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     const n = this.w * this.h * 4;
     // async so several layers / contact-sheet tiles decode concurrently

@@ -107,6 +107,7 @@ export class Layer {
         rate: this.ramp ? (a.fps || r.fps) : r.fps / speed,
         fit, box: [this.box[0] * this.q, this.box[1] * this.q], focus: c.focus, crop: c.crop, filters: c.filters, color: c.color, pan: this.pan,
         loop: !!c.loop, srcDuration: a.duration, reverse: !!c.reverse, freeze: !!c.freeze,
+        ...(mt ? {} : { codec: a.codec, alpha: a.alpha }),
       });
     }
     return this.src;

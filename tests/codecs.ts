@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -143,6 +143,64 @@ for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix
 }
 r = await renderVideo(tl(), p.root, out("part.mp3"), { start: 0.5, end: 1.5 });
 check("audio range 1s", Math.abs(Number(probe(out("part.mp3")).format.duration) - 1) < 0.1 && r.duration === 1, r);
+
+console.log("alpha in vp8/vp9 webm sources");
+{
+  // half-transparent green source: over a red background the red channel must show through
+  const alphaSrc = (name: string, codec: string, pix = "yuva420p") =>
+    ff("-f", "lavfi", "-i", `color=c=0x00ff00@0.5:s=${W}x${H}:r=24:d=1,format=${pix}`, "-c:v", codec, "-pix_fmt", pix, "-auto-alt-ref", "0", join(m, name));
+  alphaSrc("a9.webm", "libvpx-vp9");
+  alphaSrc("a8.webm", "libvpx");
+  alphaSrc("opaque9.webm", "libvpx-vp9", "yuv420p");
+  for (const [f, codec] of [["a9.webm", "vp9"], ["a8.webm", "vp8"]]) {
+    const i = api.probe(join(m, f));
+    check(`probe: alpha ${codec} webm is alpha`, i.codec === codec && i.alpha === true, i);
+  }
+  check("probe: opaque vp9 webm is not alpha", api.probe(join(m, "opaque9.webm")).alpha === false);
+  const over = async (src: string, name: string) => {
+    const dir = join(tmp, name);
+    api.create(dir, { width: W, height: H, fps: 24 });
+    await api.apply(dir, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", src, at: 0, duration: 1 }]);
+    return dir;
+  };
+  const framePx = async (dir: string, name: string) => {
+    const img = join(dir, "previews", `${name}.png`);
+    await api.frame(dir, 0.5, { out: img, scale: 1 });
+    return px(rgbaFrame(img, 0), 40, 40);
+  };
+  for (const [f, codec] of [["a9.webm", "vp9"], ["a8.webm", "vp8"]]) {
+    const c = await framePx(await over(join(m, f), `over-${codec}`), codec);
+    check(`${codec} alpha webm composites over red (preview)`, c[0] > 100 && c[1] > 100 && c[1] < 160, c);
+  }
+  { // render, then import the render, then composite it over red
+    const dir = join(tmp, "rt");
+    api.create(dir, { width: W, height: H, fps: 24 });
+    await api.apply(dir, [{ op: "set_settings", background: "#00000000" },
+      { op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: 0, duration: 1, size: [120, 90], position: "top_left" }]);
+    const rt = join(dir, "renders", "rt.webm");
+    await renderVideo(api.openProject(dir).absolutized(api.openProject(dir).load()), api.openProject(dir).root, rt, { workers: 1 });
+    check("round trip: render is flagged alpha on import", api.probe(rt).alpha === true, api.probe(rt));
+    const over2 = await over(rt, "rt-over");
+    const c = await framePx(over2, "rt");
+    const corner = px(rgbaFrame(join(over2, "previews", "rt.png"), 0), W - 6, H - 6);
+    check("round trip: transparent area shows the red background", corner[0] > 240 && corner[1] < 16 && corner[2] < 16, corner);
+    check("round trip: opaque video area is not red", !(c[0] > 240 && c[1] < 16 && c[2] < 16), c);
+  }
+  if (process.platform !== "win32") { // an ffmpeg without the libvpx decoders: the alpha source fails closed
+    const real = (process.env.PATH ?? "").split(":").map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
+    const bin = join(tmp, "nolibvpx");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\nif [ "$2" = "-decoders" ]; then "${real}" "$@" | grep -v libvpx; exit 0; fi\nexec "${real}" "$@"\n`, { mode: 0o755 });
+    const code = `const {FrameSource}=await import(${JSON.stringify(join(import.meta.dir, "../src/media.ts"))});` +
+      `const o={kind:"video",srcW:64,srcH:64,rate:24,fit:"fill",box:[64,64]};const t=(x)=>{try{new FrameSource({path:"a.webm",...o,...x});return "ok"}catch(e){return e.code+"|"+e.hint}};` +
+      `console.log(JSON.stringify([t({codec:"vp9",alpha:true}),t({codec:"vp8",alpha:true}),t({codec:"vp9",alpha:false}),t({codec:"h264",alpha:true})]))`;
+    const c = spawnSync(process.execPath, ["--no-install", "-e", code], { cwd: tmp, encoding: "utf8",
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: tmp, AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") } });
+    const [a9, a8, op, h2] = JSON.parse(c.stdout || "[]");
+    check("no libvpx decoder: alpha vp9 and vp8 fail with missing_dependency and a hint", /^missing_dependency\|.*libvpx/.test(a9) && /^missing_dependency\|.*libvpx/.test(a8), { a9, a8, err: c.stderr.slice(0, 300) });
+    check("no libvpx decoder: opaque sources are unaffected", op === "ok" && h2 === "ok", { op, h2 });
+  }
+}
 
 console.log("ffmpeg reads only local files and pipes");
 {
