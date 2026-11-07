@@ -238,8 +238,23 @@ function lengthOnce(c: Clip) {
     throw new EditError("until_end and match_duration both set the length; keep one", "bad_value", `update_clip id=${c.id} until_end=null, or match_duration=null`);
 }
 
-/** a clip that followed another clip's duration becomes a plain-duration clip (its resolved length stays) */
-function dropFollow(c: Clip) { if (typeof c.match_duration === "string") { delete c.match_duration; delete c.end_offset; } }
+/** a clip whose length was computed (it followed a clip, or its attach_to target) becomes a plain-duration clip (its resolved length stays) */
+function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } }
+
+/** Put a piece cut from a clip at timeline time `start`. An attached piece keeps its target and moves by offset (resolve() recomputes its start from the target); others set start on non-magnetic tracks. */
+function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
+  if (piece.attach_to) { piece.offset = round6(start - clipStart(findClip(tl, piece.attach_to)[2])); }
+  else if (!tr.magnetic) piece.start = round6(start);
+}
+
+/** Shift clips of one non-magnetic track by d seconds. An attached clip moves by offset, unless its target moves too (it then follows it). */
+function shiftClips(clips: Clip[], d: number) {
+  const moved = new Set(clips.map((x) => x.id));
+  for (const x of clips) {
+    if (!x.attach_to) x.start = round6(Math.max(0, clipStart(x) + d));
+    else if (!moved.has(x.attach_to)) x.offset = round6(parseTime(x.offset ?? 0) + d);
+  }
+}
 
 function addClip(p: Project, tl: Timeline, a: Dict): Dict {
   if (a.attach_to) { a = { ...a, attach_to: resolveRef(tl, a.attach_to) }; findClip(tl, a.attach_to); }
@@ -314,7 +329,7 @@ op("remove_clip", "Remove a clip (and clips attached to it; clips whose match_du
     if (a.keep_attached) { delete x.attach_to; return true; }
     attached.push(x.id); return false;
   });
-  if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); for (const x of tr.clips) if (clipStart(x) >= s) x.start = round6(Math.max(0, clipStart(x) - d)); }
+  if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); shiftClips(tr.clips.filter((x) => clipStart(x) >= s), -d); }
   const gone = new Set([c.id, ...attached]);
   const unlinked = unfollow(tl.tracks.flatMap((t) => t.clips), (id) => gone.has(id)); // a follower keeps its last length; it is not removed
   resolve(tl);
@@ -414,7 +429,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
     right.words = c.words.filter((w: any) => w.end > left).map((w: any) => ({ ...w, start: round6(w.start - left), end: round6(w.end - left) }));
     c.words = c.words.filter((w: any) => w.start < left);
   }
-  if (!tr.magnetic) right.start = round6(t);
+  placeAt(tl, tr, right, t);
   tr.clips.splice(ci + 1, 0, right);
   renameNested(tl, right);
   // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
@@ -427,6 +442,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
       ar.id = newId(tl, "aud");
       ar.in = round6(parseTime(au.in ?? 0) + (t - as) * asp);
       ar.duration = round6(ae - t); au.duration = round6(t - as);
+      dropFollow(au); dropFollow(ar);
       ar.attach_to = right.id; ar.offset = 0; ar.name = `audio of ${right.id}`;
       delete au.fade_out; delete ar.fade_in;
       rightKfs(ar, t - as);
@@ -455,10 +471,8 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];
     dropFollow(fz);
-    if (!tr.magnetic) {
-      fz.start = round6(t);
-      for (const x of tr.clips) if (clipStart(x) >= t - 1e-6) x.start = round6(clipStart(x) + clipDur(fz));
-    }
+    placeAt(tl, tr, fz, t);
+    if (!tr.magnetic) shiftClips(tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz));
     tr.clips.splice(ci + 1, 0, fz);
     resolve(tl);
     return { id: fz.id, start: fz.start, duration: fz.duration };
@@ -470,6 +484,7 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time).", { id: "c
   delete dup.group; // a copy is not part of the expanded compound's regroup set
   const dest = a.track ? findTrack(tl, a.track) : tr;
   place(tl, dest, dup, dest.magnetic ? (dest === tr ? { after: c.id } : {}) : { at: a.at ?? clipEnd(c) });
+  if (!dest.magnetic) placeAt(tl, dest, dup, clipStart(dup));
   renameNested(tl, dup);
   resolve(tl);
   return { id: dup.id, track: dest.id, start: dup.start };
@@ -615,7 +630,7 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
       const nc: Clip = structuredClone(c);
       if (j) { nc.id = newId(tl, PREFIX[c.type]); delete nc.transition; delete nc.enter; }
       nc.in = round6(s); nc.duration = round6((e - s) / speed); delete nc.keyframes; dropFollow(nc);
-      if (!tr.magnetic) { nc.start = round6(t); t += nc.duration as number; }
+      placeAt(tl, tr, nc, t); t += nc.duration as number;
       tr.clips.splice(ci + j, 0, nc);
       ids.push(nc.id);
     });

@@ -362,6 +362,94 @@ console.log("match_duration by clip reference");
   }
 }
 
+console.log("pieces of an attached clip keep their place and length");
+{
+  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  const valid = (name: string, t: any) => check(`${name}: validation is clean`, !validate(t).some((i: any) => i.level === "error"), validate(t));
+  const base = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.i = { path: "/none.png", kind: "image" };
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false };
+    t.assets.av = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: true };
+    return applyOps(null as any, t, [
+      { op: "add_clip", track: "main", asset: "i", id: "img1", duration: 4 },
+      { op: "add_clip", track: "main", asset: "i", id: "img2", duration: 2 },
+      { op: "add_clip", track: "overlay", asset: "v", id: "ovl", attach_to: "img1", offset: 0.5, in: 1, duration: 2 },
+    ])[0];
+  };
+  // plain duration
+  let [t, [sp]] = run(base(), [{ op: "split_clip", id: "ovl", at: 1.5 }]);
+  let [l, r] = [at(t, sp.left), at(t, sp.right)];
+  check("split of an attached clip: the left keeps its place, the right starts at the split time", near(l.start, 0.5) && near(r.start, 1.5) && near(l.offset, 0.5) && near(r.offset, 1.5), { l, r });
+  check("  both stay attached to the same target and the lengths sum to the original", l.attach_to === "img1" && r.attach_to === "img1" && near(l.duration + r.duration, 2) && near(r.in, 2), { l, r });
+  valid("split of an attached clip", t);
+  // retime the target
+  const [t3] = run(t, [{ op: "move_clip", id: "img1", index: 1 }]);
+  check("moving the target moves both halves and keeps their gap", near(at(t3, "img1").start, 2) && near(at(t3, sp.left).start, 2.5) && near(at(t3, sp.right).start, 3.5), [at(t3, sp.left), at(t3, sp.right)]);
+  valid("retimed target", t3);
+  // computed length
+  const [tm, [, spm]] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "ovl", at: 2 }]);
+  [l, r] = [at(tm, "ovl"), at(tm, spm.right)];
+  check("split with a computed length: plain durations that sum to the original, no match_duration/end_offset", near(l.duration, 1.5) && near(r.duration, 1.5) && near(l.start, 0.5) && near(r.start, 2) && [l, r].every((c: any) => c.match_duration === undefined && c.end_offset === undefined), { l, r });
+  valid("split with a computed length", tm);
+  const [tm3] = run(tm, [{ op: "update_clip", id: "img1", duration: 6 }]);
+  check("  a later change of the target leaves the lengths alone", near(at(tm3, "ovl").duration, 1.5) && near(at(tm3, spm.right).duration, 1.5), [at(tm3, "ovl"), at(tm3, spm.right)]);
+  // freeze_frame (a later clip attached to a main clip, and a clip attached to that one, shift too)
+  const fbase = run(base(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "tail", attach_to: "img2", offset: 0, duration: 1 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "sub", attach_to: "tail", offset: 0.25, duration: 0.5 },
+  ])[0];
+  check("freeze setup: the later clips sit where expected", near(at(fbase, "tail").start, 4) && near(at(fbase, "sub").start, 4.25), [at(fbase, "tail"), at(fbase, "sub")]);
+  const [tf, rf] = run(fbase, [{ op: "freeze_frame", id: "ovl", at: 1.5, duration: 1 }]);
+  const fz = at(tf, rf[0].id), fl = at(tf, "ovl"), fr = tf.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "video" && c.id !== "ovl" && !c.freeze);
+  check("freeze_frame on an attached clip: the freeze clip is attached and placed at the freeze time", fz.attach_to === "img1" && near(fz.start, 1.5) && near(fz.duration, 1) && near(fl.start, 0.5) && near(fl.duration, 1), { fz, fl });
+  check("  the right part sits after the freeze", fr && near(fr.start, 2.5) && near(fr.duration, 1) && fr.attach_to === "img1", fr);
+  check("  later attached clips move by their offset, and a clip attached to one of them follows once", near(at(tf, "tail").start, 5) && near(at(tf, "sub").start, 5.25), [at(tf, "tail"), at(tf, "sub")]);
+  valid("freeze_frame on an attached clip", tf);
+  // ripple removal and duplicate: a start written on an attached clip is overwritten by resolve
+  const [tr0] = run(base(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 2.5, duration: 0.5 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "tail", attach_to: "img2", offset: 0, duration: 1 },
+  ]);
+  const [tr1] = run(tr0, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  check("remove_clip ripple moves a later attached clip by its offset", near(at(tr0, "tail").start, 4) && near(at(tr1, "tail").start, 3.5), [at(tr0, "tail"), at(tr1, "tail")]);
+  valid("remove_clip ripple", tr1);
+  const [td, [dp]] = run(base(), [{ op: "duplicate_clip", id: "ovl" }]);
+  check("duplicate_clip of an attached clip lands after the original, attached to the same target", at(td, dp.id).attach_to === "img1" && near(at(td, dp.id).start, 2.5) && near(at(td, dp.id).offset, 2.5), at(td, dp.id));
+  valid("duplicate_clip of an attached clip", td);
+  // detached audio
+  const abase = run(base(), [{ op: "add_clip", track: "main", asset: "av", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }])[0];
+  const aud = abase.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").id;
+  check("audio setup: attached to the video", at(abase, aud).attach_to === "vid1" && near(at(abase, aud).start, 6) && at(abase, aud).offset === 0, at(abase, aud));
+  const [ta, [sa]] = run(abase, [{ op: "split_clip", id: aud, at: 7 }]);
+  [l, r] = [at(ta, sa.left), at(ta, sa.right)];
+  check("splitting the audio clip directly: the right half stays attached to the video at its place", l.attach_to === "vid1" && r.attach_to === "vid1" && near(l.start, 6) && near(r.start, 7) && near(r.offset, 1) && near(l.duration + r.duration, 2) && near(r.in, 2), { l, r });
+  valid("split of an attached audio clip", ta);
+  const [tv, [sv]] = run(abase, [{ op: "split_clip", id: "vid1", at: 7 }]);
+  const vr = at(tv, sv.right), al = at(tv, aud), ar = tv.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === sv.right);
+  check("splitting the video: its audio splits with it, the right audio follows the right picture", ar && near(al.start, 6) && near(al.duration, 1) && near(ar.start, 7) && near(ar.duration, 1) && near(vr.start, 7) && near(ar.in, 2), { al, ar, vr });
+  valid("split of a video with detached audio", tv);
+  const [tj, [, sj]] = run(abase, [{ op: "j_cut", id: "vid1", seconds: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]);
+  const aj = tj.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio").sort((x: any, y: any) => x.start - y.start);
+  check("splitting a video with J-cut audio: the audio is split at the same time", aj.length === 2 && near(aj[0].start, 5.5) && near(aj[0].duration, 1.5) && near(aj[1].start, 7) && near(aj[1].duration, 1) && aj[1].attach_to === sj.right, aj);
+  valid("split of a J-cut video", tj);
+  // remove_silence on an attached clip (real media with a silent stretch)
+  const S = join(tmp, "proj-attached");
+  api.create(S, { preset: "720p" });
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6,volume=enable='between(t,2,3.5)':volume=0", "-shortest", "-pix_fmt", "yuv420p", join(m, "gap.mp4"));
+  await api.apply(S, [
+    { op: "add_clip", track: "main", src: join(m, "p.png"), id: "bg", duration: 8 },
+    { op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "talk", attach_to: "bg", offset: 1, match_duration: true, end_offset: 1 },
+  ]);
+  const rs = (await api.apply(S, [{ op: "remove_silence", id: "talk" }])).results[0];
+  const si = api.info(S, "json");
+  const segs = si.timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => rs.segments.includes(c.id));
+  check("remove_silence on an attached clip: one segment per speech part", segs.length === 2, { rs, segs });
+  check("  the segments stay attached, each at its own place, with plain durations", segs.length === 2 && segs.every((c: any) => c.attach_to === "bg" && c.match_duration === undefined && c.end_offset === undefined) && near(segs[0].start, 1) && near(segs[1].start, 1 + segs[0].duration) && near(segs[1].offset, 1 + segs[0].duration), segs);
+  check("  and the project validates", si.errors === 0, si.issues);
+}
+
 console.log("validity + render");
 const inf = api.info(P);
 check("timeline valid", inf.errors === 0, inf.issues);
