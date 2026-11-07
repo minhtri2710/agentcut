@@ -18,6 +18,9 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Connected clips (Final Cut): attach_to "vid3" (or "main#2" = 3rd clip of main, "main#-1" = last) + offset (+ match_duration,
   end_offset) pins a title/overlay to a clip: retiming (snap_to_beats, trims, reorders) keeps it in sync; removing the
   clip removes what is attached. PREFER this over absolute 'at' for anything that belongs to a specific shot.
+- Length that follows a clip: match_duration "voice#-1" (a clip id or track#n) sets duration = that clip's duration - end_offset
+  (negative holds longer), keeps the start (so it works on the magnetic main track) and follows later changes to that clip.
+  Removing the followed clip keeps the length as a plain number; splitting a follower keeps both halves' lengths.
 
 ## Fastest path: templates
 {"op":"apply_template","name":"promo","media":["/abs/a.mp4","/abs/b.jpg","/abs/c.mp4"],"hook":"Ra mắt sản phẩm","points":["Nhẹ hơn 30%","Pin 2 ngày"],"cta":"Mua ngay","music":"/abs/song.mp3"}
@@ -54,6 +57,7 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 {"op":"add_clip","track":"main","src":"/abs/photo.jpg","duration":3,"motion":"ken_burns","transition":{"type":"zoom_blur","duration":0.4}}
 {"op":"add_clip","track":"text","text":"HOOK","at":0.3,"duration":2.5,"preset":"title_bold","position":"top","margin":"14%"}
 {"op":"add_clip","track":"text","text":"Sale 30%","attach_to":"main#2","offset":0.2,"match_duration":true,"preset":"subtitle_box","y":"62%"}
+{"op":"update_clip","id":"img2","match_duration":"voice#-1","end_offset":-0.3}                   img2 lasts as long as the last voice clip, plus 0.3 s
 {"op":"add_clip","track":"text","text":"🔥 HOT","at":1,"duration":2,"preset":"sticker","position":"top_right"}      emoji ok
 {"op":"add_clip","track":"overlay","src":"/abs/logo.png","until_end":true,"size":["18%","18%"],"fit":"contain","position":"top_right"}
 {"op":"add_clip","track":"overlay","src":"/abs/face.mp4","at":3,"duration":5,"size":[420,420],"mask":{"shape":"circle","feather":6},"position":"bottom_left","shadow":true,"border":{"color":"white","width":6}}

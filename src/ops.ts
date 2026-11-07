@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -207,8 +207,30 @@ function resolveRef(tl: Timeline, ref: string): string {
   return c.id;
 }
 
+/** A match_duration clip reference ("<id>" or "track#n") -> the id of the clip to follow; bad_ref if it is unknown, the clip itself, a cycle, or a length that is not its own. */
+function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
+  const hint = "name a clip on this timeline: an id or a ref like 'voice#-1'";
+  let t: Clip;
+  try { t = findClip(tl, resolveRef(tl, ref))[2]; }
+  catch (e) { if (e instanceof EditError) throw new EditError(`match_duration '${ref}': ${e.message}`, "bad_ref", e.hint ?? hint); throw e; }
+  const bad = (why: string, fix: string) => new EditError(`match_duration '${ref}': ${why}`, "bad_ref", fix);
+  if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
+  if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
+  if (t.match_duration === true) throw bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
+  const clips = tl.tracks.flatMap((x) => x.clips);
+  for (let x: Clip | undefined = t, seen = new Set<Clip>(); c && typeof x?.match_duration === "string" && !seen.has(x); x = clips.find((y) => y.id === x!.match_duration)) {
+    seen.add(x);
+    if (x.match_duration === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
+  }
+  return t.id;
+}
+
+/** a clip that followed another clip's duration becomes a plain-duration clip (its resolved length stays) */
+function dropFollow(c: Clip) { if (typeof c.match_duration === "string") { delete c.match_duration; delete c.end_offset; } }
+
 function addClip(p: Project, tl: Timeline, a: Dict): Dict {
   if (a.attach_to) { a = { ...a, attach_to: resolveRef(tl, a.attach_to) }; findClip(tl, a.attach_to); }
+  if (typeof a.match_duration === "string") a = { ...a, match_duration: followTarget(tl, null, a.match_duration) };
   if (!a.track) {
     const isAudio = a.type === "audio" || (a.src && AUDIO_EXT.has(extname(a.src).toLowerCase()));
     const t = a.words || a.srt ? "captions" : "text" in a ? "text" : isAudio ? "music" : "main";
@@ -251,6 +273,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     const patch: Dict = { ...(a.set ?? Object.fromEntries(Object.entries(a).filter(([k]) => k !== "op" && k !== "id"))) };
     if (patch.src) { patch.asset = importAsset(p, tl, patch.src); delete patch.src; }
     if (patch.attach_to) patch.attach_to = resolveRef(tl, patch.attach_to);
+    if (typeof patch.match_duration === "string") patch.match_duration = followTarget(tl, c, patch.match_duration);
     if (patch.srt) patch.srt = absPath(patch.srt);
     for (const k of ["id", "type"]) if (k in patch && patch[k] !== c[k]) throw new EditError(`cannot change clip '${k}' with update_clip`, "immutable", "remove the clip and add a new one");
     if ("start" in patch && tr.magnetic) throw new EditError("start is computed on magnetic tracks", "magnetic", "use move_clip with index, or use a non-magnetic track");
@@ -266,7 +289,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     return { id: c.id, start: c.start, duration: c.duration };
   });
 
-op("remove_clip", "Remove a clip (and clips attached to it). Magnetic tracks close the gap; ripple=true does it on other tracks too.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
+op("remove_clip", "Remove a clip (and clips attached to it; clips whose match_duration names it keep their last length as a plain number, listed in unlinked_durations). Magnetic tracks close the gap; ripple=true does it on other tracks too.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
   const [tr, ci, c] = findClip(tl, a.id);
   tr.clips.splice(ci, 1);
   const attached: string[] = [];
@@ -276,8 +299,10 @@ op("remove_clip", "Remove a clip (and clips attached to it). Magnetic tracks clo
     attached.push(x.id); return false;
   });
   if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); for (const x of tr.clips) if (clipStart(x) >= s) x.start = round6(Math.max(0, clipStart(x) - d)); }
+  const gone = new Set([c.id, ...attached]);
+  const unlinked = unfollow(tl.tracks.flatMap((t) => t.clips), (id) => gone.has(id)); // a follower keeps its last length; it is not removed
   resolve(tl);
-  return { removed: c.id, removed_attached: attached };
+  return { removed: c.id, removed_attached: attached, unlinked_durations: unlinked };
 });
 
 op("move_clip", "Move a clip in time and/or to another track.", { id: "clip id", at: "start (non-magnetic)", shift: "+/- seconds", track: "destination", index: "magnetic position" }, (p, tl, a) => {
@@ -323,7 +348,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
     return { ...out, start: c.start };
   });
 
-/** Give every clip nested in a copied compound a fresh id (ids are unique project-wide); fixes nested attach_to. */
+/** Give every clip nested in a copied compound a fresh id (ids are unique project-wide); fixes nested attach_to and match_duration references. */
 function renameNested(tl: Timeline, c: Clip) {
   if (c.type !== "compound") return;
   const map = new Map<string, string>();
@@ -332,7 +357,7 @@ function renameNested(tl: Timeline, c: Clip) {
     if (x.type === "compound") walk(x.tracks ?? []);
   } };
   walk(c.tracks ?? []);
-  const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (x.type === "compound") fix(x.tracks ?? []); } };
+  const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (typeof x.match_duration === "string" && map.has(x.match_duration)) x.match_duration = map.get(x.match_duration); if (x.type === "compound") fix(x.tracks ?? []); } };
   fix(c.tracks ?? []);
 }
 
@@ -360,6 +385,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   const right: Clip = structuredClone(c);
   right.id = newId(tl, PREFIX[c.type]);
   c.duration = round6(left); right.duration = round6(d - left);
+  dropFollow(c); dropFollow(right); // both halves keep their split lengths
   if (c.type === "compound") right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
   if (c.type === "video" || c.type === "audio") {
     if (c.reverse) c.in = round6(parseTime(c.in ?? 0) + (d - left) * (Number(c.speed ?? 1) || 1)), right.in = round6(parseTime(right.in ?? 0));
@@ -411,6 +437,7 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const [tr, ci] = findClip(tl, insertAfter.id);
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];
+    dropFollow(fz);
     if (!tr.magnetic) {
       fz.start = round6(t);
       for (const x of tr.clips) if (clipStart(x) >= t - 1e-6) x.start = round6(clipStart(x) + clipDur(fz));
@@ -569,7 +596,7 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
     segs.forEach(([s, e], j) => {
       const nc: Clip = structuredClone(c);
       if (j) { nc.id = newId(tl, PREFIX[c.type]); delete nc.transition; delete nc.enter; }
-      nc.in = round6(s); nc.duration = round6((e - s) / speed); delete nc.keyframes;
+      nc.in = round6(s); nc.duration = round6((e - s) / speed); delete nc.keyframes; dropFollow(nc);
       if (!tr.magnetic) { nc.start = round6(t); t += nc.duration as number; }
       tr.clips.splice(ci + j, 0, nc);
       ids.push(nc.id);

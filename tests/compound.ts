@@ -235,6 +235,36 @@ await twoLevel("two-level storyline", [col("main", "x1", "red", { duration: 1 })
 const bp = await failure(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz3", at: 8, duration: 1, group: { id: "G", track: "t", parent: { id: "P" } } }]));
 check("a stamp whose parent lacks a track is rejected, at group.parent.track", bp?.code === "validation_failed" && JSON.stringify(bp.details?.issues).includes("group.parent.track"), bp && [bp.code, bp.details]);
 
+console.log("match_duration by clip reference");
+{
+  const S = join(tmp, "by-reference");
+  api.create(S, { preset: "720p" });
+  await api.apply(S, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("ov", "tA", "green", { at: 0, duration: 1 }), col("ov", "tB", "white", { at: 0, duration: 1 }),
+    col("ov2", "tC", "white", { at: 0, duration: 1 }), col("ov3", "vo", "white", { at: 0, duration: 1.5 }),
+    { op: "update_clip", id: "tA", match_duration: "m1", end_offset: 0.5 }, { op: "update_clip", id: "tB", match_duration: "vo" }, { op: "update_clip", id: "tC", match_duration: "m1" }]);
+  const flat = () => api.openProject(S).load().tracks.flatMap((t: any) => t.clips) as any[];
+  const byId = (id: string) => flat().find((c: any) => c.id === id);
+  const k = (await api.apply(S, [{ op: "make_compound", ids: ["m1", "tA", "tB"], id: "K" }])).results[0];
+  const nested = byId("K").tracks.flatMap((t: any) => t.clips) as any[];
+  const nc = (id: string) => nested.find((c: any) => c.id === id);
+  check("make_compound: a reference inside the set stays", nc("tA").match_duration === "m1" && nc("tA").end_offset === 0.5 && nc("tA").duration === 1.5, nc("tA"));
+  check("make_compound: a reference that leaves the set is frozen to its length", nc("tB").match_duration === undefined && nc("tB").duration === 1.5 && JSON.stringify(k.unlinked_durations?.slice().sort()) === '["tB","tC"]', { k, tB: nc("tB") });
+  check("make_compound: a follower outside the set of a clip inside it is frozen", byId("tC").match_duration === undefined && byId("tC").duration === 2, byId("tC"));
+  const dup = (await api.apply(S, [{ op: "duplicate_clip", id: "K" }])).results[0];
+  const dn = byId(dup.id).tracks.flatMap((t: any) => t.clips) as any[];
+  const dA = dn.find((c: any) => c.match_duration), dM = dn.find((c: any) => c.type === "color" && c.id !== dA?.id);
+  check("duplicate_clip of a compound remaps a reference inside it", !!dA && dA.id !== "tA" && dM.id !== "m1" && dA.match_duration === dM.id, dn);
+  await api.apply(S, [{ op: "remove_clip", id: dup.id }]);
+  await api.apply(S, [col("ov4", "tD", "white", { at: 0, duration: 1 }), { op: "update_clip", id: "tD", match_duration: "K" }]);
+  check("a follower of the compound itself follows its length", byId("tD").duration === 2, byId("tD"));
+  const ex = (await api.apply(S, [{ op: "expand_compound", id: "K" }])).results[0];
+  check("expand_compound: a reference inside the set stays, on the same ids", byId("tA").match_duration === "m1" && byId("tA").duration === 1.5 && !!byId("m1"), byId("tA"));
+  check("expand_compound: a follower of the compound is frozen and listed", byId("tD").match_duration === undefined && byId("tD").duration === 2 && JSON.stringify(ex.unlinked_durations) === '["tD"]', { ex, tD: byId("tD") });
+  await api.apply(S, [{ op: "update_clip", id: "m1", duration: 3 }]);
+  check("expand_compound: the kept reference still follows", byId("tA").duration === 2.5, byId("tA"));
+  check("the by-reference project validates", api.info(S, "json").errors === 0, api.info(S, "json").issues);
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

@@ -1,14 +1,15 @@
 // Compound clips (Final Cut "compound clip" / CapCut "group"): make_compound, expand_compound.
 import {
   allClips, type Clip, clipDur, clipEnd, clipStart, EditError, findClip, iterClips, newId, normAnim, parseTime, resolve, round6,
-  type Timeline, type Track,
+  type Timeline, type Track, unfollow,
 } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 
 const EPS = 1e-6;
 const TRACK_PROPS = ["name", "role", "duck", "volume", "muted", "hidden", ...AUDIO_FX_KEYS];
-const detach = (c: Clip) => { for (const k of ["attach_to", "offset", "match_duration", "end_offset"]) delete c[k]; };
+/** Cut a connected clip loose. A match_duration that names a clip is not an attachment: it stays (see unfollow). */
+const detach = (c: Clip) => { delete c.attach_to; delete c.offset; if (c.match_duration === true) { delete c.match_duration; delete c.end_offset; } };
 const gap = (d: number): Clip => ({ id: "", type: "gap", duration: round6(Math.max(0.001, d)) });
 
 /** Pin a magnetic clip's transition to its resolved overlap td, so a neighbour with another duration cannot move it. */
@@ -81,7 +82,7 @@ export function registerCompoundOps(h: OpHelpers) {
       const s0 = Math.min(...picked.map(clipStart)), e0 = Math.max(...picked.map(clipEnd));
       const cmp: Clip = { id: a.id || newId(tl, "cmp"), type: "compound", ...(a.name ? { name: a.name } : {}), duration: round6(e0 - s0), tracks: [] };
       if (regroup?.parent) cmp.group = structuredClone(regroup.parent);
-      const gaps: Clip[] = [], lost: string[] = [];
+      const gaps: Clip[] = [], lost: string[] = [], unlinked: string[] = [];
       for (const tr of tl.tracks) {
         const idx = tr.clips.flatMap((c, i) => (sel.has(c.id) ? [i] : []));
         if (!idx.length) continue;
@@ -93,6 +94,7 @@ export function registerCompoundOps(h: OpHelpers) {
           n.start = round6(clipStart(n) - s0);
           delete n.until_end; delete n.group;
           if (tr.magnetic || (n.attach_to && !sel.has(n.attach_to))) detach(n);
+          unlinked.push(...unfollow([n], (id) => !sel.has(id))); // a length that follows a clip outside the set is frozen
           return n;
         });
         if (clips[0].transition) { lost.push(clips[0].id); delete clips[0].transition; } // first nested clip has no previous clip
@@ -117,9 +119,10 @@ export function registerCompoundOps(h: OpHelpers) {
       fillGaps(tl, gaps);
       const detached: string[] = [];
       for (const [, , , c] of iterClips(tl)) if (c.attach_to && sel.has(c.attach_to)) { detach(c); detached.push(c.id); }
+      unlinked.push(...unfollow([...iterClips(tl)].map((x) => x[3]), (id) => sel.has(id)));
       resolve(tl);
       return { id: cmp.id, track: home.id, start: cmp.start, duration: cmp.duration, clips: ids, tracks: cmp.tracks.map((t: Track) => t.id),
-        detached, gaps: gaps.map((g) => g.id), ...(lost.length ? { dropped_transitions: lost } : {}) };
+        detached, unlinked_durations: unlinked, gaps: gaps.map((g) => g.id), ...(lost.length ? { dropped_transitions: lost } : {}) };
     });
 
   h.op("expand_compound", "Break a compound clip apart: its nested clips go back onto the same-id tracks (created if missing) at their current " +
@@ -133,7 +136,7 @@ export function registerCompoundOps(h: OpHelpers) {
       const w0 = parseTime(c.in ?? 0), dur = clipDur(c), base = clipStart(c), next = home.clips[ci + 1];
       if (home.magnetic) pin(next, base + dur - clipStart(next ?? c));
       home.clips.splice(ci, 1);
-      const placed = new Map<string, Clip>(), dropped: string[] = [], created: string[] = [], gaps: Clip[] = [];
+      const placed = new Map<string, Clip>(), dropped: string[] = [], created: string[] = [], gaps: Clip[] = [], unlinked: string[] = [];
       const stamp = () => ({ id: c.id, ...(c.name ? { name: c.name } : {}), track: home.id, ...(c.group ? { parent: structuredClone(c.group) } : {}) }); // make_compound from=<id> regroups what carries it
       const lists: [Track, Clip[]][] = [];
       for (const nt of (c.tracks ?? []) as Track[]) {
@@ -151,11 +154,16 @@ export function registerCompoundOps(h: OpHelpers) {
       }
       // connected clips keep their position relative to (possibly trimmed) targets; targets that did not come back -> detach
       for (const n of placed.values()) {
+        if (typeof n.match_duration === "string") { // a followed clip that came back keeps the same length relation after trimming
+          const t = placed.get(n.match_duration);
+          if (!t) unlinked.push(...unfollow([n], () => true));
+          else { const eo = round6(clipDur(t) - clipDur(n)); if (Math.abs(eo) > EPS) n.end_offset = eo; else delete n.end_offset; }
+        }
         if (!n.attach_to) continue;
         const t = placed.get(n.attach_to);
         if (!t) { detach(n); continue; }
         const off = (n.offset = round6(clipStart(n) - clipStart(t)));
-        if (n.match_duration) { const eo = round6(clipDur(t) - off - clipDur(n)); if (eo < -EPS) { delete n.match_duration; delete n.end_offset; } else n.end_offset = eo; }
+        if (n.match_duration === true) { const eo = round6(clipDur(t) - off - clipDur(n)); if (eo < -EPS) { delete n.match_duration; delete n.end_offset; } else n.end_offset = eo; }
       }
       for (const [nt, clips] of lists) {
         let tr = tl.tracks.find((t) => t.id === nt.id);
@@ -190,7 +198,8 @@ export function registerCompoundOps(h: OpHelpers) {
       fillGaps(tl, gaps);
       const detached: string[] = [];
       for (const [, , , x] of iterClips(tl)) if (x.attach_to === c.id) { detach(x); detached.push(x.id); }
+      unlinked.push(...unfollow([...iterClips(tl)].map((x) => x[3]), (id) => id === c.id));
       resolve(tl);
-      return { expanded: c.id, ids: [...placed.keys()], gaps: gaps.map((g) => g.id), dropped, created_tracks: created, detached };
+      return { expanded: c.id, ids: [...placed.keys()], gaps: gaps.map((g) => g.id), dropped, created_tracks: created, detached, unlinked_durations: unlinked };
     });
 }

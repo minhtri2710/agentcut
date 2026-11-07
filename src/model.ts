@@ -129,8 +129,8 @@ export const COMMON_FIELDS: F = {
   until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark)"],
   attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
   offset: [T("number", "string"), "seconds after the attach_to clip's start (default 0)"],
-  match_duration: [T("boolean"), "with attach_to: duration = target duration - offset - end_offset"],
-  end_offset: [T("number", "string"), "with match_duration: stop this many seconds before the target ends"],
+  match_duration: [T("boolean", "string"), "true with attach_to: duration = target duration - offset - end_offset; or a clip reference (\"<id>\" or \"track#n\"): duration = that clip's duration - end_offset, the start is untouched (works on magnetic tracks) and follows later changes to that clip"],
+  end_offset: [T("number", "string"), "with match_duration: stop this many seconds before the target ends (negative holds longer)"],
 };
 export const VISUAL_FIELDS: F = {
   x: [T("number", "string"), "centre x in px or '50%'"],
@@ -422,6 +422,7 @@ export const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
 
 export function resolve(tl: Timeline): Timeline {
   for (const [, , , c] of iterClips(tl)) if (c.type === "compound" && Array.isArray(c.tracks)) resolve(subTimeline(tl, c));
+  resolveFollowers(tl);
   resolveMagnetic(tl);
   resolveAttached(tl);
   // until_end clips stretch to the end of everything else
@@ -435,6 +436,28 @@ export function resolve(tl: Timeline): Timeline {
   return tl;
 }
 
+/** match_duration naming a clip: duration = that clip's duration - end_offset (same timeline level). Chains settle in one pass per follower; a cycle (invalid) cannot loop. */
+function resolveFollowers(tl: Timeline) {
+  const byId = new Map<string, Clip>(), followers: Clip[] = [];
+  for (const [, , , c] of iterClips(tl)) { byId.set(c.id, c); if (typeof c.match_duration === "string") followers.push(c); }
+  for (let pass = 0, moved = true; moved && pass <= followers.length; pass++) {
+    moved = false;
+    for (const c of followers) {
+      const t = byId.get(c.match_duration);
+      if (!t || t === c) continue;
+      const d = round6(Math.max(0.1, clipDur(t) - parseTime(c.end_offset ?? 0)));
+      if (d !== c.duration) { c.duration = d; moved = true; }
+    }
+  }
+}
+
+/** Stop following: clips whose match_duration names a clip for which gone(id) is true keep the length they last resolved to. Returns their ids. */
+export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): string[] {
+  const out: string[] = [];
+  for (const c of clips) if (typeof c.match_duration === "string" && gone(c.match_duration)) { delete c.match_duration; delete c.end_offset; out.push(c.id); }
+  return out;
+}
+
 function resolveAttached(tl: Timeline) {
   const byId = new Map<string, Clip>();
   for (const [, , , c] of iterClips(tl)) byId.set(c.id, c);
@@ -445,7 +468,7 @@ function resolveAttached(tl: Timeline) {
       if (!t || t === c) continue;
       const off = parseTime(c.offset ?? 0);
       c.start = round6(Math.max(0, clipStart(t) + off));
-      if (c.match_duration) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
+      if (c.match_duration === true) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
     }
   }
   for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
@@ -660,6 +683,18 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         const exists = tl.tracks.some((t2) => t2.clips.some((x) => x.id === c.attach_to));
         if (!exists) issues.push({ level: "error", path: `${p}.attach_to`, message: `attached to missing clip '${c.attach_to}'`, hint: "attach to an existing clip id, or remove attach_to" });
         if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "attach_to is ignored on magnetic tracks (their starts are computed)" });
+      }
+      if (typeof c.match_duration === "string") {
+        const at = `${p}.match_duration`, clips = tl.tracks.flatMap((x) => x.clips ?? []), byId = (id: string) => clips.find((x) => x.id === id);
+        const t = byId(c.match_duration), bad = (message: string, hint: string) => issues.push({ level: "error", path: at, message, hint });
+        if (!t) bad(`follows missing clip '${c.match_duration}'`, "name an existing clip id, or set match_duration to true or remove it");
+        else if (t === c) bad("a clip cannot follow its own duration", "name another clip");
+        else if (t.until_end) bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
+        else if (t.match_duration === true) bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
+        else for (let x: Clip | undefined = t, seen = new Set<Clip>(); typeof x?.match_duration === "string" && !seen.has(x); x = byId(x.match_duration)) {
+          seen.add(x);
+          if (x.match_duration === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }
+        }
       }
       if (c.transition && ci > 0 && !tr.magnetic && !(prevEnd !== null && start < prevEnd - 1e-6)) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
       if (!tr.magnetic && kind !== "audio" && prevEnd !== null && start < prevEnd - 1e-6 && !c.transition)

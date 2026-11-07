@@ -268,6 +268,7 @@ export function summarize(tl: Timeline): string {
       if (c.pending) x.push(`pending=${Object.keys(c.pending).join(",")}`);
       if (c.remove_background) x.push("remove_background");
       if (c.attach_to) x.push(`attached→${c.attach_to}${c.offset ? `+${c.offset}` : ""}`);
+      if (typeof c.match_duration === "string") x.push(`length→${c.match_duration}${c.end_offset ? `-${c.end_offset}` : ""}`);
       if (c.enabled === false) x.push("DISABLED");
       L.push(`      ${s.toFixed(2).padStart(7)}–${(s + d).toFixed(2).padStart(7)}  ${c.id.padEnd(8)} ${desc}${x.length ? `  [${x.join(" ")}]` : ""}`);
     }

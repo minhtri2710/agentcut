@@ -10,7 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { applyOps } = await import("../src/ops.ts");
-const { newTimeline } = await import("../src/model.ts");
+const { newTimeline, validate } = await import("../src/model.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -139,6 +139,127 @@ console.log("reverse / pure timeline");
   const au = out.tracks.flatMap((tr) => tr.clips).find((c) => c.id === res[0].audio)!;
   check("reverse j_cut keeps in, l_cut lowers in", au.reverse && near(au.in as number, 3) && near(au.duration as number, 4) && near(au.start as number, 1), au);
   check("volume keyframes shift with the head", near(au.keyframes.volume[0][0], 1) && near(au.keyframes.volume[1][0], 2), au.keyframes);
+}
+
+console.log("match_duration by clip reference");
+{
+  const base = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.i = { path: "/none.png", kind: "image" };
+    t.assets.s = { path: "/none.wav", kind: "audio", duration: 20 };
+    return applyOps(null as any, t, [
+      { op: "add_clip", track: "main", asset: "i", id: "img1", duration: 2 },
+      { op: "add_clip", track: "main", asset: "i", id: "img2", duration: 2 },
+      { op: "add_clip", track: "main", asset: "i", id: "img3", duration: 2 },
+      { op: "add_clip", track: "voice", asset: "s", type: "audio", id: "vo1", at: 0, duration: 3 },
+    ])[0];
+  };
+  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  let t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "voice#-1" }])[0];
+  check("a reference sets the duration and keeps the magnetic start", at(t, "img2").duration === 3 && at(t, "img2").start === 2 && at(t, "img3").start === 5 && at(t, "img2").match_duration === "vo1", at(t, "img2"));
+  t = run(t, [{ op: "update_clip", id: "vo1", duration: 5 }])[0];
+  check("a later change to the target updates the clip length", at(t, "img2").duration === 5 && at(t, "img3").start === 7, [at(t, "img2"), at(t, "img3")]);
+  t = run(t, [{ op: "update_clip", id: "img2", end_offset: -0.5 }])[0];
+  check("negative end_offset holds longer", near(at(t, "img2").duration, 5.5) && near(at(t, "img3").start, 7.5), at(t, "img2"));
+  t = run(t, [{ op: "update_clip", id: "img2", end_offset: 1 }])[0];
+  check("end_offset stops before the target ends", near(at(t, "img2").duration, 4) && near(at(t, "img3").start, 6), at(t, "img2"));
+  t = run(t, [{ op: "update_clip", id: "img2", match_duration: null, end_offset: null }])[0];
+  check("null un-follows and keeps the length", at(t, "img2").match_duration === undefined && near(at(t, "img2").duration, 4), at(t, "img2"));
+  t = run(base(), [{ op: "add_clip", track: "main", asset: "i", id: "img4", match_duration: "vo1", end_offset: 1 }])[0];
+  check("add_clip takes a reference", at(t, "img4").duration === 2 && at(t, "img4").start === 6, at(t, "img4"));
+  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.5, match_duration: "vo1" }])[0];
+  check("a reference with attach_to: start from the attachment, length from the reference", near(at(t, "ovl").start, 0.5) && at(t, "ovl").duration === 3, at(t, "ovl"));
+
+  // a chain, listed in the opposite order
+  t = run(base(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "cA", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", asset: "i", id: "cB", at: 0, duration: 1 },
+    { op: "update_clip", id: "cA", match_duration: "cB", end_offset: 0.5 }, { op: "update_clip", id: "cB", match_duration: "vo1", end_offset: 0.5 },
+  ])[0];
+  check("a chain resolves", near(at(t, "cB").duration, 2.5) && near(at(t, "cA").duration, 2), [at(t, "cA"), at(t, "cB")]);
+  t = run(t, [{ op: "update_clip", id: "vo1", duration: 6 }])[0];
+  check("changing the end of the chain updates its start", near(at(t, "cB").duration, 5.5) && near(at(t, "cA").duration, 5), [at(t, "cA"), at(t, "cB")]);
+
+  // bad references: bad_ref, nothing written
+  const Q = join(tmp, "proj-ref");
+  api.create(Q, { preset: "720p" });
+  await api.apply(Q, [
+    { op: "add_clip", track: "main", src: join(m, "p.png"), id: "img1", duration: 2 },
+    { op: "add_clip", track: "main", src: join(m, "p.png"), id: "img2", duration: 2 },
+    { op: "add_clip", track: "overlay", text: "vo", id: "vo1", at: 0, duration: 3 },
+    { op: "add_clip", track: "overlay", text: "x", id: "cA", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", text: "x", id: "cB", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", text: "x", id: "cC", at: 0, duration: 1 },
+    { op: "add_clip", track: "overlay", text: "x", id: "ue", at: 0, until_end: true },
+    { op: "add_clip", track: "text", text: "x", id: "att", attach_to: "img1", offset: 0.1, match_duration: true },
+    { op: "update_clip", id: "cA", match_duration: "cB" }, { op: "update_clip", id: "cB", match_duration: "cC" },
+  ]);
+  const rev = () => api.info(Q, "json").timeline.revision;
+  const r0 = rev();
+  for (const [name, ops] of [
+    ["unknown id", [{ op: "update_clip", id: "img2", match_duration: "nope" }]],
+    ["unknown ref", [{ op: "update_clip", id: "img2", match_duration: "overlay#99" }]],
+    ["unknown track", [{ op: "update_clip", id: "img2", match_duration: "nowhere#0" }]],
+    ["itself", [{ op: "update_clip", id: "img2", match_duration: "img2" }]],
+    ["a 2-cycle", [{ op: "update_clip", id: "cB", match_duration: "cA" }]],
+    ["a 3-cycle", [{ op: "update_clip", id: "cC", match_duration: "cA" }]],
+    ["a cycle inside one batch", [{ op: "update_clip", id: "img2", match_duration: "vo1" }, { op: "update_clip", id: "vo1", match_duration: "img2" }]],
+    ["an until_end target", [{ op: "update_clip", id: "img2", match_duration: "ue" }]],
+    ["an attach-derived target", [{ op: "update_clip", id: "img2", match_duration: "att" }]],
+    ["add_clip, unknown id", [{ op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "nope" }]],
+  ] as [string, any[]][]) {
+    try { await api.apply(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
+    catch (e: any) { check(`${name}: bad_ref, a hint, nothing written`, e.code === "bad_ref" && !!e.hint && rev() === r0, { code: e.code, message: e.message, hint: e.hint }); }
+  }
+  check("the unknown-id hint suggests a name", await api.apply(Q, [{ op: "update_clip", id: "img1", match_duration: "img22" }]).then(() => "", (e: any) => e.hint) === "did you mean 'img2'?");
+  const qi = api.info(Q, "json");
+  await api.apply(Q, [{ op: "update_clip", id: "img2", match_duration: "vo1" }]);
+  const qi2 = api.info(Q, "json");
+  check("project_info shows the resolved duration", qi.errors === 0 && qi2.errors === 0 && qi2.timeline.tracks[0].clips[1].duration === 3 && near(qi2.duration, 5), qi2.timeline.tracks[0].clips);
+
+  // remove_clip of the target
+  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }])[0];
+  let [t2, [rm]] = run(t, [{ op: "remove_clip", id: "vo1" }]);
+  check("remove_clip of the target keeps the follower with a plain duration", at(t2, "img2") && near(at(t2, "img2").duration, 2.5) && at(t2, "img2").match_duration === undefined && at(t2, "img2").end_offset === undefined && JSON.stringify(rm.unlinked_durations) === '["img2"]' && !rm.removed_attached.length, { rm, c: at(t2, "img2") });
+  t = run(base(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "box", at: 0, duration: 1 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "tag", attach_to: "box", offset: 0, duration: 2, at: 0 },
+    { op: "add_clip", track: "main", asset: "i", id: "img4", match_duration: "tag" },
+  ])[0];
+  [t2, [rm]] = run(t, [{ op: "remove_clip", id: "box" }]);
+  check("removing an attached target unlinks its followers too", JSON.stringify(rm.removed_attached) === '["tag"]' && JSON.stringify(rm.unlinked_durations) === '["img4"]' && at(t2, "img4").match_duration === undefined && at(t2, "img4").duration === 2, { rm, c: at(t2, "img4") });
+
+  // split / duplicate
+  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 1 }])[0]; // img2: 2..4 (2 s)
+  let [t3, [sp]] = run(t, [{ op: "split_clip", id: "img2", at: 3 }]);
+  const [l, r] = [at(t3, sp.left), at(t3, sp.right)];
+  check("split of a follower: both halves keep their length and drop the reference", l.duration === 1 && r.duration === 1 && l.match_duration === undefined && r.match_duration === undefined && l.end_offset === undefined && r.end_offset === undefined, { l, r });
+  t3 = run(t3, [{ op: "update_clip", id: "vo1", duration: 9 }])[0];
+  check("  and a later change of the target leaves them alone", at(t3, sp.left).duration === 1 && at(t3, sp.right).duration === 1);
+  [t3, [sp]] = run(t, [{ op: "split_clip", id: "vo1", at: 1.5 }]);
+  check("split of the target: the follower keeps following the left half", at(t3, "img2").match_duration === "vo1" && near(at(t3, "img2").duration, 0.5), at(t3, "img2"));
+  [t3, [sp]] = run(t, [{ op: "duplicate_clip", id: "img2" }]);
+  check("duplicate keeps the reference", at(t3, sp.id).match_duration === "vo1" && at(t3, sp.id).end_offset === 1 && near(at(t3, sp.id).duration, 2), at(t3, sp.id));
+
+  // hand-edited timelines
+  const bad = (name: string, edit: (x: any) => void) => {
+    const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+    edit(x);
+    const e = validate(x).filter((i: any) => i.level === "error" && /<img2>\.match_duration$/.test(i.path));
+    check(`validate: ${name}`, e.length === 1, validate(x).filter((i: any) => i.level === "error"));
+  };
+  bad("a missing clip", (x) => { at(x, "img2").match_duration = "ghost"; });
+  bad("itself", (x) => { at(x, "img2").match_duration = "img2"; });
+  bad("a cycle", (x) => { at(x, "vo1").match_duration = "img2"; at(x, "img2").match_duration = "vo1"; });
+  bad("an until_end target", (x) => { at(x, "vo1").until_end = true; });
+  bad("a match_duration:true target", (x) => { at(x, "vo1").attach_to = "img1"; at(x, "vo1").match_duration = true; });
+  bad("a number", (x) => { at(x, "img2").match_duration = 5; });
+  const ok = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+  check("validate: a good reference is clean", !validate(ok).some((i: any) => i.level === "error"), validate(ok));
+
+  // match_duration:true with attach_to, as before
+  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true, end_offset: 0.2 }])[0];
+  check("match_duration:true with attach_to: target - offset - end_offset", near(at(t, "ovl").duration, 1.5) && near(at(t, "ovl").start, 0.3), at(t, "ovl"));
+  t = run(t, [{ op: "update_clip", id: "img1", duration: 4 }])[0];
+  check("  and it follows the target", near(at(t, "ovl").duration, 3.5), at(t, "ovl"));
 }
 
 console.log("validity + render");
