@@ -175,6 +175,7 @@ export function registerVisionOps(h: OpHelpers) {
       resolve(tl);
       const f = get(tl, a.id), t = get(tl, a.target);
       if (f.id === t.id) throw new EditError("a clip can't track itself", "bad_value", "id = the overlay that moves, target = the video it follows");
+      h.refuseAttachedMagnetic(f, findClip(tl, f.id)[0], f.attach_to ?? t.id);
       if (t.type !== "video") throw new EditError(`target '${t.id}' is a ${t.type} clip; tracking needs a video`, "bad_type");
       plainTarget(t);
       const L = layout(tl, t), { in0, speed } = srcRange(t);

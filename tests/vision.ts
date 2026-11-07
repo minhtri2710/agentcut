@@ -174,6 +174,7 @@ await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 20
 await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [10, 10] }], "bad_value", "box needs 4 numbers");
 await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], tracker: "nope" }], "bad_value", "unknown tracker -> bad_value");
 await fails(Y, [{ op: "track_to", id: "shp1", target: "shp1" }], "bad_value", "self-tracking -> bad_value");
+await fails(Y, [{ op: "add_track", id: "mag", kind: "video", magnetic: true }, { op: "add_clip", track: "mag", type: "shape", shape: "circle", size: [40, 40], fill: "white", duration: 2, id: "shpm" }, { op: "track_to", id: "shpm", target: "vid1", box: [400, 400, 200, 200], at: 1.5 }], "attached_magnetic", "track_to on a follower of a magnetic track -> attached_magnetic");
 
 // on a reframed (panning) target the follower must account for the moving crop window
 // both pending in one batch (new reframe params): track_to waits for the reframe, prepare runs them in order

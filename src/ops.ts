@@ -108,11 +108,12 @@ op("add_track", "Add a track. Later tracks draw on top.",
     return { track: id, index: idx };
   });
 
-op("update_track", "Update track properties (set: {...}).", { id: "track id", set: "fields" }, (p, tl, a) => {
+op("update_track", "Update track properties (set: {...}). magnetic=true is refused while the track holds an attached clip (attached_magnetic).", { id: "track id", set: "fields" }, (p, tl, a) => {
   const tr = findTrack(tl, a.id);
   const patch = { ...(a.set ?? Object.fromEntries(Object.entries(a).filter(([k]) => k !== "op" && k !== "id"))) };
   delete patch.clips;
   deepMerge(tr, patch);
+  if (patch.magnetic) for (const x of tr.clips) refuseAttachedMagnetic(x, tr);
   return { track: tr.id };
 });
 op("remove_track", "Delete a track and its clips.", { id: "track id" }, (p, tl, a) => {
@@ -247,9 +248,9 @@ function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
   else if (!tr.magnetic) piece.start = round6(start);
 }
 
-/** An attached clip cannot sit on a magnetic track: starts there are computed from order, so an offset has no meaning. */
-function refuseAttachedMagnetic(c: Clip, dest: Track) {
-  if (c.attach_to && dest.magnetic) throw new EditError(`'${c.id}' is attached to '${c.attach_to}' and track '${dest.id}' is magnetic`, "attached_magnetic", `update_clip id=${c.id} attach_to=null first, or choose a non-magnetic track`);
+/** An attached clip cannot sit on a magnetic track: starts there are computed from order, so an offset has no meaning. `to`: the target the clip is about to be attached to. */
+function refuseAttachedMagnetic(c: Clip, dest: Track, to = c.attach_to) {
+  if (to && dest.magnetic) throw new EditError(`'${c.id}' is attached to '${to}' and track '${dest.id}' is magnetic`, "attached_magnetic", `update_clip id=${c.id} attach_to=null first, or choose a non-magnetic track`);
 }
 
 /**
@@ -272,6 +273,7 @@ function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
   }
   resolve(tl); // the targets' real new starts (a shift can stop at 0)
   for (const [x, s] of stay) placeAt(tl, tr, x, s);
+  if (stay.length) resolve(tl); // placeAt writes offsets only
 }
 
 function addClip(p: Project, tl: Timeline, a: Dict): Dict {
@@ -698,8 +700,9 @@ op("replace_timeline", "Replace the whole timeline JSON (validated, undoable).",
 export interface OpHelpers {
   op: typeof op; PREFIX: typeof PREFIX; parseAt: typeof parseAt; place: typeof place; resolveRef: typeof resolveRef;
   ensureTrack: typeof ensureTrack; splitAt: typeof splitAt; trackEnd: typeof trackEnd; addClip: typeof addClip; importAsset: typeof importAsset;
+  refuseAttachedMagnetic: typeof refuseAttachedMagnetic;
 }
-const helpers: OpHelpers = { op, PREFIX, parseAt, place, resolveRef, ensureTrack, splitAt, trackEnd, addClip, importAsset };
+const helpers: OpHelpers = { op, PREFIX, parseAt, place, resolveRef, ensureTrack, splitAt, trackEnd, addClip, importAsset, refuseAttachedMagnetic };
 registerEditOps(helpers);
 registerCompoundOps(helpers);
 registerAudioOps(helpers);

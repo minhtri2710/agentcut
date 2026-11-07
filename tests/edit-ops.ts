@@ -453,6 +453,18 @@ console.log("pieces of an attached clip keep their place and length");
   const sr = ts.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.attach_to === "tt" && c.id !== "c0" && !c.freeze);
   check("freeze_frame with the target later on the same track: left, freeze and right are contiguous", near(at(ts, "c0").start, 1) && near(at(ts, "c0").duration, 1) && near(at(ts, rsf[0].id).start, 2) && near(at(ts, rsf[0].id).duration, 1) && sr && near(sr.start, 3) && near(sr.duration, 2) && near(at(ts, "tt").start, 6), [at(ts, "c0"), at(ts, rsf[0].id), sr, at(ts, "tt")]);
   valid("freeze_frame with the target on the same track", ts);
+  // freeze_frame through a clip that stays: X (attached to a later clip that shifts) is the freeze clip's target
+  const pbase = run(base(), [
+    { op: "add_track", id: "x", kind: "video" },
+    { op: "add_clip", track: "x", asset: "i", id: "tt", at: 5, duration: 1 },
+    { op: "add_clip", track: "x", asset: "i", id: "xx", attach_to: "tt", offset: -4, duration: 1 },
+    { op: "add_clip", track: "x", asset: "v", id: "c0", attach_to: "xx", offset: 1, duration: 2 },
+  ])[0];
+  check("freeze setup: xx at 1, c0 at 2, tt at 5", near(at(pbase, "xx").start, 1) && near(at(pbase, "c0").start, 2) && near(at(pbase, "tt").start, 5), ["xx", "c0", "tt"].map((i) => at(pbase, i)));
+  const [tp, [rp]] = run(pbase, [{ op: "freeze_frame", id: "c0", at: 3, duration: 2 }]);
+  const pr = tp.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "video" && c.attach_to === "xx" && c.id !== "c0" && !c.freeze);
+  check("freeze_frame when its target stays and follows a shifting clip: freeze at 3, right part at 5, the target stays at 1", near(at(tp, rp.id).start, 3) && near(rp.start, 3) && pr && near(pr.start, 5) && near(at(tp, "xx").start, 1) && near(at(tp, "tt").start, 7), [at(tp, rp.id), pr, at(tp, "xx"), at(tp, "tt")]);
+  valid("freeze_frame through a clip that stays", tp);
   // detached audio
   const abase = run(base(), [{ op: "add_clip", track: "main", asset: "av", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }])[0];
   const aud = abase.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").id;
@@ -505,6 +517,7 @@ console.log("pieces of an attached clip keep their place and length");
   refused("move_clip within a magnetic track of an attached clip (hand-edited) is refused", hand, [{ op: "move_clip", id: "img2", index: 0 }], "attached_magnetic");
   refused("add_clip with attach_to onto a magnetic track is refused", base(), [{ op: "add_clip", track: "main", asset: "i", id: "bad", attach_to: "img1", offset: 1, duration: 1 }], "attached_magnetic");
   refused("update_clip attach_to on a clip of a magnetic track is refused", base(), [{ op: "update_clip", id: "img2", attach_to: "img1", offset: 1 }], "attached_magnetic");
+  refused("update_track magnetic=true on a track holding an attached clip is refused", base(), [{ op: "update_track", id: "overlay", set: { magnetic: true } }], "attached_magnetic");
   const [m8] = run(base(), [{ op: "update_clip", id: "ovl", attach_to: null }, { op: "move_clip", id: "ovl", track: "main", index: 1 }]);
   check("  after attach_to=null the clip can join the magnetic track", at(m8, "ovl").attach_to === undefined && m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id).join() === "img1,ovl,img2", m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id));
   valid("detached then moved", m8);
