@@ -577,7 +577,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     // the helper itself: with allow_download false it points the HTTP clients at an unreachable proxy before importing rembg.
     // The real helper text runs under system python3 against stub numpy / PIL / rembg modules; the stub rembg records the proxy
     // variables it sees when it is imported, so nothing here reaches a network.
-    const py = spawnSync("python3", ["-c", "pass"]);
+    const py = spawnSync("python3", ["-B", "-c", "pass"]);
     if (py.status !== 0) check("python3 available for the helper guard check (skipped: not found)", true);
     else {
       const stubs = join(tmp, "stubs"), run = join(tmp, "stub-run");
@@ -596,8 +596,8 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       const guarded = (allow: boolean) => {
         const out = join(run, `seen-${allow}.json`);
         const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: allow });
-        const r = spawnSync("python3", [script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
-          env: { ...process.env, PYTHONPATH: stubs, STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" } });
+        const r = spawnSync("python3", ["-B", script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
+          env: { ...process.env, PYTHONPATH: stubs, PYTHONDONTWRITEBYTECODE: "1", STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" } });
         return { status: r.status, seen: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, stderr: r.stderr.slice(-200) };
       };
       const closed = guarded(false), open = guarded(true);
