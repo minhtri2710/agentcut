@@ -271,7 +271,7 @@ export function subjectSummary(samples: Sample[]): { subject: "face" | "saliency
   const warnings: string[] = [];
   if (subject === "saliency") warnings.push("no face found: followed the most salient region; check the framing with preview_frame and set focus by hand if it is wrong");
   const empty = samples.length - placed.length, salient = placed.length - faces.length;
-  if (subject === "mixed") warnings.push(`a face was found in ${faces.length} of ${samples.length} samples; ${empty ? `${salient} follow the most salient region and ${empty} found nothing to follow` : "the others follow the most salient region"}`);
+  if (subject === "mixed") warnings.push(`a face was found in ${faces.length} of ${samples.length} samples; ${empty ? `${salient} ${salient === 1 ? "follows" : "follow"} the most salient region and ${empty} found nothing to follow` : "the others follow the most salient region"}`);
   const lowest = Math.min(...faces.map((s) => s.score ?? 1)), most = Math.max(0, ...faces.map((s) => s.faces ?? 1));
   if (faces.length && lowest < FACE_SURE) warnings.push(`lowest face confidence ${lowest} (under ${FACE_SURE}): it may not be a face; check with preview_frame`);
   if (most > 1) warnings.push(`up to ${most} faces in frame: following the largest`);

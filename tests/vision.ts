@@ -819,10 +819,10 @@ console.log("the face model: descriptor, job, gate, download");
       });
       const H = fresh("download-abort"), ac = new AbortController(), reason = new Error("stopped by the caller");
       setTimeout(() => ac.abort(reason), 100);
-      const ab = await inCache(H, () => caught(() => V.downloadModel(desc("test_model_hold", "/hold"), ac.signal)));
-      check("downloadModel: a caller abort mid-body rejects with the caller's reason, nothing left", ab === reason && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), models: existsSync(join(H, "models")) });
-      server.closeAllConnections();
-    } finally { await new Promise((r) => server.close(r)); }
+      const t0 = Date.now(), ab = await inCache(H, () => caught(() => V.downloadModel(desc("test_model_hold", "/hold"), ac.signal))), took = Date.now() - t0;
+      // well under the 60 s download timeout: the caller's abort itself stopped the transfer
+      check("downloadModel: a caller abort mid-body rejects at once with the caller's reason, nothing left", ab === reason && took < 10_000 && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), took, models: existsSync(join(H, "models")) });
+    } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); }
     const refused = await inCache(fresh("download-closed"), () => caught(() => V.downloadModel(desc("test_model_closed", "/ok"))));
     check("downloadModel: a server that is gone -> model_download_failed", refused?.code === "model_download_failed", { code: refused?.code, message: refused?.message });
   } finally { delete process.env.FAKE_JOB_LOG; process.env.AGENTCUT_CACHE = mainCache; process.env.AGENTCUT_UV = fake; }
