@@ -315,7 +315,7 @@ export function capabilities() {
     canvas_presets: Object.fromEntries(Object.entries(M.PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])),
     output_formats: [".mp4 (H.264; codec=hevc for H.265)", ".mov (ProRes 422; codec=prores_4444 keeps alpha)", ".webm (VP9, alpha ok)", ".mkv", ".gif",
       ".wav/.mp3/.m4a/.aac/.flac (audio only)",
-      ".png / .webp (one still frame at start; alpha kept with a transparent background; webp lossless at quality=high)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
+      ".png / .webp (one still frame at start; alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness)", ".fcpxml (Final Cut Pro project)", ".otio (OpenTimelineIO: Resolve, Premiere, Avid)"],
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },

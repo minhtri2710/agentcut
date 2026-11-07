@@ -177,6 +177,12 @@ console.log("still image (.png / .webp)");
   const reason = new Error("stop"), ab = so("aborted.png");
   const aborted: any = await api.render(S, { out: ab, signal: AbortSignal.abort(reason) }).catch((e: any) => e);
   check("an already-aborted signal rejects with its reason and writes no file", aborted === reason && !existsSync(ab), aborted);
+  const gone: any = await api.render(join(tmp, "no-such-project"), { out: join(tmp, "gone.png"), signal: AbortSignal.abort(reason) }).catch((e: any) => e);
+  check("an aborted signal is checked before the project is opened", gone === reason && !existsSync(join(tmp, "gone.png")), gone);
+  let polls = 0; // passes the entry check, throws on the next one: the check before the write
+  const late = { get aborted() { return polls > 1; }, get reason() { return reason; }, addEventListener() {}, removeEventListener() {}, throwIfAborted() { if (++polls > 1) throw reason; } } as unknown as AbortSignal;
+  const lf = so("late.png"), lateRes: any = await api.render(S, { out: lf, signal: late }).catch((e: any) => e);
+  check("an abort that lands after the frame is drawn rejects with its reason and writes no file", lateRes === reason && polls === 2 && !existsSync(lf), { polls, r: lateRes });
   const O = join(tmp, "still-opaque");
   api.create(O, { width: W, height: H, fps: 24 });
   await api.apply(O, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 0, duration: 1 }]);
