@@ -66,10 +66,10 @@ export function embedCodec(video: string): string {
   return codec;
 }
 
-export function embedSubtitles(video: string, cues: Cue[]) {
+export function embedSubtitles(video: string, cues: Cue[], base?: string) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
   const vtt = codec === "webvtt";
-  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`), tmp = tmpSibling(video); // new names next to the video; nothing exists at them
+  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`, base), tmp = tmpSibling(video, base); // new names next to the video; nothing exists at them
   createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,

@@ -13,8 +13,8 @@ const MB = 1 << 20;
 export const PREVIEWS_MAX_MB = () => Number(process.env.AGENTCUT_PREVIEWS_MAX_MB ?? 200);
 interface Entry { area: "cache" | "previews"; root: string; path: string; bytes: number; mtime: number; referenced: boolean }
 
-/** temp output of a compute/render that is still running (pid in the name: vision.ts `.part-<pid>-`, `.<pid>.tmp`) */
-const inFlight = (f: string) => { const m = /\.part-(\d+)-|\.(\d+)\.tmp$/.exec(f); return !!m && alive(Number(m[1] ?? m[2])); };
+/** temp output of a write that is still running (pid in the name: safe-write.ts `.part-<pid>-`) */
+const inFlight = (f: string) => { const m = /\.part-(\d+)-/.exec(f); return !!m && alive(Number(m[1])); };
 
 /** regular files under dir; symlinks (files or directories) are never followed, counted or deleted */
 function files(dir: string): string[] {
@@ -81,7 +81,7 @@ function contained(e: Pick<Entry, "root" | "path">) {
   return true;
 }
 
-const PART_FILE = /\.part-(\d+)-/;                // vision.ts / encode.ts / ui.ts: <name>.part-<pid>-<rand><ext>
+const PART_FILE = /\.part-(\d+)-/;                // safe-write.ts tmpSibling: <name>.part-<pid>-<rand><ext>
 const RENDER_TMP = /^render-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp: render-<pid>-<mkdtemp suffix>
 
 /** Remove what a dead process left behind (SIGKILL, crash, power loss; catchable stops clean up after themselves), run at the
@@ -136,11 +136,5 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
  *  previews go first, the file just written stays. Outputs elsewhere (-o) are not touched. */
 export function capPreviews(p: Project, written: string) {
   const max = PREVIEWS_MAX_MB(), dir = join(p.root, "previews");
-  if (max > 0 && written.startsWith(dir + sep)) {
-    try { prune(p, { maxMb: max, area: "previews", keep: written }); }
-    catch (e) {
-      if (e instanceof EditError && e.code === "unsafe_cache_dir") e.hint += ` (or set AGENTCUT_PREVIEWS_MAX_MB=0 to turn the automatic previews cap off)`;
-      throw e;
-    }
-  }
+  if (max > 0 && written.startsWith(dir + sep)) prune(p, { maxMb: max, area: "previews", keep: written });
 }

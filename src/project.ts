@@ -8,7 +8,7 @@ import {
   clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, PRESETS, resolve, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
-import { createExclusive, ensureDir, lexists, writeFile } from "./safe-write.ts";
+import { checkDir, createExclusive, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
 const MAX_HISTORY = 100;
@@ -117,7 +117,10 @@ export class Project {
       if (!PRESETS[o.preset]) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
       [w, h] = PRESETS[o.preset];
     }
-    for (const d of ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"]) ensureDir(root, join(root, d));
+    const dirs = ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"].map((d) => join(root, d));
+    for (const d of dirs) checkDir(root, d); // every chain is checked before anything is made: a refused one leaves nothing behind
+    ensureRoot(root); // also proves the volume has hard links; on a volume without, nothing is left behind
+    for (const d of dirs) ensureDir(root, d);
     const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
     if (o.empty) tl.tracks = [];
     if (!createExclusive(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");

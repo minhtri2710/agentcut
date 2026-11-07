@@ -4,15 +4,16 @@
 // a link at the final name of an output is replaced by a regular file and its target is left alone.
 // Run: bun tests/writes.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-writes-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 const api = await import("../src/api.ts");
 const FB = await import("../src/feedback.ts");
+const S = await import("../src/safe-write.ts");
 
 let failures = 0;
 function check(name: string, cond: unknown, info?: unknown) {
@@ -91,7 +92,7 @@ console.log("a project directory that is a link: refused, the target is unchange
     mkdirSync(d);
     symlinkSync(t, join(d, ".agentcut"));
     const c = await code(() => api.create(d, { preset: "reels" }));
-    check(".agentcut as a link: init -> unsafe_path, no project.json, the target is unchanged", c === "unsafe_path" && !existsSync(join(d, "project.json")) && snap(t) === before, { c, now: snap(t) });
+    check(".agentcut as a link: init -> unsafe_path, nothing else is created, the target is unchanged", c === "unsafe_path" && readdirSync(d).join() === ".agentcut" && snap(t) === before, { c, entries: readdirSync(d), now: snap(t) });
   }
 }
 
@@ -117,6 +118,82 @@ console.log("an output path that is a link: replaced by a regular file, the targ
     const c = await code(() => act(p, out));
     check(`${name} to a ${dangling ? "dangling " : ""}link ${where}: ok, a regular file now, the target is unchanged`,
       c === "ok" && regular(out) && (dangling ? !existsSync(target) : readFileSync(target, "utf8") === "keep"), { c, kind: lstatSync(out).isSymbolicLink() ? "link" : "file" });
+  }
+}
+
+// ------------------------------------------------------------------ the project under another spelling
+console.log("an output path that names the project another way is checked like one inside it");
+{
+  const spellings: [string, (p: string) => string][] = [
+    ["through a link to the project", (p) => { const a = join(tmp, `alias-${++n}`); symlinkSync(p, a); return a; }],
+    ["through a link to the folder above it", (p) => { const a = join(tmp, `above-${++n}`); symlinkSync(dirname(p), a); return join(a, basename(p)); }],
+  ];
+  const priv = (p: string) => `/private${p}`;
+  if (process.platform === "darwin" && existsSync(priv(tmp)) && realpathSync(priv(tmp)) === realpathSync(tmp)) spellings.push(["with /private in front", priv]);
+  for (const [how, spell] of spellings) {
+    const groups: [string, [string, string, (p: string, out: string) => unknown][]][] = [
+      ["previews", [["preview_frame", ".jpg", (p, out) => api.frame(p, 1, { out })], ["contact_sheet", ".jpg", (p, out) => api.sheet(p, { count: 2, out })], ["scopes", ".jpg", (p, out) => api.scopes(p, 1, { out })]]],
+      ["renders", [["export_captions", ".srt", (p, out) => api.exportCaptions(p, { out })], ["export_timeline", ".fcpxml", (p, out) => api.exportTimeline(p, { out })], ["render", ".mp4", (p, out) => api.render(p, { out, draft: true, workers: 1, sheet: false })]]],
+    ];
+    for (const [dir, acts] of groups) {
+      const p = await project(`spelling-${dir}-${++n}`), t = outside("target"), before = snap(t);
+      link(p, dir, t);
+      const alias = spell(p);
+      for (const [name, ext, act] of acts) {
+        const c = await code(() => act(p, join(alias, dir, `named-${++n}${ext}`)));
+        check(`${dir}/ as a link, ${name} to the project ${how}: unsafe_path, the target is unchanged`, c === "unsafe_path" && snap(t) === before, { c, now: snap(t) });
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ a directory at the output's name
+console.log("an output path that is a directory: refused with unsafe_path, no temp file is left");
+{
+  const outputs: [string, string, string, (p: string, out: string) => unknown][] = [
+    ["preview_frame", "previews", ".jpg", (p, out) => api.frame(p, 1, { out })],
+    ["contact_sheet", "previews", ".jpg", (p, out) => api.sheet(p, { count: 2, out })],
+    ["scopes", "previews", ".jpg", (p, out) => api.scopes(p, 1, { out })],
+    ["audio_check", "previews", ".png", (p, out) => api.audioCheck(p, { out })],
+    ["export_captions", "renders", ".srt", (p, out) => api.exportCaptions(p, { out })],
+    ["export_timeline", "renders", ".fcpxml", (p, out) => api.exportTimeline(p, { out })],
+    ["render", "renders", ".mp4", (p, out) => api.render(p, { out, draft: true, workers: 1, sheet: false })],
+  ];
+  const p = await project("final-dir");
+  for (const [name, dir, ext, act] of outputs) {
+    const out = join(p, dir, `dir-${++n}${ext}`);
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "keep.txt"), "keep");
+    const c = await code(() => act(p, out));
+    check(`${name} to a directory: unsafe_path, the directory is unchanged, no temp file`,
+      c === "unsafe_path" && readFileSync(join(out, "keep.txt"), "utf8") === "keep" && readdirSync(join(p, dir)).every((f) => !f.includes(".part-")), { c, entries: readdirSync(join(p, dir)) });
+  }
+}
+
+// ------------------------------------------------------------------ temp files in flight
+console.log("cache prune: only `.part-<pid>-` names count as in flight");
+{
+  const p = await project("in-flight"), old = join(p, "previews", `old.${process.pid}.tmp`), live = join(p, "previews", `new.part-${process.pid}-abcdef.jpg`);
+  writeFileSync(old, "x");
+  writeFileSync(live, "y");
+  api.cache.prune(p, { maxMb: 0 });
+  check("a `.<pid>.tmp` file of a live pid is pruned, a `.part-<pid>-` file is kept", !existsSync(old) && existsSync(live), { old: existsSync(old), live: existsSync(live) });
+}
+
+// ------------------------------------------------------------------ volumes without hard links
+console.log("volumes without hard links: a named error, and init leaves nothing behind");
+{
+  for (const c of ["ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV", "ENOSYS"]) {
+    const e = S.linkRefusal?.({ code: c });
+    check(`link error ${c} -> unsupported_fs with a hint naming the volume types`, e?.code === "unsupported_fs" && /APFS, NTFS or ext4/.test(e.hint ?? "") && /media/.test(e.hint ?? ""), e);
+  }
+  check("EEXIST and EACCES are not volume errors", ["EEXIST", "EACCES", "ENOENT"].every((c) => S.linkRefusal?.({ code: c }) === null));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    // a root that cannot be written to makes the first write fail the way the link probe does on such a volume: the root init made is removed again
+    const root = join(tmp, "init-no-skeleton"), keep = process.umask(0o777);
+    let c: string;
+    try { c = await code(() => api.create(root, { preset: "reels" })); } finally { process.umask(keep); }
+    check("init that cannot use its new root fails and removes the root it made", c !== "ok" && !existsSync(root), { c, exists: existsSync(root) });
   }
 }
 

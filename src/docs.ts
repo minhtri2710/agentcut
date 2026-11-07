@@ -137,6 +137,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - 9:16: keep text out of the top 10% and bottom 20% (preview with guides). Use fit "blur" for landscape footage.
 - Never invent logos/screens/metrics: only use files you were given; a missing asset is a blocker - ask.
 - "Done" needs evidence: a contact sheet or frame you looked at + the render result JSON.
+- The project folder must be on a volume with hard links (APFS, NTFS, ext4; not exFAT or FAT): project.json and the lock need them, and error unsupported_fs says so. Media files may stay on any volume.
 
 ## Working alongside a human (agentcut ui)
 - \`agentcut ui [DIR] [--port 4810]\` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe

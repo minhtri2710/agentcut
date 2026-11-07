@@ -249,7 +249,7 @@ export async function render(project: string | undefined, o: {
   if (o.subtitles) {
     const [t0, t1] = res.range as [number, number];
     const inRange = SUB.cuesInRange(cues, t0, t1);
-    SUB.embedSubtitles(out, inRange);
+    SUB.embedSubtitles(out, inRange, p.root);
     res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
   }
   FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
