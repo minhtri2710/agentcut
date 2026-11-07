@@ -37,17 +37,20 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
 def subject(j):
     import cv2, numpy as np
     w, h = j["w"], j["h"]
-    face = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    face_min = float(j["face_min"])
+    det = cv2.FaceDetectorYN.create(j["face_model"], "", (w, h), face_min, 0.3, 5000)  # YuNet: score threshold, NMS threshold, top-k before NMS
     sal = cv2.saliency.StaticSaliencyFineGrained_create()  # spectral residual aliases on flat footage
+    c01 = lambda v: min(1.0, max(0.0, v))  # a face box may reach past the frame edge
     out = []
     for i, f in enumerate(frames(j["path"], j.get("start"), j.get("duration"), j.get("fps"), w, h)):
         t = (j.get("start") or 0) + i / j["fps"] if j.get("fps") else 0
-        g = cv2.equalizeHist(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY))
-        fs = face.detectMultiScale(g, scaleFactor=1.1, minNeighbors=5, minSize=(max(12, h // 12),) * 2)
-        if len(fs):
-            x, y, fw, fh = max(fs, key=lambda r: (r[2] * r[3], -r[0], -r[1]))
-            out.append({"t": round(t, 4), "x": round((x + fw / 2) / w, 4), "y": round((y + fh / 2) / h, 4),
-                        "w": round(fw / w, 4), "h": round(fh / h, 4), "kind": "face", "score": 1.0})
+        _, fs = det.detect(f)  # None, or one row per face: x, y, w, h, ten landmark values, score
+        fs = [r for r in (fs if fs is not None else []) if float(r[14]) >= face_min]
+        if fs:
+            r = max(fs, key=lambda r: (r[2] * r[3], -r[0], -r[1]))  # the largest face; ties go to the left, then the top
+            x, y, fw, fh = (float(v) for v in r[:4])
+            out.append({"t": round(t, 4), "x": round(c01((x + fw / 2) / w), 4), "y": round(c01((y + fh / 2) / h), 4),
+                        "w": round(c01(fw / w), 4), "h": round(c01(fh / h), 4), "kind": "face", "score": round(float(r[14]), 4), "faces": len(fs)})
             continue
         ok, m = sal.computeSaliency(f)
         if not ok: out.append({"t": round(t, 4), "kind": "none", "score": 0.0}); continue

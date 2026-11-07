@@ -111,7 +111,8 @@ export const MATTE_MB: Record<string, number | null> = { u2netp: 5, u2net: null,
 export const MATTE_MODELS = Object.keys(MATTE_MB);
 /** Environment for every child that runs onnxruntime (the vision helper, piper); it wins over an inherited value. */
 export const ORT_ENV = { ORT_DISABLE_TELEMETRY: "1" };
-export const matteSize = (model: string) => (MATTE_MB[model] == null ? "size unknown" : `~${MATTE_MB[model]} MB`);
+export const sizeText = (mb: number | null | undefined) => (mb == null ? "size unknown" : `~${mb} MB`);
+export const matteSize = (model: string) => sizeText(MATTE_MB[model]);
 export const MATTE_SIZES = MATTE_MODELS.map((m) => `${m} ${matteSize(m)}`).join(", ");
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 

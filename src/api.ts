@@ -14,7 +14,7 @@ import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { attachPrepared } from "./ops-vision.ts";
 import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
-import { analyzeSubject, matteCached, visionEngine } from "./vision.ts";
+import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
@@ -319,7 +319,7 @@ export function capabilities() {
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
-    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: matteCached(name) })),
+    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name) })),
     engines: { transcribe: AN.transcribeEngine(), tts: { ...AN.ttsProviders(), voices: "list_voices" }, vision: visionEngine() },
     ops: Object.keys(OPS),
   };
@@ -327,7 +327,7 @@ export function capabilities() {
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
 export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts,
-  subject: async (p: string, fps?: number) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height }); } };
+  subject: async (p: string, fps?: number, allowDownload?: boolean) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height }, allowDownload); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),

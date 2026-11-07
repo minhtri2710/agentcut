@@ -7,24 +7,72 @@ import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, rea
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
-import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV } from "./model.ts";
+import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV, sizeText } from "./model.ts";
 import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";
 import { VISION_PY } from "./vision-py.ts";
 
-// pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
+// pinned so cached results and mattes stay reproducible; opencv 4.12 ships the YuNet face detector (cv2.FaceDetectorYN), whose model is a separate download (FACE_MODEL)
 const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
 
 const userCache = () => resolve(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"));
-/** Matte models live only in `<user cache>/models/<name>/<name>.onnx`: the helper runs with U2NET_HOME = the user cache, and rembg 2.0.86 keeps a
- *  model at `<U2NET_HOME>/models/<name>/<name>.onnx`. Nothing under ~/.u2net is read. */
-export const matteModelFile = (model: string) => join(userCache(), "models", model, `${model}.onnx`);
-export const matteCached = (model: string) => lstatSync(matteModelFile(model), { throwIfNoEntry: false })?.isFile() === true;
-/** The matte models these jobs need that are not in the models dir yet. */
+/** Models live only in `<user cache>/models/<name>/<name>.onnx`: the helper runs with U2NET_HOME = the user cache, and rembg 2.0.86 keeps a
+ *  matte model at `<U2NET_HOME>/models/<name>/<name>.onnx`; the face model sits in the same layout. Nothing under ~/.u2net is read. */
+export const modelFile = (name: string) => join(userCache(), "models", name, `${name}.onnx`);
+export const modelCached = (name: string) => lstatSync(modelFile(name), { throwIfNoEntry: false })?.isFile() === true;
+
+/** The YuNet face detector (opencv_zoo, 2023mar), pinned to a commit and a hash. It is fetched by `downloadModel`, only when the caller allows
+ *  downloads, and an existing file is trusted at use time like the matte models. */
+export const FACE_MODEL = {
+  name: "face_detection_yunet_2023mar",
+  url: "https://media.githubusercontent.com/media/opencv/opencv_zoo/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+  sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+  bytes: 232589,
+};
+/** A face counts from this detector score up; below FACE_SURE a result warns that it may not be a face. Fixed, not tuned. */
+export const FACE_MIN = 0.6, FACE_SURE = 0.9;
+const mbOf = (bytes: number) => +(bytes / 1e6).toFixed(2);
+
+/** The models these jobs need that are not in the models dir yet: a matte model for each matte job, the face model for any subject job. */
 export function modelsToDownload(jobs: Derived[]) {
-  const names = new Set(jobs.filter((d) => d.kind === "matte").map((d) => String(d.job.model)));
-  return [...names].filter((model) => !matteCached(model)).map((model) => ({ model, approx_mb: MATTE_MB[model], path: matteModelFile(model) }));
+  const need = new Map<string, { model: string; approx_mb: number | null; path: string }>();
+  for (const d of jobs) {
+    const model = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
+    if (model && !modelCached(model)) need.set(model, { model, approx_mb: d.kind === "matte" ? MATTE_MB[model] : mbOf(FACE_MODEL.bytes), path: modelFile(model) });
+  }
+  return [...need.values()];
+}
+/** The error for models that are missing while downloads are not allowed. */
+export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new EditError(`a vision model is not downloaded: ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)})`).join(", ")}`, "model_not_cached",
+  `nothing was downloaded or run; models are fetched only on request: run with allow_download=true (CLI: prepare --allow-download, subject --allow-download; MCP: allow_download=true on prepare or analyze_subject) to download ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)}) to ${n.path}`).join("; ")}, or put the file there`);
+
+/** Fetch `m` into the models dir. The whole body is read and checked (size, then sha256) before anything is written, so a failure leaves
+ *  nothing behind; the file then lands under a temp name and is renamed into place. Network failures, a bad status, a timeout (60 s)
+ *  and a mismatch are `model_download_failed`; an abort rethrows its reason. */
+export async function downloadModel(m: { name: string; url: string; sha256: string; bytes: number }, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const file = modelFile(m.name);
+  const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
+  let body: Buffer;
+  try {
+    const res = await fetch(m.url, { signal: AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]) });
+    if (!res.ok) throw fail(`HTTP ${res.status}`);
+    const chunks: Buffer[] = [];
+    let n = 0;
+    for await (const c of res.body as unknown as AsyncIterable<Uint8Array>) {
+      if ((n += c.length) > m.bytes) throw fail(`the download is larger than the expected ${m.bytes} bytes`);
+      chunks.push(Buffer.from(c));
+    }
+    body = Buffer.concat(chunks);
+  } catch (e: any) {
+    if (signal?.aborted) throw signal.reason;
+    throw e instanceof EditError ? e : fail(e?.name === "TimeoutError" ? "timed out after 60 s" : String(e?.message ?? e));
+  }
+  if (body.length !== m.bytes) throw fail(`got ${body.length} bytes, expected ${m.bytes}`);
+  if (createHash("sha256").update(body).digest("hex") !== m.sha256) throw fail("the sha256 does not match");
+  const tmp = tmpSibling(file, userCache());
+  try { createFile(tmp, body); commit(tmp, file); } finally { rmSync(tmp, { force: true }); }
 }
 export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
 
@@ -102,6 +150,7 @@ export function visionEngine() {
     available: /[\\/]/.test(uv) ? isExecutable(uv) : has(uv),
     features: ["analyze_subject (runs uv when called)", ...["auto_reframe", "track_to", "remove_background"].map((o) => `${o} (records a request; prepare computes it with uv)`)],
     matte_models: "see matte_models",
+    face_model: { name: FACE_MODEL.name, approx_mb: mbOf(FACE_MODEL.bytes), cached: modelCached(FACE_MODEL.name) },
     models_note: "no model is downloaded without allow_download",
   };
 }
@@ -143,10 +192,11 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
-        const model = d.kind === "matte" && matteCached(String(d.job.model)) ? matteModelFile(String(d.job.model)) : null; // rembg never re-checks an existing model file
+        const name = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
+        const model = name && modelCached(name) ? modelFile(name) : null; // an existing model file is trusted: the helper never re-checks it
         return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
           "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
-          + (model ? `; if the error is about loading the model, the model file ${model} may be damaged: delete it and run prepare with allow_download=true` : "")));
+          + (model ? `; if the error is about loading the model, the model file ${model} may be damaged: delete it and run with allow_download=true` : "")));
       }
       try { res(JSON.parse(stdout)); } catch { rej(new EditError(`vision helper printed no JSON: ${stdout.slice(0, 200)}`, "vision_failed")); }
     });
@@ -157,11 +207,15 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
 const baseOf = (d: Derived) => d.root ?? userCache();
 
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file.
- *  A matte model is fetched by the helper only with `allowDownload` (prepare gates it first: prepare.ts). */
+ *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then the face model is fetched here
+ *  (`downloadModel`) and a matte model by the helper. The helper dir is checked first, so an unsafe cache is refused before a download. */
 export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
+  const need = modelsToDownload([d]);
+  if (need.length && !allowDownload) throw modelNotCached(need);
+  if (d.kind === "subject" && need.length) await downloadModel(FACE_MODEL, signal);
   const tmp = tmpSibling(d.file, baseOf(d));
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
@@ -172,7 +226,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   return { cached: false };
 }
 
-export interface Sample { t: number; x?: number; y?: number; w?: number; h?: number; kind?: string; score?: number; ok?: boolean }
+export interface Sample { t: number; x?: number; y?: number; w?: number; h?: number; kind?: string; score?: number; faces?: number; ok?: boolean }
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
 /** The numbers a job hands to the helper's ffmpeg commands must be real numbers: finite, and fps and the frame size positive. Every job builder goes through derived. */
 function checkJob(params: Dict) {
@@ -188,12 +242,15 @@ const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict,
   return { kind, file: join(cacheDir(root), `${kind}-${cacheKey(path, params)}${ext}`), job: { ...params, path }, pkgs, root, frames: Math.max(1, Math.round(frames)), ...extra };
 };
 
-/** Subject centre over time (largest face, else saliency centroid); x/y are 0..1 of the full source frame. */
+/** Subject centre over time (the largest face YuNet finds, with its score, else the saliency centroid); x/y are 0..1 of the full source frame.
+ *  The job carries the face model's path; the cache key carries only the model's hash and the score threshold. */
 export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; srcW: number; srcH: number; root?: string }) {
   const fps = o.still ? null : o.fps ?? 6, w = even(Math.min(480, o.srcW)), h = even((w * o.srcH) / o.srcW);
   // a still is one frame: no seek, no fps resampling (either would yield zero frames)
-  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, w, h };
-  return derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
+  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
+  const d = derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
+  d.job.face_model = modelFile(FACE_MODEL.name);
+  return d;
 }
 /** Cached subject samples; throws vision_failed when the helper decoded nothing. */
 export function subjectSamples(d: Derived) {
@@ -201,10 +258,24 @@ export function subjectSamples(d: Derived) {
   if (!res.samples.length) throw new EditError(`subject analysis decoded no frames from ${d.job.path}`, "vision_failed", "check the file and range with probe_media / preview_frame");
   return res.samples;
 }
-/** Standalone analysis (analyze_subject): computes on a cache miss. */
-export async function analyzeSubject(path: string, o: Parameters<typeof subjectJob>[1]) {
-  const d = subjectJob(path, o), { cached } = await compute(d);
-  return { source: path, fps: d.job.fps, samples: subjectSamples(d), cached };
+/** What the samples followed, for every result that reports a subject: `subject` is face (every sample), saliency (no face), mixed (some of each) or
+ *  none (no sample has a position); `warnings` (only when there are any) say in a sentence what to check. */
+export function subjectSummary(samples: Sample[]): { subject: "face" | "saliency" | "mixed" | "none"; warnings?: string[] } {
+  const faces = samples.filter((s) => s.kind === "face"), placed = samples.filter((s) => s.kind === "face" || s.kind === "saliency");
+  const subject = !placed.length ? "none" : faces.length === samples.length ? "face" : faces.length ? "mixed" : "saliency";
+  const warnings: string[] = [];
+  if (subject === "saliency") warnings.push("no face found: followed the most salient region; check the framing with preview_frame and set focus by hand if it is wrong");
+  if (subject === "mixed") warnings.push(`a face was found in ${faces.length} of ${samples.length} samples; the others follow the most salient region`);
+  const lowest = Math.min(...faces.map((s) => s.score ?? 1)), most = Math.max(0, ...faces.map((s) => s.faces ?? 1));
+  if (faces.length && lowest < FACE_SURE) warnings.push(`lowest face confidence ${lowest} (under ${FACE_SURE}): it may not be a face; check with preview_frame`);
+  if (most > 1) warnings.push(`up to ${most} faces in frame: following the largest`);
+  if (subject === "none") warnings.push("nothing to follow was found: the focus stays at the centre");
+  return warnings.length ? { subject, warnings } : { subject };
+}
+/** Standalone analysis (analyze_subject): computes on a cache miss; a missing face model needs `allowDownload`. */
+export async function analyzeSubject(path: string, o: Parameters<typeof subjectJob>[1], allowDownload = false) {
+  const d = subjectJob(path, o), { cached } = await compute(d, undefined, undefined, allowDownload), samples = subjectSamples(d);
+  return { source: path, fps: d.job.fps, samples, cached, ...subjectSummary(samples) };
 }
 
 /** OpenCV CSRT/KCF track of a box (fractions of the source frame) given at source time `at`, forwards and backwards. */

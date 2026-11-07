@@ -1,7 +1,7 @@
 // `prepare`: compute the derived assets the timeline needs (remove_background mattes, auto_reframe / track_to analyses)
 // outside apply_ops, then re-apply the pending vision requests so their keyframes land. Preview/render fail fast with
 // not_prepared until this ran (ops-vision attachPrepared). Results are cached per file hash + params (vision.ts).
-import { type Clip, allClips, type Dict, EditError, matteSize, type Timeline } from "./model.ts";
+import { type Clip, allClips, type Dict, EditError, type Timeline } from "./model.ts";
 import { applyOps } from "./ops.ts";
 import { collectMissing, mattesFor } from "./ops-vision.ts";
 import type { Project } from "./project.ts";
@@ -39,12 +39,10 @@ function computeOnce(d: V.Derived, onFrames: (n: number) => void, signal?: Abort
   return job;
 }
 
-/** The one gate for matte model downloads: before any job runs, a model that is not in <user cache>/models needs `allow_download`. */
+/** The one gate for model downloads (matte models and the face model): before any job runs, a model that is not in <user cache>/models needs `allow_download`. */
 function requireModels(jobs: V.Derived[]) {
   const need = V.modelsToDownload(jobs);
-  if (!need.length) return;
-  throw new EditError(`remove_background needs a model that is not downloaded: ${need.map((n) => `${n.model} (${matteSize(n.model)})`).join(", ")}`, "model_not_cached",
-    `nothing was downloaded or run; models are fetched only on request: run prepare with allow_download=true (CLI: prepare --allow-download; MCP: prepare allow_download=true) to download ${need.map((n) => `${n.model} (${matteSize(n.model)}) to ${n.path}`).join("; ")}, or put the file there`);
+  if (need.length) throw V.modelNotCached(need);
 }
 
 export async function prepare(p: Project, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) {

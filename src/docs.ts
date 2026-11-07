@@ -113,14 +113,17 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   render subtitles=true (CLI --subtitles) adds a soft subtitle track to .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt).
 
 ## AI vision (optional: needs uv, packages download on first use; results cached in .agentcut/cache)
-{"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y follow the face/subject
+{"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y follow the face (YuNet, with a confidence score), else the most salient region
 {"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
-  -> a matte model is downloaded only on request: prepare fails with code model_not_cached until the model is in
-     <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or you run prepare with allow_download=true (CLI: prepare
-     --allow-download); capabilities.matte_models and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
+  -> a model (a matte model, or the 0.23 MB face model that subject analysis, auto_reframe and track_to without box use) is downloaded only on
+     request: prepare fails with code model_not_cached until the model is in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE)
+     or you run prepare with allow_download=true (CLI: prepare --allow-download; analyze_subject takes allow_download too, CLI: subject --allow-download);
+     capabilities.matte_models, engines.vision.face_model and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
+  -> auto_reframe, track_to without box and analyze_subject say what they followed: subject = face|saliency|mixed|none, and warnings when it may be wrong
+     (no face found, low confidence, several faces); read them and check the framing with preview_frame.
   -> AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry).
   uv runs with --no-config: set UV_* env vars (e.g. UV_INDEX_URL) for index settings.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run

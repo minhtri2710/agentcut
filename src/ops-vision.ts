@@ -86,7 +86,7 @@ function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
 function subjectTrack(tl: Timeline, c: Clip, d: V.Derived) {
   const a = asset(tl, c), { in0, speed } = srcRange(c), samples = V.subjectSamples(d);
   const pts = samples.map((s) => ({ t: a.kind === "image" ? 0 : (s.t - in0) / speed, x: s.kind === "none" ? undefined : s.x, y: s.kind === "none" ? undefined : s.y }));
-  return { pts, faces: samples.filter((s) => s.kind === "face").length, n: samples.length };
+  return { pts, faces: samples.filter((s) => s.kind === "face").length, n: samples.length, ...V.subjectSummary(samples) };
 }
 
 export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
@@ -119,7 +119,7 @@ export function registerVisionOps(h: OpHelpers) {
     return findClip(tl, h.resolveRef(tl, String(id)))[2];
   };
 
-  h.op("auto_reframe", "Follow the subject (largest face, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y so a 16:9 shot stays framed in 9:16 (or any crop). Needs uv (downloads opencv on first use). The analysis is cached per file+range; when it is not cached yet the request is recorded (clip.pending, result pending=true) and prepare computes it and writes the keyframes.",
+  h.op("auto_reframe", "Follow the subject (the largest face found by YuNet, with a confidence score, else the most salient region) inside a cover-fitted clip: writes smoothed keyframes.focus_x/focus_y so a 16:9 shot stays framed in 9:16 (or any crop). The result says what was followed: subject = face|saliency|mixed|none, plus warnings (no face found, low confidence, several faces) to check with preview_frame. Needs uv (downloads opencv on first use); the 0.23 MB face model is downloaded only by prepare with allow_download=true (CLI: prepare --allow-download), else prepare fails with code model_not_cached. The analysis is cached per file+range; when it is not cached yet the request is recorded (clip.pending, result pending=true) and prepare computes it and writes the keyframes.",
     { id: "video/image clip", fps: "analysis samples per second (6)", smooth: "smoothing sigma seconds (0.8; higher = calmer camera)", tolerance: "max focus error kept when thinning keyframes (0.01)", axis: "auto|x|y|both (auto = the axis that can pan)" },
     (p, tl, a) => {
       resolve(tl);
@@ -141,7 +141,7 @@ export function registerVisionOps(h: OpHelpers) {
         clamp01((((u * src - crop0 * src) * scale) - view / 2) / (full - view));
       const kf = (c.keyframes ??= {});
       delete kf.focus_x; delete kf.focus_y;
-      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, faces: tr.faces };
+      const f0 = c.focus ?? [0.5, 0.5], out: Dict = { id: c.id, samples: tr.n, faces: tr.faces, subject: tr.subject, ...(tr.warnings && { warnings: tr.warnings }) };
       const axes: [boolean, "x" | "y", 0 | 1][] = [[wantX, "x", 0], [wantY, "y", 1]];
       for (const [want, ax, i] of axes) {
         if (!want) continue;
@@ -169,7 +169,7 @@ export function registerVisionOps(h: OpHelpers) {
       return V.isReady(m) ? { id: c.id, remove_background: c.remove_background, matte: m.file } : { remove_background: c.remove_background, ...pendingResult(c.id) };
     });
 
-  h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (face/saliency). Needs uv (downloads opencv on first use). Cached; when not cached yet the request is recorded (pending=true) and prepare tracks and writes the keyframes.",
+  h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (a YuNet face with a confidence score, else the most salient region) and the result carries subject/warnings as auto_reframe does; that needs the face model, downloaded only by prepare with allow_download=true. Needs uv (downloads opencv on first use). Cached; when not cached yet the request is recorded (pending=true) and prepare tracks and writes the keyframes.",
     { id: "follower clip (text/shape/image/video overlay)", target: "video clip with the object", box: "[x, y, w, h] canvas px or % (top-left + size) at 'at'", at: "timeline seconds where box is drawn (default: follower start)", shift: "[dx, dy] px added to the object centre", tracker: "csrt|kcf", fps: "tracking samples/s (15)", smooth: "sigma seconds (0.15)" },
     (p, tl, a) => {
       resolve(tl);
@@ -187,7 +187,7 @@ export function registerVisionOps(h: OpHelpers) {
       const req = { ...pick(a, ["box", "at", "shift", "tracker", "fps", "smooth"]), target: t.id };
       // the box maps to source pixels through the target's focus: a pending reframe of the target must land first
       if (t.pending?.auto_reframe) { ready(f, "track_to", req, null); return pendingResult(f.id, { waiting_for: `auto_reframe ${t.id}` }); }
-      let pts: { T: number; u?: number; v?: number }[], lost = 0;
+      let pts: { T: number; u?: number; v?: number }[], lost = 0, followed: Dict = {};
       if (a.box !== undefined) {
         if (!Array.isArray(a.box) || a.box.length !== 4) throw new EditError("box must be [x, y, w, h]", "bad_value", "top-left corner + size in canvas px or %, e.g. [400, 600, 200, 200]");
         const [bx, by, bw, bh] = a.box.map((v: any, i: number) => parseLen(v, i % 2 ? H0 : W0));
@@ -203,7 +203,9 @@ export function registerVisionOps(h: OpHelpers) {
       } else {
         const d = subjectJob(p, tl, t, Math.min(fps, 10));
         if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
-        pts = subjectTrack(tl, t, d).pts.filter((q) => q.t + ts0 >= s0 - 1e-6 && q.t + ts0 <= s1 + 1e-6).map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
+        const tr = subjectTrack(tl, t, d);
+        followed = { subject: tr.subject, ...(tr.warnings && { warnings: tr.warnings }) };
+        pts = tr.pts.filter((q) => q.t + ts0 >= s0 - 1e-6 && q.t + ts0 <= s1 + 1e-6).map((q) => ({ T: ts0 + q.t, u: q.x, v: q.y }));
         if (!pts.length) throw new EditError("no subject samples in the overlap", "vision_failed", "pass box to track a specific object");
       }
       const Ts = pts.map((q) => q.T), sigma = num(a.smooth, 0.15, "smooth");
@@ -215,7 +217,7 @@ export function registerVisionOps(h: OpHelpers) {
       f.keyframes = { ...(f.keyframes ?? {}), x: keep.map((i) => [round6(lt[i]), Math.round(X[i] * 10) / 10]), y: keep.map((i) => [round6(lt[i]), Math.round(Y[i] * 10) / 10]) };
       delete f.position;
       if (!f.attach_to) { f.attach_to = t.id; f.offset = round6(fs0 - ts0); delete f.start; }
-      return { id: f.id, target: t.id, samples: pts.length, lost, keyframes: keep.length, attached_to: f.attach_to };
+      return { id: f.id, target: t.id, samples: pts.length, lost, keyframes: keep.length, attached_to: f.attach_to, ...followed };
     });
 }
 

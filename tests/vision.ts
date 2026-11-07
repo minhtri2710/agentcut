@@ -48,11 +48,17 @@ import { appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const job = JSON.parse(process.argv.at(-1));
 appendFileSync(${JSON.stringify(calls)}, job.cmd + "\\n");
+if (process.env.FAKE_JOB_LOG) appendFileSync(process.env.FAKE_JOB_LOG, JSON.stringify(job) + "\\n");
 const n = job.fps ? Math.max(2, Math.round((job.duration ?? 4) * job.fps)) : 1;
 const ts = Array.from({ length: n }, (_, i) => +((job.start ?? 0) + i / (job.fps ?? 6)).toFixed(4));
 let out;
 if (job.cmd === "subject" && job.path.includes("empty")) out = { samples: [] };
-else if (job.cmd === "subject" && n === 1) out = { samples: [{ t: 0, x: 0.8, y: 0.5, kind: "face", score: 1 }] };
+else if (job.cmd === "subject" && process.env.FAKE_SUBJECT) { // a scenario: what the detector reports for every sample
+  const sc = process.env.FAKE_SUBJECT, face = (score, faces = 1) => ({ kind: "face", x: 0.5, y: 0.5, w: 0.2, h: 0.3, score, faces });
+  out = { samples: ts.map((t, i) => ({ t, ...(sc === "faces" ? face(0.95) : sc === "mixed" ? (i < n / 2 ? face(0.95) : { kind: "saliency", x: 0.5, y: 0.5, score: 0.5 })
+    : sc === "low" ? face(i === 2 ? 0.62 : 0.95) : sc === "several" ? face(0.95, i === 1 ? 3 : 1) : sc === "saliency" ? { kind: "saliency", x: 0.5, y: 0.5, score: 0.5 } : { kind: "none", score: 0 }) })) };
+}
+else if (job.cmd === "subject" && n === 1) out = { samples: [{ t: 0, x: 0.8, y: 0.5, kind: "face", score: 1, faces: 1 }] };
 else if (job.cmd === "subject") // subject walks 0.1 -> 0.9 with jitter, one outlier and one empty sample
   out = { samples: ts.map((t, i) => i === 3 ? { t, kind: "none", score: 0 }
     : { t, x: i === 6 ? 0.02 : 0.1 + (0.8 * i) / (n - 1) + (i % 2 ? 0.02 : -0.02), y: 0.5, kind: "saliency", score: 0.5 }) };
@@ -72,7 +78,10 @@ process.env.AGENTCUT_UV = fake;
 /** a model file as the matte models dir holds it: <cache>/models/<name>/<name>.onnx (the content is never read by the fake uv) */
 const modelFile = (name: string) => join(process.env.AGENTCUT_CACHE!, "models", name, `${name}.onnx`);
 const seedModel = (name: string) => { mkdirSync(join(process.env.AGENTCUT_CACHE!, "models", name), { recursive: true }); writeFileSync(modelFile(name), ""); };
-for (const name of ["u2netp", "u2net"]) seedModel(name); // the models the suite's mattes use are cached
+const FACE = "face_detection_yunet_2023mar";
+for (const name of ["u2netp", "u2net", FACE]) seedModel(name); // the models the suite's mattes and subject analyses use are cached
+/** the face model in another user cache dir (an empty file: the fake uv never reads it) */
+const seedFaceIn = (cache: string) => { mkdirSync(join(cache, "models", FACE), { recursive: true }); writeFileSync(join(cache, "models", FACE, `${FACE}.onnx`), ""); };
 const nCalls =(cmd?: string) => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((l) => l && (!cmd || l === cmd)).length : 0);
 
 // ---------------------------------------------------------------- pure path helpers
@@ -104,10 +113,10 @@ async function fails(proj: string, ops: any[], code: string, name: string) {
   catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
 }
 /** apply, then prepare when the batch recorded vision requests; returns the op results after prepare */
-async function applyPrep(proj: string, ops: any[]) {
+async function applyPrep(proj: string, ops: any[], allowDownload = false) {
   const r = await api.apply(proj, ops);
   if (!r.results.some((x: any) => x.pending)) return r.results;
-  const pr = await api.prepare(proj);
+  const pr = await api.prepare(proj, { allowDownload });
   return r.results.map((x: any) => (x.pending ? pr.applied.find((y: any) => y.op === x.op && y.id === x.id) ?? x : x));
 }
 async function prepFails(proj: string, ops: any[], code: string, name: string) {
@@ -316,8 +325,9 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   const cacheEnv = process.env.AGENTCUT_CACHE!;
   mkdirSync(cacheEnv, { recursive: true });
   /** analyze_subject against its own user cache dir `cache` (a fresh cache never hits a stored result); resolves to "ok" or the error code */
-  const subject = async (cache: string, fps = 5) => {
+  const subject = async (cache: string, fps = 5, seed = true) => {
     const keep = process.env.AGENTCUT_CACHE;
+    if (seed) seedFaceIn(cache);
     process.env.AGENTCUT_CACHE = cache;
     try { await api.analyze.subject(join(m, "rb.mp4"), fps); return "ok"; } catch (e: any) { return e.code as string; } finally { process.env.AGENTCUT_CACHE = keep; }
   };
@@ -377,7 +387,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
 
     // refusals come before anything is written and before uv runs
     const refused = async (name: string, cache: string, watch: string[]) => {
-      const n = runs().length, code = await subject(cache);
+      const n = runs().length, code = await subject(cache, 5, false);
       check(`${name}: refused with unsafe_helper_dir, uv not run, nothing written`, code === "unsafe_helper_dir" && runs().length === n && watch.every((d) => !existsSync(d) || readdirSync(d).length === 0), { code, ran: runs().length - n });
     };
     if (posix) {
@@ -409,13 +419,14 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     // group-writable (not world-writable). A child process: the runtime reads HOME at start, and this suite must never touch the real home.
     if (posix) {
       const home = fresh("home"), cli = join(import.meta.dir, "../src/cli.ts");
-      const inHome = (h = home) => {
+      const inHome = (h = home, seed = false) => {
+        if (seed) seedFaceIn(join(h, ".cache", "agentcut"));
         const e: Record<string, string | undefined> = { ...process.env, HOME: h, AGENTCUT_UV: rec };
         delete e.AGENTCUT_CACHE;
         return JSON.parse(spawnSync(process.execPath, [cli, "subject", join(m, "rb.mp4"), "--fps", "7"], { encoding: "utf8", env: e as NodeJS.ProcessEnv }).stdout || "{}");
       };
       chmod(home, 0o775);
-      const nHome = runs().length, okHome = inHome(), rh = runs().at(-1)!;
+      const nHome = runs().length, okHome = inHome(home, true), rh = runs().at(-1)!;
       check("default root: ~/.cache/agentcut/helper-runs under a group-writable home", okHome.ok === true && runs().length === nHome + 1 && dirname(dirname(rh.script)) === join(realpathSync(home), ".cache", "agentcut", "helper-runs"), { okHome, rh });
       chmod(home, 0o777);
       rmSync(join(home, ".cache"), { recursive: true, force: true });
@@ -643,6 +654,164 @@ def remove(*a, **k): raise SystemExit("stub rembg")
   } finally { process.env.AGENTCUT_UV = fake; }
 }
 
+// ---------------------------------------------------------------- the face model and what a subject result says it followed
+console.log("subject results: what was followed");
+{
+  const face = (score: number, faces = 1) => ({ t: 0, x: 0.5, y: 0.5, w: 0.2, h: 0.3, kind: "face", score, faces });
+  const sal = { t: 0, x: 0.5, y: 0.5, kind: "saliency", score: 0.5 }, none = { t: 0, kind: "none", score: 0 };
+  const WARN = {
+    saliency: "no face found: followed the most salient region; check the framing with preview_frame and set focus by hand if it is wrong",
+    none: "nothing to follow was found: the focus stays at the centre",
+    mixed: (k: number, n: number) => `a face was found in ${k} of ${n} samples; the others follow the most salient region`,
+    low: (s: number) => `lowest face confidence ${s} (under 0.9): it may not be a face; check with preview_frame`,
+    several: (n: number) => `up to ${n} faces in frame: following the largest`,
+  };
+  const shape = (subject: string, warnings: string[]) => JSON.stringify(warnings.length ? { subject, warnings } : { subject });
+  const attempt = (f: () => unknown) => { try { return f(); } catch (e: any) { return { threw: String(e.message ?? e) }; } };
+  for (const [name, samples, subject, warnings] of [
+    ["faces at or above 0.9", [face(0.9), face(0.97)], "face", []],
+    ["no face, saliency (and an empty sample)", [sal, sal, none], "saliency", [WARN.saliency]],
+    ["some faces, the rest saliency", [face(0.95), sal, sal, face(0.95)], "mixed", [WARN.mixed(2, 4)]],
+    ["faces and an empty sample", [face(0.95), none], "mixed", [WARN.mixed(1, 2)]],
+    ["a face under 0.9", [face(0.95), face(0.62), face(0.7)], "face", [WARN.low(0.62)]],
+    ["several faces in a frame", [face(0.95), face(0.95, 3), face(0.95, 2)], "face", [WARN.several(3)]],
+    ["only empty samples", [none, none], "none", [WARN.none]],
+    ["mixed with a weak face and several faces", [face(0.5, 2), sal], "mixed", [WARN.mixed(1, 2), WARN.low(0.5), WARN.several(2)]],
+  ] as [string, any[], string, string[]][])
+    check(`subjectSummary: ${name} -> ${subject}${warnings.length ? ` + ${warnings.length} warning(s)` : ", no warnings"}`, JSON.stringify(attempt(() => V.subjectSummary(samples))) === shape(subject, warnings), attempt(() => V.subjectSummary(samples)));
+
+  // the same summary in the three results that carry it (the fake detector reports the scenario for every sample)
+  const S = join(tmp, "summary-reel"), T = join(tmp, "summary-yt");
+  api.create(S, { preset: "reels" });
+  api.create(T, { preset: "youtube" });
+  await apply(S, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }]);
+  await apply(T, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 0, duration: 4 }]);
+  try {
+    // fps 2.5 over 4 s = 10 samples; each scenario has its own fps, so no result is read from another one's cache
+    for (const [sc, fps, subject, warnings] of [
+      ["faces", 1.5, "face", []], ["saliency", 2, "saliency", [WARN.saliency]], ["mixed", 2.5, "mixed", [WARN.mixed(5, 10)]],
+      ["low", 3.5, "face", [WARN.low(0.62)]], ["several", 4.5, "face", [WARN.several(3)]], ["none", 5.5, "none", [WARN.none]],
+    ] as [string, number, string, string[]][]) {
+      process.env.FAKE_SUBJECT = sc;
+      const a: any = await api.analyze.subject(join(m, "rb.mp4"), fps).catch((e) => e);
+      const r: any = (await applyPrep(S, [{ op: "auto_reframe", id: "vid1", fps }]).catch((e) => [e]))[0];
+      delete process.env.FAKE_SUBJECT;
+      check(`${sc}: analyze_subject says ${subject}${warnings.length ? " with its warning" : " without warnings"}`, shape(a.subject, a.warnings ?? []) === shape(subject, warnings) && a.samples?.length === Math.round(4 * fps) && "cached" in a && a.fps === fps, a);
+      check(`${sc}: auto_reframe says the same and keeps its fields`, shape(r.subject, r.warnings ?? []) === shape(subject, warnings) && r.samples === a.samples?.length && "faces" in r && r.id === "vid1", r);
+    }
+    process.env.FAKE_SUBJECT = "mixed";
+    const tt: any = (await applyPrep(T, [{ op: "track_to", id: "shp1", target: "vid1", fps: 4 }]).catch((e) => [e]))[0];
+    delete process.env.FAKE_SUBJECT;
+    check("track_to without a box says what it followed", shape(tt.subject, tt.warnings ?? []) === shape("mixed", [WARN.mixed(8, 16)]) && tt.target === "vid1" && tt.attached_to === "vid1", tt);
+    const tb: any = (await applyPrep(T, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1, fps: 10 }]).catch((e) => [e]))[0];
+    check("track_to with a box has no subject fields", tb.subject === undefined && tb.warnings === undefined && tb.attached_to === "vid1", tb);
+  } finally { delete process.env.FAKE_SUBJECT; }
+}
+
+console.log("the face model: descriptor, job, gate, download");
+{
+  const { createHash } = await import("node:crypto");
+  const { createServer } = await import("node:http");
+  const { basename } = await import("node:path");
+  const { FACE_MODEL } = V;
+  check("the face model is pinned: a name, an https URL at a full commit, a sha256 and a size",
+    FACE_MODEL?.name === FACE && /^https:\/\/.*\/[0-9a-f]{40}\/.*\.onnx$/.test(FACE_MODEL?.url ?? "") && FACE_MODEL?.sha256 === "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4" && FACE_MODEL?.bytes === 232589, FACE_MODEL);
+  const mainCache = process.env.AGENTCUT_CACHE!, jobsLog = join(tmp, "subject-jobs.jsonl");
+  const jobs = () => (existsSync(jobsLog) ? readFileSync(jobsLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as Record<string, any>[];
+  const inCache = async <T>(cache: string, f: () => T | Promise<T>): Promise<T> => {
+    process.env.AGENTCUT_CACHE = cache;
+    try { return await f(); } finally { process.env.AGENTCUT_CACHE = mainCache; }
+  };
+  const fresh = (name: string) => { const d = join(tmp, `fm-${name}`); mkdirSync(d, { recursive: true }); return d; };
+  const faceFile = (cache: string) => join(cache, "models", FACE, `${FACE}.onnx`);
+  const caught = async (f: () => unknown) => { try { await f(); return null as any; } catch (e: any) { return e; } };
+  process.env.FAKE_JOB_LOG = jobsLog;
+  try {
+    // 2. the job hands the cached model's absolute path to the helper; the cache key does not contain it
+    const before = jobs().length, rb = join(m, "rb.mp4");
+    const sub: any = await api.analyze.subject(rb, 6.5);
+    const job = jobs()[before];
+    check("the helper job carries face_model = the cached model's path", sub.cached === false && jobs().length === before + 1 && job?.cmd === "subject" && job.face_model === faceFile(mainCache), { job, want: faceFile(mainCache) });
+    const A = fresh("key-a"), B = fresh("key-b"), R = join(tmp, "key-root");
+    const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, srcW: 640, srcH: 360, root: R }));
+    const ja = await jobIn(A), jb = await jobIn(B);
+    check("the cache key is the same under two cache roots, while face_model follows the root", basename(ja.file) === basename(jb.file) && ja.job.face_model === faceFile(A) && jb.job.face_model === faceFile(B), { a: ja.file, b: jb.file, fa: ja.job.face_model, fb: jb.job.face_model });
+    check("the key names no path of this machine", !ja.file.includes(A) && !basename(ja.file).includes(FACE) && JSON.stringify(ja.job).includes(FACE_MODEL?.sha256?.slice(0, 12) ?? "no-sha"), ja.job);
+
+    // 3. the gate: no model and no allow_download -> model_not_cached, and uv is never started
+    const G = fresh("gate"), calls0 = nCalls(), jobs0 = jobs().length;
+    const ns = await inCache(G, () => caught(() => api.analyze.subject(rb, 7.5)));
+    check("analyze_subject without the model and without allow_download -> model_not_cached", ns?.code === "model_not_cached" && ns.message.includes(FACE) && !/remove_background/.test(ns.message), { code: ns?.code, message: ns?.message });
+    check("  the hint names the file, allow_download and the size", ns?.hint?.includes(faceFile(G)) && ns.hint.includes("allow_download") && ns.hint.includes("0.23"), ns?.hint);
+    check("  uv was never started and no model file was written", nCalls() === calls0 && jobs().length === jobs0 && !existsSync(join(G, "models")), { calls: nCalls() - calls0, models: existsSync(join(G, "models")) });
+    const E = join(tmp, "gate-subject");
+    api.create(E, { preset: "reels" });
+    await apply(E, [{ op: "add_clip", track: "main", src: rb, duration: 4 }, { op: "auto_reframe", id: "vid1", fps: 7 }]);
+    const st: any = await inCache(G, () => api.prepareStatus(E));
+    check("prepare status lists the face model in models_to_download", st.models_to_download?.length === 1 && st.models_to_download[0].model === FACE && st.models_to_download[0].approx_mb === 0.23 && st.models_to_download[0].path === faceFile(G), st);
+    for (const [what, opts] of [["", undefined], [" (allow_download false)", { allowDownload: false }]] as const) {
+      const np = await inCache(G, () => caught(() => api.prepare(E, opts)));
+      check(`prepare without allow_download${what}: model_not_cached, no job started`, np?.code === "model_not_cached" && np.message.includes(FACE) && !/remove_background/.test(np.message) && np.hint.includes("allow_download") && nCalls() === calls0 && jobs().length === jobs0, { code: np?.code, message: np?.message });
+    }
+    const cli = (cache: string, ...a: string[]) => spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "subject", rb, "--fps", "8.5", ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } });
+    const c1 = cli(G), c1j = JSON.parse(c1.stdout || "{}");
+    check("CLI subject without --allow-download and without the model: model_not_cached, non-zero exit, uv not started", c1.status !== 0 && c1j.error?.code === "model_not_cached" && nCalls() === calls0, { status: c1.status, out: c1.stdout.slice(0, 300) });
+    seedFaceIn(G);
+    const stOk: any = await inCache(G, () => api.prepareStatus(E));
+    check("once the model file is in place nothing is left to download", stOk.models_to_download.length === 0, stOk);
+    const okp: any = await inCache(G, () => api.prepare(E));
+    check("  and prepare runs the helper with that file", okp.ready === true && nCalls() === calls0 + 1 && jobs().at(-1)?.face_model === faceFile(G), { ready: okp.ready, job: jobs().at(-1) });
+    const c2 = cli(G, "--allow-download"), c2j = JSON.parse(c2.stdout || "{}");
+    check("CLI subject --allow-download with the model present runs and says what it followed", c2.status === 0 && c2j.ok === true && typeof c2j.subject === "string" && Array.isArray(c2j.samples), { status: c2.status, out: c2.stdout.slice(0, 300) });
+
+    // a helper that fails with the model present: the hint names the file
+    const failUv = join(tmp, "fail-subject-uv.mjs");
+    writeFileSync(failUv, `#!/usr/bin/env node\nprocess.stderr.write("stub load failure\\n"); process.exit(1);\n`);
+    chmodSync(failUv, 0o755);
+    process.env.AGENTCUT_UV = failUv;
+    const bad = await inCache(G, () => caught(() => api.analyze.subject(rb, 9.5)));
+    process.env.AGENTCUT_UV = fake;
+    check("subject helper fails with the model present: vision_failed, the hint names the model file and allow_download", bad?.code === "vision_failed" && bad.hint.includes(`the model file ${faceFile(G)} may be damaged`) && bad.hint.includes("allow_download") && /probe_media/.test(bad.hint), { code: bad?.code, hint: bad?.hint });
+
+    // 5. capabilities
+    const caps = (cache: string) => inCache(cache, () => (api.capabilities() as any));
+    const cOff = await caps(fresh("caps-off")), cOn = await caps(G);
+    check("capabilities: engines.vision.face_model is not cached in an empty cache", JSON.stringify(cOff.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: false }), cOff.engines.vision);
+    check("capabilities: engines.vision.face_model is cached once the file is there, and matte_models stays", JSON.stringify(cOn.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: true }) && cOn.matte_models.length === 5 && cOn.engines.vision.matte_models === "see matte_models", cOn.engines.vision);
+
+    // 4. downloadModel against a local server (never the product URL)
+    const good = Buffer.from("not a real model: some bytes for a local download test"), other = Buffer.from(good.toString().replace("some", "SOME"));
+    const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    const server = createServer((req, res) => {
+      const send = (code: number, body: Buffer) => { res.writeHead(code, { "content-length": body.length }); res.end(body); };
+      if (req.url === "/ok") send(200, good);
+      else if (req.url === "/other") send(200, other);
+      else if (req.url === "/short") send(200, good.subarray(0, 10));
+      else if (req.url === "/long") send(200, Buffer.concat([good, good]));
+      else send(404, Buffer.from("no"));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const desc = (name: string, path: string) => ({ name, url: `http://127.0.0.1:${port}${path}`, sha256: sha(good), bytes: good.length });
+    const D = fresh("download");
+    try {
+      await inCache(D, async () => {
+        const down = (name: string, path: string) => caught(() => V.downloadModel(desc(name, path)));
+        for (const [what, path] of [["the right size with other bytes (sha256 differs)", "/other"], ["a body shorter than the size", "/short"], ["a body longer than the size", "/long"], ["an HTTP 404", "/missing"]] as const) {
+          const e = await down("test_model_bad", path);
+          check(`downloadModel: ${what} -> model_download_failed, hint names the URL and the target path, nothing left`,
+            e?.code === "model_download_failed" && e.hint.includes(desc("x", path).url) && e.hint.includes(join(D, "models", "test_model_bad", "test_model_bad.onnx")) && !existsSync(join(D, "models")), { code: e?.code, message: e?.message, hint: e?.hint, models: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
+        }
+        const ok = await caught(() => V.downloadModel(desc("test_model_ok", "/ok")));
+        const file = join(D, "models", "test_model_ok", "test_model_ok.onnx");
+        check("downloadModel: the right bytes are written, and only that file", ok === null && existsSync(file) && readFileSync(file).equals(good) && readdirSync(join(D, "models", "test_model_ok")).join() === "test_model_ok.onnx" && V.modelCached("test_model_ok") && V.modelFile("test_model_ok") === file, { ok, listing: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
+      });
+    } finally { await new Promise((r) => server.close(r)); }
+    const refused = await inCache(fresh("download-closed"), () => caught(() => V.downloadModel(desc("test_model_closed", "/ok"))));
+    check("downloadModel: a server that is gone -> model_download_failed", refused?.code === "model_download_failed", { code: refused?.code, message: refused?.message });
+  } finally { delete process.env.FAKE_JOB_LOG; process.env.AGENTCUT_CACHE = mainCache; process.env.AGENTCUT_UV = fake; }
+}
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
@@ -659,7 +828,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   const R = join(tmp, "real");
   api.create(R, { preset: "reels" });
   await apply(R, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 }]);
-  const res = (await applyPrep(R, [{ op: "auto_reframe", id: "vid1" }]))[0];
+  const res = (await applyPrep(R, [{ op: "auto_reframe", id: "vid1" }], true))[0];
   const kx = clip(R, "vid1").keyframes.focus_x;
   check("real: subject found and followed left -> right", res.samples === 18 && kx[0][1] < 0.2 && kx.at(-1)[1] > 0.7, { res, kx });
   await apply(R, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
@@ -667,7 +836,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   api.create(Q, { preset: "youtube" });
   await apply(Q, [{ op: "add_clip", track: "main", src: join(m, "mover.mp4"), duration: 3 },
     { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [30, 30], fill: "red", at: 0, duration: 3 }]);
-  const tk = (await applyPrep(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0];
+  const tk = (await applyPrep(Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }], true))[0];
   const kxs = clip(Q, "shp1").keyframes.x, end = kxs.at(-1);
   check("real: CSRT follows the box (within 25 px)", tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end });
   await apply(Q, [{ op: "remove_background", id: "vid1" }]);
