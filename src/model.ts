@@ -105,7 +105,12 @@ const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
   duration: [(n) => n >= 0, "a number >= 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
 };
-export const MATTE_MODELS = ["u2netp", "u2net", "u2net_human_seg", "isnet-general-use", "silueta"];
+// Download size in MB, one source per number; null = not known offline. u2net_human_seg: 175,997,641 B, measured; silueta: 43 MB, rembg 2.0.86 README;
+// u2netp: ~4.7 MB, recorded in an earlier dogfood run. u2net and isnet-general-use have no local source.
+export const MATTE_MB: Record<string, number | null> = { u2netp: 5, u2net: null, u2net_human_seg: 176, "isnet-general-use": null, silueta: 43 };
+export const MATTE_MODELS = Object.keys(MATTE_MB);
+export const matteSize = (model: string) => (MATTE_MB[model] == null ? "size unknown" : `~${MATTE_MB[model]} MB`);
+export const MATTE_SIZES = MATTE_MODELS.map((m) => `${m} ${matteSize(m)}`).join(", ");
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];
 
 type F = Record<string, [string[], string]>;
@@ -158,7 +163,7 @@ export const MEDIA_FIELDS: F = {
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
   focus: [T("array"), "[fx, fy] 0..1 crop focus for cover (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
-  remove_background: [T("boolean", "object"), `true or {model: ${MATTE_MODELS.join("|")}}: AI alpha matte (cached; needs uv, see op remove_background)`],
+  remove_background: [T("boolean", "object"), `true or {model: ${MATTE_MODELS.join("|")}}: AI alpha matte (cached; needs uv; a model is downloaded only by prepare with allow_download: ${MATTE_SIZES}; see op remove_background)`],
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],

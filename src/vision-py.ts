@@ -88,6 +88,9 @@ def track(j):
     return {"samples": out, "init_index": i0}
 
 def matte(j):
+    if not j.get("allow_download"):  # no model fetch without consent: rembg's downloads go through these proxies, so a missing or corrupt model file fails instead
+        for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
+        for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
     import numpy as np
     from rembg import new_session, remove
     from PIL import Image

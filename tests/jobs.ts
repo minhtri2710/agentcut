@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-jobs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
+mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 let failures = 0;
 const t0 = performance.now();
 function check(name: string, cond: unknown, info?: unknown) {
@@ -142,6 +143,7 @@ const nCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n"
 // ---------------------------------------------------------------- prepare as an MCP job
 console.log("prepare (MCP background job)");
 const P = join(tmp, "proj");
+let extraCalls = 0; // helper runs of the model-gate project below, not of P
 {
   const env = { ...(process.env as Record<string, string>), AGENTCUT_UV: fake };
   const client = new Client({ name: "jobs-test", version: "1" });
@@ -174,6 +176,17 @@ const P = join(tmp, "proj");
   check("preview works after prepare", pv2.ok, pv2);
   const again = await call("prepare", {});
   check("second prepare: nothing to compute", again.status === "done" && again.result.computed.length === 0 && nCalls() === 1, again);
+  // a model that is not cached: the MCP prepare tool refuses it, and allow_download lets the job through
+  const Q = join(tmp, "proj-model");
+  await call("create_project", { path: Q, preset: "720p" });
+  await call("apply_ops", { project: Q, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "silueta" }] });
+  const qs = await call("prepare", { project: Q, status_only: true }), calls0 = nCalls();
+  check("MCP prepare status_only lists the model to download", qs.ok && qs.models_to_download?.[0]?.model === "silueta" && qs.models_to_download[0].approx_mb === 43, qs);
+  const q1 = await call("prepare", { project: Q, wait_seconds: 10 });
+  check("MCP prepare without allow_download: model_not_cached, the helper never runs", q1.status === "failed" && q1.error?.code === "model_not_cached" && nCalls() === calls0, q1);
+  const q2 = await call("prepare", { project: Q, allow_download: true, wait_seconds: 10 });
+  check("MCP prepare allow_download=true passes the gate", q2.status === "done" && q2.result?.computed?.[0]?.kind === "matte" && nCalls() === calls0 + 1, q2);
+  extraCalls = 1;
   await client.close();
 }
 
@@ -183,7 +196,7 @@ process.env.AGENTCUT_UV = fake;
 const api = await import("../src/api.ts");
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
-check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() === 1, rr);
+check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() - extraCalls === 1, rr);
 const png = join(tmp, "f.png");
 await api.frame(P, 1, { out: png, scale: 0.5 });
 const pix = (x: number) => [...spawnSync("ffmpeg", ["-v", "error", "-i", png, "-vf", `crop=1:1:${x}:180`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout];
@@ -203,7 +216,7 @@ check("prune max_mb=0 removes referenced files too, with a prepare hint", !exist
 const nf: any = await api.frame(P, 1, { out: png }).catch((e) => e);
 check("after pruning the matte, preview asks for prepare again", nf.code === "not_prepared", nf);
 await api.prepare(P);
-check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() === 2);
+check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() - extraCalls === 2);
 const bad = (() => { try { api.cache.prune(P, { olderThan: "soon" }); } catch (e: any) { return e.code; } })();
 check("bad older_than -> bad_value", bad === "bad_value");
 

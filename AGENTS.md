@@ -106,6 +106,9 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
+  -> a matte model is downloaded only on request: prepare fails with code model_not_cached until the model is in
+     <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or you run prepare with allow_download=true (CLI: prepare
+     --allow-download); capabilities.matte_models and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
   uv runs with --no-config: set UV_* env vars (e.g. UV_INDEX_URL) for index settings.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
   prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress): it computes the mattes /

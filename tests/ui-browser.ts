@@ -23,6 +23,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-uib-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
+mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 const api = await import("../src/api.ts");
 const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");

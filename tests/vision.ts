@@ -69,7 +69,11 @@ process.stdout.write(JSON.stringify(out));
 `);
 chmodSync(fake, 0o755);
 process.env.AGENTCUT_UV = fake;
-const nCalls = (cmd?: string) => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((l) => l && (!cmd || l === cmd)).length : 0);
+/** a model file as the matte models dir holds it: <cache>/models/<name>/<name>.onnx (the content is never read by the fake uv) */
+const modelFile = (name: string) => join(process.env.AGENTCUT_CACHE!, "models", name, `${name}.onnx`);
+const seedModel = (name: string) => { mkdirSync(join(process.env.AGENTCUT_CACHE!, "models", name), { recursive: true }); writeFileSync(modelFile(name), ""); };
+for (const name of ["u2netp", "u2net"]) seedModel(name); // the models the suite's mattes use are cached
+const nCalls =(cmd?: string) => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((l) => l && (!cmd || l === cmd)).length : 0);
 
 // ---------------------------------------------------------------- pure path helpers
 console.log("smoothPath / simplify");
@@ -511,6 +515,100 @@ console.log("asset record");
   check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", fps: null, duration: 2, ...base }).job.fps === 30);
 }
 
+// ---------------------------------------------------------------- matte models are downloaded only on request
+console.log("matte models: prepare refuses an uncached model unless allow_download is set");
+{
+  const gateLog = join(tmp, "gate-runs.jsonl"), gateUv = join(tmp, "gate-uv.mjs");
+  // records the job's allow_download and the U2NET_HOME variable only, then hands over to the fake above
+  writeFileSync(gateUv, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const job = JSON.parse(process.argv.at(-1));
+appendFileSync(${JSON.stringify(gateLog)}, JSON.stringify({ cmd: job.cmd, allow: job.allow_download, home: process.env.U2NET_HOME ?? null }) + "\\n");
+const r = spawnSync(${JSON.stringify(fake)}, process.argv.slice(2), { encoding: "utf8" });
+process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.status ?? 1);
+`);
+  chmodSync(gateUv, 0o755);
+  const gateRuns = () => (existsSync(gateLog) ? readFileSync(gateLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as { cmd: string; allow: unknown; home: string | null }[];
+  const MODEL = "u2net_human_seg", cacheRoot = process.env.AGENTCUT_CACHE!, modelDir = join(cacheRoot, "models");
+  const G = join(tmp, "gate");
+  api.create(G, { preset: "720p" });
+  await apply(G, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: MODEL }]);
+  process.env.AGENTCUT_UV = gateUv;
+  try {
+    const caps = () => (api.capabilities() as any).matte_models as { name: string; approx_mb: number; cached: boolean }[];
+    check("capabilities lists the 5 matte models with a size and cached flags", caps()?.length === 5 && caps().every((x) => x.approx_mb === null || x.approx_mb > 0) && caps().filter((x) => x.approx_mb === null).map((x) => x.name).join() === "u2net,isnet-general-use"
+      && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false, caps());
+    const st: any = api.prepareStatus(G);
+    check("prepare status lists the model that would be downloaded", st.models_to_download?.length === 1 && st.models_to_download[0].model === MODEL && st.models_to_download[0].approx_mb === 176
+      && st.models_to_download[0].path === modelFile(MODEL), st);
+    const nf: any = await api.prepare(G).catch((e) => e);
+    check("uncached model -> model_not_cached naming the model", nf.code === "model_not_cached" && nf.message.includes(MODEL), { code: nf.code, message: nf.message });
+    check("  the hint has the size, the cache path and allow_download", nf.hint?.includes("176") && nf.hint.includes(modelFile(MODEL)) && nf.hint.includes("allow_download"), nf.hint);
+    check("  the helper never ran and nothing was written to the models dir", gateRuns().length === 0 && !existsSync(join(modelDir, MODEL)), { runs: gateRuns(), listing: existsSync(modelDir) ? readdirSync(modelDir) : null });
+    { // a model whose size is not known offline: the text says so and never prints a placeholder
+      const U = join(tmp, "gate-unknown");
+      api.create(U, { preset: "720p" });
+      await apply(U, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "isnet-general-use" }]);
+      const un: any = await api.prepare(U).catch((e) => e), us: any = api.prepareStatus(U);
+      check("uncached model of unknown size: model_not_cached says 'size unknown', never null or undefined, status size is null",
+        un.code === "model_not_cached" && un.message.includes("isnet-general-use (size unknown)") && un.hint.includes("size unknown") && !/null|undefined|NaN/.test(un.message + un.hint)
+        && us.models_to_download[0]?.approx_mb === null && gateRuns().length === 0, { code: un.code, message: un.message, hint: un.hint, us: us.models_to_download });
+    }
+    seedModel(MODEL);
+    check("cached model: capabilities say so and prepare status lists nothing to download", caps().find((x) => x.name === MODEL)?.cached === true && (api.prepareStatus(G) as any).models_to_download.length === 0);
+    const ok: any = await api.prepare(G);
+    const run = gateRuns();
+    check("cached model: the gate passes, the helper ran with allow_download false and U2NET_HOME = the user cache (models live in <cache>/models)",
+      ok.computed[0]?.kind === "matte" && run.length === 1 && run[0].allow === false && run[0].home === cacheRoot, { ok: ok.ready, run });
+    rmSync(modelFile(MODEL)); rmSync(join(G, ".agentcut", "cache"), { recursive: true });
+    const al: any = await api.prepare(G, { allowDownload: true });
+    check("allow_download with the model missing: the gate passes and the helper is told allow_download true", al.computed[0]?.kind === "matte" && gateRuns().length === 2 && gateRuns()[1].allow === true, { al: al.ready, run: gateRuns() });
+    check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
+
+    // the CLI and MCP spellings reach the same gate
+    rmSync(join(G, ".agentcut", "cache"), { recursive: true });
+    const cli = (...a: string[]) => spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, "--quiet", ...a], { encoding: "utf8", env: { ...process.env } });
+    const c1 = cli(), c1j = JSON.parse(c1.stdout || "{}");
+    check("CLI prepare without --allow-download: model_not_cached, non-zero exit", c1.status !== 0 && c1j.error?.code === "model_not_cached", { status: c1.status, out: c1.stdout.slice(0, 300) });
+    const c2 = cli("--allow-download"), c2j = JSON.parse(c2.stdout || "{}");
+    check("CLI prepare --allow-download passes the gate", c2.status === 0 && c2j.ready === true && gateRuns().at(-1)?.allow === true, { status: c2.status, out: c2.stdout.slice(0, 300) });
+
+    // the helper itself: with allow_download false it points the HTTP clients at an unreachable proxy before importing rembg.
+    // The real helper text runs under system python3 against stub numpy / PIL / rembg modules; the stub rembg records the proxy
+    // variables it sees when it is imported, so nothing here reaches a network.
+    const py = spawnSync("python3", ["-c", "pass"]);
+    if (py.status !== 0) check("python3 available for the helper guard check (skipped: not found)", true);
+    else {
+      const stubs = join(tmp, "stubs"), run = join(tmp, "stub-run");
+      mkdirSync(join(stubs, "PIL"), { recursive: true }); mkdirSync(run);
+      writeFileSync(join(stubs, "numpy.py"), "");
+      writeFileSync(join(stubs, "PIL", "__init__.py"), "");
+      writeFileSync(join(stubs, "PIL", "Image.py"), "");
+      writeFileSync(join(stubs, "rembg.py"), `import json, os
+open(os.environ["STUB_OUT"], "w").write(json.dumps({k: os.environ.get(k) for k in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "NO_PROXY", "no_proxy"]}))
+def new_session(model): raise SystemExit("stub rembg: " + model)
+def remove(*a, **k): raise SystemExit("stub rembg")
+`);
+      const { VISION_PY } = await import("../src/vision-py.ts");
+      const script = join(run, "helper.py");
+      writeFileSync(script, VISION_PY);
+      const guarded = (allow: boolean) => {
+        const out = join(run, `seen-${allow}.json`);
+        const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: allow });
+        const r = spawnSync("python3", [script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
+          env: { ...process.env, PYTHONPATH: stubs, STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" } });
+        return { status: r.status, seen: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, stderr: r.stderr.slice(-200) };
+      };
+      const closed = guarded(false), open = guarded(true);
+      const dead = (v: string | null) => typeof v === "string" && /^http:\/\/127\.0\.0\.1:9\/?$/.test(v);
+      check("helper, allow_download false: the proxy variables point at an unreachable address and NO_PROXY is cleared when rembg is imported",
+        !!closed.seen && ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].every((k) => dead(closed.seen[k])) && !closed.seen.NO_PROXY && !closed.seen.no_proxy, closed);
+      check("helper, allow_download true: the proxy variables are left as they were", open.seen?.HTTPS_PROXY === "http://allowed.example:3128" && open.seen?.NO_PROXY === "*", open);
+    }
+  } finally { process.env.AGENTCUT_UV = fake; }
+}
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
@@ -539,7 +637,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   const kxs = clip(Q, "shp1").keyframes.x, end = kxs.at(-1);
   check("real: CSRT follows the box (within 25 px)", tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end });
   await apply(Q, [{ op: "remove_background", id: "vid1" }]);
-  const mt: any = await api.prepare(Q), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: Q }));
+  const mt: any = await api.prepare(Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: Q }));
   check("real: matte produced and cached", existsSync(mt.computed[0].file) && again.cached === true, mt);
 }
 

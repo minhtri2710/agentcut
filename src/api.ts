@@ -14,7 +14,7 @@ import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
 import { attachPrepared } from "./ops-vision.ts";
 import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
-import { analyzeSubject } from "./vision.ts";
+import { analyzeSubject, matteCached } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkRevision, findProject, Project, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
@@ -291,6 +291,7 @@ export function capabilities() {
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
+    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: matteCached(name) })),
     ops: Object.keys(OPS),
   };
 }
@@ -313,7 +314,7 @@ export const feedback = {
 
 /** Compute the derived assets the timeline needs (mattes, vision analyses) and apply the pending vision requests. Slow:
  *  MCP runs it as a background job (render_status); preview/render fail with not_prepared until it ran. */
-export const prepare = (project?: string, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal } = {}) => {
+export const prepare = (project?: string, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) => {
   const p = openProject(project);
   CACHE.sweepStale(p);
   return PREP.prepare(p, o);

@@ -7,8 +7,8 @@ import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, rea
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
-import { type Dict, EditError, MATTE_MODELS } from "./model.ts";
-import { commit, createFile, tmpSibling, writeFile } from "./safe-write.ts";
+import { type Dict, EditError, MATTE_MB, MATTE_MODELS } from "./model.ts";
+import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
 import { VISION_PY } from "./vision-py.ts";
 
 // pinned so cached results and mattes stay reproducible; opencv 4.12 still ships the Haar face cascades
@@ -16,6 +16,15 @@ const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
 
 const userCache = () => resolve(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"));
+/** Matte models live only in `<user cache>/models/<name>/<name>.onnx`: the helper runs with U2NET_HOME = the user cache, and rembg 2.0.86 keeps a
+ *  model at `<U2NET_HOME>/models/<name>/<name>.onnx`. Nothing under ~/.u2net is read. */
+export const matteModelFile = (model: string) => join(userCache(), "models", model, `${model}.onnx`);
+export const matteCached = (model: string) => lstatSync(matteModelFile(model), { throwIfNoEntry: false })?.isFile() === true;
+/** The matte models these jobs need that are not in the models dir yet. */
+export function modelsToDownload(jobs: Derived[]) {
+  const names = new Set(jobs.filter((d) => d.kind === "matte").map((d) => String(d.job.model)));
+  return [...names].filter((model) => !matteCached(model)).map((model) => ({ model, approx_mb: MATTE_MB[model], path: matteModelFile(model) }));
+}
 export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
 
 const hashes = new Map<string, string>();
@@ -85,9 +94,9 @@ const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd ===
 /** Runs the helper (`root` = helperRoot()) from a fresh private (0700) run dir `helper-runs/vision-<pid>-xxxxxx`, removed afterwards even on failure or abort
  *  (best effort: a cleanup error never replaces the result; a SIGKILL leaves the dir behind). The dir is also the spawn's cwd, and uv gets
  *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
-async function runHelper(root: string, d: Derived, out: string, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
+async function runHelper(root: string, d: Derived, out: string, allowDownload: boolean, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   const uvEnv = process.env.AGENTCUT_UV || "uv", uv = /[\\/]/.test(uvEnv) ? resolve(uvEnv) : uvEnv; // the cwd changes below: keep a relative path meaning what the user typed
-  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
+  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out, allow_download: allowDownload } : d.job;
   const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {
     const script = join(dir, "helper.py");
@@ -98,8 +107,9 @@ async function runHelper(root: string, d: Derived, out: string, onFrames?: (n: n
 
 function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   checkHelper(script);
+  const env = d.kind === "matte" ? { ...process.env, U2NET_HOME: userCache() } : process.env;
   return new Promise((res, rej) => {
-    const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
+    const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, env, stdio: ["pipe", "pipe", "pipe"] });
     // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)
     ch.stdin.on("error", () => {});
     stopOnAbort(ch, signal);
@@ -113,7 +123,7 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
     ch.on("error", (e: any) => rej(e.code === "ENOENT"
       ? new EditError(`${label(job.cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
         "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
-        (job.cmd === "matte" ? "rembg + onnxruntime and a ~5 MB segmentation model" : "opencv (~40 MB)"))
+        (job.cmd === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)"))
       : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
@@ -127,14 +137,16 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
 /** The trusted base of d.file: the project folder, or the user cache for an analysis without a project. */
 const baseOf = (d: Derived) => d.root ?? userCache();
 
-/** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file. */
-export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<{ cached: boolean }> {
+/** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file.
+ *  A matte model is fetched by the helper only with `allowDownload` (prepare gates it first: prepare.ts). */
+export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
   const tmp = tmpSibling(d.file, baseOf(d));
+  if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
-    const r = await runHelper(root, d, tmp, onFrames, signal);
+    const r = await runHelper(root, d, tmp, allowDownload, onFrames, signal);
     if (d.kind === "matte") commit(tmp, d.file);
     else writeFile(d.file, JSON.stringify(r), baseOf(d));
   } finally { rmSync(tmp, { force: true }); }

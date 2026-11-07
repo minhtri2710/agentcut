@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
 import { VERSION } from "./version.ts";
-const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles", "spectrogram", "no-black", "status"]);
+const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles", "spectrogram", "no-black", "status", "allow-download"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -16,7 +16,7 @@ Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · ad
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black]
              audio [--source F] [--spectrogram] [--from S --to S] [-o a.png] · motion [--from S --to S] [--frames 10] [-o m.jpg]
-Prepare:     prepare [--status] [--quiet]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
+Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
              preview and video render fail with code not_prepared until it ran)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
@@ -149,7 +149,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
         let last = 0;
-        res = await api.prepare(P, { progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } } });
+        res = await api.prepare(P, { allowDownload: f["allow-download"], progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } } });
         break;
       }
       case "cache": {

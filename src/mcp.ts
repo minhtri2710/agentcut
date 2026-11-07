@@ -140,12 +140,12 @@ export function buildServer() {
     return waitJob(id, a.wait_seconds);
   });
   s.registerTool("prepare", {
-    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview and video render fail with code not_prepared until prepare is done (audio-only renders skip it). Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing.",
-    inputSchema: { project: P, status_only: z.boolean().default(false), wait_seconds: z.number().default(30) },
+    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview and video render fail with code not_prepared until prepare is done (audio-only renders skip it). Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing (models_to_download: matte models not cached yet). A matte model (sizes in capabilities.matte_models; some are unknown offline) is downloaded only with allow_download=true; without it an uncached model fails with code model_not_cached.",
+    inputSchema: { project: P, status_only: z.boolean().default(false), allow_download: z.boolean().default(false), wait_seconds: z.number().default(30) },
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); if (a.status_only) return ok(api.prepareStatus(project)); } catch (e) { return fail(e); }
-    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal })), a.wait_seconds);
+    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download })), a.wait_seconds);
   });
   s.registerTool("cache", {
     description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes; action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'). previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",

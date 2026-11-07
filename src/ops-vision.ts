@@ -3,7 +3,7 @@
 // never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
 // sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
 import { fitBox } from "./media.ts";
-import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -158,7 +158,7 @@ export function registerVisionOps(h: OpHelpers) {
       return out;
     });
 
-  h.op("remove_background", "AI background removal on a video/image clip (sets field remove_background; fast). The alpha matte is computed by prepare into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path; preview/render fail with code not_prepared until it exists. Needs uv (downloads rembg + onnxruntime + a ~5 MB model on first use). off=true removes it.",
+  h.op("remove_background", `AI background removal on a video/image clip (sets field remove_background; fast). The alpha matte is computed by prepare into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path; preview/render fail with code not_prepared until it exists. Needs uv (downloads rembg + onnxruntime on first use). A model is never downloaded without consent: prepare fails with code model_not_cached until the model file is in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or prepare is run with allow_download=true (CLI: prepare --allow-download); sizes: ${MATTE_SIZES}. off=true removes it.`,
     { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
