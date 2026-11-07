@@ -1,5 +1,5 @@
 // High-level API shared by the CLI and the MCP server. Every function returns JSON-able objects.
-import { extname, isAbsolute, join, resolve as presolve } from "node:path";
+import { basename, extname, isAbsolute, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import * as AFX from "./audiofx.ts";
 import { loadCanvas } from "./canvas.ts";
@@ -283,15 +283,15 @@ export async function render(project: string | undefined, o: {
     encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
     effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
   if (o.sheet !== false && !out.endsWith(".gif")) {
-    const loud = AN.loudnessAsync(out);
+    const loud = res.has_audio ? AN.loudnessAsync(out) : undefined;
     try {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
       const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
-      const sp = out.replace(/\.[^.]+$/, ".sheet.jpg");
-      writeFile(sp, png, p.root);
+      const sp = join(p.root, "previews", `render-${basename(out, extname(out))}-${Date.now()}.sheet.jpg`);
+      writeOut(p, sp, png);
       res.contact_sheet = sp;
     } catch (e: any) { res.contact_sheet_error = e.message; }
-    res.loudness = await loud;
+    if (loud) res.loudness = await loud;
   }
   CACHE.capPreviews(p, out); // UI play drafts are rendered into previews/
   return res;

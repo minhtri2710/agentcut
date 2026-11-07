@@ -220,19 +220,19 @@ console.log("volumes without hard links: a named error, and init leaves nothing 
 // ------------------------------------------------------------------ sidecars of a render
 console.log("sidecar names next to a render that are links: the targets are unchanged");
 {
-  const p = await project("sidecars"), out = join(p, "renders", "s.mp4"), sheet = join(p, "renders", "s.sheet.jpg");
+  const p = await project("sidecars"), out = join(p, "renders", "s.mp4");
   mkdirSync(join(p, "renders"), { recursive: true });
   const targets: string[] = [];
-  for (const f of [`${out}.subs.srt`, `${out}.subs.mp4`, sheet]) {
+  for (const f of [`${out}.subs.srt`, `${out}.subs.mp4`]) {
     const t = join(tmp, `sidecar-target-${++n}.bin`);
     writeFileSync(t, "keep");
     symlinkSync(t, f);
     targets.push(t);
   }
   const r: any = await api.render(p, { out, draft: true, workers: 1, subtitles: true }).catch((e) => e);
-  check("render with subtitles and a contact sheet completes", !!r.output && r.subtitles?.cues > 0 && r.contact_sheet === sheet, { code: r.code, message: r.message });
+  check("render with subtitles completes; its contact sheet is in previews/", !!r.output && r.subtitles?.cues > 0 && dirname(r.contact_sheet ?? "") === join(p, "previews"), { code: r.code, message: r.message, sheet: r.contact_sheet });
   check("the sidecar links' targets are unchanged", targets.every((t) => readFileSync(t, "utf8") === "keep"));
-  check("the contact sheet is a regular file", regular(sheet));
+  check("the contact sheet is a regular file and none sits next to the output", regular(r.contact_sheet) && readdirSync(join(p, "renders")).every((f) => !f.endsWith(".sheet.jpg")), readdirSync(join(p, "renders")));
   check("no sidecar is left behind", readdirSync(join(p, "renders")).every((f) => !f.includes(".part-")), readdirSync(join(p, "renders")));
 }
 

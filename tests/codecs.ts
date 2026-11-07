@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,10 +68,10 @@ console.log("hevc");
 let r: any = await timed("hevc .mp4", () => renderVideo(tl(), p.root, out("hevc.mp4"), { codec: "hevc", workers: 1 }));
 let v = probe(out("hevc.mp4")).streams.find((s) => s.codec_type === "video");
 check("hevc codec + hvc1 tag", v?.codec_name === "hevc" && v?.codec_tag_string === "hvc1", v && { c: v.codec_name, t: v.codec_tag_string });
-check("result codec/alpha", r.codec === "hevc" && r.alpha === false && r.encoder === "libx265", r);
+check("result codec/alpha", r.codec === "hevc" && r.alpha === false && r.encoder === "libx265" && r.has_audio === true, r);
 r = await timed("hevc .mp4, 2 workers", () => renderVideo(tl(), p.root, out("hevc2.mp4"), { codec: "hevc", workers: 2 }));
 v = probe(out("hevc2.mp4")).streams.find((s) => s.codec_type === "video");
-check("hevc concat keeps hvc1 + audio", v?.codec_tag_string === "hvc1" && probe(out("hevc2.mp4")).streams.some((s) => s.codec_type === "audio"), v?.codec_tag_string);
+check("hevc concat keeps hvc1 + audio", v?.codec_tag_string === "hvc1" && r.has_audio === true && probe(out("hevc2.mp4")).streams.some((s) => s.codec_type === "audio"), v?.codec_tag_string);
 if (process.platform === "darwin") {
   r = await timed("hevc .mov hwEncode", () => renderVideo(tl(), p.root, out("hevc_hw.mov"), { codec: "h265", hwEncode: true, workers: 1 }));
   v = probe(out("hevc_hw.mov")).streams.find((s) => s.codec_type === "video");
@@ -141,6 +141,7 @@ console.log("still image (.png / .webp)");
     { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#ff0000", at: 0, duration: 1 },
     { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 1, duration: 1 }]);
   const so = (f: string) => join(S, "renders", f);
+  const sheets = () => ["renders", "previews"].flatMap((d) => (existsSync(join(S, d)) ? readdirSync(join(S, d)).filter((f) => f.endsWith(".sheet.jpg")) : [])); // a still render writes no contact sheet
   const chunks = (f: string) => { const s = readFileSync(f).toString("latin1"); return ["VP8L", "ALPH"].filter((k) => s.includes(k)); };
   const shot = async (f: string, o: any = {}) => ({ r: await api.render(S, { out: so(f), ...o }).catch((e: any) => e) as any, f: so(f) });
   const corner = (f: string, t = 0) => px(rgbaFrame(f, t), 4, 4), centre = (f: string, t = 0) => px(rgbaFrame(f, t), W / 2, H / 2);
@@ -160,7 +161,7 @@ console.log("still image (.png / .webp)");
   }
   const { r: res, f: ff1 } = await shot("shape.png", { start: 0.25 });
   check("result: exactly output/t/width/height/alpha/bytes, bytes = file size, no sheet", JSON.stringify(Object.keys(res).sort()) === JSON.stringify(["alpha", "bytes", "height", "output", "t", "width"])
-    && res.output === ff1 && res.t === 0.25 && existsSync(ff1) && res.bytes === statSync(ff1).size && !existsSync(so("shape.sheet.jpg")), res);
+    && res.output === ff1 && res.t === 0.25 && existsSync(ff1) && res.bytes === statSync(ff1).size && sheets().length === 0, res);
   const at2 = await shot("t2.png", { start: 1.5 });
   check("start picks the frame (red at 0.25, blue at 1.5)", existsSync(ff1) && existsSync(at2.f) && centre(ff1).join() === "255,0,0,255" && centre(at2.f).join() === "0,0,255,255" && at2.r.t === 1.5, { a: existsSync(ff1) && centre(ff1), b: existsSync(at2.f) && centre(at2.f) });
   const flat = await shot("flat.png", { alpha: false });
@@ -172,7 +173,7 @@ console.log("still image (.png / .webp)");
   for (const [label, o, code, file] of [["end", { end: 1 }, "bad_value", "e.png"], ["subtitles", { subtitles: true }, "bad_value", "s.webp"], ["codec h264", { codec: "h264" }, "bad_codec", "c.png"],
     ["start = duration", { start: 2 }, "bad_value", "d.png"], ["start past duration", { start: 5 }, "bad_value", "d2.webp"], ["negative start", { start: -1 }, "bad_value", "n.png"]] as const) {
     const { r, f } = await shot(file, o);
-    check(`refused: ${label} -> ${code}, no file`, r.code === code && !!r.hint && !existsSync(f) && !existsSync(f.replace(/\.[^.]+$/, ".sheet.jpg")), r instanceof Error ? { msg: r.message } : r);
+    check(`refused: ${label} -> ${code}, no file`, r.code === code && !!r.hint && !existsSync(f) && sheets().length === 0, r instanceof Error ? { msg: r.message } : r);
   }
   const reason = new Error("stop"), ab = so("aborted.png");
   const aborted: any = await api.render(S, { out: ab, signal: AbortSignal.abort(reason) }).catch((e: any) => e);
@@ -192,6 +193,39 @@ console.log("still image (.png / .webp)");
   check("opaque background png is still stored as RGBA, so probe reports alpha (pinned)", existsSync(opf) && api.probe(opf).alpha === true);
   const forced = await api.render(O, { out: join(O, "renders", "o2.webp"), alpha: true }).catch((e: any) => e) as any;
   check("alpha=true on an opaque background warns (the video text)", forced.alpha === true && /settings\.background is opaque/.test(forced.warnings?.[0] ?? ""), forced);
+}
+
+console.log("timeline without an audible clip: no audio track");
+{
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=2", "-pix_fmt", "yuv420p", join(m, "mute.mp4"));
+  ff("-f", "lavfi", "-i", "sine=frequency=330:duration=2", "-ac", "2", join(m, "tone.wav"));
+  const SP = join(tmp, "mute");
+  api.create(SP, { width: W, height: H, fps: 24 });
+  await api.apply(SP, [{ op: "add_clip", track: "main", src: join(m, "mute.mp4"), at: 0, duration: 2 }]);
+  const so = (f: string) => join(SP, "renders", f);
+  const kinds = (f: string) => probe(f).streams.map((s) => s.codec_type).sort().join();
+  const mute = (r: any) => r.has_audio === false && r.loudness === undefined && r.warnings?.some((w: string) => /no audible clips/.test(w));
+  for (const workers of [1, 2]) {
+    const rs: any = await timed(`silent .mp4, ${workers} worker(s)`, () => api.render(SP, { out: so(`mute${workers}.mp4`), workers }));
+    check(`silent .mp4, ${workers} worker(s): no audio stream, has_audio false, warned, no loudness`, kinds(so(`mute${workers}.mp4`)) === "video" && mute(rs), { k: kinds(so(`mute${workers}.mp4`)), rs });
+  }
+  for (const f of ["mute.mov", "mute.webm", "mute.mkv"]) {
+    const rs: any = await api.render(SP, { out: so(f), workers: 2, end: 1, sheet: false });
+    check(`silent ${f}, joined segments: no audio stream, has_audio false`, kinds(so(f)) === "video" && rs.has_audio === false, { k: kinds(so(f)), rs });
+  }
+  const gf: any = await api.render(SP, { out: so("mute.gif"), end: 1 });
+  check("gif: has_audio false, no no-audible-clips warning", gf.has_audio === false && !gf.warnings?.some((w: string) => /audible/.test(w)), gf);
+  const hw: any = await api.render(SP, { out: so("mute-hw.mp4"), fast: true, workers: 1, end: 1, sheet: false });
+  check("silent hardware-encode path (fast): no audio stream, has_audio false", kinds(so("mute-hw.mp4")) === "video" && hw.has_audio === false, { k: kinds(so("mute-hw.mp4")), hw });
+  check("silent .mp4 keeps the faststart layout", (() => { const b = readFileSync(so("mute1.mp4")); return b.indexOf("moov") > 0 && b.indexOf("moov") < b.indexOf("mdat"); })());
+  await api.apply(SP, [{ op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
+  for (const [f, workers] of [["mute-sub.mp4", 1], ["mute-sub2.mkv", 2]] as const) {
+    const rs: any = await api.render(SP, { out: so(f), subtitles: true, workers, end: 1, sheet: false });
+    check(`silent ${f} with subtitles: subtitle stream, no audio stream, has_audio false`, kinds(so(f)) === "subtitle,video" && rs.has_audio === false && rs.subtitles?.cues > 0, { k: kinds(so(f)), rs });
+  }
+  await api.apply(SP, [{ op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 2, volume: 0.01 }]);
+  const loud: any = await api.render(SP, { out: so("tone.mp4"), workers: 1 });
+  check("a quiet audible clip keeps its track: audio stream, has_audio true, no warning, loudness measured", kinds(so("tone.mp4")) === "audio,video" && loud.has_audio === true && !loud.warnings && loud.loudness?.integrated_lufs != null, { k: kinds(so("tone.mp4")), loud });
 }
 
 console.log("audio only");

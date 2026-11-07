@@ -1,9 +1,9 @@
 // End-to-end smoke test: generates synthetic media, exercises every op + template + export format through the CLI.
 // Run: bun tests/smoke.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const CLI = process.env.AGENTCUT_BIN ? [process.env.AGENTCUT_BIN] : [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -109,7 +109,8 @@ check("contact sheet", existsSync(cli(["sheet", "--every", "1"], C).image));
 
 console.log("render");
 const out = cli(["render", "-o", "renders/full.mp4", "--quiet"], C);
-check("mp4 frames", out.frames > 0 && existsSync(out.contact_sheet), out);
+check("mp4 frames; has_audio; the contact sheet is in previews/ and none sits next to the output", out.frames > 0 && out.has_audio === true && existsSync(out.contact_sheet)
+  && realpathSync(dirname(out.contact_sheet)) === realpathSync(join(P, "previews")) && readdirSync(join(P, "renders")).every((f) => !f.endsWith(".sheet.jpg")), out);
 check("loudness ≈ -14 LUFS", out.loudness?.integrated_lufs != null && Math.abs(out.loudness.integrated_lufs + 14) < 2.5, out.loudness);
 const part = cli(["render", "-o", "renders/part.webm", "--from", "1", "--to", "3", "--draft", "--no-sheet", "--quiet", "--workers", "1"], C);
 check("section render 2s", Math.abs(part.duration - 2) < 0.05, part.duration);

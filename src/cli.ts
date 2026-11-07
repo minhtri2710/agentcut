@@ -20,7 +20,8 @@ Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / 
              preview and video render fail with code not_prepared until it ran)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
-                    [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N]
+                    [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N] [--no-sheet]
+             (the result has has_audio, contact_sheet in previews/ and loudness; a timeline with no audible clip gets no audio track)
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
 Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F · subject F [--fps 6] [--allow-download]

@@ -18,9 +18,9 @@ import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
 export type VideoCodec = "h264" | "hevc" | "prores" | "prores_4444" | "vp9";
 export type Codec = VideoCodec | "auto";
 
-/** Video containers: default codec ("auto") and audio args. */
-export const FORMATS: Record<string, { codec: VideoCodec; audio: string[] }> = {
-  ".mp4": { codec: "h264", audio: ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"] },
+/** Video containers: default codec ("auto"), audio args and container args (kept when the file has no audio). */
+export const FORMATS: Record<string, { codec: VideoCodec; audio: string[]; flags?: string[] }> = {
+  ".mp4": { codec: "h264", audio: ["-c:a", "aac", "-b:a", "192k"], flags: ["-movflags", "+faststart"] },
   ".m4v": { codec: "h264", audio: ["-c:a", "aac", "-b:a", "192k"] },
   ".mov": { codec: "prores", audio: ["-c:a", "pcm_s16le"] },
   ".webm": { codec: "vp9", audio: ["-c:a", "libopus", "-b:a", "160k"] },
@@ -115,7 +115,7 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
     warnings.push(`background is transparent but ${gif ? "gif" : `${codec} in ${ext}`} has no alpha: alpha dropped, frames composited on black (export .mov with codec prores_4444, or .webm, to keep transparency)`);
   if (alpha && !transparent) warnings.push(ALPHA_ON_OPAQUE);
   const { v, mux } = videoArgs(codec, o.quality ?? "standard", !!o.hwEncode, alpha, ext);
-  return { codec, alpha, v, mux, a: [...(FORMATS[gif ? ".mp4" : ext]?.audio ?? [])], warnings, transparent };
+  return { codec, alpha, v, mux: [...mux, ...(FORMATS[gif ? ".mp4" : ext]?.flags ?? [])], a: [...(FORMATS[gif ? ".mp4" : ext]?.audio ?? [])], warnings, transparent };
 }
 
 export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDirs: string[]; t0: number; i0: number; i1: number; v: string[]; out: string }
@@ -236,14 +236,17 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const n = Math.round((end - start) * fps);
   const workers = Math.max(1, o.workers ?? defaultWorkers(n, fps));
   const began = performance.now();
+  // no audible clip (and a gif has no audio): no mix, no audio stream
+  const audible = !gif && audioSources(tl).length > 0;
+  if (!gif && !audible) plan.warnings.push("timeline has no audible clips: the video has no audio track");
   const part = tmpSibling(output, root), tmp = renderTmp(root);
   try {
     const wav = join(tmp, "mix.wav");
-    const audioJob = Promise.resolve().then(() => buildAudio(structuredClone(tl), wav, start, end));
+    const audioJob = Promise.resolve().then(() => { if (audible) buildAudio(structuredClone(tl), wav, start, end); });
     const target = gif ? join(tmp, "tmp.mp4") : part;
     if (workers <= 1) {
       await audioJob;
-      await encodeFrames(new Renderer(structuredClone(rtl), root, scale), start, 0, n, [...v, ...mux], target, { wav, a }, (d) => o.progress?.(d, n), o.signal);
+      await encodeFrames(new Renderer(structuredClone(rtl), root, scale), start, 0, n, [...v, ...mux], target, audible ? { wav, a } : undefined, (d) => o.progress?.(d, n), o.signal);
     } else {
       // segments are joined with `-c:v copy`, so their container must carry the codec (and alpha) losslessly
       const segExt = ext === ".mov" ? ".mov" : ext === ".webm" ? ".webm" : ".mkv";
@@ -280,8 +283,8 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       if (first) throw first;
       const list = join(tmp, "list.txt");
       createFile(list, jobs.map((j) => `file '${j.out.replace(/\\/g, "/").replace(/'/g, "'\\''")}'\n`).join(""));
-      const cc = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", ...inp(list), ...inp(wav),
-        "-map", "0:v", "-map", "1:a", "-c:v", "copy", ...mux, ...a, "-t", (n / fps).toFixed(6), target], { encoding: "utf8" });
+      const cc = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", ...inp(list), ...(audible ? inp(wav) : []),
+        "-map", "0:v", ...(audible ? ["-map", "1:a"] : []), "-c:v", "copy", ...mux, ...(audible ? a : ["-an"]), "-t", (n / fps).toFixed(6), target], { encoding: "utf8" });
       if (cc.status !== 0) throw new EditError(`concat failed: ${(cc.stderr || "").slice(-600)}`, "encode_failed");
     }
     if (gif) {
@@ -297,7 +300,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const el = (performance.now() - began) / 1000;
   const res: Record<string, unknown> = {
     output, duration: +(n / fps).toFixed(3), frames: n, width: W, height: H, fps, range: [start, end], workers,
-    codec: gif ? "gif" : plan.codec, alpha: plan.alpha, encoder: v[1],
+    codec: gif ? "gif" : plan.codec, alpha: plan.alpha, has_audio: audible, encoder: v[1],
     render_seconds: +el.toFixed(2), speed_x: +((n / fps) / el).toFixed(2), size_bytes: statSync(output).size,
   };
   if (plan.warnings.length) res.warnings = plan.warnings;
