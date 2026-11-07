@@ -7,7 +7,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, rea
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./media.ts";
-import { type Dict, EditError, MATTE_MB, MATTE_MODELS } from "./model.ts";
+import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV } from "./model.ts";
 import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
 import { VISION_PY } from "./vision-py.ts";
 
@@ -107,7 +107,7 @@ async function runHelper(root: string, d: Derived, out: string, allowDownload: b
 
 function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   checkHelper(script);
-  const env = { ...process.env, ORT_DISABLE_TELEMETRY: "1", ...(d.kind === "matte" && { U2NET_HOME: userCache() }) };
+  const env = { ...process.env, ...ORT_ENV, ...(d.kind === "matte" && { U2NET_HOME: userCache() }) };
   return new Promise((res, rej) => {
     const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, env, stdio: ["pipe", "pipe", "pipe"] });
     // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)

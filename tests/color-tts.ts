@@ -261,6 +261,20 @@ try {
     check("media/ as a link: add_voiceover -> unsafe_path, the target is unchanged", e.code === "unsafe_path" && snap() === was, { code: e.code, now: snap() });
   }
 
+  { // one request per sentence, in order; a one-sentence script is one request
+    const reqs = () => readFileSync(reqLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const n0 = reqs().length;
+    const rs = AN.tts("Một. Hai? Ba!", join(tmp, "vo3.wav"), "openai:shimmer");
+    const got = reqs().slice(n0);
+    check("http: three sentences make three requests, in order", JSON.stringify(got.map((q: any) => q.body.input)) === JSON.stringify(["Một.", "Hai?", "Ba!"]), got.map((q: any) => q.body.input));
+    const ss = (rs as any).sentences ?? [];
+    check("http: sentences are contiguous, start at 0 and end at the file duration",
+      ss.length === 3 && ss[0].start === 0 && ss.every((s: any, i: number) => i === 0 || s.start === ss[i - 1].end) && Math.abs(ss[2].end - rs.duration) < 1 / 30 && ss.every((s: any) => Math.abs(s.end - s.start - 0.7) < 0.05), { ss, d: rs.duration });
+    const n1 = reqs().length;
+    const one = AN.tts("Chỉ một câu", join(tmp, "vo1.wav"), "openai:shimmer");
+    check("http: a one-sentence script makes one request and one sentence spanning the file", reqs().length === n1 + 1 && (one as any).sentences?.length === 1 && (one as any).sentences[0].text === "Chỉ một câu" && (one as any).sentences[0].start === 0 && Math.abs((one as any).sentences[0].end - one.duration) < 1 / 30, (one as any).sentences);
+  }
+
   process.env.AGENTCUT_TTS_KEY = "sk-wrong-SECRET-456";
   let msg = "";
   try { AN.tts("x", join(tmp, "e.wav"), "openai:nova"); } catch (e: any) { msg = `${e.code} ${e.message} ${e.hint}`; }
@@ -276,6 +290,70 @@ try {
   const args = readFileSync(join(tmp, "piper.args"), "utf8");
   check("piper via env default: model, length_scale, text on stdin", pr.provider === "piper" && args.includes(`--model ${join(tmp, "vi.onnx")}`) && args.includes("--length_scale 0.500") && readFileSync(join(tmp, "piper.stdin"), "utf8") === "Chào bạn", args);
   check("voices lists piper with its model language", api.voices("vi").voices.some((v: any) => v.provider === "piper" && v.lang === "vi_VN"));
+
+  { // per-sentence synthesis: a fake piper that records each call and speaks 0.5 s per word without any pause
+    const binS = join(tmp, "bin-sentences"); mkdirSync(binS);
+    writeFileSync(join(binS, "piper"), `#!/bin/sh
+[ "$1" = "--version" ] && exit 0
+n=$(cat "${tmp}/ps.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${tmp}/ps.n"
+cat > "${tmp}/ps.in.$n"
+printf '%s' "$ORT_DISABLE_TELEMETRY" > "${tmp}/ps.ort.$n"
+[ "$(cat "${tmp}/ps.fail" 2>/dev/null)" = "$n" ] && { echo "boom" >&2; exit 1; }
+while [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done
+w=$(wc -w < "${tmp}/ps.in.$n" | tr -d ' ')
+ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $w*0.5}")" -ar 22050 "$o"
+`);
+    chmodSync(join(binS, "piper"), 0o755);
+    const pathWas = process.env.PATH;
+    const calls = () => Number(readFileSync(join(tmp, "ps.n"), "utf8").trim());
+    const input = (i: number) => readFileSync(join(tmp, `ps.in.${i}`), "utf8");
+    process.env.PATH = `${binS}:${pathWas}`;
+    try {
+      writeFileSync(join(tmp, "ps.n"), "0");
+      const text = "Một hai ba. Bốn năm? Sáu bảy tám chín!";
+      const r: any = AN.tts(text, join(tmp, "ps.wav"));
+      check("piper: three sentences make three invocations, one sentence on each stdin", calls() === 3 && [input(1), input(2), input(3)].join("|") === "Một hai ba.|Bốn năm?|Sáu bảy tám chín!", { calls: calls() });
+      const ss = r.sentences ?? [];
+      check("piper: sentences are contiguous, follow each part's length and sum to the file duration (1 frame)",
+        ss.length === 3 && ss[0].start === 0 && ss.every((s: any, i: number) => i === 0 || s.start === ss[i - 1].end) && Math.abs(ss[2].end - r.duration) < 1 / 30
+        && [1.5, 1, 2].every((d, i) => Math.abs(ss[i].end - ss[i].start - d) < 0.05) && ss.map((s: any) => s.text).join(" ") === text, { ss, d: r.duration });
+      check("piper: the joined file is 48 kHz stereo", /48000,2/.test(spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=sample_rate,channels", "-of", "csv=p=0", join(tmp, "ps.wav")], { encoding: "utf8" }).stdout));
+
+      const V = join(tmp, "vo-piper");
+      api.create(V, { preset: "720p" });
+      writeFileSync(join(tmp, "ps.n"), "0");
+      await api.apply(V, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]);
+      const cap = api.info(V, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
+      const first = (k: number) => cap.words.filter((_: any, i: number) => i === 0 || /[.!?]$/.test(cap.words[i - 1].text))[k];
+      check("add_voiceover: each sentence's first caption word starts at that sentence's start", [0, 1.5, 2.5].every((t, k) => first(k) && Math.abs(first(k).start - t) < 0.02), cap.words);
+      check("add_voiceover: caption words keep the script", cap.words.map((w: any) => w.text).join(" ") === text);
+
+      writeFileSync(join(tmp, "ps.n"), "0");
+      const o1: any = AN.tts("Chỉ một câu", join(tmp, "ps1.wav"));
+      check("piper: a one-sentence script is one invocation and one sentence", calls() === 1 && o1.sentences?.length === 1 && o1.sentences[0].start === 0 && Math.abs(o1.sentences[0].end - o1.duration) < 1 / 30, { calls: calls(), s: o1.sentences });
+
+      // a failing second part: an error, no output file, nothing left beside it, an unchanged timeline
+      const F = join(tmp, "vo-fail");
+      api.create(F, { preset: "720p" });
+      const media = () => readdirSync(join(F, "media")).sort().join(",");
+      const tlJson = () => JSON.stringify(api.info(F, "json").timeline);
+      const wasMedia = media(), wasTl = tlJson();
+      writeFileSync(join(tmp, "ps.n"), "0"); writeFileSync(join(tmp, "ps.fail"), "2");
+      const e: any = await api.apply(F, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]).catch((x) => x);
+      check("a failing second part fails the op with tts_failed, writes no output and leaves the timeline unchanged", e.code === "tts_failed" && calls() === 2 && media() === wasMedia && tlJson() === wasTl, { code: e.code, calls: calls(), media: media(), msg: e.message });
+      writeFileSync(join(tmp, "ps.n"), "0");
+      const direct = join(tmp, "ps-fail.wav");
+      writeFileSync(join(tmp, "ps.fail"), "3");
+      check("tts(): a failing last part throws and leaves no output file", throwsCode(() => AN.tts(text, direct), "tts_failed") === true && !existsSync(direct) && readdirSync(tmp).every((f) => !f.startsWith("ps-fail")));
+      rmSync(join(tmp, "ps.fail"));
+
+      // onnxruntime telemetry stays off for piper whatever the inherited value
+      writeFileSync(join(tmp, "ps.n"), "0");
+      process.env.ORT_DISABLE_TELEMETRY = "0";
+      try { AN.tts("Chào bạn", join(tmp, "ps-ort.wav")); } finally { delete process.env.ORT_DISABLE_TELEMETRY; }
+      check("piper is spawned with ORT_DISABLE_TELEMETRY=1, whatever the inherited value", readFileSync(join(tmp, "ps.ort.1"), "utf8") === "1", readFileSync(join(tmp, "ps.ort.1"), "utf8"));
+    } finally { process.env.PATH = pathWas; }
+  }
 
   // transcribe contract (whisper.cpp): whole words (-sow), punctuation is never a word of its own - it joins the previous word
   // (a leading one joins the next) and stretches its end; `text` has no space before punctuation. Fake whisper-cli on PATH.

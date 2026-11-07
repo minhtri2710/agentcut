@@ -109,6 +109,8 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
 // u2netp: ~4.7 MB, recorded in an earlier dogfood run. u2net and isnet-general-use have no local source.
 export const MATTE_MB: Record<string, number | null> = { u2netp: 5, u2net: null, u2net_human_seg: 176, "isnet-general-use": null, silueta: 43 };
 export const MATTE_MODELS = Object.keys(MATTE_MB);
+/** Environment for every child that runs onnxruntime (the vision helper, piper); it wins over an inherited value. */
+export const ORT_ENV = { ORT_DISABLE_TELEMETRY: "1" };
 export const matteSize = (model: string) => (MATTE_MB[model] == null ? "size unknown" : `~${MATTE_MB[model]} MB`);
 export const MATTE_SIZES = MATTE_MODELS.map((m) => `${m} ${matteSize(m)}`).join(", ");
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];

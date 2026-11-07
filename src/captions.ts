@@ -36,10 +36,17 @@ export function phrasesToWords(phrases: CWord[]): CWord[] {
   return words;
 }
 
-/** Word timings for a script read aloud: sentences (else clauses) map 1:1 onto detected speech segments when the counts
+const SENTENCE_BREAK = /(?<=[.!?…])\s+/;
+/** The sentences of a script (the unit a voiceover is synthesized in); a script with no sentence break is one part. */
+export function splitSentences(text: string): string[] {
+  const parts = text.trim().split(SENTENCE_BREAK).filter(Boolean);
+  return parts.length ? parts : [text];
+}
+
+/** Word timings for text read aloud: sentences (else clauses) map 1:1 onto detected speech segments when the counts
  * agree, so captions pause with the voice; otherwise the words spread over first..last speech. */
 export function scriptToWords(text: string, speech: number[][]): CWord[] {
-  for (const re of [/(?<=[.!?…])\s+/, /(?<=[.!?…,;:])\s+/]) {
+  for (const re of [SENTENCE_BREAK, /(?<=[.!?…,;:])\s+/]) {
     const parts = text.trim().split(re).filter(Boolean);
     if (parts.length > 1 && parts.length === speech.length) return phrasesToWords(parts.map((p, i) => ({ text: p, start: speech[i][0], end: speech[i][1] })));
   }

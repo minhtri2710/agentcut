@@ -589,7 +589,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
   { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
   addCaptions);
 
-op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions.",
+op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const out = join(p.root, "media", `vo-${Date.now()}.wav`);
     const res = AN.tts(a.text, out, a.voice, a.rate, p.root);
@@ -600,9 +600,12 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     const clip = addClip(p, tl, { track: tid, src: out, at });
     const result: Dict = { clip, duration: res.duration, path: p.rel(out) };
     if (a.captions) {
-      const sil = AN.silence(out, -40, 0.15);
-      const speech = sil.speech.length ? sil.speech : [[0, res.duration]];
-      const words = scriptToWords(a.text, speech);
+      const speech = AN.silence(out, -40, 0.15).speech;
+      // each sentence keeps its real span; clause pauses inside it still align when detectable
+      const words = res.sentences.flatMap((s) => {
+        const inside = speech.map(([x, y]) => [Math.max(x, s.start), Math.min(y, s.end)]).filter(([x, y]) => y - x > 0.05);
+        return scriptToWords(s.text, inside.length ? inside : [[s.start, s.end]]);
+      });
       const extra = typeof a.captions === "object" ? a.captions : typeof a.captions === "string" ? { preset: a.captions } : {};
       result.captions = addCaptions(p, tl, { words, at, ...extra });
     }

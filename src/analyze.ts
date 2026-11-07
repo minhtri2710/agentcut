@@ -1,8 +1,9 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { splitSentences } from "./captions.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
@@ -213,19 +214,33 @@ export function ttsVoices() {
 }
 
 /** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
- *  `base`: the project folder when outPath is inside it. */
+ *  Each sentence is synthesized on its own (rate applies to each), converted to 48 kHz stereo and joined in order, so `sentences` carries
+ *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
 export function tts(text: string, outPath: string, voice?: string, rate?: number, base?: string) {
   needFfmpeg();
   const part = tmpSibling(outPath, base);
   const { provider, voice: v } = pickProvider(voice);
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
+  const sentences: { text: string; start: number; end: number }[] = [];
   try {
-    const raw = provider === "piper" ? piperSpeech(text, tmp, v, rate) : provider === "openai" ? httpSpeech(text, tmp, v, rate) : systemSpeech(text, tmp, v, rate);
-    const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", part], { encoding: "utf8" });
-    if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
+    const wavs = splitSentences(text).map((s, i) => {
+      const dir = join(tmp, `s${i}`);
+      mkdirSync(dir);
+      const raw = provider === "piper" ? piperSpeech(s, dir, v, rate) : provider === "openai" ? httpSpeech(s, dir, v, rate) : systemSpeech(s, dir, v, rate);
+      const wav = join(tmp, `p${i}.wav`);
+      const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", wav], { encoding: "utf8" });
+      if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
+      const start = sentences.length ? sentences[sentences.length - 1].end : 0;
+      sentences.push({ text: s, start, end: start + probe(wav).duration });
+      return wav;
+    });
+    const list = join(tmp, "parts.txt");
+    createFile(list, wavs.map((w) => `file '${w.replace(/'/g, "'\\''")}'\n`).join(""));
+    const j = spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-ar", "48000", "-ac", "2", part], { encoding: "utf8" });
+    if (j.status !== 0) throw new EditError(`tts join failed: ${(j.stderr || "").slice(0, 300)}`, "tts_failed");
     commit(part, outPath);
   } finally { rmSync(tmp, { recursive: true, force: true }); rmSync(part, { force: true }); }
-  return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider };
+  return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider, sentences };
 }
 
 const SAPI_VOICE = "AGENTCUT_SAPI_VOICE", SAPI_OUT = "AGENTCUT_SAPI_OUT", SAPI_NO_VOICE = 3; // SAPI_NO_VOICE: PowerShell exit code for a voice that is not installed

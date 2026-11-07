@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { EditError } from "./model.ts";
+import { EditError, ORT_ENV } from "./model.ts";
 import { createFile } from "./safe-write.ts";
 
 export const PROVIDERS = ["system", "piper", "openai"] as const;
@@ -61,7 +61,7 @@ export function piperSpeech(text: string, dir: string, voice?: string, rate?: nu
   if (!model || !existsSync(model)) throw new EditError(`piper model ${model ? `'${model}' not found` : "not set"}`, "missing_dependency", "set AGENTCUT_PIPER_MODEL=/path/voice.onnx (with its .onnx.json) or use voice 'piper:/path/voice.onnx'");
   if (!has("piper")) throw new EditError("piper not installed", "missing_dependency", "install piper (`pip install piper-tts` or a release binary) and put `piper` on PATH");
   const out = join(dir, "tts-piper.wav");
-  const r = spawnSync("piper", ["--model", model, "--output_file", out, ...(rate ? ["--length_scale", (NORMAL_WPM / rate).toFixed(3)] : [])], { input: text, encoding: "utf8" });
+  const r = spawnSync("piper", ["--model", model, "--output_file", out, ...(rate ? ["--length_scale", (NORMAL_WPM / rate).toFixed(3)] : [])], { input: text, encoding: "utf8", env: { ...process.env, ...ORT_ENV } });
   if (r.status !== 0 || !existsSync(out)) throw new EditError(`piper failed: ${String(r.stderr || r.error).slice(0, 300)}`, "tts_failed");
   return out;
 }

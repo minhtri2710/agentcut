@@ -71,7 +71,8 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default
-   provider env AGENTCUT_TTS_PROVIDER. list_voices shows which providers are available.
+   provider env AGENTCUT_TTS_PROVIDER. list_voices shows which providers are available. Each sentence is synthesized separately
+   (openai: one request per sentence), so captions follow the real sentence timing.
 {"op":"update_clip","id":"vid1","set":{"color":{"look":"teal_orange","exposure":0.3,"temperature":-0.2,"vibrance":0.4}}}
 {"op":"update_clip","id":"vid2","set":{"color":{"lift":[0,0,0.05],"gain":[0.05,0,-0.03],"curves":{"master":[[0,0.03],[0.5,0.55],[1,1]]},"hsl":{"blues":{"saturation":-0.3}}}}}
 {"op":"snap_to_beats","track":"main","beats":"/abs/song.mp3","every":2}
@@ -118,7 +119,7 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   -> a matte model is downloaded only on request: prepare fails with code model_not_cached until the model is in
      <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or you run prepare with allow_download=true (CLI: prepare
      --allow-download); capabilities.matte_models and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
-  -> AgentCut runs the vision helper with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry).
+  -> AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry).
   uv runs with --no-config: set UV_* env vars (e.g. UV_INDEX_URL) for index settings.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
   prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress): it computes the mattes /
