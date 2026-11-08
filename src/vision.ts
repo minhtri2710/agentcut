@@ -152,6 +152,8 @@ const uvFound = () => { const uv = uvCommand(); return /[\\/]/.test(uv) ? isExec
 const uvMissing = (cmd: unknown) => new EditError(`${label(cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
   "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
   (cmd === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)"));
+/** A job that must run needs uv: checked before the model gate and any download, so a missing uv is reported first and nothing is fetched. */
+export function requireUv(d: Derived) { if (!uvFound()) throw uvMissing(d.job.cmd); }
 
 /** What `capabilities` says about the vision engine. A file or PATH lookup: uv is never started and nothing is downloaded. */
 export function visionEngine() {
@@ -221,7 +223,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
-  if (!uvFound()) throw uvMissing(d.job.cmd);
+  requireUv(d);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
   if (d.kind === "subject" && need.length) await downloadModel(FACE_MODEL, signal);

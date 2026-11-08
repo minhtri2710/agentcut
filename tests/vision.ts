@@ -956,8 +956,15 @@ await prepFails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "m
   mkdirSync(G);
   globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
   process.env.AGENTCUT_CACHE = G;
-  const e: any = await api.analyze.subject(join(m, "rb.mp4"), 7.25, true).then(() => null, (x) => x).finally(() => { globalThis.fetch = realFetch; process.env.AGENTCUT_CACHE = keep; });
+  const err = (f: () => Promise<unknown>) => f().then(() => null, (x) => x as any);
+  const N = join(tmp, "no-uv-reel");
+  api.create(N, { preset: "reels" });
+  await apply(N, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4") }, { op: "auto_reframe", id: "vid1", fps: 5 }]);
+  let e: any, pe: any;
+  try { e = await err(() => api.analyze.subject(join(m, "rb.mp4"), 7.25, true)); pe = await err(() => api.prepare(N)); }
+  finally { globalThis.fetch = realFetch; process.env.AGENTCUT_CACHE = keep; }
   check("no uv, face model missing, downloads allowed -> missing_dependency and nothing fetched", e?.code === "missing_dependency" && fetched.length === 0 && !existsSync(join(G, "models")), { code: e?.code, fetched });
+  check("no uv, face model missing, prepare without downloads -> missing_dependency (uv before the model gate)", pe?.code === "missing_dependency", { code: pe?.code });
 }
 check("core edits still work without uv", (await apply(B, [{ op: "update_clip", id: "vid2", set: { opacity: 0.5 } }]))[0].id === "vid2");
 
