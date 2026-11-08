@@ -87,15 +87,19 @@ for (const [label, v] of [["version+1", V + 1], ["no version", undefined]] as co
   check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before, "rewritten");
 }
 // allow_download reaches the face-model download (analyze_subject and prepare). This server runs with a stub fetch loaded by --preload
-// (the test's own file): every download attempt is recorded and answered 404, so nothing touches the network and no helper is started.
+// (the test's own file): every download attempt is recorded and answered 404, so nothing touches the network. uv is a stand-in (AGENTCUT_UV)
+// that records any run: the gate and the download come before the helper, so it never runs, and the rows do not depend on a uv on the host.
 if (process.env.AGENTCUT_MCP) console.log("  - allow_download pass-through skipped: a compiled server takes no --preload");
 else {
+  const { chmodSync, existsSync } = await import("node:fs");
   const { FACE_MODEL } = await import("../src/vision.ts");
-  const fetchLog = join(tmp, "mcp-fetch.log"), stub = join(tmp, "mcp-fetch-stub.ts");
+  const fetchLog = join(tmp, "mcp-fetch.log"), stub = join(tmp, "mcp-fetch-stub.ts"), uv2 = join(tmp, "mcp-uv-unused.sh"), uv2Ran = join(tmp, "mcp-uv-unused.ran");
   writeFileSync(stub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
+  writeFileSync(uv2, `#!/bin/sh\n: > ${JSON.stringify(uv2Ran)}\nexit 1\n`);
+  chmodSync(uv2, 0o755);
   const fetched = () => { try { return readFileSync(fetchLog, "utf8").split("\n").filter(Boolean); } catch { return []; } };
   const c2 = new Client({ name: "agentcut-test-2", version: "1" });
-  await c2.connect(new StdioClientTransport({ command: process.execPath, args: ["--no-install", "--preload", stub, resolve(import.meta.dir, "../src/mcp.ts")], env }));
+  await c2.connect(new StdioClientTransport({ command: process.execPath, args: ["--no-install", "--preload", stub, resolve(import.meta.dir, "../src/mcp.ts")], env: { ...env, AGENTCUT_UV: uv2 } }));
   const call2 = callOn(c2);
   const D = join(tmp, "dl");
   await call2("create_project", { path: D, preset: "reels" });
@@ -106,7 +110,7 @@ else {
   const s1 = await call2("analyze_subject", { path: join(tmp, "a.mp4"), fps: 2, allow_download: true }), n1 = fetched().length;
   const p1 = await call2("prepare", { allow_download: true, wait_seconds: 20 });
   check("MCP analyze_subject with allow_download reaches the face-model download (stub 404 -> model_download_failed)", code(s1) === "model_download_failed" && n1 === 1 && fetched()[0] === FACE_MODEL.url, { s1: s1.json, fetched: fetched() });
-  check("MCP prepare with allow_download reaches the same download", p1.json.error?.code === "model_download_failed" && fetched().length === 2 && fetched()[1] === FACE_MODEL.url, { p1: p1.json, fetched: fetched() });
+  check("MCP prepare with allow_download reaches the same download", p1.json.error?.code === "model_download_failed" && fetched().length === 2 && fetched()[1] === FACE_MODEL.url && !existsSync(uv2Ran), { p1: p1.json, fetched: fetched(), uvRan: existsSync(uv2Ran) });
   await c2.close();
 }
 // analyze_subject caches in the project (the project arg, else the one the server remembers) and in the user cache with none; auto_reframe then reuses
