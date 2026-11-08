@@ -147,12 +147,16 @@ const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd ===
 
 /** The uv to run: AGENTCUT_UV or `uv` on PATH. A path is made absolute here, because the cwd changes before the spawn. */
 const uvCommand = () => { const u = process.env.AGENTCUT_UV || "uv"; return /[\\/]/.test(u) ? resolve(u) : u; };
+/** Is uv there? A file or PATH lookup: uv is never started. */
+const uvFound = () => { const uv = uvCommand(); return /[\\/]/.test(uv) ? isExecutable(uv) : has(uv); };
+const uvMissing = (cmd: unknown) => new EditError(`${label(cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
+  "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
+  (cmd === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)"));
 
 /** What `capabilities` says about the vision engine. A file or PATH lookup: uv is never started and nothing is downloaded. */
 export function visionEngine() {
-  const uv = uvCommand();
   return {
-    available: /[\\/]/.test(uv) ? isExecutable(uv) : has(uv),
+    available: uvFound(),
     features: ["analyze_subject (runs uv when called)", ...["auto_reframe", "track_to", "remove_background"].map((o) => `${o} (records a request; prepare computes it with uv)`)],
     matte_models: "see matte_models",
     face_model: { name: FACE_MODEL.name, approx_mb: mbOf(FACE_MODEL.bytes), cached: modelCached(FACE_MODEL.name) },
@@ -190,9 +194,7 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       for (const l of lines) { const m = PROGRESS.exec(l); if (m) onFrames?.(Number(m[1])); else err += l + "\n"; }
     });
     ch.on("error", (e: any) => rej(e.code === "ENOENT"
-      ? new EditError(`${label(job.cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
-        "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
-        (job.cmd === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)"))
+      ? uvMissing(job.cmd)
       : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
@@ -213,11 +215,13 @@ const baseOf = (d: Derived) => d.root ?? userCache();
 
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file.
  *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then the face model is fetched here
- *  (`downloadModel`) and a matte model by the helper. The helper dir is checked first, so an unsafe cache is refused before a download. */
+ *  (`downloadModel`) and a matte model by the helper. The helper dir and uv are checked first, so an unsafe cache or a missing uv
+ *  is refused before a download. */
 export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
+  if (!uvFound()) throw uvMissing(d.job.cmd);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
   if (d.kind === "subject" && need.length) await downloadModel(FACE_MODEL, signal);

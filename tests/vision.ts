@@ -951,6 +951,14 @@ console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
 await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint (prepare)");
 await prepFails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "missing_dependency", "no uv (matte) -> missing_dependency (prepare)");
+{
+  const keep = process.env.AGENTCUT_CACHE, G = join(tmp, "no-uv-cache"), realFetch = globalThis.fetch, fetched: string[] = [];
+  mkdirSync(G);
+  globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
+  process.env.AGENTCUT_CACHE = G;
+  const e: any = await api.analyze.subject(join(m, "rb.mp4"), 7.25, true).then(() => null, (x) => x).finally(() => { globalThis.fetch = realFetch; process.env.AGENTCUT_CACHE = keep; });
+  check("no uv, face model missing, downloads allowed -> missing_dependency and nothing fetched", e?.code === "missing_dependency" && fetched.length === 0 && !existsSync(join(G, "models")), { code: e?.code, fetched });
+}
 check("core edits still work without uv", (await apply(B, [{ op: "update_clip", id: "vid2", set: { opacity: 0.5 } }]))[0].id === "vid2");
 
 // ---------------------------------------------------------------- real helper (opt-in: downloads opencv/rembg via uv)
