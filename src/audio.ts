@@ -73,6 +73,14 @@ export function audioSources(tl: Timeline) {
   return out;
 }
 
+/** The spans voice/dialogue clips cover: what ducking ducks against. */
+export function voiceSpans(tl: Timeline): [number, number][] {
+  const out: [number, number][] = [];
+  for (const { track: tr, clip: c } of flatClips(tl.tracks))
+    if ((tr.role === "voice" || tr.role === "dialogue") && (c.type === "audio" || c.type === "video")) { const s = parseTime(c.start ?? 0); out.push([s, s + parseTime(c.duration)]); }
+  return out;
+}
+
 export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): string {
   needFfmpeg();
   resolve(tl);
@@ -80,11 +88,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   t1 ??= T;
   const sr = Number(tl.settings.sample_rate ?? 48000);
   const srcs = audioSources(tl);
-  // voice intervals for ducking
-  const voice: [number, number][] = [];
-  for (const { track: tr, clip: c } of flatClips(tl.tracks))
-    if ((tr.role === "voice" || tr.role === "dialogue") && (c.type === "audio" || c.type === "video")) { const s = parseTime(c.start ?? 0); voice.push([s, s + parseTime(c.duration)]); }
-  voice.sort((a, b) => a[0] - b[0]);
+  const voice = voiceSpans(tl).sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
   for (const [s, e] of voice) { const l = merged[merged.length - 1]; if (l && s - l[1] < 0.5) l[1] = Math.max(l[1], e); else merged.push([s, e]); }
   const args = ["-v", "error", "-y", "-nostdin"];
