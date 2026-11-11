@@ -121,10 +121,10 @@ async function applyPrep(proj: string, ops: any[], allowDownload = false) {
   const pr = await api.prepare(proj, { allowDownload });
   return r.results.map((x: any) => (x.pending ? pr.applied.find((y: any) => y.op === x.op && y.id === x.id) ?? x : x));
 }
-async function prepFails(proj: string, ops: any[], code: string, name: string) {
+async function prepFails(proj: string, ops: any[], code: string, name: string, words: string[] = []) {
   await apply(proj, ops);
   try { await api.prepare(proj); check(name, false, "no error"); }
-  catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
+  catch (e: any) { check(name, e.code === code && !!e.hint && words.every((w) => `${e.message} ${e.hint}`.includes(w)), { code: e.code, message: e.message, hint: e.hint }); }
   await api.undo(proj);
 }
 const clip = (proj: string, id: string) => api.info(proj, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
@@ -951,18 +951,21 @@ console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
 await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint (prepare)");
 await prepFails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "missing_dependency", "no uv (matte) -> missing_dependency (prepare)");
+await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }, { op: "remove_background", id: "vid1", model: "u2net" }], "missing_dependency",
+  "no uv, mixed batch -> one missing_dependency naming both jobs and both downloads", ["remove_background", "subject analysis", "rembg", "opencv"]);
 {
   const keep = process.env.AGENTCUT_CACHE, G = join(tmp, "no-uv-cache"), realFetch = globalThis.fetch, fetched: string[] = [];
-  mkdirSync(G);
-  globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
-  process.env.AGENTCUT_CACHE = G;
   const err = (f: () => Promise<unknown>) => f().then(() => null, (x) => x as any);
   const N = join(tmp, "no-uv-reel");
-  api.create(N, { preset: "reels" });
-  await apply(N, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4") }, { op: "auto_reframe", id: "vid1", fps: 5 }]);
   let e: any, pe: any;
-  try { e = await err(() => api.analyze.subject(join(m, "rb.mp4"), 7.25, true)); pe = await err(() => api.prepare(N)); }
-  finally { globalThis.fetch = realFetch; process.env.AGENTCUT_CACHE = keep; }
+  try {
+    mkdirSync(G);
+    globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
+    process.env.AGENTCUT_CACHE = G;
+    api.create(N, { preset: "reels" });
+    await apply(N, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4") }, { op: "auto_reframe", id: "vid1", fps: 5 }]);
+    e = await err(() => api.analyze.subject(join(m, "rb.mp4"), 7.25, true)); pe = await err(() => api.prepare(N));
+  } finally { globalThis.fetch = realFetch; process.env.AGENTCUT_CACHE = keep; }
   check("no uv, face model missing, downloads allowed -> missing_dependency and nothing fetched", e?.code === "missing_dependency" && fetched.length === 0 && !existsSync(join(G, "models")), { code: e?.code, fetched });
   check("no uv, face model missing, prepare without downloads -> missing_dependency (uv before the model gate)", pe?.code === "missing_dependency", { code: pe?.code });
 }

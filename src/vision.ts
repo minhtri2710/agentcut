@@ -149,11 +149,15 @@ const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd ===
 const uvCommand = () => { const u = process.env.AGENTCUT_UV || "uv"; return /[\\/]/.test(u) ? resolve(u) : u; };
 /** Is uv there? A file or PATH lookup: uv is never started. */
 const uvFound = () => { const uv = uvCommand(); return /[\\/]/.test(uv) ? isExecutable(uv) : has(uv); };
-const uvMissing = (cmd: unknown) => new EditError(`${label(cmd)} needs uv (runs the Python vision helper)`, "missing_dependency",
-  "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
-  (cmd === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)"));
-/** A job that must run needs uv: checked before the model gate and any download, so a missing uv is reported first and nothing is fetched. */
-export function requireUv(d: Derived) { if (!uvFound()) throw uvMissing(d.job.cmd); }
+/** Names every distinct job kind of a batch and what its first run downloads. */
+const uvMissing = (cmds: unknown[]) => {
+  const all = (f: (c: unknown) => string) => [...new Set(cmds.map(f))].join(" and ");
+  return new EditError(`${all(label)} needs uv (runs the Python vision helper)`, "missing_dependency",
+    "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
+    all((c) => (c === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)")));
+};
+/** Jobs that must run need uv: checked before the model gate and any download, so a missing uv is reported first and nothing is fetched. */
+export function requireUv(ds: Derived[]) { if (!uvFound()) throw uvMissing(ds.map((d) => d.job.cmd)); }
 
 /** What `capabilities` says about the vision engine. A file or PATH lookup: uv is never started and nothing is downloaded. */
 export function visionEngine() {
@@ -196,7 +200,7 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       for (const l of lines) { const m = PROGRESS.exec(l); if (m) onFrames?.(Number(m[1])); else err += l + "\n"; }
     });
     ch.on("error", (e: any) => rej(e.code === "ENOENT"
-      ? uvMissing(job.cmd)
+      ? uvMissing([job.cmd])
       : new EditError(`vision helper failed to start (${job.cmd}): ${e.message}`, "vision_failed")));
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
@@ -223,7 +227,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
-  requireUv(d);
+  requireUv([d]);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
   if (d.kind === "subject" && need.length) await downloadModel(FACE_MODEL, signal);

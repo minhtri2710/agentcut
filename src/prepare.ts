@@ -68,7 +68,7 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
       if (tl.revision !== revision) throw new EditError(`the project kept changing while prepare ran (revision ${revision} -> ${tl.revision}); it did not finish`, "conflict", "run prepare again", undefined, { revision: tl.revision });
       throw new EditError("prepare made no progress", "internal", "this is an AgentCut bug; please report_feedback(kind='bug')");
     }
-    V.requireUv(jobs[0]); // every job here must run, so uv comes before the model gate, as in compute
+    V.requireUv(jobs); // every job here must run, so uv comes before the model gate, as in compute
     if (!o.allowDownload) requireModels(jobs);
     const total = jobs.reduce((n, d) => n + d.frames, 0);
     let base = 0;
