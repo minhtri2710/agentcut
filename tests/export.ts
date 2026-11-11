@@ -86,11 +86,19 @@ check("volume 0.5 -> -6.02dB with fade-in", /<adjust-volume amount="-6.02dB">\s*
 check("fit contain -> adjust-conform fit", /<clip [^>]*name="img1"[^>]*>\s*<adjust-conform type="fit"\/>/.test(xml));
 check("marker on the covering clip", /<marker start="2300\/3000s" duration="100\/3000s" value="check this"\/>/.test(xml));
 const sk = (id: string, type?: string) => fx.skipped.some((s) => s.id === id && (!type || s.type === type));
-// a track setting is reported only where it changes the render: the music track with clips, not an empty ducked track
-const withEmpty = { ...tl, tracks: [...tl.tracks, { id: "bed", kind: "audio", duck: -20, eq: "voice", clips: [] }] } as typeof tl;
+// a track setting is reported only where it changes the render: on a track that feeds the mix, and duck never on a voice track
+const musicTr = tl.tracks.find((t) => t.id === "music")!;
+const quiet = musicTr.clips.map((c) => ({ ...c, muted: true }));
+const withEmpty = { ...tl, tracks: [...tl.tracks.map((t) => (t === musicTr ? { ...t, eq: "voice" } : t)),
+  { id: "bed", kind: "audio", duck: -20, eq: "voice", clips: [] },
+  { id: "off", kind: "audio", duck: -20, eq: "voice", muted: true, clips: musicTr.clips },
+  { id: "quiet", kind: "audio", duck: -20, eq: "voice", clips: quiet },
+  { id: "vo", kind: "audio", role: "voice", duck: -20, clips: musicTr.clips }] } as typeof tl;
 const fxE = exportFcpxml(withEmpty).skipped;
-check("skipped: shape, effects, dip_black approximated, duck on the music track, nothing for an empty track",
-  sk(shp1, "shape") && sk(vid3, "fields") && sk(vid2, "transition") && sk("music", "duck") && !fxE.some((s) => s.id === "bed"), { skipped: fx.skipped, withEmpty: fxE });
+const skE = (id: string, type?: string) => fxE.some((s) => s.id === id && (!type || s.type === type));
+check("skipped: shape, effects, dip_black approximated, duck + eq on the music track, nothing for an empty, muted or silent track or a ducked voice",
+  sk(shp1, "shape") && sk(vid3, "fields") && sk(vid2, "transition") && sk("music", "duck") && skE("music", "audio_fx") &&
+  !skE("bed") && !skE("off") && !skE("quiet") && !skE("vo"), { skipped: fx.skipped, withEmpty: fxE });
 check("clip count", fx.clips === 8, fx.clips);
 const fcpOut = join(tmp, "out", "edit.fcpxml");
 const res = exportTimeline(tl, "fcpxml", fcpOut);

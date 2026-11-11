@@ -6,6 +6,7 @@
 // Transitions: AgentCut overlaps clip B onto clip A by d. NLEs keep clips contiguous and let the transition borrow media
 // handles, so the cut goes to the overlap midpoint: A loses ceil(d/2) at its end, B starts floor(d/2) later in its
 // source (in += floor(d/2) * speed), and a transition of duration d is centred on the cut.
+import { audioSources } from "./audio.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -234,9 +235,10 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   }
   for (const [k, v] of Object.entries(tl.settings || {}))
     if (k === "effects" && Array.isArray(v) && v.length) skipped.push({ id: "settings", type: "effects", reason: "whole-frame effects are not exported" });
-  // track settings matter only on a track with clips: an empty track's duck or audio processing changes nothing
-  const used = tracks.filter((tr) => tr.clips.length);
-  for (const tr of used) if (tr.duck) skipped.push({ id: tr.id, type: "duck", reason: "auto-ducking is not exported (set volume keyframes in the NLE)" });
+  // track settings matter only on a track that feeds the mix: an empty, muted or silent track's duck or audio processing changes nothing
+  const used = tracks.filter((tr) => audioSources({ ...tl, tracks: [tr] }).length);
+  // the mix never ducks a voice or dialogue track
+  for (const tr of used) if (tr.duck && tr.role !== "voice" && tr.role !== "dialogue") skipped.push({ id: tr.id, type: "duck", reason: "auto-ducking is not exported (set volume keyframes in the NLE)" });
   for (const tr of used) {
     const fx = AUDIO_FX_KEYS.filter((k) => tr[k] !== undefined && tr[k] !== null && tr[k] !== false);
     if (fx.length) skipped.push({ id: tr.id, type: "audio_fx", reason: `track audio processing not exported: ${fx.join(", ")}` });
