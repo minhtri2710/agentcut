@@ -18,7 +18,7 @@ export function parseSrt(path: string): CWord[] {
     const i = lines.findIndex((l) => ts.test(l));
     if (i < 0) continue;
     const g = ts.exec(lines[i])!;
-    const text = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").trim();
+    const text = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").replace(/--\u2060>/g, "-->").trim(); // formatCues writes the cue arrow as --U+2060>
     if (text) out.push({ text, start: sec(g[1], g[2], g[3], g[4]), end: sec(g[5], g[6], g[7], g[8]) });
   }
   return out;

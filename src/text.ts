@@ -54,16 +54,31 @@ function metrics(style: TextStyle) {
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const graphemes = (s: string) => [...segmenter.segment(s)].map((g) => g.segment);
 
-/** Greedy pieces of one word that each fit maxWidth (a single glyph wider than that stands alone). Measures per grapheme, so only for words that do not fit. */
-function breakWord(style: TextStyle, word: string, maxWidth: number): [string, number][] {
-  const out: [string, number][] = [];
-  let cur = "", curW = 0;
-  for (const g of graphemes(word)) {
-    const w = measure(style, cur + g);
-    if (cur && w > maxWidth) { out.push([cur, curW]); cur = g; curW = measure(style, g); }
-    else { cur += g; curW = w; }
+// CJK text has no spaces: a line may break between two CJK characters (Han, Hiragana, Katakana, Hangul, the CJK Symbols and Punctuation
+// block and the fullwidth forms). Kinsoku, minimal: no line starts with a closing mark and none ends with an opening one (the closing/opening
+// brackets, commas, full stops, colons, ?!, and the middle dot of the CJK punctuation blocks), so a mark stays with the character it follows/precedes.
+const CJK = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\u3000-\u303f\uff00-\uffef]/u;
+const NO_LINE_START = new Set([..."、。，．・：；？！）］｝」』】〕〉》〗〙〛"]);
+const NO_LINE_END = new Set([..."（［｛「『【〔〈《〖〘〚"]);
+
+/** Greedy pieces of one word that each fit maxWidth (a single glyph wider than that stands alone). The first piece may only use `room` (what is left on the
+ * current line); it is empty when not even one unbreakable run fits there. A piece ends at a CJK break or, with none, at a grapheme.
+ * Measures per grapheme, so only for words that do not fit. */
+function breakWord(style: TextStyle, word: string, maxWidth: number, room = maxWidth): [string, number][] {
+  const gs = graphemes(word), out: [string, number][] = [];
+  const canBreak = (i: number) => CJK.test(gs[i - 1]) && CJK.test(gs[i]) && !NO_LINE_START.has(gs[i]) && !NO_LINE_END.has(gs[i - 1]);
+  let start = 0, brk = -1, w = 0;
+  for (let i = 0; i < gs.length; i++) {
+    if (i > start && canBreak(i)) brk = i;
+    w = measure(style, gs.slice(start, i + 1).join(""));
+    const onFirst = !out.length && room < maxWidth;
+    if (w <= (out.length ? maxWidth : room) || (i === start && !onFirst)) continue;
+    let b = brk > start ? brk : onFirst ? start : i;
+    if (brk <= start && !onFirst) while (b > start + 1 && (NO_LINE_START.has(gs[b]) || NO_LINE_END.has(gs[b - 1]))) b--; // forced break: still keep a mark with its neighbour
+    out.push([gs.slice(start, b).join(""), b > start ? measure(style, gs.slice(start, b).join("")) : 0]);
+    start = b; brk = -1; i = b - 1;
   }
-  out.push([cur, curW]);
+  out.push([gs.slice(start).join(""), w]);
   return out;
 }
 
@@ -76,12 +91,14 @@ export function layout(text: string, style: TextStyle, maxWidth: number) {
     for (const word of para.split(" ")) {
       if (!word) continue;
       const ww = measure(style, word);
-      if (ww > maxWidth) { // wider than an empty line (a long token, or CJK text with no spaces): break it by grapheme; every piece keeps the word's index
-        if (cur.length) { lines.push({ words: cur, w: curW }); cur = []; curW = 0; }
-        const pieces = breakWord(style, word, maxWidth);
+      const fill = cur.length > 0 && curW + space + ww > maxWidth && CJK.test(word); // a CJK word that does not fit after earlier words starts on this line
+      if (ww > maxWidth || fill) { // wider than an empty line (a long token, or CJK text with no spaces), or CJK text to fill the line: break it; every piece keeps the word's index
+        if (cur.length && !fill) { lines.push({ words: cur, w: curW }); cur = []; curW = 0; }
+        const pieces = breakWord(style, word, maxWidth, fill ? maxWidth - curW - space : maxWidth);
         pieces.forEach(([piece, w], k) => {
-          if (k < pieces.length - 1) lines.push({ words: [{ text: piece, x: 0, w, i: idx, more: true }], w });
-          else { cur = [{ text: piece, x: 0, w, i: idx }]; curW = w; }
+          const more = k < pieces.length - 1;
+          if (piece) { const x = cur.length ? curW + space : 0; cur.push(more ? { text: piece, x, w, i: idx, more } : { text: piece, x, w, i: idx }); curW = x + w; }
+          if (more && cur.length) { lines.push({ words: cur, w: curW }); cur = []; curW = 0; }
         });
         idx++;
         continue;

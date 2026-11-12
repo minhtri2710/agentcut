@@ -256,11 +256,30 @@ console.log("text wrap: a word wider than the line breaks into pieces");
   check("text whose words all fit still wraps at the spaces, one word per piece", S.lines.length > 1 && S.lines.map((l) => l.words.map((w) => w.text).join(" ")).join(" ") === shortWords && S.lines.every((l) => l.words.every((w) => !w.more)));
   const white = (cv: any, y0: number, y1: number) => { const d = cv.getContext("2d").getImageData(0, y0, cv.width, y1 - y0).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200 && d[i] > 200 && d[i + 1] > 200 && d[i + 2] > 200) n++; return n; };
   const red = (cv: any) => { const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200 && d[i] > 200 && d[i + 1] < 60 && d[i + 2] < 60) n++; return n; };
+  const mixed = [`Hello ${cjk}`, `第一章 ${cjk}`];
+  for (const t of mixed) {
+    const M = layout(t, st, MAX), w1 = M.lines[0].words.filter((w) => w.i === 1);
+    check(`CJK text fills the line it starts on: ${t.slice(0, 5)}…`, w1.length === 1 && w1[0].more === true && M.lines.every((l) => l.w <= MAX + 1e-6)
+      && M.lines.flatMap((l) => l.words).filter((w) => w.i === 1).map((w) => w.text).join("") === cjk && M.count === 2, M.lines.map((l) => l.words.map((w) => w.text)));
+  }
+  const closing = "、。，．・：；？！）」』】〕〉》", opening = "（「『【〔〈《";
+  const marked = "今日は天気がとても良いので、公園へ散歩に行きましょう。「楽しい」と彼は言った。（本当に）";
+  const bad: unknown[] = [];
+  for (let max = 90; max <= 400; max += 7)
+    for (const t of [marked, `a ${marked}`]) for (const l of layout(t, st, max).lines) {
+      const first = [...l.words[0].text][0], last = [...l.words[l.words.length - 1].text].pop()!;
+      if (closing.includes(first) || opening.includes(last)) bad.push({ max, l: l.words.map((w) => w.text) });
+    }
+  check("kinsoku: no line starts with a closing mark or ends with an opening one", bad.length === 0, bad.slice(0, 2));
   const hl = renderText(long, st, MAX, { activeWord: 0, highlightColor: "#ff0000" });
   check("a highlighted word that was broken is marked on every piece", red(hl) > 0 && white(hl, 0, hl.height) === 0, { red: red(hl), white: white(hl, 0, hl.height) });
   const hl2 = renderText(`ab ${long}`, st, MAX, { activeWord: 1, highlightColor: "#ff0000" });
   const first = Math.ceil(layout("ab", st, MAX).glyphH) + 4; // the first line holds only "ab"
   check("only the active word's pieces are marked", white(hl2, 0, first) > 0 && white(hl2, first + 4, hl2.height) === 0, { first, h: hl2.height });
+  const ink = (cv: any, y0: number, y1: number, isRed: boolean) => { const d = cv.getContext("2d").getImageData(0, y0, cv.width, y1 - y0).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 60 && d[i] > 150 && (d[i + 1] < 100) === isRed) n++; return n; }; // thin CJK strokes are partly transparent
+  const hc = renderText(mixed[1], st, MAX, { activeWord: 1, highlightColor: "#ff0000" });
+  const row0 = Math.ceil(layout("第一章", st, MAX).glyphH) + 4;
+  check("a highlighted CJK word split over lines is marked on every piece, the word before it is not", ink(hc, 0, row0, false) > 0 && ink(hc, 0, row0, true) > 0 && ink(hc, row0 + 4, hc.height, false) === 0 && ink(hc, row0 + 4, hc.height, true) > 0, { w0: ink(hc, 0, row0, false), w1: ink(hc, row0 + 4, hc.height, false), red1: ink(hc, row0 + 4, hc.height, true) });
   check("a plain frame has no highlight colour", red(renderText(long, st, MAX, { activeWord: null, highlightColor: "#ff0000" })) === 0);
 }
 

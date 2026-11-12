@@ -216,6 +216,19 @@ console.log("caption sources and subtitle export");
   }
   check("srt: cue text keeps its characters (no entity shows literally)", formatCues(cue, "srt").includes("<i>x</i> & c") && !formatCues(cue, "srt").includes("&gt;"), formatCues(cue, "srt"));
   check("vtt: cue text markup characters are escaped", formatCues(cue, "vtt").includes("a --&gt; b &lt;i&gt;x&lt;/i&gt; &amp; c"), formatCues(cue, "vtt"));
+  const rt = join(tmp, "arrow.srt");
+  writeFileSync(rt, formatCues([{ start: 0, end: 1, text: "a --> b", clip: "c1" }], "srt"));
+  check("an exported srt reads back to the same words (the cue arrow in text included)", parseSrt(rt).map((w) => w.text).join("|") === "a --> b", parseSrt(rt));
+  // a soft subtitle stream keeps the caption's characters: webvtt stores entities (stream copy), mov_text stores plain text
+  const { embedSubtitles } = await import("../src/subtitles.ts");
+  const payload = (f: string) => spawnSync("ffmpeg", ["-v", "error", "-i", f, "-map", "0:s", "-c:s", "copy", "-f", "data", "-"], { encoding: "buffer" }).stdout;
+  ff("-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1", "-c:v", "libvpx-vp9", join(m, "sub.webm"));
+  ff("-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", join(m, "sub.mp4"));
+  await embedSubtitles(join(m, "sub.webm"), cue);
+  await embedSubtitles(join(m, "sub.mp4"), cue);
+  check("webm: the cue text is stored escaped, so a player shows the literal characters", payload(join(m, "sub.webm")).toString("utf8") === "a --&gt; b &lt;i&gt;x&lt;/i&gt; &amp; c", payload(join(m, "sub.webm")).toString("utf8"));
+  const mp4 = payload(join(m, "sub.mp4"));
+  check("mp4: the cue text is stored as plain text, markup characters kept", mp4.subarray(2, 2 + mp4.readUInt16BE(0)).toString("utf8") === "a --> b <i>x</i> & c", mp4.toString("utf8"));
   const gone = join(tmp, "missing.srt");
   let err: any;
   try { parseSrt(gone); } catch (e) { err = e; }
