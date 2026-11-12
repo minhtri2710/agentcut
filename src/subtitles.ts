@@ -6,7 +6,7 @@ import { extname } from "node:path";
 import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
 import { EditError, parseTime, type Timeline, type Track } from "./model.ts";
-import { commit, createFile, tmpSibling } from "./safe-write.ts";
+import { commit, createFile, partSibling, tmpSibling } from "./safe-write.ts";
 
 export interface Cue { start: number; end: number; text: string; clip: string }
 export const SUB_FORMATS: Record<string, "srt" | "vtt"> = { ".srt": "srt", ".vtt": "vtt" };
@@ -49,9 +49,14 @@ function stamp(sec: number, sep: string) {
   return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)}${sep}${p(ms % 1000, 3)}`;
 }
 
+// WebVTT cue text is markup: & < > must be entities (this also removes any `-->`). SubRip has no escapes and its players read <tags>;
+// only the cue arrow, which would end the cue early in a strict parser, is turned into text.
+const escapeCue = (text: string, fmt: "srt" | "vtt") =>
+  fmt === "vtt" ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : text.replace(/-->/g, "--&gt;");
+
 export function formatCues(cues: Cue[], fmt: "srt" | "vtt"): string {
   const sep = fmt === "srt" ? "," : ".";
-  const body = cues.map((q, i) => `${fmt === "srt" ? `${i + 1}\n` : ""}${stamp(q.start, sep)} --> ${stamp(q.end, sep)}\n${q.text.replace(/\n{2,}/g, "\n")}\n`).join("\n");
+  const body = cues.map((q, i) => `${fmt === "srt" ? `${i + 1}\n` : ""}${stamp(q.start, sep)} --> ${stamp(q.end, sep)}\n${escapeCue(q.text, fmt).replace(/\n{2,}/g, "\n")}\n`).join("\n");
   return fmt === "vtt" ? `WEBVTT\n\n${body}` : body;
 }
 
@@ -69,7 +74,7 @@ export function embedCodec(video: string): string {
 export function embedSubtitles(video: string, cues: Cue[], base?: string) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
   const vtt = codec === "webvtt";
-  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`, base), tmp = tmpSibling(video, base); // new names next to the video; nothing exists at them
+  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`, base), tmp = partSibling(video, base); // new names next to the video; nothing exists at them
   createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,

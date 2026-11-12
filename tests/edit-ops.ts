@@ -798,6 +798,38 @@ console.log("untrusted field names and pending requests");
   check("a stored request cannot change its op or clip id", msg.startsWith("pending auto_reframe on 'vid1'"), { msg, removed: !t.tracks.flatMap((x: any) => x.clips).some((x: any) => x.id === "vid2") });
 }
 
+console.log("templates and beats");
+{
+  const P2 = join(tmp, "proj2");
+  api.create(P2, { preset: "720p" });
+  const png = join(m, "p.png");
+  const ap = (ops: any[]) => api.apply(P2, ops).then((r) => r.results);
+  const code = async (ops: any[]) => { try { await ap(ops); return "ok"; } catch (e: any) { return e.code; } };
+  check("the slideshow template documents the argument it reads (title_preset), not caption_preset",
+    "title_preset" in (api.capabilities().templates as any).slideshow.args && !("caption_preset" in (api.capabilities().templates as any).slideshow.args));
+  await ap([{ op: "apply_template", name: "slideshow", media: [png], title: "Hi", title_preset: "neon" }]);
+  const title = api.info(P2, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Hi");
+  check("slideshow title_preset styles the title", !!title?.glow, title);
+  check("quote template without text is refused as missing_arg", await code([{ op: "apply_template", name: "quote" }]) === "missing_arg");
+
+  // beats read from an audio path follow the file: a replaced file gives its own beats
+  const click = join(m, "click.wav");
+  const makeClicks = (period: number) => ff("-f", "lavfi", "-i", `sine=f=1000:d=14,volume='lt(mod(t,${period}),0.05)':eval=frame`, "-ar", "22050", click);
+  const firstCut = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.i = { path: png, kind: "image" };
+    const [, [, , sn]] = applyOps(null as any, t, [
+      { op: "add_clip", track: "main", asset: "i", id: "a", duration: 3 }, { op: "add_clip", track: "main", asset: "i", id: "b", duration: 3 },
+      { op: "snap_to_beats", track: "main", beats: click, every: 1 }]);
+    return sn.retimed[0].duration as number;
+  };
+  makeClicks(0.5);
+  const d1 = firstCut();
+  makeClicks(1);
+  const d2 = firstCut();
+  check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
+}
+
 console.log("validity + render");
 const inf = api.info(P);
 check("timeline valid", inf.errors === 0, inf.issues);

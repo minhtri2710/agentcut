@@ -3,10 +3,9 @@
 // Output options: codec (h264 | hevc | prores | prores_4444 | vp9 | auto by extension), alpha (transparent video in
 // .mov ProRes 4444 / .webm VP9), and audio-only exports (.wav .mp3 .m4a .aac .flac) that skip video entirely.
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
-import { availableParallelism, hostname } from "node:os";
+import { availableParallelism } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
@@ -15,7 +14,7 @@ import { hasCodec, needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
 import { alive, refuseSource } from "./project.ts";
-import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
+import { commit, createFile, ensureDir, HOST_TAG, partSibling } from "./safe-write.ts";
 
 export type VideoCodec = "h264" | "hevc" | "prores" | "prores_4444" | "vp9";
 export type Codec = VideoCodec | "auto";
@@ -124,15 +123,6 @@ export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDir
 
 /** Scratch dir of one render: `<project>/.agentcut/tmp/render-<pid>-<rand>/`. The pid lets cache.ts sweepStale remove it after a crash. */
 const renderTmp = (root: string) => mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `render-${process.pid}-`));
-
-/** Short tag of this machine in the part files it writes: a pid means nothing on another machine that shares the output folder. */
-export const HOST_TAG = createHash("sha1").update(hostname()).digest("hex").slice(0, 8);
-
-/** A new part file name beside `output`: safe-write.ts `<name>.part-<pid>-<12 hex><ext>` with HOST_TAG before the random part. */
-function partSibling(output: string, root: string) {
-  const p = tmpSibling(output, root), cut = p.length - extname(output).length - 13;
-  return `${p.slice(0, cut)}-${HOST_TAG}${p.slice(cut)}`;
-}
 
 /** Remove the `<name>.part-<pid>-<HOST_TAG>-<12 hex><ext>` files a dead process of this machine left beside `output` (SIGKILL, power loss).
  *  Only the exact names partSibling makes for this output (untagged names and other machines' tags stay), as direct regular-file

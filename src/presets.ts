@@ -47,7 +47,7 @@ const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
 export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dict) => Dict[] }> = {
   slideshow: {
     doc: "photos/clips with Ken Burns + crossfades, optional title and music (cuts snap to beats)",
-    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", caption_preset: "for title (title_bold)" },
+    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)" },
     build: (a) => {
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
       if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold" });
@@ -88,6 +88,7 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
     doc: "single quote card over a background clip/photo or gradient",
     args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
     build: (a) => {
+      if (typeof a.text !== "string" || !a.text.trim()) throw new EditError("quote needs text", "missing_arg", "pass text: the quote");
       const d = a.seconds ?? 6;
       const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", color: { look: "moody" }, effects: [{ type: "vignette", intensity: 0.6 }] }
         : { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#0f2027", "#203a43", "#2c5364"], angle: 135 }, duration: d }];

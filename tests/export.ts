@@ -201,6 +201,26 @@ print(json.dumps({"otio": desc(o), "fcpx": desc(tl), "reserialized": same}))
   }
 } else console.log("  - AGENTCUT_OTIO_PY not set: OpenTimelineIO roundtrip skipped");
 
+console.log("caption sources and subtitle export");
+{
+  const { captionWords, parseSrt } = await import("../src/captions.ts");
+  const { formatCues } = await import("../src/subtitles.ts");
+  const code = (f: () => unknown) => { try { f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
+  const ws: any[] = captionWords({ words: [{ text: "a", start: "1.5s", end: "00:02.5" }, { text: "b", s: "500ms", e: 3 }] });
+  check("caption word times written as strings are parsed", ws[0].start === 1.5 && ws[0].end === 2.5 && ws[1].start === 0.5 && ws[1].end === 3, ws);
+  check("a caption word time that is not a time is refused as bad_time", code(() => captionWords({ words: [{ text: "a", start: "soon", end: 1 }] })) === "bad_time");
+  const cue = [{ start: 0, end: 1, text: "a --> b <i>x</i> & c", clip: "c1" }];
+  for (const fmt of ["srt", "vtt"] as const) {
+    const body = formatCues(cue, fmt).split("\n").filter((l) => l.includes("-->"));
+    check(`${fmt}: only the timing line holds the cue arrow`, body.length === 1 && /^\d\d:\d\d:\d\d[,.]\d{3} --> /.test(body[0]), body);
+  }
+  check("vtt: cue text markup characters are escaped", formatCues(cue, "vtt").includes("a --&gt; b &lt;i&gt;x&lt;/i&gt; &amp; c"), formatCues(cue, "vtt"));
+  const gone = join(tmp, "missing.srt");
+  let err: any;
+  try { parseSrt(gone); } catch (e) { err = e; }
+  check("a missing srt is a named not_found error with the path in the hint", err?.code === "not_found" && err.hint?.includes(gone), { code: err?.code, hint: err?.hint });
+}
+
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all export checks passed"}  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

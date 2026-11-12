@@ -1,12 +1,15 @@
 // Caption sources: word timings, SRT/VTT parsing, paging. Pure (no Skia).
 import { readFileSync } from "node:fs";
-import type { Dict } from "./model.ts";
+import { type Dict, EditError, parseTime } from "./model.ts";
 
 // ------------------------------------------------------------------ captions
 export interface CWord { text: string; start: number; end: number }
 
 export function parseSrt(path: string): CWord[] {
-  const raw = readFileSync(path, "utf8").replace(/^﻿/, "").replace(/\r/g, "");
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (e: any) { throw e.code === "ENOENT" ? new EditError(`subtitle file not found: ${path}`, "not_found", `check the srt path: ${path}`) : e; }
+  const raw = text.replace(/^﻿/, "").replace(/\r/g, "");
   const ts = /(\d+:)?(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+:)?(\d+):(\d+)[,.](\d+)/;
   const sec = (h: string | undefined, m: string, s: string, ms: string) => (h ? parseInt(h) : 0) * 3600 + +m * 60 + +s + +ms / 10 ** ms.length;
   const out: CWord[] = [];
@@ -53,7 +56,7 @@ export function scriptToWords(text: string, speech: number[][]): CWord[] {
 
 export function captionWords(c: Dict): CWord[] {
   if (c.words?.length)
-    return c.words.map((w: any) => ({ text: String(w.text ?? w.word ?? w.w ?? "").trim(), start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) }))
+    return c.words.map((w: any) => ({ text: String(w.text ?? w.word ?? w.w ?? "").trim(), start: parseTime(w.start ?? w.s ?? 0, "caption word start"), end: parseTime(w.end ?? w.e ?? 0, "caption word end") }))
       .filter((w: CWord) => w.text);
   if (c.srt) return phrasesToWords(parseSrt(c.srt));
   return [];
