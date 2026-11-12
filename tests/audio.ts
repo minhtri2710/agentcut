@@ -1,7 +1,7 @@
 // Audio processing (denoise, eq, compressor, pan, pitch, normalize; clip + track bus), enhance_voice, subtitle export/embed.
 // Measures rendered audio with FFmpeg. Run: bun tests/audio.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -271,14 +271,17 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // a stand-in ffmpeg records its pid and then waits: the abort must end that very process
     const bin = join(tmp, "fakebin"), pidFile = join(tmp, "fake.pid"), Q = join(tmp, "abort-proj");
     mkdirSync(bin);
-    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\necho $$ > '${pidFile}'\nexec sleep 60\n`, { mode: 0o755 });
+    const realFfmpeg = process.env.PATH!.split(delimiter).map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
+    // the stand-in waits only when an argument contains `key` (any call when key is empty); every other call runs the real ffmpeg
+    const standIn = (key: string) => writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexec '${realFfmpeg}' "$@"\n`, { mode: 0o755 });
     api.create(Q, { width: 320, height: 240, fps: 24 });
     await api.apply(Q, [{ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 0, duration: 2 }]);
     hasCodec("encoders", "pcm_s16le"); // the encoder list is read once per process: read it from the real ffmpeg before the stand-in takes PATH
     const pq = api.openProject(Q), realPath = process.env.PATH!;
     // the stand-in sleeps 60 s, so a rejection within 5 s of the abort shows the abort stopped it rather than the child ending on its own
-    const abortRun = async (name: string, start: (signal: AbortSignal) => Promise<unknown>) => {
+    const abortRun = async (name: string, key: string, start: (signal: AbortSignal) => Promise<unknown>) => {
       const ac = new AbortController();
+      standIn(key);
       let err: any, pid = 0, aliveBefore = false, took = -1;
       rmSync(pidFile, { force: true });
       process.env.PATH = bin + delimiter + realPath;
@@ -295,8 +298,18 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
       try { process.kill(pid, 0); } catch { aliveAfter = false; }
       check(`abort during ${name}: the call rejects with the abort within 5 s and the ffmpeg child it started is gone`, pid > 0 && aliveBefore && err?.name === "AbortError" && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message });
     };
-    await abortRun("the mix", (signal) => buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, signal));
-    await abortRun("an audio render", (signal) => api.render(Q, { out: join(tmp, "abort-render.wav"), signal }));
+    await abortRun("the mix", "", (signal) => buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, signal));
+    await abortRun("an audio render", "", (signal) => api.render(Q, { out: join(tmp, "abort-render.wav"), signal }));
+    // the render tail: the stand-in waits only at the step under test, so the render reaches it with the real frames and segments
+    const R = join(tmp, "abort-video");
+    api.create(R, { width: 320, height: 240, fps: 24 });
+    await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }]);
+    await abortRun("the segment concat", "concat", (signal) => api.render(R, { out: join(tmp, "abort-concat.mp4"), workers: 2, sheet: false, signal }));
+    await abortRun("the gif conversion", "palettegen", (signal) => api.render(R, { out: join(tmp, "abort.gif"), workers: 1, sheet: false, signal }));
+    const { embedSubtitles } = await import("../src/subtitles.ts"), { loudness } = await import("../src/analyze.ts");
+    const subbed = join(tmp, "abort-sub.mp4");
+    await abortRun("the subtitle mux", "-c:s", async (signal) => { copyFileSync(join(m, "talk.mp4"), subbed); await embedSubtitles(subbed, [{ start: 0, end: 1, text: "x", clip: "c" }], undefined, signal); });
+    await abortRun("a loudness measurement", "ebur128", (signal) => loudness(join(m, "talk.mp4"), signal));
   }
 }
 

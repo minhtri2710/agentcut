@@ -134,9 +134,9 @@ if (!bin) {
   console.log("ffmpeg spawn failure");
   const script = join(tmp, "spawn-fail.ts"), empty = join(tmp, "empty-path");
   mkdirSync(empty);
-  writeFileSync(script, `import { loudnessAsync } from ${JSON.stringify(join(root, "src/analyze.ts"))};\nprocess.env.PATH = ${JSON.stringify(empty)};\nconsole.log(JSON.stringify(await loudnessAsync("x.wav")));\n`);
+  writeFileSync(script, `import { loudness } from ${JSON.stringify(join(root, "src/analyze.ts"))};\nprocess.env.PATH = ${JSON.stringify(empty)};\nconsole.log(JSON.stringify(await loudness("x.wav")));\n`);
   const r = spawnSync("bun", ["--no-install", "--no-env-file", `--config=${join(root, "scripts/bunfig.empty.toml")}`, script], { cwd: tmp, env: { ...env(), PATH: process.env.PATH }, encoding: "utf8", timeout: 30000 });
-  check("loudnessAsync with no ffmpeg on PATH resolves with unknown metrics", r.status === 0 && r.stdout.includes('"integrated_lufs":null'), [r.status, r.stdout.slice(0, 200), r.stderr.slice(-300)]);
+  check("loudness with no ffmpeg on PATH resolves with unknown metrics", r.status === 0 && r.stdout.includes('"integrated_lufs":null'), [r.status, r.stdout.slice(0, 200), r.stderr.slice(-300)]);
 }
 
 // the test runner: a failing suite does not hide the later ones, the exit code is 1 and the failed suites are named at the end

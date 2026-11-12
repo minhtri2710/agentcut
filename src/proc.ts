@@ -18,11 +18,12 @@ export function stopOnAbort(ch: ChildProcess, signal?: AbortSignal, graceMs = 15
 }
 
 export interface RunResult { status: number | null; stdout: string; stderr: string }
-/** spawnSync without blocking the event loop. Output past `maxBuffer` bytes on either stream (spawnSync's default, 1 MiB) kills the child and gives
+/** spawnSync without blocking the event loop; `input` is written to stdin. Output past `maxBuffer` bytes on either stream (spawnSync's default, 1 MiB) kills the child and gives
  *  status null with the output kept so far, as does a failed spawn (the message goes to stderr). An abort stops the child and rejects with signal.reason. */
-export async function run(cmd: string, args: string[], { signal, maxBuffer = 1 << 20 }: { signal?: AbortSignal; maxBuffer?: number } = {}): Promise<RunResult> {
+export async function run(cmd: string, args: string[], { signal, maxBuffer = 1 << 20, input }: { signal?: AbortSignal; maxBuffer?: number; input?: Buffer } = {}): Promise<RunResult> {
   signal?.throwIfAborted();
-  const ch = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const ch = spawn(cmd, args, { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
+  if (input) { ch.stdin!.on("error", () => { /* the child exited before reading it all: its status says why */ }); ch.stdin!.end(input); }
   const out: Buffer[][] = [[], []], size = [0, 0];
   let over = false;
   const keep = (k: 0 | 1) => (d: Buffer) => {

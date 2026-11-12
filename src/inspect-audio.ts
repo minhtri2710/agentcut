@@ -121,7 +121,7 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
     const mw = readWindows(mixPath);
     const T = o.source ? mw.dur : Math.max(mw.dur, totalDuration(tl!));
     const findings: Dict[] = [];
-    const loud = AN.loudness(mixPath);
+    const loud = await AN.loudness(mixPath);
 
     // 1. clipping (sample peak >= -0.1 dBFS) and overs (> -1 dBFS, the usual true-peak ceiling)
     for (const [s, e] of runs(mw.peak.length, (k) => mw.peak[k] >= 0.9886, 0, 0.1))

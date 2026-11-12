@@ -1,5 +1,5 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { inp } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
 import { commit, createFile, tmpSibling } from "./safe-write.ts";
+import { run } from "./proc.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
 function decodeMono(path: string, sr = 22050): Float32Array {
@@ -162,27 +163,12 @@ export function silence(path: string, noiseDb = -35, minSilence = 0.4) {
   return { source: path, noise_db: noiseDb, min_silence: minSilence, silences: sil, speech, duration: dur };
 }
 
-export function loudness(path: string) {
-  needFfmpeg();
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
-  const txt = (r.stderr || "").slice((r.stderr || "").lastIndexOf("Summary:"));
+/** EBU R128 loudness of a file. A failed spawn leaves the metrics null, so a render that already ended is not failed for it; an abort rejects. */
+export async function loudness(path: string, signal?: AbortSignal) {
+  const { stderr } = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  const txt = stderr.slice(stderr.lastIndexOf("Summary:"));
   const grab = (l: string) => { const m = new RegExp(`${l}:\\s+(-?[\\d.]+|-inf)`).exec(txt); return m && m[1] !== "-inf" ? +m[1] : null; };
   return { source: path, integrated_lufs: grab("I"), range_lu: grab("LRA"), true_peak_dbfs: grab("Peak") };
-}
-
-/** Non-blocking variant (used right after renders so it overlaps with the contact sheet). */
-export function loudnessAsync(path: string): Promise<ReturnType<typeof loudness>> {
-  return new Promise((res) => {
-    const p = spawn("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"]);
-    let err = "";
-    p.stderr.on("data", (d) => { err += d; if (err.length > 1e6) err = err.slice(-20000); });
-    p.on("error", () => res({ source: path, integrated_lufs: null, range_lu: null, true_peak_dbfs: null })); // a failed spawn leaves the metrics unknown; a render that ended is not failed for it
-    p.on("close", () => {
-      const txt = err.slice(err.lastIndexOf("Summary:"));
-      const grab = (l: string) => { const m = new RegExp(`${l}:\\s+(-?[\\d.]+|-inf)`).exec(txt); return m && m[1] !== "-inf" ? +m[1] : null; };
-      res({ source: path, integrated_lufs: grab("I"), range_lu: grab("LRA"), true_peak_dbfs: grab("Peak") });
-    });
-  });
 }
 
 // ------------------------------------------------------------------ TTS

@@ -159,7 +159,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
       case "scenes": res = api.analyze.scenes(pos[0], num(f.threshold)); break;
       case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
-      case "loudness": res = api.analyze.loudness(pos[0]); break;
+      case "loudness": res = await api.analyze.loudness(pos[0]); break;
       case "transcribe": res = api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
       case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
         let root: string | undefined;
