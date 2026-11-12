@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import { checkRevision, type Project } from "./project.ts";
@@ -215,7 +215,7 @@ function resolveRef(tl: Timeline, ref: string): string {
   return c.id;
 }
 
-/** A match_duration clip reference ("<id>" or "track#n") -> the id of the clip to follow; bad_ref if it is unknown, the clip itself, a cycle, or a length that is not its own. */
+/** A match_duration clip reference ("<id>" or "track#n") -> the id of the clip to follow; bad_ref if it is unknown, the clip itself, an until_end clip, or a cycle. */
 function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   const hint = "name a clip on this timeline: an id or a ref like 'voice#-1'";
   let t: Clip;
@@ -224,11 +224,12 @@ function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   const bad = (why: string, fix: string) => new EditError(`match_duration '${ref}': ${why}`, "bad_ref", fix);
   if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
   if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
-  if (t.match_duration === true && t.attach_to) throw bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
   const clips = tl.tracks.flatMap((x) => x.clips);
-  for (let x: Clip | undefined = t, seen = new Set<Clip>(); c && typeof x?.match_duration === "string" && !seen.has(x); x = clips.find((y) => y.id === x!.match_duration)) {
+  for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = clips.find((y) => y.id === lengthTarget(x!))) {
     seen.add(x);
-    if (x.match_duration === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
+    const next = clips.find((y) => y.id === lengthTarget(x!));
+    if (next?.until_end) throw bad(`'${t.id}' takes its length from '${next.id}', which has until_end`, "follow a clip with its own duration");
+    if (c && lengthTarget(x) === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
   }
   return t.id;
 }

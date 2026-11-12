@@ -313,7 +313,9 @@ console.log("match_duration by clip reference");
     ["a 3-cycle", [{ op: "update_clip", id: "cC", match_duration: "cA" }]],
     ["a cycle inside one batch", [{ op: "update_clip", id: "img2", match_duration: "vo1" }, { op: "update_clip", id: "vo1", match_duration: "img2" }]],
     ["an until_end target", [{ op: "update_clip", id: "img2", match_duration: "ue" }]],
-    ["an attach-derived target", [{ op: "update_clip", id: "img2", match_duration: "att" }]],
+    ["a cycle through an attached length", [{ op: "add_clip", track: "overlay", text: "x", id: "ay", attach_to: "cA", match_duration: true }, { op: "update_clip", id: "cC", match_duration: "ay" }]],
+    ["a chain that reaches an until_end clip", [{ op: "add_clip", track: "overlay", text: "x", id: "uy", attach_to: "ue", match_duration: true }, { op: "update_clip", id: "img2", match_duration: "uy" }]],
+    ["add_clip on a chain that reaches an until_end clip", [{ op: "add_clip", track: "overlay", text: "x", id: "uy", attach_to: "ue", match_duration: true }, { op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "uy" }]],
     ["add_clip, unknown id", [{ op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "nope" }]],
   ] as [string, any[]][]) {
     try { await api.apply(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
@@ -363,7 +365,22 @@ console.log("match_duration by clip reference");
   bad("itself", (x) => { at(x, "img2").match_duration = "img2"; });
   bad("a cycle", (x) => { at(x, "vo1").match_duration = "img2"; at(x, "img2").match_duration = "vo1"; });
   bad("an until_end target", (x) => { at(x, "vo1").until_end = true; });
-  bad("a match_duration:true target", (x) => { at(x, "vo1").attach_to = "img1"; at(x, "vo1").match_duration = true; });
+  bad("a cycle through an attached length", (x) => { at(x, "vo1").attach_to = "img2"; at(x, "vo1").match_duration = true; });
+  { // a follower of an attached-length clip: lengths settle in one call, the magnetic clip after it moves with them
+    const [x] = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "tag", attach_to: "img1", offset: 0.5, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "tag" }]);
+    check("a clip can follow an attached match_duration:true clip", near(at(x, "tag").duration, 1.5) && near(at(x, "img2").duration, 1.5) && !validate(x).some((i: any) => i.level === "error"), [at(x, "tag"), at(x, "img2")]);
+    at(x, "img1").duration = 4;
+    resolve(x);
+    const once = structuredClone(x), twice = structuredClone(resolve(structuredClone(x)));
+    check("  and one resolve settles the chain: attached length, follower, the clip after it", near(at(x, "tag").duration, 3.5) && near(at(x, "img2").duration, 3.5) && near(at(x, "img3").start, 7.5) && JSON.stringify(once) === JSON.stringify(twice), [at(x, "tag"), at(x, "img2"), at(x, "img3")]);
+  }
+  { // ... but not through to an until_end clip: before it on a magnetic track, its start would move with its own length
+    const x = base();
+    x.tracks.find((tr: any) => tr.id === "main")!.clips.push({ id: "ue", type: "image", asset: "i", start: 0, duration: 1, until_end: true });
+    x.tracks.find((tr: any) => tr.id === "main")!.clips.unshift({ id: "af", type: "image", asset: "i", start: 0, duration: 1, match_duration: "ay" });
+    x.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "ay", type: "image", asset: "i", start: 0, duration: 1, attach_to: "ue", match_duration: true });
+    check("validate: a follower whose length chain reaches an until_end clip is an error", validate(x).some((i: any) => i.level === "error" && i.path.endsWith("<af>.match_duration") && /until_end/.test(i.message)), validate(x));
+  }
   { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "vo1").match_duration = true;
     check("validate: match_duration:true without attach_to is a plain length, so a good target", !validate(x).some((i: any) => i.level === "error"), validate(x)); }
   bad("a number", (x) => { at(x, "img2").match_duration = 5; });
@@ -545,6 +562,27 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
     t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "c", type: "image", asset: "i", start: 0, duration: 1, attach_to: "k0", offset: 0.5 });
     const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
     check("resolve: an until_end clip first on a magnetic track is a fixed point and ends with the clips that do not move with it", JSON.stringify(a) === JSON.stringify(b) && near(at(a, "u").duration, 1), { a, b });
+  }
+
+  // every length settles before any layout: one resolve gives the final answer (hand-edited: add_clip refuses attach_to on a magnetic track)
+  const lengths = (edit: (t: any) => void) => {
+    const t = base();
+    edit(t);
+    const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
+    return { stable: JSON.stringify(a) === JSON.stringify(b), a };
+  };
+  const magnetic = (t: any) => t.tracks.find((tr: any) => tr.id === "main")!.clips;
+  { // k1 (overlay, 1 s) is 3 s long: the magnetic clip m1 takes its length from it, and m2 starts after that length
+    const r = lengths((t) => {
+      at(t, "k1").duration = 3;
+      magnetic(t).splice(1, 0, { id: "m1", type: "image", asset: "i", start: 2, duration: 1, attach_to: "k1", match_duration: true }, { id: "m2", type: "image", asset: "i", start: 3, duration: 1 });
+    });
+    check("resolve: an attached length on a magnetic track settles before the clips after it are laid out", r.stable && near(at(r.a, "m1").duration, 3) && near(at(r.a, "m2").start, 5) && near(at(r.a, "m1").start, 0), r.a);
+  }
+  { // validate says what resolve does with attach_to on a magnetic track
+    const t = base();
+    magnetic(t).push({ id: "m1", type: "image", asset: "i", start: 2, duration: 1, attach_to: "k1", match_duration: true });
+    check("validate: attach_to on a magnetic track is a warning that names the length it still takes", validate(t).some((i: any) => i.level === "warning" && /<m1>\.attach_to$/.test(i.path) && /match_duration/.test(i.message)), validate(t));
   }
 
   // the batch's "new issues" compare by clip identity

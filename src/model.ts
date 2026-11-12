@@ -425,9 +425,7 @@ export const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
 
 export function resolve(tl: Timeline): Timeline {
   for (const [, , , c] of iterClips(tl)) if (c.type === "compound" && Array.isArray(c.tracks)) resolve(subTimeline(tl, c));
-  resolveFollowers(tl);
-  resolveMagnetic(tl);
-  resolveAttached(tl);
+  layout(tl);
   // until_end clips stretch to the end of everything else; a clip whose length follows one counts only at its floor length, a clip whose start moves with one not at all
   const { len, pos } = movesWithUntilEnd(tl);
   let end = 0, any = false;
@@ -437,11 +435,31 @@ export function resolve(tl: Timeline): Timeline {
   }
   if (any) {
     for (const [, , , c] of iterClips(tl)) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
-    resolveFollowers(tl);
-    resolveMagnetic(tl);
-    resolveAttached(tl);
+    layout(tl);
   }
   return tl;
+}
+
+/** Every length settles before any start: a start (magnetic, attached) reads settled lengths, so one call gives the final answer. */
+function layout(tl: Timeline) {
+  resolveLengths(tl);
+  resolveMagnetic(tl);
+  resolveAttached(tl);
+}
+
+/** Visit each clip after the clip it depends on, so a chain of any depth settles in one call; a cycle (invalid) stops where it closes. */
+function settleChains(tl: Timeline, dependsOn: (c: Clip) => string | undefined, settle: (c: Clip, t: Clip) => void) {
+  const byId = new Map<string, Clip>(), done = new Set<Clip>();
+  for (const [, , , c] of iterClips(tl)) byId.set(c.id, c);
+  const visit = (c: Clip) => {
+    if (done.has(c)) return;
+    done.add(c);
+    const id = dependsOn(c), t = id === undefined ? undefined : byId.get(id);
+    if (!t || t === c) return;
+    visit(t);
+    settle(c, t);
+  };
+  for (const [, , , c] of iterClips(tl)) visit(c);
 }
 
 /** The clips whose end moves with the length of an until_end clip. `len`: their length follows it (match_duration). `pos`: their start moves with it, because they sit after such a clip on a magnetic track or attach to the start of a clip that does.
@@ -449,12 +467,11 @@ export function resolve(tl: Timeline): Timeline {
 function movesWithUntilEnd(tl: Timeline): { len: Set<Clip>; pos: Set<Clip> } {
   const byId = new Map<string, Clip>(), len = new Set<Clip>(), pos = new Set<Clip>();
   for (const [, , , c] of iterClips(tl)) { byId.set(c.id, c); if (c.until_end) len.add(c); }
-  const lengthOf = (c: Clip) => (typeof c.match_duration === "string" ? c.match_duration : c.match_duration === true ? c.attach_to : undefined);
   for (let grew = true; grew;) {
     grew = false;
     const add = (set: Set<Clip>, c: Clip) => { if (!set.has(c)) { set.add(c); grew = true; } };
     for (const tr of tl.tracks) tr.clips.forEach((c, i) => {
-      const prev = tr.clips[i - 1], target = byId.get(lengthOf(c)!), at = byId.get(c.attach_to);
+      const prev = tr.clips[i - 1], target = byId.get(lengthTarget(c)!), at = byId.get(c.attach_to);
       if (target && len.has(target)) add(len, c);
       if (at && pos.has(at)) add(pos, c);
       if (tr.magnetic && prev && (len.has(prev) || pos.has(prev))) add(pos, c);
@@ -463,19 +480,15 @@ function movesWithUntilEnd(tl: Timeline): { len: Set<Clip>; pos: Set<Clip> } {
   return { len, pos };
 }
 
-/** match_duration naming a clip: duration = that clip's duration - end_offset (same timeline level). Chains settle in one pass per follower; a cycle (invalid) cannot loop. */
-function resolveFollowers(tl: Timeline) {
-  const byId = new Map<string, Clip>(), followers: Clip[] = [];
-  for (const [, , , c] of iterClips(tl)) { byId.set(c.id, c); if (typeof c.match_duration === "string") followers.push(c); }
-  for (let pass = 0, moved = true; moved && pass <= followers.length; pass++) {
-    moved = false;
-    for (const c of followers) {
-      const t = byId.get(c.match_duration);
-      if (!t || t === c) continue;
-      const d = round6(Math.max(0.1, clipDur(t) - parseTime(c.end_offset ?? 0)));
-      if (d !== c.duration) { c.duration = d; moved = true; }
-    }
-  }
+/** The id of the clip whose length this clip's length follows: match_duration naming a clip, or true with attach_to. */
+export const lengthTarget = (c: Clip) => (typeof c.match_duration === "string" ? c.match_duration : c.match_duration === true ? c.attach_to : undefined);
+
+/** A clip's length follows another clip: match_duration naming a clip (duration = its duration - end_offset, the start untouched), or true with attach_to (duration = the target's - offset - end_offset). */
+function resolveLengths(tl: Timeline) {
+  settleChains(tl, lengthTarget, (c, t) => {
+    const off = typeof c.match_duration === "string" ? 0 : parseTime(c.offset ?? 0);
+    c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
+  });
 }
 
 /** A clip whose duration is computed, not stored: it follows a clip (match_duration names one) or its attach_to target (match_duration true). */
@@ -499,20 +512,7 @@ export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): 
 }
 
 function resolveAttached(tl: Timeline) {
-  const byId = new Map<string, Clip>();
-  for (const [, , , c] of iterClips(tl)) byId.set(c.id, c);
-  const done = new Set<Clip>();
-  const settle = (c: Clip) => { // the target settles first, so a chain of any depth is placed in one call; a cycle (invalid) stops where it closes
-    if (done.has(c)) return;
-    done.add(c);
-    const t = c.attach_to ? byId.get(c.attach_to) : undefined;
-    if (!t || t === c) return;
-    settle(t);
-    const off = parseTime(c.offset ?? 0);
-    c.start = round6(Math.max(0, clipStart(t) + off));
-    if (c.match_duration === true) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
-  };
-  for (const [, , , c] of iterClips(tl)) settle(c);
+  settleChains(tl, (c) => c.attach_to, (c, t) => { c.start = round6(Math.max(0, clipStart(t) + parseTime(c.offset ?? 0))); });
   for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
 }
 
@@ -757,7 +757,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           seen.add(x);
           if (x.attach_to === c.id) { issues.push({ level: "error", path: at, message: `attached to '${t.id}', which is attached back to it`, hint: "break the cycle: remove attach_to from one of the clips" }); break; }
         }
-        if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "attach_to is ignored on magnetic tracks (their starts are computed)" });
+        if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "on a magnetic track attach_to places this clip at its target, and with match_duration true takes its length from it, but the clips after it stay in track order (their starts are computed)" });
       }
       if (typeof c.match_duration === "string") {
         const at = `${p}.match_duration`;
@@ -766,10 +766,11 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (!t) bad(`follows missing clip '${c.match_duration}'`, "name an existing clip id, or remove match_duration");
         else if (t === c) bad("a clip cannot follow its own duration", "name another clip");
         else if (t.until_end) bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
-        else if (t.match_duration === true && t.attach_to) bad(`'${t.id}' has match_duration true, so its length is computed after layout`, `follow its target '${t.attach_to}' instead`);
-        else for (let x: Clip | undefined = t, seen = new Set<Clip>(); typeof x?.match_duration === "string" && !seen.has(x); x = byId(x.match_duration)) {
+        else for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = byId(lengthTarget(x)!)) {
           seen.add(x);
-          if (x.match_duration === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }
+          const next = byId(lengthTarget(x)!);
+          if (next?.until_end) { bad(`'${t.id}' takes its length from '${next.id}', which has until_end`, "follow a clip with its own duration"); break; }
+          if (lengthTarget(x) === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }
         }
       }
       if (c.transition && ci > 0 && !tr.magnetic && !(prevEnd !== null && start < prevEnd - 1e-6)) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
