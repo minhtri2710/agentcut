@@ -97,7 +97,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
 {"op":"make_compound","ids":["main#1","main#2","txt1"],"name":"intro"}   group clips into ONE compound clip (move/trim/fade/mask/effects as a unit)
-{"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track}); the compound's volume/muted/enabled go to its clips; effects, opacity and other layer fields are refused (layer_properties: clear them first)
+{"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track}); the compound's volume/muted/enabled go to its clips; effects, opacity and other layer fields (also until_end, pending, a transition off a storyline) are refused (layer_properties: clear them first)
 {"op":"make_compound","from":"cmp1"}                regroup: takes every clip/gap stamped group.id "cmp1" (also after split_clip), same id + name, clears the stamps; rebuild inner groups before outer ones (inner_expanded); a rebuilt inner compound rejoins its outer group (group.parent)
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
      regroup (from, not ids; duplicate_clip drops the stamp). Nested audio is mixed (compound volume/muted apply) at compound speed 1.

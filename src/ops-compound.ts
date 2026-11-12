@@ -12,8 +12,11 @@ const TRACK_PROPS = ["name", "role", "duck", "volume", "muted", "hidden", ...AUD
 /** Cut a connected clip loose. A match_duration that names a clip is not an attachment: it stays (see unfollow). */
 const detach = (c: Clip) => { delete c.attach_to; delete c.offset; if (c.match_duration === true) { delete c.match_duration; delete c.end_offset; } };
 /** layer properties of a compound that act on its composited picture: they cannot be handed to the separate clips of an expansion */
-const LAYER_PROPS = ["effects", "keyframes", "opacity", "blend", "mask", "scale", "scale_x", "scale_y", "rotation", "x", "y", "position", "radius", "shadow", "border", "motion", "enter", "exit"];
-const layerProps = (c: Clip) => LAYER_PROPS.filter((k) => c[k] != null && c[k] !== false && (typeof c[k] !== "object" || Object.keys(c[k]).length > 0));
+const LAYER_PROPS = ["effects", "keyframes", "opacity", "blend", "mask", "scale", "scale_x", "scale_y", "rotation", "x", "y", "position", "radius", "shadow", "border", "motion", "enter", "exit", "pending", "until_end"];
+const IDENTITY: Record<string, unknown> = { opacity: 1, blend: "normal", scale: 1, scale_x: 1, scale_y: 1, rotation: 0, radius: 0 }; // values that change nothing
+/** a transition is carried only into a magnetic storyline; on a free track it would overlap the previous clip and be dropped */
+const layerProps = (c: Clip, magnetic: boolean) => [...LAYER_PROPS, ...(magnetic ? [] : ["transition"])]
+  .filter((k) => c[k] != null && c[k] !== false && c[k] !== IDENTITY[k] && (typeof c[k] !== "object" || Object.keys(c[k]).length > 0));
 const gap = (d: number): Clip => ({ id: "", type: "gap", duration: round6(Math.max(0.001, d)) });
 
 /** Pin a magnetic clip's transition to its resolved overlap td, so a neighbour with another duration cannot move it. */
@@ -25,13 +28,13 @@ function pin(c: Clip | undefined, td: number) {
 }
 
 /** Cut `head`/`tail` seconds off a clip, keeping its content locked to the timeline. */
-function trim(n: Clip, head: number, tail: number) {
+function trim(n: Clip, head: number, tail: number, compound: string) {
   if (head < EPS && tail < EPS) return;
   const sp = Number(n.speed ?? 1) || 1, d = n.reverse ? tail : head;
   if (hasSourceTime(n) && !n.freeze && d > EPS) n.in = round6(parseTime(n.in ?? 0) + d * sp);
   if (head > EPS) {
     delete n.transition; delete n.fade_in;
-    shiftKfs(n, -head);
+    shiftKfs(n, -head, `captions '${n.id}' sit inside compound '${compound}': set the compound's in to 0 (update_clip id=${compound} set={in: 0}), or replace its nested tracks`);
   }
   if (tail > EPS) delete n.fade_out;
   n.duration = round6(clipDur(n) - head - tail);
@@ -128,16 +131,17 @@ export function registerCompoundOps(h: OpHelpers) {
 
   h.op("expand_compound", "Break a compound clip apart: its nested clips go back onto the same-id tracks (created if missing) at their current " +
     "timeline positions, trimmed to the visible part (in/duration). On the compound's magnetic track they are spliced in its place (gaps fill holes). " +
-    "Every clip and gap it places gets a `group` stamp {id, name, track, parent?} (parent = the stamp the expanded compound itself carried); make_compound from=<id> regroups them, and the rebuilt compound takes that parent stamp back. The compound's volume, muted and enabled go to its clips; layer fields that act on its picture (effects, opacity, mask, ...) are refused (layer_properties). On another storyline the clips take the gap make_compound left there, else a new track just above it. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
+    "Every clip and gap it places gets a `group` stamp {id, name, track, parent?} (parent = the stamp the expanded compound itself carried); make_compound from=<id> regroups them, and the rebuilt compound takes that parent stamp back. The compound's volume, muted and enabled go to its clips; layer fields that act on its picture (effects, opacity, mask, ...), until_end, pending, and a transition on a non-magnetic track are refused (layer_properties; values that change nothing, like opacity 1, are fine). On another storyline the clips take the gap make_compound left there, else a new track just above it. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
       if (Math.abs((Number(c.speed ?? 1) || 1) - 1) > EPS || c.keyframes?.speed)
         throw new EditError(`'${c.id}' plays at a different speed; expand_compound needs speed 1`, "retimed", `reset it first: update_clip id=${c.id} set={speed: null}`);
-      const lost = layerProps(c);
+      const lost = layerProps(c, !!home.magnetic);
       if (lost.length) throw new EditError(`'${c.id}' has layer properties (${lost.join(", ")}) that apply to the compound as one picture; expanding would drop them`, "layer_properties",
         `remove them first: update_clip id=${c.id} set={${lost.map((k) => `${k}: null`).join(", ")}}`);
       const w0 = parseTime(c.in ?? 0), dur = clipDur(c), base = clipStart(c), next = home.clips[ci + 1];
+      const td = home.magnetic && ci > 0 ? Math.max(0, clipEnd(home.clips[ci - 1]) - base) : 0; // how far the compound's transition pulled it back over the previous clip
       if (home.magnetic) pin(next, base + dur - clipStart(next ?? c));
       home.clips.splice(ci, 1);
       const placed = new Map<string, Clip>(), dropped: string[] = [], created: string[] = [], gaps: Clip[] = [], unlinked: string[] = [];
@@ -149,7 +153,7 @@ export function registerCompoundOps(h: OpHelpers) {
           const s = clipStart(n0), e = s + clipDur(n0), x0 = Math.max(s, w0), x1 = Math.min(e, w0 + dur);
           if (x1 - x0 < 1e-3) { dropped.push(n0.id); continue; }
           const n = structuredClone(n0);
-          trim(n, x0 - s, e - x1);
+          trim(n, x0 - s, e - x1, c.id);
           const fields = fieldsFor(n.type); // what the compound did to all its audio and to its visibility now sits on each clip
           if (c.enabled === false) n.enabled = false;
           if (c.muted && "muted" in fields) n.muted = true;
@@ -174,16 +178,16 @@ export function registerCompoundOps(h: OpHelpers) {
         if (n.match_duration === true) { const eo = round6(clipDur(t) - off - clipDur(n)); if (eo < -EPS) { delete n.match_duration; delete n.end_offset; } else n.end_offset = eo; }
       }
       /** put `clips` in storyline `tr` at index `at`, where `[base, base + dur)` was; `lead` is the transition into the first one */
-      const splice = (tr: Track, at: number, clips: Clip[], lead: unknown) => {
+      const splice = (tr: Track, at: number, clips: Clip[], lead: unknown, back: number) => {
         const seq: Clip[] = [];
         let cur = base;
         for (const n of clips) {
-          const st = clipStart(n);
-          const g = st > cur + 1e-3 ? gap(st - cur) : null;
+          const st = clipStart(n), lag = seq.length ? 0 : back; // a leading gap cannot overlap the previous clip, so it starts `back` later than the compound did
+          const g = st > cur + lag + 1e-3 ? gap(st - cur - lag) : null;
           if (g) { gaps.push(g); seq.push(g); cur = st; delete n.transition; }
           else if (seq.length) pin(n, cur - st); // an overlap with the previous clip is its transition
-          else if (lead) n.transition = structuredClone(lead); else delete n.transition;
-          const eff = !g && seq.length && n.transition ? st : cur;
+          else if (lead) { n.transition = structuredClone(lead); pin(n, lag - (st - cur)); } else delete n.transition;
+          const eff = !g && (seq.length ? n.transition : true) ? st : cur;
           delete n.start; detach(n); seq.push(n);
           cur = eff + clipDur(n);
         }
@@ -192,14 +196,14 @@ export function registerCompoundOps(h: OpHelpers) {
       };
       for (const [nt, clips] of lists) {
         let tr = tl.tracks.find((t) => t.id === nt.id);
-        if (tr === home && home.magnetic) { splice(home, ci, clips, c.transition); continue; } // into the storyline; starts become implicit
+        if (tr === home && home.magnetic) { splice(home, ci, clips, c.transition, td); continue; } // into the storyline; starts become implicit
         let above: Track | undefined;
         if (tr?.magnetic) { // another storyline cannot take absolute starts: the clips take the gap make_compound left there, else a new track just above it
           const gi = tr.clips.findIndex((g) => g.type === "gap" && Math.abs(clipStart(g) - base) < 1e-3 && Math.abs(clipEnd(g) - (base + dur)) < 1e-3);
           if (gi >= 0) {
             const after = tr.clips[gi + 1];
             if (after) pin(after, base + dur - clipStart(after));
-            tr.clips.splice(gi, 1); splice(tr, gi, clips, undefined); continue;
+            tr.clips.splice(gi, 1); splice(tr, gi, clips, undefined, 0); continue;
           }
           above = tr; tr = undefined;
         }
@@ -213,7 +217,7 @@ export function registerCompoundOps(h: OpHelpers) {
         tr.clips.push(...clips);
         tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
       }
-      if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { const g = gap(dur); gaps.push(g); home.clips.splice(ci, 0, g); } // nothing of the compound is on its own storyline: keep the time
+      if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { const g = gap(dur - td); gaps.push(g); home.clips.splice(ci, 0, g); } // nothing of the compound is on its own storyline: keep the time
       for (const g of gaps) g.group = stamp();
       fillGaps(tl, gaps);
       const detached: string[] = [];
