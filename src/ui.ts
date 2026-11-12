@@ -99,9 +99,11 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     }
 
     if (req.method === "POST") {
+      const gone = new AbortController(); // the browser closed or aborted the request before the response was sent: stop the work it was waiting on
+      res.on("close", () => { if (!res.writableEnded) gone.abort(); });
       const body = await readJson(req);
       const rev = body.revision === undefined ? undefined : Number(body.revision);
-      if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label }));
+      if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, signal: gone.signal }));
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev) });
       if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev) });
       if (path === "/api/sheet") {

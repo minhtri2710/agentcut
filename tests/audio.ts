@@ -390,9 +390,11 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     hasCodec("encoders", "pcm_s16le"); // the encoder list is read once per process: read it from the real ffmpeg before the stand-in takes PATH
     const pq = api.openProject(Q), realPath = process.env.PATH!;
     // the stand-in sleeps 60 s, so a rejection within 5 s of the abort shows the abort stopped it rather than the child ending on its own
-    const abortRun = async (name: string, key: string, start: (signal: AbortSignal) => Promise<unknown>) => {
+    // `tool`: the stand-in is that tool's own binary (it waits when an argument contains `key`, else exits `other`), and ffmpeg runs for real around it
+    const stallTool = (tool: string, key: string, other: number) => writeFileSync(join(bin, tool), `#!/bin/sh\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexit ${other}\n`, { mode: 0o755 });
+    const abortRun = async (name: string, key: string, start: (signal: AbortSignal) => Promise<unknown>, tool?: { name: string; other?: number }) => {
       const ac = new AbortController();
-      standIn(key);
+      if (tool) { rmSync(join(bin, "ffmpeg"), { force: true }); stallTool(tool.name, key, tool.other ?? 0); } else standIn(key);
       let err: any, pid = 0, aliveBefore = false, took = -1;
       rmSync(pidFile, { force: true });
       process.env.PATH = bin + delimiter + realPath;
@@ -407,7 +409,7 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
       } finally { process.env.PATH = realPath; }
       let aliveAfter = true;
       try { process.kill(pid, 0); } catch { aliveAfter = false; }
-      check(`abort during ${name}: the call rejects with the abort within 5 s and the ffmpeg child it started is gone`, pid > 0 && aliveBefore && err?.name === "AbortError" && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message });
+      check(`abort during ${name}: the call rejects with the abort within 5 s and the child it started is gone`, pid > 0 && aliveBefore && err?.name === "AbortError" && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message });
     };
     await abortRun("the mix", "", (signal) => buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, signal));
     await abortRun("an audio render", "", (signal) => api.render(Q, { out: join(tmp, "abort-render.wav"), signal }));
@@ -454,6 +456,28 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     const speaker = join(bin, process.platform === "darwin" ? "say" : "espeak-ng");
     writeFileSync(speaker, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${process.platform === "darwin" ? "-o" : "-w"}" ] && cp '${src}' "$2"; shift; done\n`, { mode: 0o755 });
     await abortRun("the speech conversion", "p0.wav", (signal) => api.analyze.tts("Hello there.", join(tmp, "abort-tts.wav"), undefined, undefined, Q, signal));
+    await abortRun("the speech join", "parts.txt", (signal) => api.analyze.tts("Hello there.", join(tmp, "abort-join.wav"), undefined, undefined, Q, signal));
+    // each speech tool: the stand-in is the tool and the key an argument only that call has. An engine's branch is chosen by process.platform, so a row presents the platform whose engine it stops
+    const asPlatform = async (platform: string, f: () => Promise<unknown>) => {
+      const was = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { value: platform });
+      try { return await f(); } finally { Object.defineProperty(process, "platform", was); }
+    };
+    const withEnv = async (vars: Record<string, string | undefined>, f: () => Promise<unknown>) => {
+      const was = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+      const set = (v: Record<string, string | undefined>) => { for (const [k, x] of Object.entries(v)) if (x === undefined) delete process.env[k]; else process.env[k] = x; };
+      set(vars);
+      try { return await f(); } finally { set(was); }
+    };
+    const speak = (voice?: string) => (signal: AbortSignal) => api.analyze.tts("Hello there.", join(tmp, "abort-tool.wav"), voice, undefined, Q, signal);
+    await abortRun("say", " -f ", (signal) => asPlatform("darwin", () => speak()(signal)), { name: "say" });
+    await abortRun("espeak-ng", "-w ",(signal) => asPlatform("linux", () => speak()(signal)), { name: "espeak-ng" });
+    await abortRun("espeak-ng's voice listing", "--voices", (signal) => asPlatform("linux", () => speak("vi")(signal)), { name: "espeak-ng", other: 1 });
+    await abortRun("powershell", "-NoProfile", (signal) => asPlatform("win32", () => speak()(signal)), { name: "powershell" });
+    await abortRun("piper", "--output_file", (signal) => withEnv({ AGENTCUT_PIPER_MODEL: src }, () => speak("piper")(signal)), { name: "piper" });
+    await abortRun("curl", "--max-time", (signal) => withEnv({ AGENTCUT_TTS_URL: "http://127.0.0.1:9/v1" }, () => speak("openai:alloy")(signal)), { name: "curl" }); // the stand-in answers in place of curl: the URL is never dialled
+    await abortRun("whisper-cli", "-oj", (signal) => api.analyze.transcribe(src, "vi", src, undefined, undefined, signal), { name: "whisper-cli" });
+    await abortRun("whisper", "--word_timestamps", (signal) => withEnv({ AGENTCUT_WHISPER_MODEL: undefined }, () => api.analyze.transcribe(src, "vi", undefined, undefined, undefined, signal)), { name: "whisper" });
     // output past the cap stops a child that ignores SIGTERM: the call settles with status null and the child is gone
     {
       let pid = 0, res: any, took = -1;

@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, attach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, newId, ownDuration, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
+import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -83,9 +83,7 @@ function amount(a: Dict, keys: string[], positive: boolean): number {
   return v;
 }
 
-/** the audio clip created by detach_audio for video clip v */
-const linked = (tl: Timeline, v?: Clip) => (v?.type === "video" ? allClips(tl).find((x) => x.type === "audio" && x.attach_to === v.id && x.asset === v.asset) : undefined);
-const withAudio = (tl: Timeline, edges: Edge[]): Edge[] => [...edges, ...edges.flatMap(([c, s, g]) => { const l = linked(tl, c); return l ? [[l, s, g] as Edge] : []; })];
+const withAudio = (tl: Timeline, edges: Edge[], op: string): Edge[] => [...edges, ...edges.flatMap(([c, s, g]) => { const l = soleAudio(tl, c, op); return l ? [[l[1], s, g] as Edge] : []; })];
 
 /** other audible (non-music) clips overlapping [t0, t1] - they keep playing under a J/L-cut */
 function audibleUnder(tl: Timeline, t0: number, t1: number, skip: string[]): string[] {
@@ -109,8 +107,8 @@ export function registerEditOps(h: OpHelpers) {
 
   function detach(tl: Timeline, v: Clip, trackId?: string): Clip {
     if (v.type !== "video") throw new EditError(`detach_audio needs a video clip; '${v.id}' is ${v.type}`, "bad_type", v.type === "audio" ? "it is already an audio clip: edit it directly" : "pass the id of a video clip that has sound");
-    const ex = linked(tl, v);
-    if (ex) throw new EditError(`audio of '${v.id}' is already detached as '${ex.id}'`, "already_detached", `nothing to do: edit '${ex.id}' directly, or use j_cut/l_cut/slip_clip on '${v.id}'`, undefined, { audio: ex.id });
+    const ex = linkedAudio(tl, v).map(([, x]) => x.id);
+    if (ex.length) throw new EditError(`audio of '${v.id}' is already detached as '${ex.join("', '")}'`, "already_detached", `nothing to do: edit '${ex[0]}' directly, or use j_cut/l_cut/slip_clip on '${v.id}'`, undefined, { audio: ex[0] });
     if (v.muted) throw new EditError(`'${v.id}' is muted, so there is no audio to detach`, "muted", `unmute first: update_clip id=${v.id} muted=false`);
     if (!tl.assets[v.asset]?.has_audio) throw new EditError(`'${v.id}' (asset '${v.asset}') has no audio stream`, "no_audio", "add sound with add_clip type=audio instead");
     if (v.freeze) throw new EditError(`'${v.id}' is a freeze frame, which plays no audio`, "no_audio");
@@ -132,10 +130,10 @@ export function registerEditOps(h: OpHelpers) {
   }
 
   /** [video, its detached audio, whether we detached it now]; accepts the audio clip itself too */
-  function audioOf(tl: Timeline, c: Clip, trackId?: string): [Clip, Clip, boolean] {
+  function audioOf(tl: Timeline, c: Clip, op: string, trackId?: string): [Clip, Clip, boolean] {
     if (c.type === "audio" && c.attach_to) return [findClip(tl, c.attach_to)[2], c, false];
-    const l = linked(tl, c);
-    if (l) return [c, l, false];
+    const l = soleAudio(tl, c, op);
+    if (l) return [c, l[1], false];
     if (c.type === "video" && c.muted) throw new EditError(`'${c.id}' is muted and has no detached audio clip`, "muted", `unmute it (update_clip id=${c.id} muted=false) and retry`);
     return [c, detach(tl, c, trackId), true];
   }
@@ -155,7 +153,7 @@ export function registerEditOps(h: OpHelpers) {
       const [, , c] = get(tl, a);
       const v = c.type === "audio" && c.attach_to ? findClip(tl, c.attach_to)[2] : c;
       if (v.type !== "video") throw new EditError(`attach_audio needs a video clip with detached audio; '${c.id}' is ${c.type}`, "bad_type", "pass the video's id, or the id of its audio clip");
-      const aud = linked(tl, v);
+      const aud = soleAudio(tl, v, "attach_audio")?.[1];
       if (!aud) throw new EditError(`'${v.id}' has no detached audio`, "not_detached", "its sound is already on the clip; detach_audio, j_cut or l_cut create a detached audio clip");
       resolve(tl);
       const sync = (x: Clip) => ({ offset: x === aud ? parseTime(x.offset ?? 0, "offset") : 0, duration: clipDur(x), in: cin(x), speed: spd(x), reverse: !!x.reverse, loop: !!x.loop, enabled: x.enabled !== false, group: JSON.stringify(x.group ?? null) });
@@ -197,7 +195,7 @@ export function registerEditOps(h: OpHelpers) {
       (p, tl, a) => {
         const [, , c] = get(tl, a);
         const req = amount(a, ["seconds", "by", "lead", "duration"], true);
-        const [v, aud, detached] = audioOf(tl, c, a.track);
+        const [v, aud, detached] = audioOf(tl, c, lead ? "j_cut" : "l_cut", a.track);
         ownDuration(aud);
         resolve(tl);
         const side: Side = lead ? "head" : "tail";
@@ -228,7 +226,7 @@ export function registerEditOps(h: OpHelpers) {
       const [, , c] = get(tl, a);
       if (!isAV(c)) throw new EditError(`slip_clip needs a video or audio clip; '${c.id}' is ${c.type}`, "bad_type", "images/text have no source in-point; use move_clip to move them");
       const by = amount(a, ["by", "seconds", "shift"], false);
-      const list = [c, ...[linked(tl, c)].filter((x): x is Clip => !!x)];
+      const own = soleAudio(tl, c, "slip_clip")?.[1], list = own ? [c, own] : [c];
       let lo = -Infinity, hi = Infinity;
       for (const x of list) {
         lo = Math.max(lo, -cin(x) / spd(x));
@@ -253,7 +251,7 @@ export function registerEditOps(h: OpHelpers) {
       resolve(tl);
       if (!tr.magnetic && (Math.abs(clipEnd(l) - clipStart(r)) > 1e-3 || r.attach_to))
         throw new EditError(`'${l.id}' and '${r.id}' do not touch (${clipEnd(l).toFixed(3)} vs ${clipStart(r).toFixed(3)})`, "not_adjacent", "roll_edit needs two adjacent clips; use trim_clip / move_clip for separate clips");
-      applyEdges(tl, withAudio(tl, [[l, "tail", 1], [r, "head", -1]]), by, "roll_edit");
+      applyEdges(tl, withAudio(tl, [[l, "tail", 1], [r, "head", -1]], "roll_edit"), by, "roll_edit");
       if (!tr.magnetic) r.start = round6(clipStart(r) + by);
       resolve(tl);
       return { left: { id: l.id, in: l.in ?? 0, duration: l.duration }, right: { id: r.id, start: r.start, in: r.in ?? 0, duration: r.duration }, cut: round6(clipStart(r)) };
@@ -278,8 +276,8 @@ export function registerEditOps(h: OpHelpers) {
       const edges: Edge[] = [];
       if (prev) edges.push([prev, "tail", 1]);
       if (next) edges.push([next, "head", -1]);
-      const own = linked(tl, c); // c's detached audio follows it and must not be pushed before 0 either
-      applyEdges(tl, withAudio(tl, edges), by, "slide_clip", Math.max(tr.magnetic ? -Infinity : -clipStart(c), own ? -clipStart(own) : -Infinity));
+      const own = soleAudio(tl, c, "slide_clip")?.[1]; // c's detached audio follows it and must not be pushed before 0 either
+      applyEdges(tl, withAudio(tl, edges, "slide_clip"), by, "slide_clip", Math.max(tr.magnetic ? -Infinity : -clipStart(c), own ? -clipStart(own) : -Infinity));
       if (!tr.magnetic) {
         c.start = round6(clipStart(c) + by);
         if (next) next.start = round6(clipStart(next) + by);

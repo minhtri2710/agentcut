@@ -96,6 +96,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"j_cut","id":"main#1","seconds":0.8}         B's audio starts 0.8 s before its picture (auto-detaches)
 {"op":"l_cut","id":"main#0","seconds":1,"crossfade":0.3}   A's audio runs 1 s over B
   -> check result.under (clips still audible underneath) and fade/lower them. split_clip/trim_clip keep detached audio in sync.
+  Splitting the detached audio clip leaves a video with several audio pieces: split_clip and duplicate_clip on the video handle every piece; the other ops that follow the audio refuse it (audio_pieces), so edit a piece by its id.
 {"op":"slip_clip","id":"vid2","by":0.5}            different part of the source, same place on the timeline
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)

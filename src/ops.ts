@@ -6,8 +6,8 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
+  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, linkedAudio, newId,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import { checkRevision, type Project } from "./project.ts";
@@ -409,7 +409,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
     if (clipDur(c) <= 0) throw new EditError("trim leaves a non-positive duration", "bad_trim");
     const out: Dict = { id: c.id, in: c.in ?? 0, start: c.start, duration: c.duration };
     // detached audio follows: same source in-point change, same amount cut from the head/tail
-    const la = linkedAudio(tl, c);
+    const la = soleAudio(tl, c, "trim_clip");
     if (la && !c.reverse) {
       const au = la[1], head = a.trim_start ? parseTime(a.trim_start) : 0, tail = d0 - head - clipDur(c);
       const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0 + (c.freeze ? head * speed : 0)) * ((Number(au.speed ?? 1) || 1) / speed); // a freeze keeps its frame, its audio still advances
@@ -431,13 +431,6 @@ function renameNested(tl: Timeline, c: Clip) {
   walk(c.tracks ?? []);
   const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (typeof x.match_duration === "string" && map.has(x.match_duration)) x.match_duration = map.get(x.match_duration); if (x.type === "compound") fix(x.tracks ?? []); } };
   fix(c.tracks ?? []);
-}
-
-/** Audio clip created by detach_audio/j_cut/l_cut for video clip v (same asset, connected to it). */
-export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip] | undefined {
-  if (v.type !== "video") return undefined;
-  for (const tr of tl.tracks) for (const x of tr.clips) if (x.type === "audio" && x.attach_to === v.id && x.asset === v.asset) return [tr, x];
-  return undefined;
 }
 
 /** right half of a split: the same curves (focus pan, volume, ...) in its own clip-local time; a speed ramp can't be cut this way */
@@ -469,9 +462,8 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   tr.clips.splice(ci + 1, 0, right);
   renameNested(tl, right);
   // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
-  const la = linkedAudio(tl, c);
-  if (la && !la[1].reverse) {
-    const [atr, au] = la;
+  for (const [atr, au] of linkedAudio(tl, c)) {
+    if (au.reverse) continue;
     const as = clipStart(au), ae = as + clipDur(au), asp = Number(au.speed ?? 1) || 1;
     if (as < t - 1e-6 && t < ae - 1e-6) {
       const ar: Clip = structuredClone(au);
@@ -515,7 +507,7 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     return { id: fz.id, start: fz.start, duration: fz.duration };
   });
 
-op("duplicate_clip", "Copy a clip (optionally to another track/time). A magnetic track refuses a copy of an attached clip (attached_magnetic).", { id: "clip id", track: "track id", at: "start" }, (p, tl, a) => {
+op("duplicate_clip", "Copy a clip (optionally to another track/time); a video with detached audio gets a copy of every audio piece, listed in result.audio (ids). A magnetic track refuses a copy of an attached clip (attached_magnetic).", { id: "clip id", track: "track id", at: "start" }, (p, tl, a) => {
   const [tr, , c] = findClip(tl, a.id);
   const dup: Clip = { ...structuredClone(c), id: newId(tl, PREFIX[c.type]) };
   delete dup.group; // a copy is not part of the expanded compound's regroup set
@@ -527,15 +519,15 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time). A magnetic
     if (dup.attach_to && dup.match_duration === true) { delete dup.match_duration; delete dup.end_offset; } // the copy sits elsewhere: it keeps the length it had
   }
   renameNested(tl, dup);
-  const la = linkedAudio(tl, c); // the copy of a picture with detached sound gets its own copy of that sound, connected to it
-  if (la) {
-    const ad: Clip = { ...structuredClone(la[1]), id: newId(tl, PREFIX.audio), attach_to: dup.id, name: `audio of ${dup.id}` };
+  const audio = linkedAudio(tl, c).map(([atr, au]) => { // the copy of a picture with detached sound gets its own copy of every piece of that sound, connected to it
+    const ad: Clip = { ...structuredClone(au), id: newId(tl, PREFIX.audio), attach_to: dup.id, name: `audio of ${dup.id}` };
     delete ad.group;
-    la[0].clips.push(ad);
-    la[0].clips.sort((x, y) => clipStart(x) - clipStart(y));
-  }
+    atr.clips.push(ad);
+    atr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+    return ad.id;
+  });
   resolve(tl);
-  return { id: dup.id, track: dest.id, start: dup.start, ...(la ? { audio: la[0].clips.find((x) => x.attach_to === dup.id)!.id } : {}) };
+  return { id: dup.id, track: dest.id, start: dup.start, ...(audio.length ? { audio } : {}) };
 });
 
 op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative to clip start. prop 'speed' = speed ramp (video only; its sound follows the ramp and changes pitch with it).",
@@ -669,7 +661,7 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
     const [tr, ci, c] = findClip(tl, a.id);
     if (c.type !== "video" && c.type !== "audio") throw new EditError("remove_silence needs a video or audio clip", "bad_type");
     resolve(tl);
-    const la = linkedAudio(tl, c);
+    const la = soleAudio(tl, c, "remove_silence");
     if (la?.[1].reverse) throw new EditError(`the detached audio '${la[1].id}' of '${c.id}' plays reversed, so it cannot be cut into the same segments`, "reversed_audio", `update_clip id=${la[1].id} set={reverse: null}, or remove_clip id=${la[1].id}`);
     const res = AN.analysis(p, { kind: "silence", path: p.abs(tl.assets[c.asset].path), noiseDb: +(a.noise_db ?? -35), minSilence: +(a.min_silence ?? 0.4) });
     const pad = +(a.padding ?? 0.1), speed = Number(c.speed ?? 1) || 1;

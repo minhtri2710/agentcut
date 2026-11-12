@@ -235,6 +235,21 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
     check("attach_audio re-points clips attached to the audio (attach_to, match_duration) to the video and keeps their start and length",
       at(moved, "tag").attach_to === "fx" && at(moved, "fol").match_duration === "fx" && near(at(moved, "tag").start, at(pinned, "tag").start) && near(at(moved, "fol").duration, at(pinned, "fol").duration) && errs(moved).length === 0, [at(moved, "tag"), at(moved, "fol"), errs(moved)]);
   }
+  { // splitting the detached audio itself leaves two audio clips attached to one video: a valid layout, so no op may pick one of them
+    const [pieces] = run(fxd, [{ op: "split_clip", id: "aud1", at: 1 }, { op: "add_clip", track: "main", asset: "v", id: "p1", duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "p2", duration: 2 }]);
+    const attached = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio" && c.attach_to === id);
+    check("two audio pieces on one video validate clean", attached(pieces, "fx").length === 2 && errs(pieces).length === 0, errs(pieces));
+    for (const o of [{ op: "attach_audio", id: "fx" }, { op: "trim_clip", id: "fx", trim_start: 0.5 }, { op: "j_cut", id: "fx", seconds: 0.2 }, { op: "l_cut", id: "fx", seconds: 0.2 }, { op: "slip_clip", id: "fx", by: 0.2 },
+      { op: "enhance_voice", id: "fx" }, { op: "remove_silence", id: "fx" }, { op: "roll_edit", id: "fx", by: 0.2 }, { op: "slide_clip", id: "p1", by: 0.2 }])
+      refuses(`${o.op} on a video with two audio pieces is refused as audio_pieces`, pieces, [o], "audio_pieces");
+    const [sp] = run(pieces, [{ op: "split_clip", id: "fx", at: 2 }]);
+    const [left, right] = [attached(sp, "fx"), attached(sp, sp.tracks[0].clips[1].id)];
+    check("split_clip on a video splits the piece it crosses, and every piece stays with its picture", left.length === 2 && right.length === 1 && near(right[0].start, 2) && near(right[0].duration, 1) && errs(sp).length === 0, [left, right]);
+    const [dp, [dr]] = run(pieces, [{ op: "duplicate_clip", id: "fx" }]);
+    check("duplicate_clip copies every audio piece", Array.isArray(dr.audio) && dr.audio.length === 2 && attached(dp, dr.id).length === 2 && errs(dp).length === 0, [dr, attached(dp, dr.id)]);
+    const ramp = errs(run(pieces, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).filter((i: any) => /detached audio/.test(i.message));
+    check("validate: a speed ramp on a video with two audio pieces is an error naming both", ramp.length === 1 && /aud1/.test(ramp[0].message) && /aud2/.test(ramp[0].message), ramp);
+  }
   const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
   // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)
@@ -773,7 +788,7 @@ console.log("pieces of an attached clip keep their place and length");
   check("remove_clip ripple moves a later attached clip by its offset", near(at(tr0, "tail").start, 4) && near(at(tr1, "tail").start, 3.5), [at(tr0, "tail"), at(tr1, "tail")]);
   valid("remove_clip ripple", tr1);
   const [td, [dp]] = run(base(), [{ op: "duplicate_clip", id: "ovl" }]);
-  check("duplicate_clip of an attached clip lands after the original, attached to the same target", at(td, dp.id).attach_to === "img1" && near(at(td, dp.id).start, 2.5) && near(at(td, dp.id).offset, 2.5), at(td, dp.id));
+  check("duplicate_clip of an attached clip lands after the original, attached to the same target, and reports no audio", dp.audio === undefined && at(td, dp.id).attach_to === "img1" && near(at(td, dp.id).start, 2.5) && near(at(td, dp.id).offset, 2.5), at(td, dp.id));
   valid("duplicate_clip of an attached clip", td);
   const [tdm, [, dpm]] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "duplicate_clip", id: "ovl" }]);
   check("duplicate_clip of an attached clip with a computed length: the copy lands after it with the same length, as a plain duration", near(at(tdm, "ovl").duration, 3.5) && near(at(tdm, dpm.id).start, 4) && near(at(tdm, dpm.id).duration, 3.5) && at(tdm, dpm.id).match_duration === undefined && at(tdm, dpm.id).end_offset === undefined && at(tdm, "ovl").match_duration === true, [at(tdm, "ovl"), at(tdm, dpm.id)]);
@@ -1023,8 +1038,8 @@ console.log("clip copies: split, duplicate, freeze, remove");
     { op: "j_cut", id: "pic", seconds: 0.5 }])[0];
   check("j_cut on a new track sets no role", at(dbase, at(dbase, "pic").id) && dbase.tracks.find((tr: any) => tr.id === "dialogue")?.role === undefined, dbase.tracks.map((tr: any) => [tr.id, tr.role]));
   const [dt, [dd]] = run(dbase, [{ op: "duplicate_clip", id: "pic", at: 8 }]);
-  const da = at(dt, dd.audio), oa = at(dt, "aud1");
-  check("duplicate_clip: the copy gets its own copy of the detached audio, connected to it and with the same lead", !!da && da.attach_to === dd.id && da.id !== oa.id && oa.attach_to === "pic" && near(da.offset, oa.offset) && near(da.start, 7.5) && near(da.duration, oa.duration) && near(da.in, oa.in) && at(dt, dd.id).muted === true, [da, oa]);
+  const da = at(dt, dd.audio?.[0]), oa = at(dt, "aud1");
+  check("duplicate_clip: the copy gets its own copy of the detached audio (result.audio lists its one id), connected to it and with the same lead", dd.audio.length === 1 && !!da && da.attach_to === dd.id && da.id !== oa.id && oa.attach_to === "pic" && near(da.offset, oa.offset) && near(da.start, 7.5) && near(da.duration, oa.duration) && near(da.in, oa.in) && at(dt, dd.id).muted === true, [da, oa]);
   ok("duplicate_clip with detached audio", dt);
 
   // freeze_frame at the clip start plays before the clip

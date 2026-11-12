@@ -1,7 +1,7 @@
 // Audio ops: enhance_voice (one-shot voice chain on a clip or a whole track).
 import { AUDIO_FX_KEYS, DENOISE_STRENGTH } from "./audiofx.ts";
-import { type Dict, EditError, findClip, findTrack } from "./model.ts";
-import { linkedAudio, type OpHelpers } from "./ops.ts";
+import { type Dict, EditError, findClip, findTrack, soleAudio } from "./model.ts";
+import type { OpHelpers } from "./ops.ts";
 
 
 export function registerAudioOps(h: OpHelpers) {
@@ -22,7 +22,7 @@ export function registerAudioOps(h: OpHelpers) {
       }
       let [, , c] = findClip(tl, h.resolveRef(tl, String(a.id)));
       if (c.type !== "audio" && c.type !== "video") throw new EditError(`enhance_voice needs a video or audio clip; '${c.id}' is ${c.type}`, "bad_type");
-      const la = linkedAudio(tl, c);
+      const la = soleAudio(tl, c, "enhance_voice");
       if (la) c = la[1];
       else if (c.muted) throw new EditError(`'${c.id}' is muted, so there is no audio to enhance`, "muted", `unmute it first: update_clip id=${c.id} muted=false`);
       if (c.type === "video" && !tl.assets[c.asset]?.has_audio) throw new EditError(`'${c.id}' has no audio stream`, "no_audio");

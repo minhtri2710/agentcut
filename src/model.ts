@@ -415,6 +415,20 @@ export function findClip(tl: Timeline, id: string): [Track, number, Clip] {
   throw new EditError(`clip '${id}' not found`, "not_found", s ? `did you mean '${s}'?` : `existing clips: ${ids.slice(0, 30).join(", ") || "(none)"}`);
 }
 
+/** The detached audio of a video (detach_audio, j_cut, l_cut): audio clips attached to it with its asset, in track order. Splitting or copying the audio clip itself leaves several pieces. */
+export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip][] {
+  if (v.type !== "video") return [];
+  return [...iterClips(tl)].filter(([, , , x]) => x.type === "audio" && x.attach_to === v.id && x.asset === v.asset).map(([tr, , , x]) => [tr, x]);
+}
+
+/** The one detached audio clip of a video; several pieces are refused, so that an op which edits "the" audio never picks one for the user. */
+export function soleAudio(tl: Timeline, v: Clip, op: string): [Track, Clip] | undefined {
+  const la = linkedAudio(tl, v);
+  if (la.length > 1) throw new EditError(`'${v.id}' has ${la.length} detached audio clips (${la.map(([, x]) => x.id).join(", ")}), and ${op} edits one`, "audio_pieces",
+    "edit the pieces by id, or remove_clip all but one; split_clip and duplicate_clip on the video handle every piece");
+  return la[0];
+}
+
 export function findTrack(tl: Timeline, id: string): Track {
   const t = tl.tracks.find((x) => x.id === id);
   if (t) return t;
@@ -791,9 +805,9 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         const parsed = issues.length === n0; // every keyframe is well formed, so parseKfs reads them
         if (prop === "speed") {
           if (isRetimed(c)) issues.push({ level: "error", path: `${p}.speed`, message: `'${c.id}' has speed ${c.speed} and a speed ramp; the ramp sets the speed and \`speed\` would be ignored`, hint: "a ramp sets the speed; remove `speed` or the ramp" });
-          const la = clips.find((x) => x.type === "audio" && x.attach_to === c.id && x.asset === c.asset);
-          if (la) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `video '${c.id}' has a speed ramp and detached audio '${la.id}', which plays at constant speed and drifts from the picture`,
-            hint: `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la.id} to drop that audio and its processing` });
+          const la = linkedAudio(tl, c).map(([, x]) => x.id);
+          if (la.length) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `video '${c.id}' has a speed ramp and detached audio '${la.join("', '")}', which plays at constant speed and drifts from the picture`,
+            hint: `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
           if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
         }
       }

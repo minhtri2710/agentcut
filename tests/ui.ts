@@ -254,6 +254,37 @@ process.exit(1);
   await new Promise((ok) => uc.server.close(ok));
 }
 
+// an apply stops with its request: when the browser closes the connection during an analysis, the tool it runs is stopped and nothing is saved
+if (process.platform !== "win32") {
+  const dirA = join(tmp, "abort-apply"), binA = join(tmp, "bin-abort"), pidFile = join(tmp, "abort.pid"); // the stand-in piper records its pid and waits
+  mkdirSync(binA);
+  writeFileSync(join(binA, "piper"), `#!/bin/sh\necho $$ > '${pidFile}'; exec sleep 60\n`, { mode: 0o755 });
+  api.create(dirA, { preset: "square" });
+  const before = readFileSync(join(dirA, "project.json"), "utf8");
+  const ua = await startUi(dirA, { port: 0 });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const was = { PATH: process.env.PATH, AGENTCUT_PIPER_MODEL: process.env.AGENTCUT_PIPER_MODEL };
+  process.env.PATH = `${binA}:${was.PATH}`;
+  process.env.AGENTCUT_PIPER_MODEL = join(media, "p.jpg");
+  let pid = 0, aliveBefore = false, stopped = false;
+  try {
+    const rq = request({ host: "127.0.0.1", port: ua.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ua.port}`, "content-type": "application/json" } });
+    rq.on("error", () => { /* the socket is destroyed below */ });
+    rq.end(JSON.stringify({ ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }] }));
+    for (let i = 0; i < 200 && !pid; i++) { await Bun.sleep(25); try { pid = Number(readFileSync(pidFile, "utf8")) || 0; } catch { /* not started yet */ } }
+    aliveBefore = pid > 0 && alive(pid);
+    rq.destroy();
+    for (let i = 0; i < 200 && !stopped; i++) { stopped = !alive(pid); if (!stopped) await Bun.sleep(25); }
+  } finally {
+    for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+  if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL"); // a child that outlived the bound is the failure; do not leave it running
+  check("a UI apply stops its analysis when the request goes away, within 5 s", pid > 0 && aliveBefore && stopped, { pid, aliveBefore, stopped });
+  check("the aborted apply saved nothing and the server keeps serving", readFileSync(join(dirA, "project.json"), "utf8") === before && (await raw("/api/state", { port: ua.port })).status === 200);
+  ua.server.closeAllConnections?.();
+  await new Promise((ok) => ua.server.close(ok));
+}
+
 // default port 4810 taken: the message names the port (this listener may fail if something else already holds it, which also blocks startUi)
 {
   const { createServer } = await import("node:net");
