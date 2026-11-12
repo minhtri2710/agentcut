@@ -25,7 +25,7 @@ const dir = () => ensureDir(home(), join(home(), "feedback"));
 const notesFile = () => join(dir(), "notes.json");
 const eventsFile = () => join(dir(), "events.jsonl");
 /** One cross-process lock for the store: the events trim and the notes read-modify-write must not interleave with another process's append or write. */
-const locked = <T>(fn: () => T): T => withLock(join(dir(), "lock"), fn);
+const locked = <T>(fn: () => T, waitMs?: number): T => withLock(join(dir(), "lock"), fn, waitMs);
 const telemetryOn = () => process.env.AGENTCUT_TELEMETRY !== "0";
 
 const HOME = homedir();
@@ -58,7 +58,7 @@ export function recordEvent(ev: Record<string, unknown>) {
         writeFile(f, lines.slice(Math.floor(lines.length / 2)).join("\n"), home());
       }
       appendFile(f, JSON.stringify({ t: new Date().toISOString(), v: VERSION, ...ev }) + "\n", home());
-    });
+    }, 1000); // telemetry waits briefly for the lock, then drops the event
   } catch { /* feedback must never break the tool */ }
 }
 

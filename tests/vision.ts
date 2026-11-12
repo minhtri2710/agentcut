@@ -786,21 +786,24 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       const pids = join(run, "children.pids"), late = join(run, "late.mov");
       fakeFfmpeg(`echo $$ >> ${JSON.stringify(pids)}\ncase " $* " in *" pipe:0 "*) cat >/dev/null; sleep 1; for a; do o=$a; done; echo late > "$o";; *) exec sleep 30;; esac`);
       const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, allow_download: true });
-      const h = spawn("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, matteJob], { cwd: run, stdio: ["pipe", "ignore", "ignore"], env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
-      const exited = new Promise<number | null>((res) => h.on("exit", (c) => res(c)));
       const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const kids = () => (existsSync(pids) ? readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
       const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-      try {
-        for (let i = 0; i < 200 && kids().length < 2; i++) await pause(50);
-        const started = kids().length;
-        h.stdin!.end();
-        const code = await Promise.race([exited, pause(10_000).then(() => "timeout" as const)]);
-        for (let i = 0; i < 60 && kids().some(isAlive); i++) await pause(50);
-        await pause(1500); // longer than the fake encoder's delay
-        check("helper: stdin closed during a decode and an encode: both ffmpeg children are gone and no output is written afterwards",
-          started === 2 && code !== "timeout" && !kids().some(isAlive) && !existsSync(late), { started, code, alive: kids().filter(isAlive), late: existsSync(late) });
-      } finally { for (const pid of kids()) if (isAlive(pid)) process.kill(pid, "SIGKILL"); if (h.exitCode === null) h.kill("SIGKILL"); }
+      for (const how of ["stdin closed", "SIGTERM"] as const) {
+        rmSync(pids, { force: true }); rmSync(late, { force: true });
+        const h = spawn("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, matteJob], { cwd: run, stdio: ["pipe", "ignore", "ignore"], env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
+        const exited = new Promise<number | null>((res) => h.on("exit", (c) => res(c)));
+        try {
+          for (let i = 0; i < 200 && kids().length < 2; i++) await pause(50);
+          const started = kids().length;
+          if (how === "SIGTERM") h.kill("SIGTERM"); else h.stdin!.end();
+          const code = await Promise.race([exited, pause(10_000).then(() => "timeout" as const)]);
+          for (let i = 0; i < 60 && kids().some(isAlive); i++) await pause(50);
+          await pause(1500); // longer than the fake encoder's delay
+          check(`helper: ${how} during a decode and an encode: both ffmpeg children are gone and no output is written afterwards`,
+            started === 2 && code !== "timeout" && !kids().some(isAlive) && !existsSync(late), { started, code, alive: kids().filter(isAlive), late: existsSync(late) });
+        } finally { for (const pid of kids()) if (isAlive(pid)) process.kill(pid, "SIGKILL"); if (h.exitCode === null) h.kill("SIGKILL"); }
+      }
     }
   } finally { process.env.AGENTCUT_UV = fake; }
 }

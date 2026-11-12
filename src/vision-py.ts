@@ -2,29 +2,31 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
-import json, os, stat, subprocess, sys, tempfile, threading
+import json, os, signal, stat, subprocess, sys, tempfile, threading
 
-_kids, _lock, _stopping = [], threading.Lock(), False
-def _spawn(args, **kw):  # every child goes through here so a stop can kill it; none starts after the stop began
+_kids, _lock = [], threading.Lock()
+def _spawn(args, **kw):  # every child goes through here so a stop can kill it; while a stop runs this blocks until the process exits
     with _lock:
-        if _stopping: os._exit(143)
         p = subprocess.Popen(args, **kw); _kids.append(p); return p
 
-def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it): kill and reap our own ffmpeg children, then leave at once
-    global _stopping
+def _stop():  # kill and reap our own ffmpeg children, then leave at once; the lock is held to the end, so no child starts meanwhile
+    with _lock:
+        for p in _kids:
+            try: p.kill()
+            except OSError: pass
+        for p in _kids:
+            try: p.wait()
+            except OSError: pass
+        os._exit(143)
+
+def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it)
     try:
         while os.read(0, 65536): pass  # the raw fd: sys.stdin.buffer would hold its lock and abort the interpreter at a normal exit
     except Exception: pass
-    with _lock:
-        _stopping = True
-        kids = list(_kids)
-    for p in kids:
-        try: p.kill()
-        except OSError: pass
-    for p in kids:
-        try: p.wait()
-        except OSError: pass
-    os._exit(143)
+    _stop()
+# SIGTERM (an abort, possibly forwarded by uv) stops us the same way. The handler runs on the main thread, which may hold the lock
+# inside _spawn, so it hands the stop to a thread; that thread is not a daemon, so a main thread that exits first still waits for it.
+signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=_stop).start())
 # Armed only when stdin is a pipe or socket, i.e. vision.ts holds the other end. If uv handed us /dev/null or a tty instead, EOF
 # would arrive at once and kill every run: then only the kill / EPIPE path stops us.
 try: _m = os.fstat(0).st_mode
