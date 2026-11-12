@@ -53,7 +53,7 @@ export function refuseSource(root: string, tl: Pick<Timeline, "assets"> | null, 
   const o = canon(out), st = lstatSync(out, { throwIfNoEntry: false }), hist = canon(join(root, ".agentcut"));
   const same = (f: string) => {
     if (canon(f) === o) return true;
-    const s = st?.isFile() ? lstatSync(f, { throwIfNoEntry: false }) : undefined;
+    const s = st?.isFile() ? statSync(f, { throwIfNoEntry: false }) : undefined; // follows a symlinked asset to the file it reads
     return !!s && s.isFile() && s.ino === st!.ino && s.dev === st!.dev;
   };
   const what = o === hist || o.startsWith(hist + sep) ? "the project's history folder"
@@ -220,7 +220,7 @@ export class Project {
     return this.locked(() => {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
-      try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_version", "bad_revision"].includes(e.code))) throw e; damage = e; }
+      try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
       if (base !== undefined && rev !== undefined) checkRevision(base, rev);
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; tl: Timeline }[] = [];

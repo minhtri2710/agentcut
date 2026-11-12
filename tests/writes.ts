@@ -280,12 +280,14 @@ console.log("copy and speech ops: a dry run or a refused batch leaves nothing in
 // ------------------------------------------------------------------ outputs may not replace the project's own files
 console.log("render/export/caption/preview output at project.json, .agentcut/ or an asset file: output_is_source, the file is unchanged");
 {
-  const own = join(tmp, "own-source.mp4");
+  const own = join(tmp, "own-source.mp4"), tgt = join(tmp, "link-target.mp4"), lnk = join(tmp, "link-source.mp4");
   copyFileSync(join(m, "av.mp4"), own);
+  copyFileSync(join(m, "av.mp4"), tgt);
+  symlinkSync(tgt, lnk);
   const p = await project("out-source");
-  await api.apply(p, [{ op: "import_media", path: own }, { op: "import_media", path: join(m, "other.mp4"), copy: true }]);
+  await api.apply(p, [{ op: "import_media", path: own }, { op: "import_media", path: join(m, "other.mp4"), copy: true }, { op: "import_media", path: lnk }]);
   const pj = join(p, "project.json"), inMedia = join(p, "media", "other.mp4"), hist = join(p, ".agentcut", "history", "undo", "x.mp4");
-  const sums = () => [pj, own, inMedia].map((f) => readFileSync(f).toString("base64")).join("|"), before = sums();
+  const sums = () => [pj, own, inMedia, tgt].map((f) => readFileSync(f).toString("base64")).join("|"), before = sums();
   const rows: [string, () => unknown][] = [
     ["render over an asset outside the project", () => api.render(p, { out: own, draft: true, sheet: false })],
     ["render over a copied asset in media/", () => api.render(p, { out: inMedia, draft: true, sheet: false })],
@@ -295,6 +297,7 @@ console.log("render/export/caption/preview output at project.json, .agentcut/ or
     ["export_captions over project.json", () => api.exportCaptions(p, { out: pj, format: "srt" })],
     ["preview_frame over project.json", () => api.frame(p, 1, { out: pj })],
     ["scopes over an asset", () => api.scopes(p, 1, { out: own })],
+    ["render over the target of a symlinked asset", () => api.render(p, { out: tgt, draft: true, sheet: false })],
   ];
   for (const [name, f] of rows) check(`${name}: output_is_source`, (await code(f)) === "output_is_source" && sums() === before, name);
   const up = join(p, "PROJECT.JSON");
