@@ -708,6 +708,43 @@ console.log("pieces of an attached clip keep their place and length");
     && g1?.fade_out === 0.3 && g1.exit === "fade" && g1.fade_in === undefined && g1.enter === undefined, [g0, g1]);
   const gr = (c: any) => c?.effects?.find((f: any) => f.type === "grain");
   check("remove_silence: a whole-clip effect stays on every segment and a timed effect follows its content", segs.every((c: any) => c.effects?.some((f: any) => f.type === "bw" && f.start === undefined)) && near(gr(g1)?.start, 4 - g1.in) && near(gr(g1)?.duration, 1), segs.map((c: any) => [c.in, c.effects]));
+
+  // remove_silence cuts the detached audio into the same segments
+  const S2 = join(tmp, "proj-detached");
+  api.create(S2, { preset: "720p" });
+  await api.apply(S2, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "tk", at: 1, in: 0.5, duration: 5.5 }, { op: "j_cut", id: "tk", seconds: 0.3 }]);
+  const rs2 = (await api.apply(S2, [{ op: "remove_silence", id: "tk" }])).results[0];
+  const si2 = api.info(S2, "json");
+  const all2 = si2.timeline.tracks.flatMap((tr: any) => tr.clips), segs2 = rs2.segments.map((id: string) => all2.find((c: any) => c.id === id));
+  const aud2 = all2.filter((c: any) => c.type === "audio");
+  const [ps0, ps1] = segs2.map((sg: any) => aud2.find((a: any) => a.attach_to === sg.id));
+  check("remove_silence with detached audio: one audio piece per picture segment, attached to it", segs2.length === 2 && aud2.length === 2 && !!ps0 && !!ps1, { segs2, aud2 });
+  check("  a piece starts where its segment's sound starts; the J-cut lead stays on the first", near(ps1?.offset, 0) && near(ps1?.in, segs2[1]?.in) && near(ps1?.duration, segs2[1]?.duration) && near(ps0?.offset, -0.3) && near(ps0?.in, segs2[0]?.in - 0.3) && near(ps0?.duration, segs2[0]?.duration + 0.3), { segs2, aud2 });
+  check("  and the project validates", si2.errors === 0, si2.issues);
+  // the J/L lead keeps its length when the silence sits at the head or the tail (gap.mp4 is silent from 2 to 3.5 s)
+  const S3 = join(tmp, "proj-jl");
+  api.create(S3, { preset: "720p" });
+  await api.apply(S3, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "hj", at: 1, in: 2.2, duration: 3.8 }, { op: "j_cut", id: "hj", seconds: 0.3 },
+    { op: "add_clip", track: "main", src: join(m, "gap.mp4"), id: "tl", at: 0, in: 0, duration: 2.3 }, { op: "l_cut", id: "tl", seconds: 0.3 }]);
+  const rs3 = (await api.apply(S3, [{ op: "remove_silence", id: "hj" }, { op: "remove_silence", id: "tl" }])).results;
+  const all3 = api.info(S3, "json").timeline.tracks.flatMap((tr: any) => tr.clips);
+  const by3 = (id: string) => all3.find((c: any) => c.id === id), on3 = (id: string) => all3.filter((c: any) => c.type === "audio" && c.attach_to === id).sort((x: any, y: any) => x.offset - y.offset);
+  const [hs] = rs3[0].segments.map(by3), hp = on3(hs?.id);
+  check("remove_silence with head silence and a J-cut: the lead stays 0.3 s of the sound before the picture, and the segment's sound starts with it",
+    hp.length === 2 && near(hp[0].offset, -0.3) && near(hp[0].duration, 0.3) && near(hp[0].in, 1.9) && near(hp[1].offset, 0) && near(hp[1].in, hs.in) && near(hp[1].duration, hs.duration)
+    && near(hp[0].start, hs.start - 0.3) && near(hp[1].start, hs.start), { hs, hp });
+  const ls = rs3[1].segments.map(by3).at(-1), lp = on3(ls?.id);
+  check("remove_silence with tail silence and an L-cut: the lead stays 0.3 s of the sound after the picture",
+    lp.length === 2 && near(lp[0].offset, 0) && near(lp[0].duration, ls.duration) && near(lp[1].offset, ls.duration) && near(lp[1].duration, 0.3) && near(lp[1].in, 2.3)
+    && near(lp[1].start, ls.start + ls.duration), { ls, lp });
+  const rv = (() => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };
+    const [t1] = applyOps(null as any, t, [{ op: "add_clip", track: "overlay", asset: "v", id: "pv", at: 0, duration: 3 }, { op: "detach_audio", id: "pv" }]);
+    t1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").reverse = true;
+    try { applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }]); return "no error"; } catch (e: any) { return e.code; }
+  })();
+  check("remove_silence refuses a picture whose detached audio plays reversed", rv === "reversed_audio", rv);
 }
 
 console.log("clip copies: split, duplicate, freeze, remove");
@@ -772,6 +809,73 @@ console.log("clip copies: split, duplicate, freeze, remove");
   const [ck] = run(cbase(), [{ op: "remove_clip", id: "k0", keep_attached: true }]);
   check("remove_clip keep_attached detaches only the direct dependents", !at(ck, "k0") && at(ck, "k1").attach_to === undefined && at(ck, "k2").attach_to === "k1" && at(ck, "k3").attach_to === "k2", [at(ck, "k1"), at(ck, "k2")]);
   ok("remove_clip chain", cr);
+
+  // flash: `at` is clip-local like keyframes, so it moves with the content
+  const fxs = (fxl: any[]) => run(mk(), [{ op: "add_clip", track: "overlay", asset: "i", id: "fl", at: 0, duration: 6, effects: fxl }])[0];
+  const [ft] = run(fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }]), [{ op: "trim_clip", id: "fl", trim_start: 1 }]);
+  check("trim_start moves a flash with the content and drops one that is already over", JSON.stringify(at(ft, "fl").effects.map((f: any) => f.at)) === "[1]", at(ft, "fl").effects);
+  const [fs, [fsr]] = run(fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }]), [{ op: "split_clip", id: "fl", at: 1 }]);
+  check("split_clip: the right half's flash fires at the same moment, the one before the split stays on the left", JSON.stringify(at(fs, fsr.right).effects.map((f: any) => f.at)) === "[1]" && at(fs, "fl").effects.length === 2, [at(fs, fsr.right).effects, at(fs, "fl").effects]);
+  const [fw] = run(fxs([{ type: "flash", start: 1, duration: 0.5 }]), [{ op: "trim_clip", id: "fl", trim_start: 1.25 }]);
+  const fwf = at(fw, "fl").effects?.[0];
+  check("a flash cut into by the head keeps its own length and fades from where it was", near(fwf?.at, -0.25) && near(fwf?.duration, 0.5) && fwf.start === undefined, fwf);
+  ok("flash after trim_start", fw);
+  const { createCanvas } = await import("@napi-rs/canvas");
+  const { applyEffects } = await import("../src/effects.ts");
+  const flashAt = (f: any, t: number) => {
+    const cv = createCanvas(8, 8), g = cv.getContext("2d");
+    g.fillStyle = "#000"; g.fillRect(0, 0, 8, 8);
+    return applyEffects(cv, [f], t, 30, 1).canvas.getContext("2d").getImageData(4, 4, 1, 1).data[0];
+  };
+  check("a flash fires at its `at` for its own duration, which is not also a window from the clip start", flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.1) > 100 && flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.3) === 0 && flashAt({ type: "flash", at: -0.25, duration: 0.5 }, 0.1) > 50, [flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.1), flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.3)]);
+
+  // expand_compound
+  const cbase2 = () => run(mk(), [
+    { op: "add_clip", track: "main", asset: "i", id: "A", duration: 2 },
+    { op: "add_clip", track: "main", asset: "i", id: "B", duration: 1, transition: { type: "crossfade", duration: 0.5 }, effects: [{ type: "flash", at: 0.8 }] },
+    { op: "add_clip", track: "overlay", asset: "i", id: "O", at: 1.5, duration: 1 },
+    { op: "add_clip", track: "main", asset: "i", id: "D", duration: 2 },
+    { op: "make_compound", ids: ["B", "O"], id: "C" }])[0];
+  const nested = (t: any, tid: string) => at(t, "C").tracks.find((x: any) => x.id === tid);
+  const kept = (f: (t: any) => void) => { const t = structuredClone(cbase2()); f(t); return run(t, [{ op: "expand_compound", id: "C" }])[0]; };
+  check("expand_compound setup: the compound sits 0.5 over the previous clip and D follows it", near(at(cbase2(), "C").start, 1.5) && near(at(cbase2(), "D").start, 2.5), [at(cbase2(), "C").start, at(cbase2(), "D").start]);
+  const noHome = (t: any) => { at(t, "C").tracks = at(t, "C").tracks.filter((x: any) => x.id !== "main"); };
+  const e1c = (() => { const t = structuredClone(cbase2()); noHome(t); try { run(t, [{ op: "expand_compound", id: "C" }]); return "no error"; } catch (e: any) { return e.code; } })();
+  check("expand_compound with nothing back on its storyline refuses to drop the compound's transition", e1c === "layer_properties", e1c);
+  const e1b = (() => { const t = structuredClone(cbase2()); noHome(t); return run(t, [{ op: "update_clip", id: "C", set: { transition: null } }])[0]; })();
+  const e1 = run(e1b, [{ op: "expand_compound", id: "C" }])[0];
+  check("expand_compound with nothing back on its storyline: the clips after it keep their time", near(at(e1, "D").start, at(e1b, "D").start), [at(e1b, "D"), at(e1, "D")]);
+  ok("expand_compound time-keeping gap", e1);
+  for (const [name, st, dur] of [["a head gap shorter than the transition becomes a smaller overlap", 0.3, 0.7], ["a head gap longer than the transition stays a gap", 0.8, 0.2]] as const) {
+    const e2 = kept((t) => { Object.assign(nested(t, "main").clips[0], { start: st, duration: dur }); });
+    check(`expand_compound: ${name}; the clip keeps its time and D stays at 2.5`, near(at(e2, "B").start, 1.5 + st) && near(at(e2, "D").start, 2.5), [at(e2, "B"), at(e2, "D")]);
+    ok(`expand_compound head gap ${st}`, e2);
+  }
+  const cutHead = run(cbase2(), [{ op: "update_clip", id: "C", set: { in: 0.5, duration: 0.5 } }, { op: "expand_compound", id: "C" }])[0];
+  check("expand_compound: a head cut moves the nested flash with the content", near(at(cutHead, "B").effects?.[0].at, 0.3), at(cutHead, "B").effects);
+
+  // layer properties: identity values lose nothing; a drop that would be silent is refused
+  const refuse = (t: any, ops: any[]) => { try { run(t, ops); return undefined; } catch (e: any) { return e; } };
+  const withProps = (props: any) => { const t = structuredClone(cbase2()); Object.assign(at(t, "C"), props); return refuse(t, [{ op: "expand_compound", id: "C" }]); };
+  check("expand_compound accepts identity layer values (opacity 1, scale 1, rotation 0, blend normal, radius 0)", withProps({ opacity: 1, scale: 1, scale_x: 1, rotation: 0, blend: "normal", radius: 0 }) === undefined);
+  check("expand_compound still refuses a real layer value", withProps({ opacity: 0.5 })?.code === "layer_properties");
+  for (const props of [{ until_end: true }, { pending: { auto_reframe: { op: "auto_reframe" } } }]) {
+    const er = withProps(props);
+    check(`expand_compound refuses ${Object.keys(props)[0]} instead of dropping it`, er?.code === "layer_properties" && er.message.includes(Object.keys(props)[0]), er && [er.code, er.message]);
+  }
+  const free = run(mk(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "f1", at: 0, duration: 2 }, { op: "add_clip", track: "overlay", asset: "i", id: "f2", at: 2, duration: 2 },
+    { op: "make_compound", ids: ["f2"], id: "FC" }])[0];
+  at(free, "FC").transition = { type: "crossfade", duration: 0.5 };
+  const ft2 = refuse(free, [{ op: "expand_compound", id: "FC" }]);
+  check("expand_compound refuses the transition of a compound on a free track instead of dropping it", ft2?.code === "layer_properties" && ft2.message.includes("transition"), ft2 && [ft2.code, ft2.message]);
+
+  // the srt refusal while expanding names the compound, not the nested clip it cannot reach
+  const srtc = run(mk(), [
+    { op: "add_clip", track: "captions", type: "captions", id: "sc", at: 0, duration: 4, srt: "/none.srt" },
+    { op: "make_compound", ids: ["sc"], id: "SC" }, { op: "update_clip", id: "SC", set: { in: 1, duration: 3 } }])[0];
+  const es = refuse(srtc, [{ op: "expand_compound", id: "SC" }]);
+  check("expand_compound over srt captions with a cut head: the hint names the compound", es?.code === "bad_type" && /update_clip id=SC set=\{in: 0\}/.test(es.hint) && !/give the clip/.test(es.hint), es && [es.code, es.hint]);
 }
 
 console.log("untrusted field names and pending requests");
