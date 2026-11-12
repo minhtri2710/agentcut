@@ -388,14 +388,16 @@ export type Request =
   | { kind: "beats"; path: string };
 type Answers = { transcribe: Awaited<ReturnType<typeof transcribe>>; tts: Awaited<ReturnType<typeof tts>>; silence: Awaited<ReturnType<typeof silence>>; beats: Awaited<ReturnType<typeof beats>> };
 
-/** The one cross-call cache: the beats of an audio file, keyed by path, mtime and size (a replaced file is another key), so repeated
- *  snap_to_beats calls on one server decode a track once. Only `compute` reads it; a direct `beats` call (analyze_beats, review) never shares it. */
-const beatCache = new Map<string, Awaited<ReturnType<typeof beats>>>();
+/** The one cross-call cache: the beats of an audio file, one entry per path holding the mtime and size it was decoded at (a replaced file
+ *  replaces its entry, as probeCache does), so repeated snap_to_beats calls on one server decode a track once. Only `compute` reads it;
+ *  a direct `beats` call (analyze_beats, review) never shares it. */
+const beatCache = new Map<string, { mtime: number; size: number; value: Awaited<ReturnType<typeof beats>> }>();
 async function cachedBeats(path: string, signal?: AbortSignal) {
-  const st = statSync(path), key = `${path}\0${st.mtimeMs}\0${st.size}`;
-  let hit = beatCache.get(key);
-  if (!hit) beatCache.set(key, hit = await beats(path, signal));
-  return hit;
+  const st = statSync(path), hit = beatCache.get(path);
+  if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.value;
+  const value = await beats(path, signal);
+  beatCache.set(path, { mtime: st.mtimeMs, size: st.size, value });
+  return value;
 }
 
 /** Thrown by an op on a memo miss. Not an EditError: it never leaves api.apply (any other caller of applyOps gets this internal error). */

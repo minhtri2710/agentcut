@@ -6,7 +6,7 @@ import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
 import { run } from "./proc.ts";
 import { EditError, isRetimed, parseTime, type Timeline, type Track, visibleSpan } from "./model.ts";
-import { commit, createFile, partSibling, tmpSibling } from "./safe-write.ts";
+import { commit, createFile, partSibling } from "./safe-write.ts";
 
 export interface Cue { start: number; end: number; text: string; clip: string }
 export const SUB_FORMATS: Record<string, "srt" | "vtt"> = { ".srt": "srt", ".vtt": "vtt" };
@@ -75,10 +75,12 @@ export function embedCodec(video: string): string {
 export async function embedSubtitles(video: string, cues: Cue[], base?: string, signal?: AbortSignal) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
   const vtt = codec === "webvtt";
-  const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`, base), tmp = partSibling(video, base); // new names next to the video; nothing exists at them
+  // new names next to the video; nothing exists at them. The sidecar is named like the mux output (a part name of the video, so the next
+  // render of it sweeps one a SIGKILL left behind), which hides its format from ffmpeg: it is named with -f.
+  const sub = partSibling(video, base), tmp = partSibling(video, base);
   createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
-    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
+    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), "-f", vtt ? "webvtt" : "srt", ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { signal });
     if (r.status !== 0) throw new EditError(`subtitle mux failed: ${r.stderr.slice(-600)}`, "encode_failed");
     commit(tmp, video);

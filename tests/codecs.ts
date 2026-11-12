@@ -582,6 +582,23 @@ console.log("decode and render failures");
   check("a live render's part file, another output's part file, an odd name, a link and its target stay",
     [liveP, otherName, odd, target].every((f) => existsSync(f)) && lstatSync(link).isSymbolicLink(), readdirSync(dir));
 
+  { // the subtitle sidecar a killed mux left beside the output: its name is derived from what embedSubtitles really uses
+    const sdir = join(tmp, "sweep-sub"), bin = join(tmp, "fakebin-sub"), rec = join(tmp, "mux-args.txt"), video = join(sdir, "s.mp4");
+    mkdirSync(sdir); mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\nfor a; do echo "$a"; done > '${rec}'\nexit 1\n`, { mode: 0o755 });
+    const { embedSubtitles } = await import("../src/subtitles.ts"), pathNow = process.env.PATH;
+    process.env.PATH = `${bin}:${pathNow}`;
+    try { await embedSubtitles(video, [{ start: 0, end: 1, text: "x", clip: "c" }]); } catch { /* the stand-in fails the mux */ } finally { process.env.PATH = pathNow; }
+    const args = readFileSync(rec, "utf8").trim().split("\n"), sidecar = basename(args[args.lastIndexOf("-i") + 1]);
+    const other = HOST_TAG === "00000000" ? "11111111" : "00000000";
+    const gone = join(sdir, sidecar.replace(`part-${process.pid}-`, `part-${dead}-`));
+    const keep = [gone.replace(`-${HOST_TAG}-`, `-${other}-`), gone.replace(`-${HOST_TAG}-`, "-")];
+    for (const f of [gone, ...keep]) writeFileSync(f, "x");
+    await renderVideo(tl(), p.root, video, { workers: 1, end: 0.5 });
+    check("a dead mux's subtitle sidecar of this host beside the output is swept by the next render", gone !== keep[0] && !existsSync(gone), { sidecar, left: readdirSync(sdir) });
+    check("a sidecar-shaped file of another host, and one with no host tag, stay", keep.every((f) => existsSync(f)), readdirSync(sdir));
+  }
+
   const bw = workerFailure('E {"message":"m","code":"c","hint":"h"}', 0), bad = workerFailure("E not json", 3);
   check("a worker's E line keeps its message, code and hint", bw.message === "m" && bw.code === "c" && bw.hint === "h", bw);
   check("an unreadable E line is a render_failed error that names the line", bad.code === "render_failed" && bad.message.includes("E not json") && bad.message.includes("worker 3"), bad);

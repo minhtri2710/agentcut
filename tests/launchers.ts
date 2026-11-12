@@ -152,6 +152,8 @@ if (!bin) {
   check("test runner: a failing suite does not stop the later ones; exit 1; the failed suites are named, the passing one is not",
     bad.status === 1 && /FAIL-A ran[\s\S]*PASS-B ran[\s\S]*FAIL-C ran/.test(bad.stdout) && tail.includes("fail-a.ts (exit 3)") && tail.includes("fail-c.ts (exit 1)") && !tail.includes("pass-b.ts"),
     [bad.status, bad.stdout.slice(-200), bad.stderr.slice(-300)]);
+  const flags = run(suite("flags.ts", "console.log(`FLAGS ${JSON.stringify(process.execArgv)}`);\n"));
+  check("test runner: each suite is started with --no-install", flags.stdout.includes('FLAGS ["--no-install"]'), [flags.status, flags.stdout.slice(-200), flags.stderr.slice(-200)]);
   check("test runner: all suites passing exits 0", good.status === 0 && /all 1 suites passed/.test(good.stdout), [good.status, good.stdout.slice(-200), good.stderr.slice(-200)]);
 }
 
