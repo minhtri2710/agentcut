@@ -323,16 +323,17 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // output past the cap stops a child that ignores SIGTERM: the call settles with status null and the child is gone
     {
       let pid = 0, res: any, took = -1;
+      rmSync(pidFile, { force: true });
       const t1 = Date.now();
       const settled = await Promise.race([
         run("sh", ["-c", `echo $$ > '${pidFile}'; trap '' TERM; exec yes`], { maxBuffer: 4096 }).then((r) => { res = r; took = Date.now() - t1; return true; }),
         new Promise((r) => setTimeout(() => r(false), 5000)),
       ]);
-      pid = Number(readFileSync(pidFile, "utf8")) || 0;
-      let alive = true;
-      try { process.kill(pid, 0); } catch { alive = false; }
+      if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf8")) || 0;
+      let alive = pid > 0;
+      if (alive) try { process.kill(pid, 0); } catch { alive = false; }
       if (alive) process.kill(pid, "SIGKILL"); // a child that outlived the bound is the failure; do not leave it running
-      check("output past the cap: a child that ignores SIGTERM is killed and the call settles with status null within 5 s", settled === true && res?.status === null && !alive && took < 5000, { settled, status: res?.status, alive, took });
+      check("output past the cap: a child that ignores SIGTERM is killed and the call settles with status null within 5 s", pid > 0 && settled === true && res?.status === null && !alive && took < 5000, { pid, settled, status: res?.status, alive, took });
     }
   }
 }
