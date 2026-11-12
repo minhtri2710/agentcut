@@ -586,7 +586,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
   }
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
-  validateTracks(tl, o, issues, new Map(), "$");
+  validateTracks(tl, o, issues, new Map(), "$", ROOT);
   if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
   return issues;
 }
@@ -597,25 +597,20 @@ export const isRetimed = (c: Clip) => Math.abs((Number(c.speed ?? 1) || 1) - 1) 
 export const hasSound = (c: Clip, assets: Timeline["assets"]) => (c.type === "audio" || c.type === "video") && !c.muted && !c.freeze && !c.keyframes?.speed
   && !!assets[c.asset] && !!(assets[c.asset].has_audio || assets[c.asset].kind === "audio");
 
-/** What a compound drops when it plays at a speed other than 1: audible nested clips (audio.ts flatClips) and nested captions (subtitles.ts captionCues). */
-function retimedDrops(assets: Timeline["assets"], tr: Track, c: Clip): { audio: boolean; captions: boolean } {
-  const out = { audio: false, captions: false };
-  const walk = (tracks: Track[], gain: number) => {
-    for (const t of tracks) for (const n of t.clips ?? []) {
-      if (n.enabled === false) continue;
-      const g = t.muted ? 0 : gain * Number(t.volume ?? 1);
-      if (n.type === "captions") { if (!t.hidden) out.captions = true; }
-      else if (n.type === "compound") { if (Array.isArray(n.tracks)) walk(n.tracks, n.muted ? 0 : g * Number(n.volume ?? 1)); }
-      else if (hasSound(n, assets) && Number(n.volume ?? 1) * g > 0) out.audio = true;
-    }
-  };
-  walk(c.tracks!, tr.muted || c.muted ? 0 : Number(tr.volume ?? 1) * Number(c.volume ?? 1));
-  out.captions &&= !tr.hidden;
-  return out;
-}
+/** The part of [s, e] inside the window [w0, w1], or null when under 1 ms is left. audio.ts mapClip, subtitles.ts captionCues and the retimed-compound warning trim a nested clip to its compound's visible window with it. */
+export const visibleSpan = (s: number, e: number, w0: number, w1: number): [number, number] | null => {
+  const a = Math.max(s, w0), b = Math.min(e, w1);
+  return b - a < 1e-3 ? null : [a, b];
+};
+
+/** What audio.ts and subtitles.ts reach at one level of validateTracks, as if every compound above played at speed 1: the gain and caption visibility
+ *  of the ancestors, the window of this level's time that is visible, and (inside the nearest retimed compound only) where to record what that compound drops. */
+interface Flow { gain: number; captions: boolean; w0: number; w1: number; sink?: { audio: boolean; captions: boolean } }
+const ROOT: Flow = { gain: 1, captions: true, w0: 0, w1: Infinity };
+const DEAD: Flow = { gain: 0, captions: false, w0: 0, w1: 0 }; // below a disabled or outside-the-window compound: nothing is mixed or exported
 
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
-function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string) {
+function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string, flow: Flow) {
   const assets = tl.assets || {};
   const ids = new Map<string, string>(); // track ids: unique per level
   const clips = tl.tracks.flatMap((x) => x.clips ?? []), byId = (id: string) => clips.find((x) => x.id === id);
@@ -628,7 +623,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
     if (!tr.id) issues.push({ level: "error", path: `${tp}.id`, message: "track needs an id" });
     else if (dup(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
     ids.set(tr.id, tp);
-    const kind = tr.kind || "video";
+    const kind = tr.kind || "video", tf = { gain: tr.muted ? 0 : flow.gain * Number(tr.volume ?? 1), captions: flow.captions && !tr.hidden };
     let prevEnd: number | null = null;
     (tr.clips || []).forEach((c, ci) => {
       let p = `${tp}.clips[${ci}]`;
@@ -653,6 +648,11 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (dur <= 0) issues.push({ level: "error", path: `${p}.duration`, message: "duration must be > 0" });
         if (start < 0) issues.push({ level: "error", path: `${p}.start`, message: "start must be >= 0" });
       } catch (e: any) { issues.push({ level: "error", path: p, message: e.message, hint: e.hint }); return; }
+      const vis = c.enabled === false ? null : visibleSpan(start, start + dur, flow.w0, flow.w1); // null: audio.ts and subtitles.ts never reach this clip
+      if (vis && flow.sink) {
+        if (c.type === "captions") { if (tf.captions) flow.sink.captions = true; }
+        else if (hasSound(c, assets) && Number(c.volume ?? 1) * tf.gain > 0) flow.sink.audio = true;
+      }
       if (MEDIA_TYPES.has(c.type)) {
         const aid = c.asset;
         if (!aid) issues.push({ level: "error", path: `${p}.asset`, message: "media clip needs 'asset' (or 'src' when adding)" });
@@ -754,13 +754,17 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       prevEnd = Math.max(prevEnd ?? 0, start + dur);
       if (c.type === "compound") {
         if (!Array.isArray(c.tracks)) { issues.push({ level: "error", path: `${p}.tracks`, message: "compound clip needs 'tracks' (a list of nested tracks)", hint: "create one with make_compound" }); return; }
-        try { if (parseTime(c.in ?? 0) < 0) issues.push({ level: "error", path: `${p}.in`, message: "in must be >= 0" }); } catch (e: any) { issues.push({ level: "error", path: `${p}.in`, message: e.message, hint: e.hint }); }
-        if (isRetimed(c) && c.enabled !== false) {
-          const drops = retimedDrops(assets, tr, c), at = `${p}.speed`;
-          if (drops.audio) issues.push({ level: "warning", path: at, message: `compound plays at speed ${c.speed}: its nested audio is not mixed`, hint: "set speed 1, or detach the audio before retiming" });
-          if (drops.captions) issues.push({ level: "warning", path: at, message: `compound plays at speed ${c.speed}: its nested captions are not exported as subtitles (export_captions, render subtitles=true)`, hint: "set speed 1, or move the captions out of the compound" });
+        let cin = 0;
+        try { cin = parseTime(c.in ?? 0); if (cin < 0) issues.push({ level: "error", path: `${p}.in`, message: "in must be >= 0" }); } catch (e: any) { issues.push({ level: "error", path: `${p}.in`, message: e.message, hint: e.hint }); }
+        let down = DEAD, sink: Flow["sink"];
+        if (vis) { // a retimed compound inside another one still warns for its own clips: they stay silent until both play at speed 1
+          const sp = Number(c.speed ?? 1) || 1;
+          if (isRetimed(c)) sink = { audio: false, captions: false };
+          down = { gain: c.muted ? 0 : tf.gain * Number(c.volume ?? 1), captions: tf.captions, w0: cin + (vis[0] - start) * sp, w1: cin + (vis[1] - start) * sp, sink: sink ?? flow.sink };
         }
-        validateTracks(subTimeline(tl, c), o, issues, clipIds, p);
+        validateTracks(subTimeline(tl, c), o, issues, clipIds, p, down);
+        if (sink?.audio) issues.push({ level: "warning", path: `${p}.speed`, message: `compound plays at speed ${c.speed}: its nested audio is not mixed`, hint: "set speed 1, or detach the audio before retiming" });
+        if (sink?.captions) issues.push({ level: "warning", path: `${p}.speed`, message: `compound plays at speed ${c.speed}: its nested captions are not exported as subtitles (export_captions, render subtitles=true)`, hint: "set speed 1, or move the captions out of the compound" });
       }
     });
   });

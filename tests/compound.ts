@@ -392,6 +392,43 @@ console.log("retimed compound: what it drops is reported by validate");
   check("back to speed 1: no warning", warns().length === 0, warns());
 }
 
+console.log("retimed compound: the warning names only what audio and subtitles would really bring back at speed 1");
+{
+  const M = await import("../src/model.ts");
+  const warned = (tracks: any[]) => {
+    const tl = M.newTimeline(640, 360, 30);
+    tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true } as any;
+    tl.assets.q = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: false } as any;
+    tl.tracks = tracks;
+    return M.validate(tl).filter((i) => i.level === "warning" && i.path.endsWith(".speed")).map((i) => `${i.path.match(/.*<(\w+)>/)![1]}:${/audio/.test(i.message) ? "audio" : "captions"}`).sort();
+  };
+  const vid = (id: string, o: object = {}) => ({ id, type: "video", asset: "v", start: 0, duration: 2, ...o });
+  const cap = (id: string, o: object = {}) => ({ id, type: "captions", words: [{ text: "Hi", start: 0, end: 1 }], start: 0, duration: 2, ...o });
+  const trk = (id: string, clips: any[], o: object = {}) => ({ id, kind: "video", clips, ...o });
+  const cmp = (id: string, tracks: any[], o: object = {}) => ({ id, type: "compound", start: 0, duration: 2, speed: 2, tracks, ...o });
+  const top = (...c: any[]) => [trk("top", c)];
+  const is = (name: string, got: string[], want: string[]) => check(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
+
+  is("audible nested video and nested captions: both reported", warned(top(cmp("RC", [trk("n", [vid("a"), cap("c")])]))), ["RC:audio", "RC:captions"]);
+  is("a frozen nested video has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a", { freeze: true })])]))), []);
+  is("a muted nested track has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a")], { muted: true })]))), []);
+  is("a nested video whose asset has no audio has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a", { asset: "q" })])]))), []);
+  is("a hidden nested track still mixes its audio but exports no captions", warned(top(cmp("RC", [trk("n", [vid("a"), cap("c")], { hidden: true })]))), ["RC:audio"]);
+  is("a compound on a hidden nested track exports no captions either", warned(top(cmp("RC", [trk("n", [cmp("N", [trk("m", [cap("c")])], { speed: 1 })], { hidden: true })]))), []);
+
+  const inner = () => cmp("RC", [trk("n", [vid("a"), cap("c")])]);
+  is("a disabled ancestor reaches nothing below it", warned(top(cmp("P", [trk("p", [inner()])], { speed: 1, enabled: false }))), []);
+  is("a muted ancestor drops no audio below it, but its captions are still exported", warned(top(cmp("P", [trk("p", [inner()])], { speed: 1, muted: true }))), ["RC:captions"]);
+  is("an ancestor on a muted track drops no audio below it", warned([trk("top", [cmp("P", [trk("p", [inner()])], { speed: 1 })], { muted: true })]), ["RC:captions"]);
+  is("an ancestor on a hidden track exports no captions below it", warned([trk("top", [cmp("P", [trk("p", [inner()])], { speed: 1 })], { hidden: true })]), ["RC:audio"]);
+  is("a retimed compound counts its own clips, not those of a retimed compound inside it", warned(top(cmp("P", [trk("p", [vid("b"), cmp("RC", [trk("n", [vid("a")])])])]))), ["P:audio", "RC:audio"]);
+  is("a retimed compound inside a retimed one still reports its own drop; the outer one does not count it", warned(top(cmp("P", [trk("p", [cmp("RC", [trk("n", [vid("a")])])])]))), ["RC:audio"]);
+
+  is("clips outside the visible nested range [in, in + duration x speed] are not counted", warned(top(cmp("RC", [trk("n", [vid("a", { start: 10 }), cap("c", { start: 10 })])]))), []);
+  is("a clip inside that range is counted only because the speed widens it", warned(top(cmp("RC", [trk("n", [vid("a", { start: 3 })])]))), ["RC:audio"]);
+  is("the range starts at the compound's in", warned(top(cmp("RC", [trk("n", [vid("a", { start: 0 })])], { in: 5 }))), []);
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { extname } from "node:path";
 import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
-import { EditError, isRetimed, parseTime, type Timeline, type Track } from "./model.ts";
+import { EditError, isRetimed, parseTime, type Timeline, type Track, visibleSpan } from "./model.ts";
 import { commit, createFile, partSibling, tmpSibling } from "./safe-write.ts";
 
 export interface Cue { start: number; end: number; text: string; clip: string }
@@ -30,8 +30,9 @@ export function captionCues(tl: Timeline, ids?: string[]): Cue[] {
         if (c.type !== "captions" || (ids && !ids.includes(c.id))) continue;
         const words = captionWords(c), pages = captionPages(words, Number(c.max_words ?? 3));
         pageSpans(words, pages).forEach(([ps, pe], i) => {
-          const a = Math.max(s + ps, s, w0), b = Math.min(s + pe, e, w1);
-          if (b - a < 1e-3) return;
+          const v = visibleSpan(Math.max(s + ps, s), Math.min(s + pe, e), w0, w1);
+          if (!v) return;
+          const [a, b] = v;
           let text = pages[i].map((wi) => words[wi].text).join(" ");
           if (c.uppercase) text = text.toUpperCase();
           out.push({ start: base + a - w0, end: base + b - w0, text, clip: c.id });

@@ -537,6 +537,9 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   check("a new video track that moves a track with an existing error is accepted", await code([{ op: "add_clip", track: "overlay2", src: png, id: "o9", at: 0, duration: 1 }]) === "ok");
   await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 })) }], { allowInvalid: true });
   check("a second clip without an id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 7, duration: 1 })) }]) === "validation_failed");
+  const copyOfG2 = (t: any, start: number) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ ...t.tracks[0].clips.find((c: any) => c.id === "g2"), start });
+  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 9)) }], { allowInvalid: true }); // id g2 now twice
+  check("another copy of an already duplicated clip id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 11)) }]) === "validation_failed");
   // a ripple follows an attach chain of any depth (17 links here)
   const blank = newTimeline(640, 360, 30); blank.assets.i = { path: "/none.png", kind: "image" };
   const [deep] = run(blank, [

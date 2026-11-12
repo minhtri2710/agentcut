@@ -5,7 +5,7 @@ import { parseKfs } from "./anim.ts";
 import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
-import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track } from "./model.ts";
+import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
 
@@ -32,8 +32,9 @@ interface Win { base: number; w0: number; w1: number; gain: number; track: Track
 /** clip c of a compound's nested timeline -> parent time, trimmed to the compound's visible window [w0, w1] */
 function mapClip(c: Clip, w?: Win): Clip | null {
   if (!w) return c;
-  const s = parseTime(c.start ?? 0), e = s + parseTime(c.duration), a = Math.max(s, w.w0), b = Math.min(e, w.w1);
-  if (b - a < 1e-3) return null;
+  const s = parseTime(c.start ?? 0), e = s + parseTime(c.duration), v = visibleSpan(s, e, w.w0, w.w1);
+  if (!v) return null;
+  const [a, b] = v;
   const head = a - s, tail = e - b, speed = Number(c.speed ?? 1) || 1;
   const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + (c.reverse ? tail : head) * speed };
   if (head > 1e-6) {
