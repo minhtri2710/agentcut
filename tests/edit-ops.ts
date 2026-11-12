@@ -274,6 +274,9 @@ console.log("match_duration by clip reference");
   check("validate: a transition object without a type is an error", errAt(bx((x) => { at(x, "img2").transition = { duration: 0.3 }; }), /<img2>\.transition\.type$/));
   check("validate: a transition object with a type is clean", !errAt(bx((x) => { at(x, "img2").transition = { type: "crossfade", duration: 0.3 }; }), /transition/));
   check("validate: settings.effects as a string is an error, not a throw", errAt(bx((x) => { x.settings.effects = "glitch"; }), /^\$\.settings\.effects$/));
+  check("validate: settings.effects null (set_settings effects:null) is clean", !errAt(bx((x) => { x.settings.effects = null; }), /effects/));
+  check("validate: a transition object with type null is an error", errAt(bx((x) => { at(x, "img2").transition = { type: null, duration: 0.3 }; }), /<img2>\.transition\.type$/));
+  for (const k of ["effects", "filters"]) check(`validate: clip ${k} as a string is an error, not a throw`, errAt(bx((x) => { at(x, "img2")[k] = "grain"; }), new RegExp(`<img2>\\.${k}$`)));
   // a child with a timeout: before the guard, atempo looped forever
   const at1 = spawnSync("bun", ["--no-install", "--no-env-file", "-e", `const { atempo } = await import(${JSON.stringify(join(import.meta.dir, "../src/audiofx.ts"))}); for (const v of [-1, 0, NaN, Infinity]) { try { atempo(v); process.exit(2); } catch {} }`], { timeout: 5000, encoding: "utf8" });
   check("atempo refuses a non-positive or non-finite speed instead of looping", at1.status === 0, { status: at1.status, signal: at1.signal });

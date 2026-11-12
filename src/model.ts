@@ -539,7 +539,8 @@ function groupIssues(g: any, path: string): { path: string; message: string; hin
 
 function checkName(v: unknown, opts: string[], path: string, issues: Issue[], what: string) {
   const name = v && typeof v === "object" ? (v as Dict).type : v;
-  if (name === undefined && v && typeof v === "object") { issues.push({ level: "error", path: `${path}.type`, message: `${what} needs a 'type'`, hint: `options: ${opts.join(", ")}` }); return; }
+  // an object without a usable type would reach the renderer as a type it cannot draw
+  if (v && typeof v === "object" && (typeof name !== "string" || !name)) { issues.push({ level: "error", path: `${path}.type`, message: `${what} needs a 'type'`, hint: `options: ${opts.join(", ")}` }); return; }
   if (name === undefined || name === null || name === false || name === "none" || name === "") return;
   if (!opts.includes(name as string)) {
     const s = suggest(name, opts);
@@ -556,7 +557,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     issues.push({ level: "warning", path: `$.${k}`, message: `unknown top-level key '${k}' (ignored)` });
   const st = tl.settings || {};
   checkFields(st, SETTINGS_FIELDS, "$.settings", issues, "settings");
-  if (st.effects !== undefined && !Array.isArray(st.effects)) issues.push({ level: "error", path: "$.settings.effects", message: "effects must be a list", hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
+  if (st.effects != null && !Array.isArray(st.effects)) issues.push({ level: "error", path: "$.settings.effects", message: "effects must be a list", hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
   else (st.effects || []).forEach((f: any, fi: number) => {
     const ft = typeof f === "string" ? f : f?.type;
     if (!(ft in EFFECTS)) issues.push({ level: "error", path: `$.settings.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
@@ -652,7 +653,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           issues.push({ level: "error", path: `${p}.${key}`, message: `invalid ${key} '${c[key]}'`, hint: s ? `did you mean '${s}'?` : `options: ${opts.join(", ")}` });
         }
       if (c.mask) checkName(typeof c.mask === "string" ? c.mask : c.mask.shape, MASKS, `${p}.mask`, issues, "mask shape");
-      (c.filters || []).forEach((f: any, fi: number) => {
+      (Array.isArray(c.filters) ? c.filters : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
         if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
         else {
@@ -674,7 +675,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if ("look" in c.color) checkName(c.color.look, Object.keys(LOOKS), `${p}.color.look`, issues, "look");
         for (const [k, message] of gradeIssues(c.color)) issues.push({ level: "error", path: `${p}.color.${k}`, message });
       }
-      (c.effects || []).forEach((f: any, fi: number) => {
+      (Array.isArray(c.effects) ? c.effects : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
         if (!(ft in EFFECTS)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
       });
