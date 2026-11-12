@@ -149,8 +149,8 @@ export function registerEditOps(h: OpHelpers) {
       return { id: v.id, audio: aud.id, track: tl.tracks.find((t) => t.clips.includes(aud))!.id, start: aud.start, duration: aud.duration };
     });
 
-  h.op("attach_audio", "Inverse of detach_audio: put a video's detached sound back on the video and remove the audio clip. Its processing (eq, compressor, pan, denoise, pitch, normalize), volume, fades and volume keyframes move back to the video, which is unmuted. " +
-    "Refused (out_of_sync, naming the field) when the audio no longer lines up with the picture: offset other than 0, or in/duration/speed/reverse/loop/enabled different from the video's (a J/L-cut or slip). A speed ramp needs this first.",
+  h.op("attach_audio", "Inverse of detach_audio: put a video's detached sound back on the video and remove the audio clip. Its processing (eq, compressor, pan, denoise, pitch, normalize), volume, fades and volume keyframes move back to the video, which is unmuted (muted, if the audio clip was). " +
+    "Refused (out_of_sync, naming the field) when the audio no longer lines up with the picture: offset other than 0, or in/duration/speed/reverse/loop/enabled/group different from the video's (a J/L-cut or slip); refused (audio_state) when the audio's track is muted or at volume 0, the video is a freeze frame, or the audio has its own length rule (until_end, match_duration naming a clip). Clips attached to the audio clip are attached to the video. A speed ramp needs this first.",
     { id: "video clip id or ref, or its detached audio clip" }, (p, tl, a) => {
       const [, , c] = get(tl, a);
       const v = c.type === "audio" && c.attach_to ? findClip(tl, c.attach_to)[2] : c;
@@ -158,20 +158,29 @@ export function registerEditOps(h: OpHelpers) {
       const aud = linked(tl, v);
       if (!aud) throw new EditError(`'${v.id}' has no detached audio`, "not_detached", "its sound is already on the clip; detach_audio, j_cut or l_cut create a detached audio clip");
       resolve(tl);
-      const sync = (x: Clip) => ({ offset: x === aud ? parseTime(x.offset ?? 0, "offset") : 0, duration: clipDur(x), in: cin(x), speed: spd(x), reverse: !!x.reverse, loop: !!x.loop, enabled: x.enabled !== false });
+      const sync = (x: Clip) => ({ offset: x === aud ? parseTime(x.offset ?? 0, "offset") : 0, duration: clipDur(x), in: cin(x), speed: spd(x), reverse: !!x.reverse, loop: !!x.loop, enabled: x.enabled !== false, group: JSON.stringify(x.group ?? null) });
       const [pv, pa] = [sync(v), sync(aud)];
       for (const k of Object.keys(pv) as (keyof typeof pv)[]) {
         const same = typeof pv[k] === "number" ? Math.abs((pv[k] as number) - (pa[k] as number)) < 1e-3 : pv[k] === pa[k];
         if (!same) throw new EditError(`'${aud.id}' no longer lines up with '${v.id}': ${k} is ${pa[k]}, the video's is ${pv[k]}`, "out_of_sync",
           `make ${k} match the video's (undo the J/L-cut or slip), or remove_clip id=${aud.id} to drop that audio and its processing`, undefined, { audio: aud.id, field: k });
       }
+      const atr = tl.tracks.find((t) => t.clips.includes(aud))!;
+      const silent = atr.muted ? `track '${atr.id}' is muted` : !(Number(atr.volume ?? 1) > 0) ? `track '${atr.id}' has volume 0` : v.freeze ? `'${v.id}' is a freeze frame, which plays no audio` : aud.until_end || typeof aud.match_duration === "string" ? `'${aud.id}' has its own length rule (until_end or match_duration)` : "";
+      if (silent) throw new EditError(`attach_audio would change what '${aud.id}' plays: ${silent}`, "audio_state",
+        "unmute or raise that track and unfreeze the video; remove until_end/match_duration from the audio; or remove_clip the audio to drop it", undefined, { audio: aud.id });
       for (const k of MOVE_KEYS) { if (aud[k] !== undefined) v[k] = structuredClone(aud[k]); else delete v[k]; }
       if (aud.keyframes?.volume) v.keyframes = { ...v.keyframes, volume: structuredClone(aud.keyframes.volume) };
       else if (v.keyframes) { delete v.keyframes.volume; if (!Object.keys(v.keyframes).length) delete v.keyframes; }
-      delete v.muted;
-      for (const t of tl.tracks) t.clips = t.clips.filter((x) => x !== aud);
+      if (aud.muted) v.muted = true; else delete v.muted;
+      if (aud.note) v.note = v.note ? `${v.note}\n${aud.note}` : aud.note;
+      for (const x of allClips(tl)) { // aud lines up with v exactly, so what followed aud keeps its place and length
+        if (x.attach_to === aud.id) x.attach_to = v.id;
+        if (x.match_duration === aud.id) x.match_duration = v.id;
+      }
+      atr.clips = atr.clips.filter((x) => x !== aud);
       resolve(tl);
-      return { id: v.id, removed: aud.id };
+      return { id: v.id, removed: aud.id, ...(aud.name && aud.name !== `audio of ${v.id}` ? { dropped_name: aud.name } : {}) };
     });
 
   const cutDoc = (lead: boolean) => (lead

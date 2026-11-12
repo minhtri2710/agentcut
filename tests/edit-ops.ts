@@ -217,6 +217,24 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   catch (e: any) { check("attach_audio refuses a J-cut's audio as out_of_sync, naming offset", e.code === "out_of_sync" && /offset/.test(e.message) && e.details?.field === "offset" && !!e.hint, { code: e.code, message: e.message, details: e.details }); }
   refuses("attach_audio on a video with no detached audio is refused as not_detached", fxv, [{ op: "attach_audio", id: "fx" }], "not_detached");
   check("after attach_audio a speed ramp is accepted (detached, it was refused)", errs(run(fxr, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).length === 0);
+  { // state of the audio clip that keeps the sound silent (or unplayable) must not turn audible
+    const mute = structuredClone(fxd); at(mute, "aud1").muted = true;
+    check("attach_audio keeps a muted detached audio silent (the video ends muted)", at(run(mute, [{ op: "attach_audio", id: "fx" }])[0], "fx").muted === true);
+    for (const state of [{ muted: true }, { volume: 0 }]) {
+      const quiet = structuredClone(fxd); Object.assign(quiet.tracks.find((t: any) => t.clips.some((c: any) => c.id === "aud1"))!, state);
+      refuses(`attach_audio refuses audio on a track with ${JSON.stringify(state)} as audio_state`, quiet, [{ op: "attach_audio", id: "fx" }], "audio_state");
+    }
+    const frozen = structuredClone(fxd); at(frozen, "fx").freeze = true;
+    refuses("attach_audio refuses a frozen video as audio_state", frozen, [{ op: "attach_audio", id: "fx" }], "audio_state");
+    const tail = structuredClone(fxd); at(tail, "aud1").until_end = true;
+    refuses("attach_audio refuses audio with its own length rule (until_end) as audio_state", tail, [{ op: "attach_audio", id: "fx" }], "audio_state");
+  }
+  { // clips attached to the audio clip move to the video, in place
+    const [pinned] = run(fxd, [{ op: "add_clip", track: "text", type: "text", text: "t", id: "tag", attach_to: "aud1", offset: 0.5, duration: 1 }, { op: "add_clip", track: "text", type: "text", text: "u", id: "fol", at: 0, match_duration: "aud1" }]);
+    const [moved] = run(pinned, [{ op: "attach_audio", id: "fx" }]);
+    check("attach_audio re-points clips attached to the audio (attach_to, match_duration) to the video and keeps their start and length",
+      at(moved, "tag").attach_to === "fx" && at(moved, "fol").match_duration === "fx" && near(at(moved, "tag").start, at(pinned, "tag").start) && near(at(moved, "fol").duration, at(pinned, "fol").duration) && errs(moved).length === 0, [at(moved, "tag"), at(moved, "fol"), errs(moved)]);
+  }
   const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
   // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)
@@ -417,6 +435,8 @@ console.log("match_duration by clip reference");
   const bx = (edit: (x: any) => void) => { const x = structuredClone(ok); edit(x); return x; };
   for (const sp of [-1, 0, 9]) check(`validate: speed ${sp} is an error`, errAt(bx((x) => { at(x, "vo1").speed = sp; }), /<vo1>\.speed$/));
   for (const sp of [0.1, 2, 8]) check(`validate: speed ${sp} is clean`, !errAt(bx((x) => { at(x, "vo1").speed = sp; }), /speed/));
+  for (const sr of [0, 0.5, 44100.5, 7999, 192001]) check(`validate: settings.sample_rate ${sr} is an error`, errAt(bx((x) => { x.settings.sample_rate = sr; }), /^\$\.settings\.sample_rate$/));
+  for (const sr of [8000, 44100, 48000, 192000]) check(`validate: settings.sample_rate ${sr} is clean`, !errAt(bx((x) => { x.settings.sample_rate = sr; }), /sample_rate/));
   const ramp = { speed: [[0, 1], [1, 2]] };
   // a video clip vd9 on the main track, with `extra` fields; its sound (au9) is detached when `detached`
   const vd = (extra: any, detached = false) => bx((x) => {
@@ -436,6 +456,7 @@ console.log("match_duration by clip reference");
   check("validate: speed keyframes of 0.1 and 8 are clean", !errAt(ramped([[0, 0.1], [1, 8]]), /vd9/));
   const over = validate(ramped([[0, 8], [1, 0.1, "back_out"]])).filter((i: any) => i.level === "error" && /<vd9>\.keyframes\.speed$/.test(i.path));
   check("validate: an overshooting easing is refused only where the curve leaves 0.1..8, naming the segment and the value", over.length === 1 && /back_out.*t=0 and t=1.*to -\d/.test(over[0].message), over);
+  check("validate: elastic_out is refused at its true peak (0.1 -> 5.8662 reaches 8.018)", errAt(ramped([[0, 0.1], [1, 5.8662, "elastic_out"]]), /<vd9>\.keyframes\.speed$/));
   check("validate: back_out inside 0.1..8 is clean, and so is an easing on the first keyframe (it has no effect)", !errAt(ramped([[0, 1], [1, 2, "back_out"]]), /vd9/) && !errAt(ramped([[0, 1, "back_out"], [1, 2]]), /vd9/));
   const withText = (x: any) => { x.tracks.find((t: any) => t.id === "main").clips.push({ id: "tx9", type: "text", text: "hi", start: 6, duration: 1 }); return x; };
   check("validate: keyframes.speed on an image clip is an error", errAt(bx((x) => { at(x, "img2").keyframes = ramp; }), /<img2>\.keyframes\.speed$/));

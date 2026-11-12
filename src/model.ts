@@ -162,8 +162,8 @@ export const VISUAL_FIELDS: F = {
 export const SPEED_MIN = 0.1, SPEED_MAX = 8;
 /** Easings that leave [start, end] between two keyframes, so a ramp using one can pass the speed range. */
 const OVERSHOOT = ["back_out", "elastic_out"];
-/** Samples per overshooting segment: validate costs at most this many `ease` calls per such segment. */
-const OVERSHOOT_SAMPLES = 64;
+/** Mixer sample rate in Hz: an integer ffmpeg takes at both ends (telephony 8 kHz .. pro audio 192 kHz); pitch shifts divide by round(rate * 2^(semitones/12)), so a tiny rate would make that zero. */
+const SAMPLE_RATE_MIN = 8000, SAMPLE_RATE_MAX = 192000;
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
@@ -269,7 +269,7 @@ export const TRACK_FIELDS: F = {
 export const SETTINGS_FIELDS: F = {
   width: [T("number"), "canvas width px"], height: [T("number"), "canvas height px"], fps: [T("number"), "frames per second"],
   background: [T("string"), "canvas colour"], duration: [T("number", "null"), "force total duration"],
-  loudness: [T("number", "null"), "target LUFS (default -14, null = off)"], sample_rate: [T("number"), "48000"],
+  loudness: [T("number", "null"), "target LUFS (default -14, null = off)"], sample_rate: [T("number"), `Hz, an integer ${SAMPLE_RATE_MIN}..${SAMPLE_RATE_MAX} (default 48000)`],
   effects: [T("array"), "whole-frame effects, times relative to the timeline: " + Object.keys(EFFECTS).join(",")],
 };
 
@@ -613,6 +613,8 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     else if (v % 2) issues.push({ level: "warning", path: `$.settings.${k}`, message: `${k} is odd; it is rounded to even on export` });
   }
   if (typeof st.fps !== "number" || st.fps < 1 || st.fps > 120) issues.push({ level: "error", path: "$.settings.fps", message: "fps must be 1..120" });
+  if (typeof st.sample_rate === "number" && !(Number.isInteger(st.sample_rate) && st.sample_rate >= SAMPLE_RATE_MIN && st.sample_rate <= SAMPLE_RATE_MAX))
+    issues.push({ level: "error", path: "$.settings.sample_rate", message: `sample_rate must be an integer ${SAMPLE_RATE_MIN}..${SAMPLE_RATE_MAX} Hz`, hint: "48000 (default) or 44100" });
   const assets = tl.assets || {};
   for (const [aid, a] of Object.entries(assets)) {
     const ap = `$.assets.${aid}`;
@@ -648,17 +650,26 @@ interface Flow { gain: number; captions: boolean; w0: number; w1: number; sink?:
 const ROOT: Flow = { gain: 1, captions: true, w0: 0, w1: Infinity };
 const DEAD: Flow = { gain: 0, captions: false, w0: 0, w1: 0 }; // below a disabled or outside-the-window compound: nothing is mixed or exported
 
-/** A speed segment whose overshooting easing leaves SPEED_MIN..SPEED_MAX is an error naming the value it reaches. Reads each segment as kfValue does (the easing of a keyframe shapes the segment ending at it, so the first keyframe's is ignored). */
+/** [min, max] of an overshooting easing over t in 0..1, found once by dense sampling (the error is ~1e-6 of the span); lazy because anim.ts and this file import each other. */
+const easeRange = new Map<string, [number, number]>();
+function rangeOf(e: string): [number, number] {
+  let r = easeRange.get(e);
+  if (!r) {
+    r = [Infinity, -Infinity];
+    for (let j = 0; j <= 20000; j++) { const v = ease(e, j / 20000); r = [Math.min(r[0], v), Math.max(r[1], v)]; }
+    easeRange.set(e, r);
+  }
+  return r;
+}
+
+/** A speed segment whose overshooting easing leaves SPEED_MIN..SPEED_MAX is an error naming the value it reaches: the curve is v0 + (v1 - v0) * ease(t), so its extremes are at the easing's extremes (O(1) per segment). Reads each segment as kfValue does (the easing of a keyframe shapes the segment ending at it, so the first keyframe's is ignored). */
 function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
   const pts = parseKfs([...kfs]); // a copy: parseKfs caches by array identity, and a validated list may have been edited in place
+  const mid = (SPEED_MIN + SPEED_MAX) / 2;
   for (let i = 1; i < pts.length; i++) {
     const [t0, v0] = pts[i - 1], [t1, v1, e] = pts[i];
     if (!OVERSHOOT.includes(e as string) || t1 - t0 <= 1e-9) continue;
-    let worst = v1;
-    for (let j = 1; j <= OVERSHOOT_SAMPLES; j++) {
-      const v = v0 + (v1 - v0) * ease(e, j / OVERSHOOT_SAMPLES);
-      if (Math.abs(v - (SPEED_MIN + SPEED_MAX) / 2) > Math.abs(worst - (SPEED_MIN + SPEED_MAX) / 2)) worst = v;
-    }
+    const worst = rangeOf(e!).map((m) => v0 + (v1 - v0) * m).reduce((a, b) => (Math.abs(b - mid) > Math.abs(a - mid) ? b : a));
     if (!(worst >= SPEED_MIN && worst <= SPEED_MAX)) issues.push({ level: "error", path, message: `easing '${e}' between t=${t0} and t=${t1} takes the speed to ${+worst.toFixed(3)}, outside ${SPEED_MIN}..${SPEED_MAX}`, hint: "use ease_out or ease_in_out, or keep the keyframe values away from the limits" });
   }
 }
