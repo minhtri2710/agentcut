@@ -79,6 +79,66 @@ reset();
   ignored("mcp", "home");
 }
 
+// CLI input and flags: a raw run keeps the exit code, which cli() drops
+const run = (args: string[], cwd: string, input?: string) => {
+  const r = spawnSync(cliCmd[0], [...cliCmd.slice(1), ...args], { cwd, env: env(), encoding: "utf8", input, maxBuffer: 1 << 28 });
+  let json: any = null; try { json = JSON.parse(r.stdout); } catch { /* checked by the caller */ }
+  return { status: r.status, json, out: r.stdout };
+};
+console.log("cli input and flags");
+{
+  const io = join(tmp, "io");
+  cli(["init", io, "--preset", "square"], tmp);
+  const clipIds = () => JSON.parse(readFileSync(join(io, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips.map((c: any) => c.id));
+  // a 3-byte character split across two stdin writes
+  const body = Buffer.from(JSON.stringify([{ op: "add_clip", track: "text", id: "big", text: "ệ".repeat(20) + "x".repeat(3000000), at: 0, duration: 1 }]));
+  const cut = body.indexOf(Buffer.from("ệ")) + 1;
+  const a = await new Promise<{ out: string }>((done) => {
+    const p = spawn(cliCmd[0], [...cliCmd.slice(1), "apply", "-", "-p", io], { cwd: tmp, env: env(), stdio: ["pipe", "pipe", "ignore"] });
+    let out = ""; p.stdout!.on("data", (d) => (out += d)); p.on("close", () => done({ out }));
+    p.stdin!.write(body.subarray(0, cut));
+    setTimeout(() => p.stdin!.end(body.subarray(cut)), 500);
+  });
+  check("apply - keeps multi-byte text whole across stdin chunks", JSON.parse(a.out || "{}").ok === true && !readFileSync(join(io, "project.json"), "utf8").includes("\uFFFD"), a.out.slice(0, 300));
+  const rev = () => run(["info", "-p", io], tmp).json?.revision;
+  const r0 = rev();
+  const dr = run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", id: "c1", duration: 2 }]), "--dry-run=false", "-p", io], tmp);
+  check("--dry-run=false saves the edit", dr.json?.dry_run === false && rev() > r0, dr.out.slice(0, 300));
+  const u = run(["render", "--start", "2", "--end", "5", "-p", io], tmp);
+  check("unknown flag: exit 2, code usage, names the flag", u.status === 2 && u.json?.error?.code === "usage" && u.json.error.message.includes("--start"), u.out.slice(0, 300));
+  const uc = run(["bogus"], tmp);
+  check("unknown command: exit 2", uc.status === 2 && uc.json?.error?.code === "usage", uc.out.slice(0, 300));
+  const note = run(["feedback", "add", "kind=idea", "title=flag check"], tmp).json;
+  const rs = run(["feedback", "resolve", note.id, "--status", "wontfix"], tmp);
+  check("feedback resolve --status wontfix stores the value", rs.json?.status === "wontfix", rs.out.slice(0, 300));
+  const md = join(tmp, "backlog.md");
+  const sm = run(["feedback", "summary", "--md", md], tmp);
+  check("feedback summary --md FILE writes the file", sm.json?.ok === true && existsSync(md), sm.out.slice(0, 300));
+  run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "text", id: "t1", text: "Hi", at: 0, duration: 1, attach_to: "c1" }]), "-p", io], tmp);
+  const rm = run(["rm", "c1", "--keep-attached", "-p", io], tmp);
+  check("rm --keep-attached keeps the attached clip", rm.json?.ok === true && clipIds().includes("t1") && !clipIds().includes("c1"), [rm.out.slice(0, 200), clipIds()]);
+  // a result bigger than the pipe buffer, read late: the process must not exit before the pipe is drained
+  const slow = await new Promise<{ len: number; ok: boolean }>((done) => {
+    const p = spawn(cliCmd[0], [...cliCmd.slice(1), "info", "--json", "-p", io], { cwd: tmp, env: env(), stdio: ["ignore", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    p.stdout!.on("data", (d: Buffer) => chunks.push(d));
+    p.stdout!.pause();
+    setTimeout(() => p.stdout!.resume(), 1500);
+    p.on("close", () => { const t = Buffer.concat(chunks).toString("utf8"); let ok = false; try { ok = JSON.parse(t).ok === true; } catch { /* cut */ } done({ len: t.length, ok }); });
+  });
+  check("a result larger than the pipe buffer arrives whole", slow.ok, slow.len);
+}
+
+// a failed ffmpeg spawn: the loudness of a finished render is left unknown, the process does not die on an unhandled 'error' event
+if (!bin) {
+  console.log("ffmpeg spawn failure");
+  const script = join(tmp, "spawn-fail.ts"), empty = join(tmp, "empty-path");
+  mkdirSync(empty);
+  writeFileSync(script, `import { loudnessAsync } from ${JSON.stringify(join(root, "src/analyze.ts"))};\nprocess.env.PATH = ${JSON.stringify(empty)};\nconsole.log(JSON.stringify(await loudnessAsync("x.wav")));\n`);
+  const r = spawnSync("bun", ["--no-install", "--no-env-file", `--config=${join(root, "scripts/bunfig.empty.toml")}`, script], { cwd: tmp, env: { ...env(), PATH: process.env.PATH }, encoding: "utf8", timeout: 30000 });
+  check("loudnessAsync with no ffmpeg on PATH resolves with unknown metrics", r.status === 0 && r.stdout.includes('"integrated_lufs":null'), [r.status, r.stdout.slice(0, 200), r.stderr.slice(-300)]);
+}
+
 // every bun command in a package.json script is `bun --no-install ...`: --no-install given to `bun run` does not reach the bun processes a script starts
 const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts as Record<string, string>;
 const bareBun = Object.entries(scripts).flatMap(([n, line]) => line.split("&&").map((c) => c.trim().split(/\s+/)).filter((w) => w[0] === "bun" && w[1] !== "--no-install").map((w) => `${n}: ${w.slice(0, 3).join(" ")}`));

@@ -176,6 +176,7 @@ export function loudnessAsync(path: string): Promise<ReturnType<typeof loudness>
     const p = spawn("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"]);
     let err = "";
     p.stderr.on("data", (d) => { err += d; if (err.length > 1e6) err = err.slice(-20000); });
+    p.on("error", () => res({ source: path, integrated_lufs: null, range_lu: null, true_peak_dbfs: null })); // a failed spawn leaves the metrics unknown; a render that ended is not failed for it
     p.on("close", () => {
       const txt = err.slice(err.lastIndexOf("Summary:"));
       const grab = (l: string) => { const m = new RegExp(`${l}:\\s+(-?[\\d.]+|-inf)`).exec(txt); return m && m[1] !== "-inf" ? +m[1] : null; };
