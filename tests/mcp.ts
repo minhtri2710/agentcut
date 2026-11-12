@@ -185,8 +185,11 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   const H = join(tmp, "height-only"), ho = await call5("create_project", { path: H, preset: "reels", height: 500 });
   check("create_project with only a height uses it, not the preset", ho.json.ok && ho.json.settings.height === 500 && ho.json.settings.width === 1920, ho.json.settings);
 
-  // the schema bounds hold whether the SDK answers with an error result or a protocol error
-  const rejected = async (name: string, args: Record<string, unknown>) => { try { const r = await call5(name, args); return r.r.isError === true || r.json?.ok === false; } catch { return true; } };
+  // only the SDK's own input validation counts (an error result or a protocol error, code -32602 "Input validation error"); an api bad_value answer would pass with the schema bound deleted
+  const rejected = async (name: string, args: Record<string, unknown>) => {
+    try { const r = await call5(name, args); return r.r.isError === true && /-32602|Input validation error/.test(String(r.json?.error?.message ?? r.json)); }
+    catch (e: any) { return e?.code === -32602; }
+  };
   await call5("open_project", { path: A });
   for (const [name, args] of [["preview_frame", { t: 0, scale: 1e6 }], ["preview_frame", { t: 0, scale: 0 }], ["render", { scale: 1e6 }], ["contact_sheet", { count: 1e6 }], ["contact_sheet", { count: 0 }],
     ["contact_sheet", { times: Array.from({ length: 65 }, () => 0) }], ["contact_sheet", { times: [-1] }], ["contact_sheet", { every: 0 }]] as const)

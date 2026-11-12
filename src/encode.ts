@@ -3,9 +3,10 @@
 // Output options: codec (h264 | hevc | prores | prores_4444 | vp9 | auto by extension), alpha (transparent video in
 // .mov ProRes 4444 / .webm VP9), and audio-only exports (.wav .mp3 .m4a .aac .flac) that skip video entirely.
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
@@ -124,12 +125,21 @@ export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDir
 /** Scratch dir of one render: `<project>/.agentcut/tmp/render-<pid>-<rand>/`. The pid lets cache.ts sweepStale remove it after a crash. */
 const renderTmp = (root: string) => mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `render-${process.pid}-`));
 
-/** Remove the `<name>.part-<pid>-<12 hex><ext>` files a dead process left beside `output` (SIGKILL, power loss). Only the exact names
- *  safe-write.ts tmpSibling makes for this output, as direct regular-file children of its directory (links are not files here),
- *  whose pid is provably gone; housekeeping never fails the render. */
+/** Short tag of this machine in the part files it writes: a pid means nothing on another machine that shares the output folder. */
+export const HOST_TAG = createHash("sha1").update(hostname()).digest("hex").slice(0, 8);
+
+/** A new part file name beside `output`: safe-write.ts `<name>.part-<pid>-<12 hex><ext>` with HOST_TAG before the random part. */
+function partSibling(output: string, root: string) {
+  const p = tmpSibling(output, root), cut = p.length - extname(output).length - 13;
+  return `${p.slice(0, cut)}-${HOST_TAG}${p.slice(cut)}`;
+}
+
+/** Remove the `<name>.part-<pid>-<HOST_TAG>-<12 hex><ext>` files a dead process of this machine left beside `output` (SIGKILL, power loss).
+ *  Only the exact names partSibling makes for this output (untagged names and other machines' tags stay), as direct regular-file
+ *  children of its directory (links are not files here), whose pid is provably gone; housekeeping never fails the render. */
 function sweepParts(output: string) {
   const ext = extname(output), dir = dirname(output), esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`^${esc(basename(output, ext))}\\.part-(\\d+)-[0-9a-f]{12}${esc(ext)}$`);
+  const re = new RegExp(`^${esc(basename(output, ext))}\\.part-(\\d+)-${HOST_TAG}-[0-9a-f]{12}${esc(ext)}$`);
   try {
     for (const d of readdirSync(dir, { withFileTypes: true })) {
       const m = re.exec(d.name);
@@ -172,6 +182,12 @@ export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: numb
   if (code !== 0) throw new EditError(`encoder failed: ${err.slice(-600)}`, "encode_failed");
 }
 
+/** The error a worker reported in its `E <json>` stdout line, kept as is; a line that is not that JSON is a failed render that names the line. */
+export function workerFailure(line: string, k: number) {
+  try { const e = JSON.parse(line.slice(2)); return new EditError(e.message, e.code, e.hint, e.path); }
+  catch { return new EditError(`render worker ${k} printed an unreadable error line: ${line.slice(0, 300)}`, "render_failed"); }
+}
+
 /** How to start a worker: compiled Bun binary re-invokes itself; otherwise run segment-worker with the same runtime. */
 function workerCommand(): string[] {
   const here = fileURLToPath(import.meta.url);
@@ -212,7 +228,7 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   if (!audioSources(tl).length) warnings.push("timeline has no audible clips: the export is silence");
   const began = performance.now();
   sweepParts(output);
-  const part = tmpSibling(output, root), tmp = renderTmp(root); // part: where ffmpeg writes before it is renamed to `output`, which never holds a partial file
+  const part = partSibling(output, root), tmp = renderTmp(root); // part: where ffmpeg writes before it is renamed to `output`, which never holds a partial file
   try {
     const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
     const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(wav), "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
@@ -258,7 +274,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const audible = !gif && audioSources(tl).length > 0;
   if (!gif && !audible) plan.warnings.push("timeline has no audible clips: the video has no audio track");
   sweepParts(output);
-  const part = tmpSibling(output, root), tmp = renderTmp(root);
+  const part = partSibling(output, root), tmp = renderTmp(root);
   try {
     const wav = join(tmp, "mix.wav");
     const audioJob = Promise.resolve().then(() => { if (audible) buildAudio(structuredClone(tl), wav, start, end); });
@@ -293,10 +309,11 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
           buf += d;
           const lines = buf.split("\n"); buf = lines.pop()!;
           for (const l of lines) {
-            if (l.startsWith("E ")) { const e = JSON.parse(l.slice(2)); failure = new EditError(e.message, e.code, e.hint, e.path); } // the worker's own error, kept as is
+            if (l.startsWith("E ")) failure = workerFailure(l, k);
             else if (l.startsWith("P ")) {
               done[k] = +l.slice(2);
-              try { o.progress?.(done.reduce((x, y) => x + y, 0), n); } catch (e) { first ??= e; stop.abort(); } // a throw in an event handler would escape the render
+              // a throw in an event handler would escape the render; once a failure is recorded, workers that are still stopping report no more progress
+              if (first === undefined) try { o.progress?.(done.reduce((x, y) => x + y, 0), n); } catch (e) { first = e; stop.abort(); }
             }
           }
         });
