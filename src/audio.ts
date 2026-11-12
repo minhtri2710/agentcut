@@ -8,6 +8,9 @@ import { run } from "./proc.ts";
 import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
+// The graph travels in one argv element (ffmpeg < 7 has no file form). What the OS caps, per platform: linux one argument (MAX_ARG_STRLEN 128 KiB, so the filter alone against 120000);
+// win32 the whole command line (32767 chars, so the joined argv against 30000); the others (darwin, the BSDs) all args plus the environment (ARG_MAX 1 MiB, so the joined argv against 900000, leaving ~148 KB for the environment).
+const ARGV_LIMITS: Record<string, { of: "filter" | "command"; max: number }> = { linux: { of: "filter", max: 120000 }, win32: { of: "command", max: 30000 }, other: { of: "command", max: 900000 } };
 const STEREO = "aformat=sample_fmts=fltp:channel_layouts=stereo";
 
 // volume='expr':eval=frame holds one gain per audio frame (decoder frames are 85-93 ms). The duck ramp is linear in amplitude, so its dB error is steep near the ramp's end:
@@ -183,15 +186,15 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
   });
   if (labels.length) graph.push(`${labels.join("")}amix=inputs=${labels.length}:duration=longest:normalize=0,apad=whole_dur=${T},atrim=0:${T}[out]`);
   else { args.push("-f", "lavfi", "-i", `anullsrc=r=${sr}:cl=stereo`); graph.push(`[0:a]atrim=0:${T}[out]`); }
-  // the graph is one argv element: Linux caps it at 128 KiB, Windows caps the whole command line at 32767 chars (ffmpeg < 7 has no file form)
-  const filter = graph.join(";");
-  if (filter.length > (process.platform === "win32" ? 30000 : 120000)) {
+  const raw = outWav + ".raw.wav", argv = [...args, "-filter_complex", graph.join(";"), "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw];
+  const { of, max } = ARGV_LIMITS[process.platform] ?? ARGV_LIMITS.other, size = of === "filter" ? argv[argv.indexOf("-filter_complex") + 1].length : argv.join(" ").length;
+  if (size > max) {
     const ids = srcs.filter((x) => x.clip.keyframes?.speed).map((x) => x.clip.id);
-    throw new EditError(`the audio mix is too large for one ffmpeg command (${filter.length} chars)${ids.length ? `; speed-ramped clips: ${ids.join(", ")}` : ""}`, "too_complex", "use fewer speed keyframes or split the clip, then ramp each part");
+    throw new EditError(`the audio mix is too large for one ffmpeg command (${size} chars, limit ${max})${ids.length ? `; speed-ramped clips: ${ids.join(", ")}` : ""}`, "too_complex",
+      ids.length ? "use fewer speed keyframes or split the clip, then ramp each part" : "split the timeline into shorter renders, or use fewer clips");
   }
-  const raw = outWav + ".raw.wav";
   try {
-    let r = await run("ffmpeg", [...args, "-filter_complex", filter, "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw], { signal });
+    let r = await run("ffmpeg", argv, { signal });
     if (r.status !== 0) throw new EditError(`audio mix failed: ${r.stderr.trim().slice(-600)}`, "audio_failed");
     const post: string[] = [];
     const lufs = tl.settings.loudness === undefined ? -14 : tl.settings.loudness;

@@ -318,7 +318,8 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   check(`a 44.1 kHz source in a 48 kHz project: every click within one frame (worst ${(w44 * 1000).toFixed(1)} ms)`, w44 < 1 / FPS, w44);
   const w48 = worst(onsets(await rmix("ramp-rev44", (tl) => { tl.settings.sample_rate = 44100; Object.assign(tl.tracks.find((t: any) => t.id === "main").clips[0], { reverse: true, in: CIN, keyframes: { speed: kr } }); })), rexp);
   check(`reversed, a 48 kHz source in a 44.1 kHz project: every click within one frame (worst ${(w48 * 1000).toFixed(1)} ms)`, w48 < 1 / FPS, w48);
-  // the graph is one ffmpeg argument (capped at 128 KiB on Linux, 32767 chars on Windows): a curve with hundreds of runs is refused by name before ffmpeg starts; a long one under the bound mixes
+  // the graph is one ffmpeg argument (the OS caps it: linux 128 KiB for one argument, win32 32767 chars for the command line, darwin 1 MiB for argv plus environment, see ARGV_LIMITS):
+  // a curve with hundreds of runs is refused by name before ffmpeg starts; a short one mixes with its graph under the smallest bound
   const zigProject = async (name: string, secs: number) => {
     const Z = join(tmp, name);
     api.create(Z, { width: 320, height: 240, fps: FPS });
@@ -327,13 +328,23 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
     tlz.settings.loudness = null;
     return tlz;
   };
-  const okOut = join(tmp, "zig30.wav");
-  await buildAudio(await zigProject("ramp-zig30", 30), okOut);
-  check("a 30 s zigzag ramp (under the bound) mixes", existsSync(okOut));
-  const bigOut = join(tmp, "zig100.wav");
+  const okOut = join(tmp, "zig10.wav"), copy = join(tmp, "graph-copy.txt");
+  let graphChars = -1; // the length of the -filter_complex argument of that mix, read through a stand-in ffmpeg (not on win32)
+  if (process.platform !== "win32") {
+    const gbin = join(tmp, "graphbin"), realF = process.env.PATH!.split(delimiter).map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
+    mkdirSync(gbin);
+    writeFileSync(join(gbin, "ffmpeg"), `#!/bin/sh\np=; for a in "$@"; do [ "$p" = "-filter_complex" ] && printf '%s' "$a" > '${copy}'; p=$a; done\nexec '${realF}' "$@"\n`, { mode: 0o755 });
+    const tlz = await zigProject("ramp-zig10", 10), realPath = process.env.PATH!;
+    hasCodec("encoders", "pcm_s16le"); // read once from the real ffmpeg before the stand-in takes PATH
+    process.env.PATH = gbin + delimiter + realPath;
+    try { await buildAudio(tlz, okOut); } finally { process.env.PATH = realPath; }
+    graphChars = readFileSync(copy, "utf8").length;
+  } else await buildAudio(await zigProject("ramp-zig10", 10), okOut);
+  check(`a 10 s zigzag ramp mixes with its graph under the smallest bound (${graphChars} chars of 30000)`, existsSync(okOut) && (graphChars === -1 || (graphChars > 1000 && graphChars < 25000)), graphChars);
+  const bigOut = join(tmp, "zig600.wav");
   let big: any;
-  try { await buildAudio(await zigProject("ramp-zig100", 100), bigOut); } catch (e: any) { big = e; }
-  check("a 100 s zigzag ramp is refused as too_complex, names the clip, and leaves no mix file behind", big?.code === "too_complex" && /vid1/.test(big.message) && !!big.hint && !existsSync(bigOut) && !existsSync(bigOut + ".raw.wav"), big && { code: big.code, message: big.message });
+  try { await buildAudio(await zigProject("ramp-zig600", 600), bigOut); } catch (e: any) { big = e; }
+  check("a 600 s zigzag ramp (over every platform's bound) is refused as too_complex, names the clip, and leaves no mix file behind", big?.code === "too_complex" && /vid1/.test(big.message) && /speed keyframes/.test(big.hint) && !existsSync(bigOut) && !existsSync(bigOut + ".raw.wav"), big && { code: big.code, message: big.message.slice(0, 200) });
   const muted = await rmix("ramp-muted", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].muted = true; });
   check("muted: a ramped clip is silent", onsets(muted).length === 0, onsets(muted));
 }
