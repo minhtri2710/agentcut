@@ -10,10 +10,10 @@ import {
   normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
-import type { Project } from "./project.ts";
+import { checkRevision, type Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
-import { registerEditOps, shiftKfs } from "./ops-edit.ts";
+import { normWord, registerEditOps, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
 import { registerVisionOps } from "./ops-vision.ts";
@@ -346,17 +346,17 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     return { id: c.id, start: c.start, duration: c.duration };
   });
 
-op("remove_clip", "Remove a clip (and clips attached to it; clips whose match_duration names it keep their last length as a plain number, listed in unlinked_durations). Magnetic tracks close the gap; ripple=true does it on other tracks too.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
+op("remove_clip", "Remove a clip (and clips attached to it, and those attached to them; clips whose match_duration names it keep their last length as a plain number, listed in unlinked_durations). Magnetic tracks close the gap; ripple=true does it on other tracks too.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
   const [tr, ci, c] = findClip(tl, a.id);
   tr.clips.splice(ci, 1);
-  const attached: string[] = [];
-  for (const t of tl.tracks) t.clips = t.clips.filter((x) => {
-    if (x.attach_to !== c.id) return true;
-    if (a.keep_attached) { delete x.attach_to; return true; }
-    attached.push(x.id); return false;
-  });
+  const attached: string[] = [], gone = new Set([c.id]), top = tl.tracks.flatMap((t) => t.clips);
+  if (a.keep_attached) { for (const x of top) if (x.attach_to === c.id) delete x.attach_to; }
+  else for (let n = -1; n !== gone.size;) { // a clip attached to a removed clip goes too, down the whole chain
+    n = gone.size;
+    for (const x of top) if (x.attach_to && gone.has(x.attach_to) && !gone.has(x.id)) { gone.add(x.id); attached.push(x.id); }
+  }
+  for (const t of tl.tracks) t.clips = t.clips.filter((x) => !attached.includes(x.id));
   if (a.ripple && !tr.magnetic) { const d = clipDur(c), s = clipStart(c); shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= s), -d); }
-  const gone = new Set([c.id, ...attached]);
   const unlinked = unfollow(tl.tracks.flatMap((t) => t.clips), (id) => gone.has(id)); // a follower keeps its last length; it is not removed
   resolve(tl);
   return { removed: c.id, removed_attached: attached, unlinked_durations: unlinked };
@@ -440,10 +440,9 @@ export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip] | undefined {
 
 /** right half of a split: the same curves (focus pan, volume, ...) in its own clip-local time; a speed ramp can't be cut this way */
 function rightKfs(c: Clip, left: number) {
-  if (!c.keyframes) return;
-  delete c.keyframes.speed;
-  shiftKfs(c, -left);
-  if (!Object.keys(c.keyframes).length) delete c.keyframes;
+  delete c.keyframes?.speed;
+  shiftKfs(c, -left); // keyframes, effect windows and caption words; srt cues cannot be moved, so that split is refused
+  if (c.keyframes && !Object.keys(c.keyframes).length) delete c.keyframes;
 }
 
 function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, number] {
@@ -463,10 +462,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   }
   delete right.transition; delete right.enter; delete c.exit; delete c.fade_out; delete right.fade_in;
   rightKfs(right, left);
-  if (c.type === "captions" && c.words) {
-    right.words = c.words.filter((w: any) => w.end > left).map((w: any) => ({ ...w, start: round6(w.start - left), end: round6(w.end - left) }));
-    c.words = c.words.filter((w: any) => w.start < left);
-  }
+  if (c.type === "captions" && c.words) c.words = c.words.map(normWord).filter((w: any) => w.start < left);
   placeAt(tl, tr, right, t);
   tr.clips.splice(ci + 1, 0, right);
   renameNested(tl, right);
@@ -501,17 +497,18 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const [, , c0] = findClip(tl, a.id);
     if (c0.type !== "video") throw new EditError("freeze_frame needs a video clip", "bad_type");
     const t = parseAt(tl, a.at);
-    const s = clipStart(c0);
-    const srcT = parseTime(c0.in ?? 0) + (t - s) * (Number(c0.speed ?? 1) || 1);
+    const s = clipStart(c0), atStart = t <= s + 1e-3; // a freeze of the first frame plays before the clip
+    const srcT = parseTime(c0.in ?? 0) + Math.max(0, t - s) * (Number(c0.speed ?? 1) || 1);
     let insertAfter = c0;
-    if (t > s + 1e-3 && t < s + clipDur(c0) - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
+    if (!atStart && t < s + clipDur(c0) - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
     const [tr] = findClip(tl, insertAfter.id);
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];
     dropFollow(fz);
+    if (atStart && tr.magnetic && c0.transition) { fz.transition = c0.transition; delete c0.transition; } // the cut from the previous clip now leads into the freeze
     if (!tr.magnetic) shiftClips(tl, tr, tr.clips.filter((x) => clipStart(x) >= t - 1e-6), clipDur(fz)); // leaves the target's shifted start resolved for placeAt
     placeAt(tl, tr, fz, t);
-    tr.clips.splice(tr.clips.indexOf(insertAfter) + 1, 0, fz);
+    tr.clips.splice(tr.clips.indexOf(insertAfter) + (atStart ? 0 : 1), 0, fz);
     resolve(tl);
     return { id: fz.id, start: fz.start, duration: fz.duration };
   });
@@ -528,8 +525,15 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time). A magnetic
     if (dup.attach_to && dup.match_duration === true) { delete dup.match_duration; delete dup.end_offset; } // the copy sits elsewhere: it keeps the length it had
   }
   renameNested(tl, dup);
+  const la = linkedAudio(tl, c); // the copy of a picture with detached sound gets its own copy of that sound, connected to it
+  if (la) {
+    const ad: Clip = { ...structuredClone(la[1]), id: newId(tl, PREFIX.audio), attach_to: dup.id, name: `audio of ${dup.id}` };
+    delete ad.group;
+    la[0].clips.push(ad);
+    la[0].clips.sort((x, y) => clipStart(x) - clipStart(y));
+  }
   resolve(tl);
-  return { id: dup.id, track: dest.id, start: dup.start };
+  return { id: dup.id, track: dest.id, start: dup.start, ...(la ? { audio: la[0].clips.find((x) => x.attach_to === dup.id)!.id } : {}) };
 });
 
 op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative to clip start. prop 'speed' = speed ramp (video audio is dropped).",
@@ -675,8 +679,10 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
     const ids: string[] = [];
     segs.forEach(([s, e], j) => {
       const nc: Clip = structuredClone(c);
-      if (j) { nc.id = newId(tl, PREFIX[c.type]); delete nc.transition; delete nc.enter; }
+      if (j) { nc.id = newId(tl, PREFIX[c.type]); delete nc.transition; delete nc.enter; delete nc.fade_in; }
+      if (j < segs.length - 1) { delete nc.exit; delete nc.fade_out; } // the fades and the exit belong to the ends of the whole clip
       nc.in = round6(s); nc.duration = round6((e - s) / speed); delete nc.keyframes; dropFollow(nc);
+      shiftKfs(nc, -(s - cin) / speed); // effect windows stay on their content
       placeAt(tl, tr, nc, t); t += nc.duration as number;
       tr.clips.splice(ci + j, 0, nc);
       ids.push(nc.id);
@@ -700,11 +706,12 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     return { template: a.name, steps: results.length, results, duration: totalDuration(resolve(tl)) };
   });
 
-op("replace_timeline", "Replace the whole timeline JSON (validated, undoable).", { timeline: "full timeline object" }, (p, tl, a) => {
+op("replace_timeline", "Replace the whole timeline JSON (validated, undoable). A timeline that carries `revision` replaces only a project still at that revision (else conflict: re-read it and resend); without `revision` it replaces whatever is there. The saved revision is always the project's own.", { timeline: "full timeline object" }, (p, tl, a) => {
   const n = a.timeline;
   if (!n || typeof n !== "object" || !n.tracks || !n.settings) throw new EditError("timeline must contain settings and tracks", "bad_timeline");
   if (n.version !== SCHEMA_VERSION)
     throw new EditError(`the op input timeline has schema version ${JSON.stringify(n.version) ?? "missing"}; this build uses version ${SCHEMA_VERSION}`, "bad_version", `set "version": ${SCHEMA_VERSION}`);
+  if (n.revision != null) checkRevision(n.revision, tl.revision);
   n.assets ??= {}; n.markers ??= [];
   const revision = tl.revision; // the project's own counter: an input's revision is ignored
   for (const k of Object.keys(tl)) delete (tl as Dict)[k];

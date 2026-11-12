@@ -24,14 +24,23 @@ function room(tl: Timeline, c: Clip, side: Side): number {
   const before = cin(c) / spd(c), after = (srcLen(tl, c) - cin(c) - clipDur(c) * spd(c)) / spd(c);
   return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
 }
-/** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp) and caption words; words that end before the clip's head are dropped. */
+/** a caption word with the s/e aliases (captionWords) resolved to start/end */
+export const normWord = (w: any) => ({ ...w, start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) });
+/** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp), effect windows and caption words; what ends before the clip's head is dropped. */
 export function shiftKfs(c: Clip, e: number) {
   if (!e) return;
   if (c.type === "captions" && !c.words?.length && c.srt)
     throw new EditError(`captions '${c.id}' come from srt, whose times cannot be moved by this edit`, "bad_type", "give the clip 'words' (seconds relative to the clip start) instead of srt, or edit the srt times");
-  if (c.type === "captions" && Array.isArray(c.words)) // words may use the s/e aliases (captionWords)
-    c.words = c.words.map((w: any) => ({ ...w, start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) }))
-      .filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
+  if (c.type === "captions" && Array.isArray(c.words))
+    c.words = c.words.map(normWord).filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
+  if (Array.isArray(c.effects)) { // an effect with no start/duration covers the whole clip and stays
+    c.effects = c.effects.flatMap((f: any) => {
+      if (!f || typeof f !== "object" || (f.start === undefined && f.duration === undefined)) return [f];
+      const s = parseTime(f.start ?? 0) + e, s2 = Math.max(0, s), d = (f.duration === undefined ? Infinity : parseTime(f.duration)) - (s2 - s);
+      return d > EPS ? [{ ...f, start: round6(s2), ...(Number.isFinite(d) ? { duration: round6(d) } : {}) }] : [];
+    });
+    if (!c.effects.length) delete c.effects;
+  }
   if (!c.keyframes) return;
   for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
     c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
@@ -95,9 +104,8 @@ export function registerEditOps(h: OpHelpers) {
     if (v.muted) throw new EditError(`'${v.id}' is muted, so there is no audio to detach`, "muted", `unmute first: update_clip id=${v.id} muted=false`);
     if (!tl.assets[v.asset]?.has_audio) throw new EditError(`'${v.id}' (asset '${v.asset}') has no audio stream`, "no_audio", "add sound with add_clip type=audio instead");
     if (v.freeze || v.keyframes?.speed) throw new EditError(`'${v.id}' is a freeze frame or speed ramp, which plays no audio`, "no_audio");
-    const tid = trackId ?? "dialogue", isNew = !tl.tracks.some((t) => t.id === tid);
+    const tid = trackId ?? "dialogue";
     const tr = h.ensureTrack(tl, tid, "audio");
-    if (isNew && !tr.role) tr.role = "dialogue";
     if ((tr.kind ?? "video") !== "audio" || tr.magnetic) throw new EditError(`track '${tid}' must be a non-magnetic audio track`, "bad_track", "omit track (default 'dialogue') or add_track kind=audio");
     const aud: Clip = { id: newId(tl, h.PREFIX.audio), type: "audio", name: `audio of ${v.id}`, asset: v.asset, duration: round6(clipDur(v)), attach_to: v.id, offset: 0 };
     for (const k of ["in", "speed", "volume", "fade_in", "fade_out", "reverse", "loop", "enabled", ...AUDIO_FX_KEYS]) if (v[k] !== undefined) {
@@ -121,7 +129,7 @@ export function registerEditOps(h: OpHelpers) {
     return [c, detach(tl, c, trackId), true];
   }
 
-  h.op("detach_audio", "Split a video clip's sound into its own audio clip (on track 'dialogue', role dialogue, created if missing) connected to the video " +
+  h.op("detach_audio", "Split a video clip's sound into its own audio clip (on track 'dialogue', created if missing; a new track gets no role, so it ducks nothing) connected to the video " +
     "(attach_to, offset 0, same duration/in/speed/volume/fades/volume keyframes; audio processing fields move to it); the video becomes muted. Needed for J/L-cuts; j_cut/l_cut call it automatically. " +
     "split_clip/trim_clip on the video keep its detached audio in sync.",
     { id: "video clip id or ref ('main#1')", track: "audio track id (default 'dialogue')" }, (p, tl, a) => {

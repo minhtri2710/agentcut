@@ -1,7 +1,7 @@
 // Compound clips: make_compound / expand_compound must not change what renders (frames + audio mix).
 // Run: bun tests/compound.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -287,6 +287,87 @@ console.log("match_duration by clip reference");
   const fb = api.openProject(S3).load().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "K3").tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "fb");
   check("remove_asset force: a nested follower of a removed nested clip keeps its length", JSON.stringify(ra.unlinked_durations) === '["fb"]' && fb.match_duration === undefined && fb.duration === 2, { ra, fb });
   check("  and the project validates", api.info(S3, "json").errors === 0, api.info(S3, "json").issues);
+}
+
+console.log("expand_compound: a trimmed head moves keyframes, effects and caption words; srt captions are refused");
+{
+  const X = join(tmp, "expand-head");
+  api.create(X, { preset: "720p" });
+  const srt = join(tmp, "cues.srt");
+  writeFileSync(srt, "1\n00:00:01,000 --> 00:00:02,000\nhi\n");
+  await api.apply(X, [
+    col("ov", "k1", "red", { at: 0, duration: 4, effects: [{ type: "grain", start: 1, duration: 2 }], keyframes: { opacity: [{ t: 1, v: 0.5 }, { t: 3, v: 1 }] } }),
+    { op: "add_clip", track: "cp", type: "captions", id: "cw", at: 0, duration: 4, words: [{ text: "hi", start: 1, end: 2 }, { text: "yo", s: 2.5, e: 3.5 }] },
+    { op: "make_compound", ids: ["k1", "cw"], id: "K" },
+    { op: "update_clip", id: "K", set: { in: 0.5, duration: 3 } },
+    { op: "expand_compound", id: "K" }]);
+  const xs = api.openProject(X).load().tracks.flatMap((t: any) => t.clips) as any[];
+  const k1 = xs.find((c: any) => c.id === "k1"), cw = xs.find((c: any) => c.id === "cw");
+  check("object-form keyframes move with the cut head", JSON.stringify(k1.keyframes.opacity.map((x: any) => x.t)) === "[0.5,2.5]", k1.keyframes);
+  check("an effect window moves with the cut head", k1.effects.length === 1 && k1.effects[0].start === 0.5 && k1.effects[0].duration === 2, k1.effects);
+  check("caption words move with the cut head, alias words included", cw.words.length === 2 && cw.words[0].start === 0.5 && cw.words[0].end === 1.5 && cw.words[1].start === 2 && cw.words[1].end === 3, cw.words);
+  check("  the expanded project validates", api.info(X, "json").errors === 0, api.info(X, "json").issues);
+  const Y = join(tmp, "expand-srt");
+  api.create(Y, { preset: "720p" });
+  await api.apply(Y, [{ op: "add_clip", track: "cp", type: "captions", id: "cs", at: 0, duration: 4, srt }, { op: "add_clip", track: "cp2", type: "captions", id: "cs2", at: 0, duration: 4, srt },
+    { op: "make_compound", ids: ["cs"], id: "S" }, { op: "make_compound", ids: ["cs2"], id: "S2" }, { op: "update_clip", id: "S", set: { in: 0.5, duration: 3 } }]);
+  check("expanding a compound with srt captions at a cut head is refused (cues cannot move)", (await failure(() => api.apply(Y, [{ op: "expand_compound", id: "S" }])))?.code === "bad_type");
+  check("  and with no head cut it expands", (await failure(() => api.apply(Y, [{ op: "expand_compound", id: "S2" }]))) === null);
+}
+
+console.log("expand_compound: what the compound carried goes to its clips, or the expand is refused");
+{
+  const X = join(tmp, "expand-carry");
+  api.create(X, { preset: "720p" });
+  await api.apply(X, [
+    { op: "add_clip", track: "ov", src: join(m, "a.mp4"), id: "cv1", at: 0, duration: 2, volume: 0.8 },
+    { op: "add_clip", track: "ov", src: join(m, "a.mp4"), id: "cv2", at: 3, duration: 2 },
+    col("ov", "cc", "red", { at: 6, duration: 1 }), col("ov", "cd", "blue", { at: 8, duration: 1 }),
+    { op: "make_compound", ids: ["cv1"], id: "C1" }, { op: "make_compound", ids: ["cv2"], id: "C2" }, { op: "make_compound", ids: ["cc"], id: "C3" }, { op: "make_compound", ids: ["cd"], id: "C4" },
+    { op: "update_clip", id: "C4", set: { effects: [{ type: "bw" }], opacity: 0.8 } },
+    { op: "update_clip", id: "C1", set: { volume: 0.5, enabled: false } }, { op: "update_clip", id: "C2", set: { muted: true } }, { op: "update_clip", id: "C3", set: { effects: [{ type: "bw" }], opacity: 0.8 } }]);
+  const flat = () => api.openProject(X).load().tracks.flatMap((t: any) => t.clips) as any[];
+  const e3 = await failure(() => api.apply(X, [{ op: "expand_compound", id: "C3" }]));
+  check("a compound with effects or opacity is refused, naming them, with the fix", e3?.code === "layer_properties" && /effects/.test(e3.message) && /opacity/.test(e3.message) && /update_clip/.test(e3.hint) && flat().some((c: any) => c.id === "C3"), e3 && [e3.code, e3.message, e3.hint]);
+  await api.apply(X, [{ op: "expand_compound", id: "C1" }, { op: "expand_compound", id: "C2" }]);
+  const cv1 = flat().find((c: any) => c.id === "cv1"), cv2 = flat().find((c: any) => c.id === "cv2");
+  check("the compound's volume multiplies into its clips and its enabled=false goes with them", Math.abs(cv1.volume - 0.4) < 1e-6 && cv1.enabled === false && cv2.enabled === undefined, [cv1, cv2]);
+  check("the compound's muted goes to its clips", cv2.muted === true && cv1.muted === undefined, [cv1, cv2]);
+  await api.apply(X, [{ op: "update_clip", id: "C4", set: { effects: null, opacity: null } }, { op: "expand_compound", id: "C4" }]);
+  check("  and with the layer properties cleared it expands", !flat().some((c: any) => c.id === "C4") && api.info(X, "json").errors === 0, api.info(X, "json").issues);
+}
+
+console.log("expand_compound: other storylines and the home storyline keep their time and their place");
+{
+  const setup = async (name: string) => {
+    const X = join(tmp, name);
+    api.create(X, { preset: "720p" });
+    await api.apply(X, [{ op: "add_track", id: "story2", kind: "video", magnetic: true, below: "overlay" },
+      col("main", "c1", "red"), col("main", "c2", "blue"), col("story2", "s1", "green"), col("story2", "s2", "white"), col("story2", "s3", "gray", { duration: 1 })]);
+    const mk = (await api.apply(X, [{ op: "make_compound", ids: ["c1", "c2", "s1", "s2"], id: "G" }])).results[0];
+    return { X, mk, tl: () => api.openProject(X).load(), story: () => api.openProject(X).load().tracks.find((t: any) => t.id === "story2")!.clips as any[] };
+  };
+  const a = await setup("expand-story");
+  const order0 = a.tl().tracks.map((t: any) => t.id);
+  check("setup: make_compound leaves a gap on the other storyline", a.story().map((c: any) => c.id).join() === `${a.mk.gaps[0]},s3`, a.story().map((c: any) => c.id));
+  const ex = (await api.apply(a.X, [{ op: "expand_compound", id: "G" }])).results[0];
+  check("the clips go back into the other storyline's gap: no new track, nothing left over", ex.created_tracks.length === 0 && a.story().map((c: any) => c.id).join() === "s1,s2,s3" && a.tl().tracks.map((t: any) => t.id).join() === order0.join(), { ex, story: a.story().map((c: any) => c.id) });
+  check("  they keep their times on that storyline", JSON.stringify(a.story().map((c: any) => [c.id, c.start, c.duration])) === '[["s1",0,2],["s2",2,2],["s3",4,1]]', a.story().map((c: any) => [c.id, c.start, c.duration]));
+  check("  and the project validates", api.info(a.X, "json").errors === 0, api.info(a.X, "json").issues);
+  const b = await setup("expand-story-moved");
+  await api.apply(b.X, [{ op: "update_clip", id: b.mk.gaps[0], set: { duration: 3 } }]);
+  const exb = (await api.apply(b.X, [{ op: "expand_compound", id: "G" }])).results[0];
+  const order = b.tl().tracks.map((t: any) => t.id);
+  check("when that gap no longer fits, the new track sits just above the other storyline, not on top", exb.created_tracks.length === 1 && order[order.indexOf("story2") + 1] === exb.created_tracks[0] && order.indexOf("overlay") > order.indexOf(exb.created_tracks[0]), { exb, order });
+  check("  and the other storyline keeps its clips", b.story().map((c: any) => c.id).includes("s3"), b.story().map((c: any) => c.id));
+  const Z = join(tmp, "expand-home-empty");
+  api.create(Z, { preset: "720p" });
+  await api.apply(Z, [col("main", "h1", "red"), col("main", "h2", "blue"), col("main", "h3", "green"), col("ov", "o1", "white", { at: 0, duration: 4 }), { op: "make_compound", ids: ["h1", "h2", "o1"], id: "H" }]);
+  const nested = (api.openProject(Z).load().tracks.find((t: any) => t.id === "main")!.clips[0].tracks as any[]).filter((t: any) => t.id !== "main");
+  await api.apply(Z, [{ op: "update_clip", id: "H", set: { tracks: nested } }, { op: "expand_compound", id: "H" }]);
+  const zm = api.openProject(Z).load().tracks.find((t: any) => t.id === "main")!.clips as any[];
+  const h3 = zm.find((c: any) => c.id === "h3");
+  check("a compound with nothing of its own on its storyline leaves a gap, so the clips after it keep their time", zm[0].type === "gap" && zm[0].duration === 4 && h3.start === 4, zm.map((c: any) => [c.id, c.type, c.start, c.duration]));
 }
 
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");

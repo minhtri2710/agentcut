@@ -55,7 +55,7 @@ console.log("detach_audio");
 const d = await one({ op: "detach_audio", id: "vid1" });
 check("detach returns ids", d.id === "vid1" && d.audio === "aud1" && d.track === "dialogue", d);
 const a1 = clip("aud1"), dlg = tl().tracks.find((t: any) => t.id === "dialogue");
-check("dialogue track created (audio, role dialogue)", dlg?.kind === "audio" && dlg.role === "dialogue", dlg);
+check("dialogue track created as an audio track with no role (it ducks nothing)", dlg?.kind === "audio" && dlg.role === undefined, dlg);
 check("audio clip mirrors video", a1.attach_to === "vid1" && a1.offset === 0 && a1.in === 1 && a1.duration === 3 && a1.start === 0 && a1.asset === clip("vid1").asset, a1);
 check("video muted", clip("vid1").muted === true);
 await fails({ op: "detach_audio", id: "vid1" }, "already_detached", "detach twice -> already_detached");
@@ -224,19 +224,28 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("slide_clip moves the in-point of a lottie next to it", near(at(sl2, "lt").in, 1.5) && near(at(sl2, "lt").duration, 2.5) && near(at(sl2, "cp").duration, 3.5), [at(sl2, "cp"), at(sl2, "lt")]);
 }
 
-console.log("replace_timeline keeps the project's revision");
+console.log("replace_timeline: expected revision, and the saved revision is the project's");
 {
   const R = join(tmp, "proj-replace");
   api.create(R, { preset: "720p" });
   const cur = api.info(R, "json").timeline;
-  for (const [label, revision] of [["a wrong revision", 999], ["no revision", undefined]] as const) {
-    const input = { ...structuredClone(cur), name: `replaced ${label}` };
-    if (revision === undefined) delete (input as any).revision; else input.revision = revision;
-    const t1 = performance.now();
-    const res: any = await api.apply(R, [{ op: "replace_timeline", timeline: input }]).catch((e: any) => e);
-    const now = api.info(R, "json");
-    check(`replace_timeline with ${label} is applied at once and bumps the project's own revision`, res.ok === true && now.timeline.name === `replaced ${label}` && now.revision === res.revision && performance.now() - t1 < 5000, { code: res.code, message: res.message, revision: now.revision });
-  }
+  const rev = () => api.info(R, "json").revision;
+  const replace = (input: any, opts: any = {}) => api.apply(R, [{ op: "replace_timeline", timeline: input }], opts).catch((e: any) => e);
+  await api.apply(R, [{ op: "set_settings", name: "newer edit" }]); // the project moves past the revision `cur` was read at
+  const now0 = api.info(R, "json");
+  const stale: any = await replace({ ...structuredClone(cur), name: "stale replace" });
+  check("a timeline read at an older revision is refused as conflict, with a hint, and nothing changes", stale.code === "conflict" && !!stale.hint && rev() === now0.revision && api.info(R, "json").timeline.name === "newer edit", { code: stale.code, message: stale.message, revision: rev() });
+  const staleDry: any = await replace({ ...structuredClone(cur), name: "stale replace" }, { dryRun: true });
+  check("  a dry run refuses it the same way", staleDry.code === "conflict", { code: staleDry.code });
+  const t1 = performance.now();
+  const fresh: any = await replace({ ...structuredClone(now0.timeline), name: "replaced at the current revision" });
+  check("a timeline at the current revision is applied at once, and the saved revision is the project's next one", fresh.ok === true && fresh.revision === now0.revision + 1 && rev() === fresh.revision && api.info(R, "json").timeline.name === "replaced at the current revision" && performance.now() - t1 < 5000, { code: fresh.code, message: fresh.message, revision: rev() });
+  const bare: any = structuredClone(api.info(R, "json").timeline);
+  delete bare.revision; bare.name = "replaced without a revision";
+  const before = rev(), res: any = await replace(bare);
+  check("a timeline without revision replaces whatever is there", res.ok === true && res.revision === before + 1 && api.info(R, "json").timeline.name === "replaced without a revision", { code: res.code, message: res.message });
+  const bad: any = await replace({ ...structuredClone(api.info(R, "json").timeline), revision: "x" });
+  check("a revision that is not an integer is refused as bad_revision", bad.code === "bad_revision", { code: bad.code });
 }
 
 console.log("match_duration by clip reference");
@@ -684,12 +693,82 @@ console.log("pieces of an attached clip keep their place and length");
     { op: "add_clip", track: "main", src: join(m, "p.png"), id: "bg", duration: 8 },
     { op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "talk", attach_to: "bg", offset: 1, match_duration: true, end_offset: 1 },
   ]);
+  await api.apply(S, [{ op: "update_clip", id: "talk", set: { fade_in: 0.2, fade_out: 0.3, enter: "fade", exit: "fade", effects: [{ type: "bw" }, { type: "grain", start: 4, duration: 1 }] } }]);
   const rs = (await api.apply(S, [{ op: "remove_silence", id: "talk" }])).results[0];
   const si = api.info(S, "json");
   const segs = si.timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => rs.segments.includes(c.id));
   check("remove_silence on an attached clip: one segment per speech part", segs.length === 2, { rs, segs });
   check("  the segments stay attached, each at its own place, with plain durations", segs.length === 2 && segs.every((c: any) => c.attach_to === "bg" && c.match_duration === undefined && c.end_offset === undefined) && near(segs[0].start, 1) && near(segs[1].start, 1 + segs[0].duration) && near(segs[1].offset, 1 + segs[0].duration), segs);
   check("  and the project validates", si.errors === 0, si.issues);
+  const [g0, g1] = segs;
+  check("remove_silence: the fade-in and enter stay on the first segment, the fade-out and exit on the last", g0?.fade_in === 0.2 && g0.enter === "fade" && g0.fade_out === undefined && g0.exit === undefined
+    && g1?.fade_out === 0.3 && g1.exit === "fade" && g1.fade_in === undefined && g1.enter === undefined, [g0, g1]);
+  const gr = (c: any) => c?.effects?.find((f: any) => f.type === "grain");
+  check("remove_silence: a whole-clip effect stays on every segment and a timed effect follows its content", segs.every((c: any) => c.effects?.some((f: any) => f.type === "bw" && f.start === undefined)) && near(gr(g1)?.start, 4 - g1.in) && near(gr(g1)?.duration, 1), segs.map((c: any) => [c.in, c.effects]));
+}
+
+console.log("clip copies: split, duplicate, freeze, remove");
+{
+  const mk = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };
+    t.assets.i = { path: "/none.png", kind: "image" };
+    return t;
+  };
+  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  const ids = (t: any, track: string) => t.tracks.find((tr: any) => tr.id === track).clips.map((c: any) => c.id).join();
+  const ok = (name: string, t: any) => check(`${name}: the timeline validates`, !validate(t).some((i: any) => i.level === "error"), validate(t).filter((i: any) => i.level === "error"));
+  const refusedWith = (t: any, ops: any[]) => { try { run(t, ops); return "no error"; } catch (e: any) { return e.code; } };
+
+  // split_clip
+  const [fx, [, sfx]] = run(mk(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "box", at: 0, duration: 4, effects: [{ type: "vignette" }, { type: "grain", start: 1, duration: 2 }, { type: "blur", start: 3 }] },
+    { op: "split_clip", id: "box", at: 2 }]);
+  const rfx = at(fx, sfx.right).effects;
+  check("split_clip: the right half gets the effects in its own time (whole-clip ones stay, a window is cut at the split)", rfx.length === 3 && rfx[0].start === undefined && rfx[1].type === "grain" && near(rfx[1].start, 0) && near(rfx[1].duration, 1) && rfx[2].type === "blur" && near(rfx[2].start, 1) && at(fx, "box").effects.length === 3, [rfx, at(fx, "box").effects]);
+  const [aw, [, saw]] = run(mk(), [
+    { op: "add_clip", track: "captions", type: "captions", id: "cap", at: 0, duration: 4, words: [{ text: "a", s: 0, e: 1 }, { text: "b", s: 2, e: 3 }] },
+    { op: "split_clip", id: "cap", at: 1.5 }]);
+  const lw = at(aw, "cap").words, rw = at(aw, saw.right).words;
+  check("split_clip: caption words written with the s/e aliases survive in both halves", lw.length === 1 && lw[0].text === "a" && rw.length === 1 && rw[0].text === "b" && near(rw[0].start, 0.5) && near(rw[0].end, 1.5), [lw, rw]);
+  const withSrt = run(mk(), [{ op: "add_clip", track: "captions", type: "captions", id: "scap", at: 0, duration: 4, srt: "/none.srt" }])[0];
+  check("split_clip: srt-backed captions are refused (their cues cannot be moved into the right half)", refusedWith(withSrt, [{ op: "split_clip", id: "scap", at: 2 }]) === "bad_type");
+
+  // duplicate_clip keeps the sound of a picture with detached audio
+  const dbase = run(mk(), [
+    { op: "add_clip", track: "overlay", asset: "v", id: "pic", at: 2, in: 1, duration: 3 },
+    { op: "j_cut", id: "pic", seconds: 0.5 }])[0];
+  check("j_cut on a new track sets no role", at(dbase, at(dbase, "pic").id) && dbase.tracks.find((tr: any) => tr.id === "dialogue")?.role === undefined, dbase.tracks.map((tr: any) => [tr.id, tr.role]));
+  const [dt, [dd]] = run(dbase, [{ op: "duplicate_clip", id: "pic", at: 8 }]);
+  const da = at(dt, dd.audio), oa = at(dt, "aud1");
+  check("duplicate_clip: the copy gets its own copy of the detached audio, connected to it and with the same lead", !!da && da.attach_to === dd.id && da.id !== oa.id && oa.attach_to === "pic" && near(da.offset, oa.offset) && near(da.start, 7.5) && near(da.duration, oa.duration) && near(da.in, oa.in) && at(dt, dd.id).muted === true, [da, oa]);
+  ok("duplicate_clip with detached audio", dt);
+
+  // freeze_frame at the clip start plays before the clip
+  const fbase = () => run(mk(), [
+    { op: "add_clip", track: "main", asset: "i", id: "first", duration: 2 },
+    { op: "add_clip", track: "main", asset: "v", id: "pic", in: 1, duration: 3, transition: { type: "crossfade", duration: 0.5 } }])[0];
+  const [fm, [fr]] = run(fbase(), [{ op: "freeze_frame", id: "pic", at: 1.5, duration: 1 }]);
+  check("freeze_frame at the start of a storyline clip: the freeze comes first, then the whole clip", ids(fm, "main") === `first,${fr.id},pic` && near(at(fm, fr.id).in, 1) && near(at(fm, "pic").duration, 3) && near(at(fm, "pic").start, at(fm, fr.id).start + 1), [ids(fm, "main"), at(fm, fr.id), at(fm, "pic")]);
+  check("  the transition from the previous clip leads into the freeze", at(fm, fr.id).transition?.type === "crossfade" && at(fm, "pic").transition === undefined, [at(fm, fr.id).transition, at(fm, "pic").transition]);
+  ok("freeze_frame at a storyline clip start", fm);
+  const [fo, [, fo1]] = run(mk(), [{ op: "add_clip", track: "overlay", asset: "v", id: "pic", at: 1, in: 2, duration: 2 }, { op: "freeze_frame", id: "pic", at: 1, duration: 1.5 }]);
+  check("freeze_frame at the start of a free-placed clip: the freeze sits at that time and the clip moves after it", ids(fo, "overlay") === `${fo1.id},pic` && near(at(fo, fo1.id).start, 1) && near(at(fo, fo1.id).in, 2) && near(at(fo, "pic").start, 2.5), [ids(fo, "overlay"), at(fo, fo1.id), at(fo, "pic")]);
+  ok("freeze_frame at a free-placed clip start", fo);
+
+  // remove_clip follows the attach chain
+  const cbase = () => run(mk(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "k0", at: 0, duration: 4 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "k1", attach_to: "k0", offset: 0.5, duration: 1 },
+    { op: "add_clip", track: "overlay", asset: "i", id: "k2", attach_to: "k1", offset: 0.2, duration: 0.5 },
+    { op: "add_clip", track: "text", type: "text", text: "x", id: "k3", attach_to: "k2", offset: 0.1, duration: 0.2 },
+    { op: "add_clip", track: "text", type: "text", text: "y", id: "keep", at: 3, duration: 1 }])[0];
+  const [cr, [crr]] = run(cbase(), [{ op: "remove_clip", id: "k0" }]);
+  check("remove_clip removes the whole attach chain", JSON.stringify([...crr.removed_attached].sort()) === '["k1","k2","k3"]' && !at(cr, "k1") && !at(cr, "k2") && !at(cr, "k3") && !!at(cr, "keep"), { crr, left: cr.tracks.flatMap((tr: any) => tr.clips.map((c: any) => c.id)) });
+  const [ck] = run(cbase(), [{ op: "remove_clip", id: "k0", keep_attached: true }]);
+  check("remove_clip keep_attached detaches only the direct dependents", !at(ck, "k0") && at(ck, "k1").attach_to === undefined && at(ck, "k2").attach_to === "k1" && at(ck, "k3").attach_to === "k2", [at(ck, "k1"), at(ck, "k2")]);
+  ok("remove_clip chain", cr);
 }
 
 console.log("untrusted field names and pending requests");
