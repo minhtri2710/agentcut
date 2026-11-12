@@ -74,15 +74,14 @@ export function embedCodec(video: string): string {
 
 export async function embedSubtitles(video: string, cues: Cue[], base?: string, signal?: AbortSignal) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
-  // Only SubRip is fed from an srt sidecar. ffmpeg's srt reader turns <i> into a style, and its webvtt writer does not escape, so mov_text
-  // reads the vtt sidecar (its text is plain: entities decode to the literal characters) and webvtt is stream-copied (the entities stay).
-  const vtt = codec !== "srt";
+  const vtt = codec === "webvtt"; // webvtt is stream-copied from the vtt sidecar (its entities stay); the srt sidecars below are read by ffmpeg's srt reader
   // new names next to the video; nothing exists at them. The sidecar is named like the mux output (a part name of the video, so the next
   // render of it sweeps one a SIGKILL left behind), which hides its format from ffmpeg: it is named with -f.
   const sub = partSibling(video, base), tmp = partSibling(video, base);
-  createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
+  // the srt reader (and a SubRip player) reads <tags>, {\ overrides and \N line breaks: an invisible word joiner keeps them literal, as for -->
+  createFile(sub, vtt ? formatCues(cues, "vtt") : formatCues(cues.map((q) => ({ ...q, text: q.text.replace(/<|\{(?=\\)|\\(?=[Nn])/g, "$&\u2060") })), "srt"));
   try {
-    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), "-f", vtt ? "webvtt" : "srt", ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", ...(codec === "webvtt" ? [] : ["-c:s", codec]),
+    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), "-f", vtt ? "webvtt" : "srt", ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", ...(vtt ? [] : ["-c:s", codec]),
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { signal });
     if (r.status !== 0) throw new EditError(`subtitle mux failed: ${r.stderr.slice(-600)}`, "encode_failed");
     commit(tmp, video);
