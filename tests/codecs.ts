@@ -424,10 +424,20 @@ console.log("decode and render failures");
   const b = short(1.2);
   await b.readAt(0.5);
   check("past the probed length the last frame is still held", (await b.readAt(2)).length === 64 * 64 * 4);
-  b.close();
-  const z = short();
-  check("a decoder that yields no frame is decode_failed, not a zero frame", (await code(z.readAt(5))) === "decode_failed");
+  const z = short(3);
+  check("a fresh source that ends with no frame well inside its probed length is decode_failed, not a zero frame", (await code(z.readAt(2))) === "decode_failed");
   z.close();
+  // a fresh source (preview, still, sheet tile, later render segment) read past the end holds the last frame, like the streamed one
+  const fresh = short(), held = await fresh.readAt(5).catch(() => Buffer.alloc(0));
+  check("a fresh source read past the end returns the held last frame", held.length === 64 * 64 * 4 && held.some((x) => x !== 0) && held.equals(await b.readAt(2)), held.length);
+  fresh.close();
+  // audio longer than video: the container length is not the video's end
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
+  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+  await la.readAt(0.5);
+  check("a video shorter than its audio holds its last frame at the container's length", (await code(la.readAt(2))) === "ok");
+  la.close();
+  b.close();
   const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });
   await sk.readAt(0);
   const PATH0 = process.env.PATH;
@@ -449,6 +459,30 @@ console.log("decode and render failures");
   check("one worker keeps the decode error code", one?.code === "decode_failed", one?.code);
   check("several workers keep the decode error code", two?.code === "decode_failed", two?.code);
   check("a worker error carries no stack frames", !!two && !/\n\s+at /.test(two.message), two?.message);
+
+  // 1 vs several workers: a segment that starts inside the held region gives the same frames
+  const H1 = join(tmp, "projh");
+  api.create(H1, { width: W, height: H, fps: 24 });
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "onesec.mp4"));
+  await api.apply(H1, [{ op: "add_clip", track: "overlay", src: join(m, "onesec.mp4"), at: 0, duration: 2 }]);
+  const hp = openProject(H1), htl = () => hp.absolutized(openProject(H1).load());
+  const h1 = await expectError(() => renderVideo(htl(), hp.root, join(H1, "renders", "h1.mp4"), { workers: 1 }));
+  const h2 = await expectError(() => renderVideo(htl(), hp.root, join(H1, "renders", "h2.mp4"), { workers: 2 }));
+  check("one and two workers both render a clip held past its source", h1 === null && h2 === null, { h1: h1?.message, h2: h2?.message });
+  if (h1 === null && h2 === null) {
+    const f1 = rgbaFrame(join(H1, "renders", "h1.mp4"), 1.5), f2 = rgbaFrame(join(H1, "renders", "h2.mp4"), 1.5);
+    let d = 0; for (let i = 0; i < f1.length; i++) d += Math.abs(f1[i] - f2[i]);
+    check("the held frame is the same for one and two workers", f1.length === f2.length && d / f1.length < 2, d / f1.length);
+  }
+
+  // A-26 on the compiled path: the binary starts a worker as `cli __segment <job>`; its EditError is one E line on stdout
+  {
+    const job = join(tmp, "seg-job.json");
+    writeFileSync(job, JSON.stringify({ tl: qtl(), root: qp.root, scale: 1, fontDirs: [], t0: 0, i0: 0, i1: 24, v: ["-c:v", "libx264", "-pix_fmt", "yuv420p"], out: join(tmp, "seg-out.mkv") }));
+    const sg = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "__segment", job], { encoding: "utf8" });
+    const eLine = sg.stdout.split("\n").find((l) => l.startsWith("E "));
+    check("the __segment entry reports an EditError as an E line with its code", sg.status === 1 && JSON.parse(eLine?.slice(2) ?? "{}").code === "decode_failed", { s: sg.status, o: sg.stdout.slice(0, 200), e: sg.stderr.slice(0, 200) });
+  }
 
   // A-39: bounds
   for (const workers of [0, 2.5, -1, Number.NaN]) {

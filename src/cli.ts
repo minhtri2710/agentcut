@@ -95,7 +95,7 @@ async function readOps(file: string | undefined, inline: string | undefined) {
 const num = (v: any) => (v === undefined ? undefined : Number(v));
 
 export async function main(argv = process.argv.slice(2)) {
-  if (argv[0] === "__segment") { const { runSegment } = await import("./segment-worker.ts"); await runSegment(argv[1]); return; }
+  if (argv[0] === "__segment") { const { runSegmentMain } = await import("./segment-worker.ts"); await runSegmentMain(argv[1]); return; }
   const { flags: f, pos } = parseArgs(argv);
   pretty = !!f.pretty || !!process.stdout.isTTY;
   const cmd = pos.shift();
