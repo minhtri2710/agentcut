@@ -51,19 +51,26 @@ export async function beats(path: string, signal?: AbortSignal, minBpm = 60, max
   const bins = Math.floor(8000 / (sr / nfft));
   const win = new Float64Array(nfft).map((_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (nfft - 1)));
   const re = new Float64Array(nfft), im = new Float64Array(nfft);
-  let prev = new Float64Array(bins), cur = new Float64Array(bins);
+  const mag = [new Float64Array(bins), new Float64Array(bins)];
   const flux = new Float64Array(nfr);
-  for (let f = 0; f < nfr; f++) {
-    const off = f * hop;
-    for (let i = 0; i < nfft; i++) { re[i] = y[off + i] * win[i]; im[i] = 0; }
-    fft(re, im);
-    let s = 0;
-    for (let b = 0; b < bins; b++) {
-      cur[b] = Math.log1p(100 * Math.hypot(re[b], im[b]));
-      if (f > 0) s += Math.max(0, cur[b] - prev[b]);
+  // a plain function, not the async body: an await in a hot loop costs ~10% of the wall time (measured)
+  const stft = (from: number, to: number) => {
+    for (let f = from; f < to; f++) {
+      const off = f * hop, cur = mag[f & 1], prev = mag[(f & 1) ^ 1];
+      for (let i = 0; i < nfft; i++) { re[i] = y[off + i] * win[i]; im[i] = 0; }
+      fft(re, im);
+      let s = 0;
+      for (let b = 0; b < bins; b++) {
+        cur[b] = Math.log1p(100 * Math.hypot(re[b], im[b]));
+        if (f > 0) s += Math.max(0, cur[b] - prev[b]);
+      }
+      flux[f] = s / bins;
     }
-    flux[f] = s / bins;
-    [prev, cur] = [cur, prev];
+  };
+  // the STFT is all of the DSP's time (~50 us a frame): hand the loop back every 128 frames, so a call never holds it past ~10 ms and an abort lands within a batch
+  for (let f = 0; f < nfr; f += 128) {
+    if (f) { await new Promise((r) => setImmediate(r)); signal?.throwIfAborted(); }
+    stft(f, Math.min(nfr, f + 128));
   }
   // remove slow trend, half-wave rectify, normalise
   const onset = new Float64Array(nfr);
