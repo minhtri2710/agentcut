@@ -252,8 +252,8 @@ if (process.platform !== "win32") {
   const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"],
     ["transcribe", { path: join(tmp, "talk.wav") }, "-ar 16000"], ["analyze_silence", { path: join(tmp, "talk.wav") }, "silencedetect"], ["tts", { text: "Hello there.", output: join(tmp, "stall-tts.wav") }, "p0.wav"],
     ["apply_ops", { project: SP, ops: [{ op: "add_captions", transcribe: join(tmp, "talk.wav") }] }, "-ar 16000"],
-    ["scopes", { project: SP, t: 0.2 }, "signalstats"], ["analyze_beats", { path: join(tmp, "talk.wav") }, "f32le"], ["review", { project: SM, beats: "music" }, "f32le"],
-    ["apply_ops", { project: SP, ops: [{ op: "snap_to_beats", track: "main", beats: join(tmp, "talk.wav") }] }, "f32le"]] as const;
+    ["scopes", { project: SP, t: 0.2 }, "signalstats"], ["analyze_beats", { path: join(tmp, "talk.wav") }, "-f f32le"], ["review", { project: SM, beats: "music" }, "-f f32le"],
+    ["apply_ops", { project: SP, ops: [{ op: "snap_to_beats", track: "main", beats: join(tmp, "talk.wav") }] }, "-f f32le"]] as const;
   for (const [tool, args, key] of stalls) {
     stall(key);
     rmSync(pidFile, { force: true });
