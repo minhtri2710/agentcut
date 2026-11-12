@@ -155,7 +155,7 @@ const uvFound = () => { const uv = uvCommand(); return /[\\/]/.test(uv) ? isExec
 /** Names every distinct job kind of a batch and what its first run downloads. */
 const uvMissing = (cmds: unknown[]) => {
   const all = (f: (c: unknown) => string) => [...new Set(cmds.map(f))].join(" and ");
-  return new EditError(`${all(label)} needs uv (runs the Python vision helper)`, "missing_dependency",
+  return new EditError(`${all(label)} ${new Set(cmds.map(label)).size > 1 ? "need" : "needs"} uv (runs the Python vision helper)`, "missing_dependency",
     "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
     all((c) => (c === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)")));
 };

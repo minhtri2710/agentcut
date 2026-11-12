@@ -996,10 +996,10 @@ console.log("the face model: descriptor, job, gate, download");
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
-await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint (prepare)");
+await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }], "missing_dependency", "no uv -> missing_dependency with install hint (prepare)", ["needs uv"]);
 await prepFails(B, [{ op: "remove_background", id: "vid2", model: "u2net" }], "missing_dependency", "no uv (matte) -> missing_dependency (prepare)");
 await prepFails(P, [{ op: "auto_reframe", id: "vid1", fps: 3 }, { op: "remove_background", id: "vid1", model: "u2net" }], "missing_dependency",
-  "no uv, mixed batch -> one missing_dependency naming both jobs and both downloads", ["remove_background", "subject analysis", "rembg", "opencv"]);
+  "no uv, mixed batch -> one missing_dependency naming both jobs and both downloads", ["remove_background", "subject analysis", "rembg", "opencv", " need uv"]);
 {
   const keep = process.env.AGENTCUT_CACHE, G = join(tmp, "no-uv-cache"), realFetch = globalThis.fetch, fetched: string[] = [];
   const err = (f: () => Promise<unknown>) => f().then(() => null, (x) => x as any);
