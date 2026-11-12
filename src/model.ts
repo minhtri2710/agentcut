@@ -518,17 +518,17 @@ function resolveAttached(tl: Timeline) {
   for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
 }
 
-/** `end`: where until_end clips stretch to. An until_end clip's overlap is not limited by its own length (that length is made from where it starts), unless the clip before it ends past `end`: it is then 0.1 long, so the overlap stays within it. */
+/** `end`: where until_end clips stretch to. An until_end clip's overlap is not limited by its own length (that length is made from where it starts), so no start reads `end`; its length is at least the overlap, so the clips after it keep their place. */
 function resolveMagnetic(tl: Timeline, end?: number) {
   for (const tr of tl.tracks) {
     if (!tr.magnetic) continue;
     let t = 0;
     tr.clips.forEach((c, i) => {
       const spec = i > 0 ? normAnim(c.transition, 0.5) : null;
-      const own = !c.until_end ? clipDur(c) : end === undefined || t <= end + 1e-6 ? Infinity : 0.1;
-      const start = Math.max(0, spec ? t - Math.min(spec.duration, clipDur(tr.clips[i - 1]), own) : t);
+      const over = spec ? Math.min(spec.duration, clipDur(tr.clips[i - 1])) : 0;
+      const start = Math.max(0, t - Math.min(over, c.until_end ? Infinity : clipDur(c)));
       c.start = round6(start);
-      if (end !== undefined && c.until_end) c.duration = round6(Math.max(0.1, end - c.start));
+      if (end !== undefined && c.until_end) c.duration = round6(Math.max(0.1, end - c.start, over));
       t = start + clipDur(c);
     });
   }

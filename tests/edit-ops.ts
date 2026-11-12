@@ -601,7 +601,12 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
     settled("two until_end clips on one magnetic track", build([img("u1", { until_end: true }), img("u2", { until_end: true })]), [["u1", 0, 4], ["u2", 4, 0.1]]);
     settled("an until_end clip with a transition on a magnetic track", build([img("a"), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 0.3 } })]), [["u", 0.7, 3.3]]);
     settled("an until_end clip whose transition is longer than its length ends with the rest, as long as the overlap", build([img("a", { duration: 3 }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], []), [["u", 2, 1]]);
-    settled("an until_end clip after a clip that ends past the rest keeps its transition overlap within its length", build([img("u1", { duration: 4, until_end: true }), img("a"), img("u2", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } }), img("b")]), [["u2", 4.9, 0.1], ["b", 5, 1]]);
+    settled("an until_end clip after a clip that ends past the rest keeps its transition overlap, so the clip after it keeps its place", build([img("u1", { duration: 4, until_end: true }), img("a"), img("u2", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } }), img("b")]), [["u2", 4, 1], ["b", 5, 1]]);
+    { // a clip attached to an until_end clip is counted in the end at the start it keeps (the clip before is disabled and ends past everything else)
+      const t = build([img("a", { duration: 3, enabled: false }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], [img("x", { duration: 0.5, attach_to: "u" }), img("bed", { until_end: true })]);
+      const r = runs(t), x = JSON.parse(r[0]), xEnd = at(x, "x").start + at(x, "x").duration;
+      check("resolve: a clip attached to an until_end clip ends with the until_end clips, which stay valid and stable", r.every((y) => y === r[0]) && xEnd <= at(x, "bed").start + at(x, "bed").duration + 1e-6 && !validate(x).some((i: any) => i.level === "error"), [at(x, "x"), at(x, "bed"), at(x, "u")]);
+    }
     // attach_to on a magnetic track is a hand-edit (add_clip, update_clip, move_clip, duplicate_clip, track_to and update_track refuse it with attached_magnetic); what would not settle is refused
     const errAt = (t: any, id: string, field: string) => validate(t).some((i: any) => i.level === "error" && i.path.endsWith(`<${id}>.${field}`));
     const before = build([img("y", { attach_to: "u", match_duration: true }), img("u", { until_end: true })]);
