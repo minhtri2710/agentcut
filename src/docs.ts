@@ -97,7 +97,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
 {"op":"make_compound","ids":["main#1","main#2","txt1"],"name":"intro"}   group clips into ONE compound clip (move/trim/fade/mask/effects as a unit)
-{"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track}); the compound's volume/muted/enabled go to its clips; effects, opacity and other layer fields (also until_end, pending, a transition off a storyline) are refused (layer_properties: clear them first)
+{"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track}); the compound's volume/muted/enabled go to its clips; effects, opacity and other layer fields (also until_end, pending, a transition off a storyline or with nothing back on it) are refused (layer_properties: clear them first)
 {"op":"make_compound","from":"cmp1"}                regroup: takes every clip/gap stamped group.id "cmp1" (also after split_clip), same id + name, clears the stamps; rebuild inner groups before outer ones (inner_expanded); a rebuilt inner compound rejoins its outer group (group.parent)
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
      regroup (from, not ids; duplicate_clip drops the stamp). Nested audio is mixed (compound volume/muted apply) at compound speed 1.
@@ -142,7 +142,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - transitions: crossfade, dip_black, dip_white, flash, glitch, zoom, zoom_blur, spin, circle, blur, slide_*, push_*, wipe_*
 - enter/exit: fade, pop, bounce, flip, slide_*, zoom_in, zoom_out, wipe_*, blur, drop, spin, typewriter (text), words (text)
 - motion: ken_burns, ken_burns_out, zoom_slow, pan_left/right/up/down, pulse, float, sway, shake
-- effects (clip or whole video, optional start/duration): glitch, rgb_split, flash, grain, zoom_blur, vignette, vhs, letterbox, strobe, blur, bw, invert, hue, brightness, contrast, saturate
+- effects (clip or whole video, optional start/duration window; flash: at + duration): glitch, rgb_split, flash, grain, zoom_blur, vignette, vhs, letterbox, strobe, blur, bw, invert, hue, brightness, contrast, saturate
 - color (grade, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel) as a base, exposure (stops),
   contrast, saturation, vibrance, temperature/tint (-1..1), lift/gamma/gain [r,g,b] -1..1, curves {master|r|g|b: [[x,y],..]},
   hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}

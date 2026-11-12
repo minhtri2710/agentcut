@@ -694,18 +694,26 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
     });
     if (la) { // detached audio is cut into the same segments, each attached to its picture with the same lead
       const [atr, au] = la, vs = clipStart(c), ve = clipEnd(c), as = clipStart(au), ae = as + clipDur(au), asp = Number(au.speed ?? 1) || 1;
-      const parts = segs.flatMap(([s, e], j) => {
+      // [lo, hi) is the source run (in pre-cut timeline time) and off its place from the segment's start
+      const parts: { j: number; lo: number; hi: number; off: number }[] = [];
+      const add = (j: number, lo: number, hi: number, off: number) => {
+        if (hi - lo <= 1e-3) return;
+        const l = parts[parts.length - 1]; // runs that touch in the source and on the timeline stay one piece
+        if (l && l.j === j && Math.abs(l.hi - lo) < 1e-6 && Math.abs(l.off + l.hi - l.lo - off) < 1e-6) l.hi = hi; else parts.push({ j, lo, hi, off });
+      };
+      segs.forEach(([s, e], j) => {
         const o0 = vs + (s - cin) / speed, o1 = vs + (e - cin) / speed; // where the segment sat before the cut
-        const lo = j === 0 && as < vs - 1e-6 ? as : Math.max(as, o0), hi = j === segs.length - 1 && ae > ve + 1e-6 ? ae : Math.min(ae, o1); // a J/L-cut lead outside the picture stays
-        return hi - lo > 1e-3 ? [{ j, lo, hi, o0 }] : [];
+        if (j === 0 && as < vs - 1e-6) add(j, as, Math.min(vs, ae), as - vs); // a J-cut lead keeps its length before the first segment
+        add(j, Math.max(as, o0), Math.min(ae, o1), Math.max(as, o0) - o0);
+        if (j === segs.length - 1 && ae > ve + 1e-6) add(j, Math.max(ve, as), ae, o1 - o0 + Math.max(ve, as) - ve); // an L-cut lead keeps its length after the last
       });
       let at = atr.clips.indexOf(au);
       atr.clips.splice(at, 1);
-      parts.forEach(({ j, lo, hi, o0 }, k) => {
+      parts.forEach(({ j, lo, hi, off }, k) => {
         const ap: Clip = structuredClone(au);
-        ap.id = k ? newId(tl, "aud") : au.id;
+        if (k) { ap.id = newId(tl, "aud"); ap.name = `audio of ${ids[j]}`; }
         ap.in = round6(parseTime(au.in ?? 0) + (lo - as) * asp); ap.duration = round6(hi - lo);
-        ap.attach_to = ids[j]; ap.offset = round6(lo - o0); ap.name = `audio of ${ids[j]}`;
+        ap.attach_to = ids[j]; ap.offset = round6(off);
         dropFollow(ap);
         if (k) delete ap.fade_in;
         if (k < parts.length - 1) delete ap.fade_out;

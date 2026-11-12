@@ -721,6 +721,22 @@ console.log("pieces of an attached clip keep their place and length");
   check("remove_silence with detached audio: one audio piece per picture segment, attached to it", segs2.length === 2 && aud2.length === 2 && !!ps0 && !!ps1, { segs2, aud2 });
   check("  a piece starts where its segment's sound starts; the J-cut lead stays on the first", near(ps1?.offset, 0) && near(ps1?.in, segs2[1]?.in) && near(ps1?.duration, segs2[1]?.duration) && near(ps0?.offset, -0.3) && near(ps0?.in, segs2[0]?.in - 0.3) && near(ps0?.duration, segs2[0]?.duration + 0.3), { segs2, aud2 });
   check("  and the project validates", si2.errors === 0, si2.issues);
+  // the J/L lead keeps its length when the silence sits at the head or the tail (gap.mp4 is silent from 2 to 3.5 s)
+  const S3 = join(tmp, "proj-jl");
+  api.create(S3, { preset: "720p" });
+  await api.apply(S3, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "hj", at: 1, in: 2.2, duration: 3.8 }, { op: "j_cut", id: "hj", seconds: 0.3 },
+    { op: "add_clip", track: "main", src: join(m, "gap.mp4"), id: "tl", at: 0, in: 0, duration: 2.3 }, { op: "l_cut", id: "tl", seconds: 0.3 }]);
+  const rs3 = (await api.apply(S3, [{ op: "remove_silence", id: "hj" }, { op: "remove_silence", id: "tl" }])).results;
+  const all3 = api.info(S3, "json").timeline.tracks.flatMap((tr: any) => tr.clips);
+  const by3 = (id: string) => all3.find((c: any) => c.id === id), on3 = (id: string) => all3.filter((c: any) => c.type === "audio" && c.attach_to === id).sort((x: any, y: any) => x.offset - y.offset);
+  const [hs] = rs3[0].segments.map(by3), hp = on3(hs?.id);
+  check("remove_silence with head silence and a J-cut: the lead stays 0.3 s of the sound before the picture, and the segment's sound starts with it",
+    hp.length === 2 && near(hp[0].offset, -0.3) && near(hp[0].duration, 0.3) && near(hp[0].in, 1.9) && near(hp[1].offset, 0) && near(hp[1].in, hs.in) && near(hp[1].duration, hs.duration)
+    && near(hp[0].start, hs.start - 0.3) && near(hp[1].start, hs.start), { hs, hp });
+  const ls = rs3[1].segments.map(by3).at(-1), lp = on3(ls?.id);
+  check("remove_silence with tail silence and an L-cut: the lead stays 0.3 s of the sound after the picture",
+    lp.length === 2 && near(lp[0].offset, 0) && near(lp[0].duration, ls.duration) && near(lp[1].offset, ls.duration) && near(lp[1].duration, 0.3) && near(lp[1].in, 2.3)
+    && near(lp[1].start, ls.start + ls.duration), { ls, lp });
   const rv = (() => {
     const t = newTimeline(640, 360, 30);
     t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };
@@ -823,8 +839,12 @@ console.log("clip copies: split, duplicate, freeze, remove");
   const nested = (t: any, tid: string) => at(t, "C").tracks.find((x: any) => x.id === tid);
   const kept = (f: (t: any) => void) => { const t = structuredClone(cbase2()); f(t); return run(t, [{ op: "expand_compound", id: "C" }])[0]; };
   check("expand_compound setup: the compound sits 0.5 over the previous clip and D follows it", near(at(cbase2(), "C").start, 1.5) && near(at(cbase2(), "D").start, 2.5), [at(cbase2(), "C").start, at(cbase2(), "D").start]);
-  const e1 = kept((t) => { at(t, "C").tracks = at(t, "C").tracks.filter((x: any) => x.id !== "main"); });
-  check("expand_compound with nothing back on its storyline: the clips after it keep their time", near(at(e1, "D").start, 2.5), at(e1, "D"));
+  const noHome = (t: any) => { at(t, "C").tracks = at(t, "C").tracks.filter((x: any) => x.id !== "main"); };
+  const e1c = (() => { const t = structuredClone(cbase2()); noHome(t); try { run(t, [{ op: "expand_compound", id: "C" }]); return "no error"; } catch (e: any) { return e.code; } })();
+  check("expand_compound with nothing back on its storyline refuses to drop the compound's transition", e1c === "layer_properties", e1c);
+  const e1b = (() => { const t = structuredClone(cbase2()); noHome(t); return run(t, [{ op: "update_clip", id: "C", set: { transition: null } }])[0]; })();
+  const e1 = run(e1b, [{ op: "expand_compound", id: "C" }])[0];
+  check("expand_compound with nothing back on its storyline: the clips after it keep their time", near(at(e1, "D").start, at(e1b, "D").start), [at(e1b, "D"), at(e1, "D")]);
   ok("expand_compound time-keeping gap", e1);
   for (const [name, st, dur] of [["a head gap shorter than the transition becomes a smaller overlap", 0.3, 0.7], ["a head gap longer than the transition stays a gap", 0.8, 0.2]] as const) {
     const e2 = kept((t) => { Object.assign(nested(t, "main").clips[0], { start: st, duration: dur }); });

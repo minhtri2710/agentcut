@@ -131,7 +131,7 @@ export function registerCompoundOps(h: OpHelpers) {
 
   h.op("expand_compound", "Break a compound clip apart: its nested clips go back onto the same-id tracks (created if missing) at their current " +
     "timeline positions, trimmed to the visible part (in/duration). On the compound's magnetic track they are spliced in its place (gaps fill holes). " +
-    "Every clip and gap it places gets a `group` stamp {id, name, track, parent?} (parent = the stamp the expanded compound itself carried); make_compound from=<id> regroups them, and the rebuilt compound takes that parent stamp back. The compound's volume, muted and enabled go to its clips; layer fields that act on its picture (effects, opacity, mask, ...), until_end, pending, and a transition on a non-magnetic track are refused (layer_properties; values that change nothing, like opacity 1, are fine). On another storyline the clips take the gap make_compound left there, else a new track just above it. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
+    "Every clip and gap it places gets a `group` stamp {id, name, track, parent?} (parent = the stamp the expanded compound itself carried); make_compound from=<id> regroups them, and the rebuilt compound takes that parent stamp back. The compound's volume, muted and enabled go to its clips; layer fields that act on its picture (effects, opacity, mask, ...), until_end, pending, and a transition on a non-magnetic track or with none of its clips back on its storyline are refused (layer_properties; values that change nothing, like opacity 1, are fine). On another storyline the clips take the gap make_compound left there, else a new track just above it. Needs speed 1.", { id: "compound clip id or ref" }, (p, tl, a) => {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
@@ -217,7 +217,11 @@ export function registerCompoundOps(h: OpHelpers) {
         tr.clips.push(...clips);
         tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
       }
-      if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { const g = gap(dur - td); gaps.push(g); home.clips.splice(ci, 0, g); } // nothing of the compound is on its own storyline: keep the time
+      if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { // nothing of the compound is on its own storyline: a gap keeps the time
+        if (td > EPS) throw new EditError(`'${c.id}' has a transition but none of its clips comes back onto '${home.id}'; expanding would drop it`, "layer_properties",
+          `remove it first: update_clip id=${c.id} set={transition: null}`);
+        const g = gap(dur); gaps.push(g); home.clips.splice(ci, 0, g);
+      }
       for (const g of gaps) g.group = stamp();
       fillGaps(tl, gaps);
       const detached: string[] = [];
