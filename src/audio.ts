@@ -5,7 +5,7 @@ import { parseKfs } from "./anim.ts";
 import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
-import { type Clip, EditError, parseTime, resolve, type Timeline, totalDuration, type Track } from "./model.ts";
+import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track } from "./model.ts";
 
 const { atempo } = FX;
 
@@ -54,7 +54,7 @@ function* flatClips(tracks: Track[], w?: Win): Generator<{ track: Track; clip: C
       const c = mapClip(c0, w);
       if (!c) continue;
       if (c.type !== "compound") { yield { track, clip: c, gain }; continue; }
-      if (c.muted || Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6 || !Array.isArray(c.tracks)) continue; // retimed compounds: no nested audio
+      if (c.muted || isRetimed(c) || !Array.isArray(c.tracks)) continue;
       const w0 = parseTime(c.in ?? 0);
       yield* flatClips(c.tracks, { base: parseTime(c.start ?? 0), w0, w1: w0 + parseTime(c.duration), gain: gain * Number(c.volume ?? 1), track });
     }
@@ -64,10 +64,8 @@ function* flatClips(tracks: Track[], w?: Win): Generator<{ track: Track; clip: C
 export function audioSources(tl: Timeline) {
   const out: { track: Track; clip: Clip; path: string; volume: number }[] = [];
   for (const { track, clip: c, gain } of flatClips(tl.tracks)) {
-    if (c.muted || (c.type !== "video" && c.type !== "audio") || c.freeze || c.keyframes?.speed) continue;
-    const a = tl.assets[c.asset];
-    if (!a || (!a.has_audio && a.kind !== "audio")) continue;
-    const vol = Number(c.volume ?? 1) * gain;
+    if (!hasSound(c, tl.assets)) continue;
+    const a = tl.assets[c.asset], vol = Number(c.volume ?? 1) * gain;
     if (vol > 0) out.push({ track, clip: c, path: a.path, volume: vol });
   }
   return out;
