@@ -169,7 +169,7 @@ class FrameStream {
       this.wake?.();
     });
     const end = () => { this.ended = true; this.wake?.(); };
-    s.on("end", end); s.on("error", end); proc.on("exit", end);
+    s.on("end", end); s.on("error", end); proc.on("exit", end); proc.on("error", end);
   }
   async read(): Promise<Buffer | null> {
     const n = this.frameBytes;
@@ -267,6 +267,7 @@ export class FrameSource {
     this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, false), { stdio: ["ignore", "pipe", "pipe"] });
     let err = "";
     this.proc.stderr!.on("data", (d) => { if (err.length < 2000) err += d; });
+    this.proc.on("error", (e) => { err += String(e); }); // a failed spawn reads as decode_failed
     (this.proc as any)._err = () => err;
     this.stream = new FrameStream(this.proc, this.w * this.h * 4);
     this.pos = this.o.reverse ? -1 : k - 1;
