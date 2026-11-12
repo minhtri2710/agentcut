@@ -174,7 +174,7 @@ function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
   const c: Clip = { id: a.id, type, duration: 0 };
   for (const [k, v] of Object.entries(a)) if (!ADD_META.has(k) && v !== undefined && v !== null) c[k] = structuredClone(v);
   if (!c.id) c.id = newId(tl, PREFIX[type]);
-  else if (tl.tracks.some((t) => t.clips.some((x) => x.id === c.id))) throw new EditError(`clip id '${c.id}' already exists`, "exists");
+  else if ([...allClips(tl.tracks)].some((x) => x.id === c.id)) throw new EditError(`clip id '${c.id}' already exists`, "exists");
   if (a.end !== undefined && a.duration === undefined) c.duration = parseAt(tl, a.end) - parseAt(tl, a.at ?? a.start ?? 0);
   else if (a.duration === undefined) c.duration = defaultDuration(tl, c);
   c.duration = round6(parseTime(c.duration));
@@ -262,6 +262,7 @@ function refuseAttachedMagnetic(c: Clip, dest: Track, to = c.attach_to) {
 function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
   const byId = new Map<string, Clip>([...allClips(tl.tracks)].map((x) => [x.id, x]));
   const inSet = new Set(moved), onTrack = new Set(tr.clips);
+  // n < 16: a cycle saved with allow_invalid, or built earlier in the same batch, must not recurse forever
   const moves = (c: Clip | undefined, n = 0): boolean => !!c && (inSet.has(c) || (!onTrack.has(c) && !!c.attach_to && n < 16 && moves(byId.get(c.attach_to), n + 1)));
   const stay: [Clip, number][] = [];
   for (const x of tr.clips) {

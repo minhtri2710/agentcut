@@ -60,7 +60,9 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
   const list: M.Dict[] = Array.isArray(ops) ? ops : ops.ops ?? [ops];
-  const key = (i: M.Issue) => `${i.path.split("<")[0]}|${i.message}`;
+  // An issue keeps its identity when a clip is inserted, moved or compounded: clip ids are unique project-wide, so key by the
+  // innermost clip id and field, not by the track/clip indices of the path.
+  const key = (i: M.Issue) => `${i.path.replace(/^.*(<[^<>]*>)/, "$1")}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
   for (const until = Date.now() + 10_000; ;) {
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
