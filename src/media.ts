@@ -215,6 +215,7 @@ export class FrameSource {
   private pos = -1;
   private last: Buffer | null = null;
   private eof = false;
+  private ended: Promise<string> | null = null; // what the running ffmpeg reports once it is done: "" for a clean exit, else why it failed
   private still: Buffer | null = null;
   private hw = HWACCEL;
   private input: string[];
@@ -265,10 +266,14 @@ export class FrameSource {
   private spawnAt(k: number) {
     this.close();
     this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, false), { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = this.proc;
     let err = "";
-    this.proc.stderr!.on("data", (d) => { if (err.length < 2000) err += d; });
-    this.proc.on("error", (e) => { err += String(e); }); // a failed spawn reads as decode_failed
-    (this.proc as any)._err = () => err;
+    proc.stderr?.on("data", (d) => { if (err.length < 2000) err += d; });
+    // a spawn failure ('error') and a non-zero exit both count as a failed decode, before or after the first frame
+    this.ended = new Promise((res) => {
+      proc.once("error", (e) => res(`${err}${e}`.trim()));
+      proc.once("close", (code, sig) => res(code === 0 ? err.trim() : `${err}ffmpeg exited with ${code ?? sig}`.trim()));
+    });
     this.stream = new FrameStream(this.proc, this.w * this.h * 4);
     this.pos = this.o.reverse ? -1 : k - 1;
     this.eof = false;
@@ -297,7 +302,7 @@ export class FrameSource {
     const o = this.o;
     if (o.kind === "image" || o.freeze) return (this.still ??= await this.decodeStill(o.srcIn ?? 0));
     const k = Math.max(0, Math.round(u * o.rate));
-    if (this.eof && k > this.pos) return this.last ?? Buffer.alloc(this.w * this.h * 4);
+    if (this.eof && k > this.pos) return this.last!;
     if (k === this.pos && this.last) return this.last;
     if (!this.proc || k < this.pos || k - this.pos > Math.max(4, o.rate * 2)) {
       if (o.reverse && this.proc && k > this.pos) { /* keep streaming */ } else this.spawnAt(k);
@@ -305,13 +310,14 @@ export class FrameSource {
     while (this.pos < k) {
       const f = await this.stream!.read();
       if (!f) {
-        if (!this.last) {
-          const err = (this.proc as any)?._err?.() ?? "";
-          if (this.hw) { this.hw = false; this.spawnAt(k); continue; } // retry once in software
-
-          if (err.trim()) throw new EditError(`decode failed for ${o.path}: ${err.slice(0, 300)}`, "decode_failed");
-          this.last = Buffer.alloc(this.w * this.h * 4);
-        }
+        const bad = await this.ended!;
+        if (bad && this.hw) { this.hw = false; this.spawnAt(k); continue; } // retry once in software
+        if (bad) throw new EditError(`decode failed for ${o.path}: ${bad.slice(0, 300)}`, "decode_failed");
+        // a clean end: past the probed length the last frame is held (the documented 'clip needs more source' warning);
+        // a source that ends well inside its probed length is damaged or was replaced, and a hold would hide that
+        const at = (o.srcIn ?? 0) + k / o.rate;
+        if (!this.last || (!o.reverse && !o.loop && o.srcDuration && at < o.srcDuration - 0.5 - 1 / o.rate))
+          throw new EditError(`decode failed for ${o.path}: the source ended after ${this.pos + 1} frames, at ${at.toFixed(2)}s`, "decode_failed", "re-run prepare or re-import the media; the file may be truncated or have changed");
         this.eof = true;
         return this.last;
       }

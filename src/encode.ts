@@ -4,16 +4,16 @@
 // .mov ProRes 4444 / .webm VP9), and audio-only exports (.wav .mp3 .m4a .aac .flac) that skip video entirely.
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
 import { hasCodec, needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
-import { refuseSource } from "./project.ts";
+import { alive, refuseSource } from "./project.ts";
 import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
 
 export type VideoCodec = "h264" | "hevc" | "prores" | "prores_4444" | "vp9";
@@ -124,6 +124,20 @@ export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDir
 /** Scratch dir of one render: `<project>/.agentcut/tmp/render-<pid>-<rand>/`. The pid lets cache.ts sweepStale remove it after a crash. */
 const renderTmp = (root: string) => mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `render-${process.pid}-`));
 
+/** Remove the `<name>.part-<pid>-<12 hex><ext>` files a dead process left beside `output` (SIGKILL, power loss). Only the exact names
+ *  safe-write.ts tmpSibling makes for this output, as direct regular-file children of its directory (links are not files here),
+ *  whose pid is provably gone; housekeeping never fails the render. */
+function sweepParts(output: string) {
+  const ext = extname(output), dir = dirname(output), esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${esc(basename(output, ext))}\\.part-(\\d+)-[0-9a-f]{12}${esc(ext)}$`);
+  try {
+    for (const d of readdirSync(dir, { withFileTypes: true })) {
+      const m = re.exec(d.name);
+      if (d.isFile() && m && !alive(Number(m[1]))) rmSync(join(dir, d.name), { force: true });
+    }
+  } catch { /* no directory yet, or busy: the next render sweeps */ }
+}
+
 /** Render frames [i0, i1) to `out` (video only, or muxed with audio when given). `signal` stops the encoder and ends the loop. */
 export async function encodeFrames(r: Renderer, t0: number, i0: number, i1: number, v: string[], out: string,
   audio?: { wav: string; a: string[] }, onFrame?: (done: number) => void, signal?: AbortSignal) {
@@ -197,6 +211,7 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   const warnings: string[] = [];
   if (!audioSources(tl).length) warnings.push("timeline has no audible clips: the export is silence");
   const began = performance.now();
+  sweepParts(output);
   const part = tmpSibling(output, root), tmp = renderTmp(root); // part: where ffmpeg writes before it is renamed to `output`, which never holds a partial file
   try {
     const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
@@ -236,11 +251,13 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const start = o.start ?? 0, end = Math.min(o.end ?? T, T);
   if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix --from/--to");
   const n = Math.round((end - start) * fps);
-  const workers = Math.max(1, o.workers ?? defaultWorkers(n, fps));
+  if (o.workers !== undefined && !(Number.isInteger(o.workers) && o.workers >= 1)) throw new EditError(`workers must be a whole number >= 1, got ${JSON.stringify(o.workers)}`, "bad_value");
+  const workers = o.workers ?? defaultWorkers(n, fps);
   const began = performance.now();
   // no audible clip (and a gif has no audio): no mix, no audio stream
   const audible = !gif && audioSources(tl).length > 0;
   if (!gif && !audible) plan.warnings.push("timeline has no audible clips: the video has no audio track");
+  sweepParts(output);
   const part = tmpSibling(output, root), tmp = renderTmp(root);
   try {
     const wav = join(tmp, "mix.wav");
@@ -270,15 +287,21 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
         createFile(jf, JSON.stringify(job));
         const p = spawn(cmd[0], [...cmd.slice(1), jf], { stdio: ["ignore", "pipe", "pipe"] });
         stopOnAbort(p, stop.signal);
-        let err = "", buf = "";
+        let err = "", buf = "", failure: EditError | undefined;
         p.stderr!.on("data", (d) => { if (err.length < 4000) err += d; });
         p.stdout!.on("data", (d) => {
           buf += d;
           const lines = buf.split("\n"); buf = lines.pop()!;
-          for (const l of lines) if (l.startsWith("P ")) { done[k] = +l.slice(2); o.progress?.(done.reduce((x, y) => x + y, 0), n); }
+          for (const l of lines) {
+            if (l.startsWith("E ")) { const e = JSON.parse(l.slice(2)); failure = new EditError(e.message, e.code, e.hint, e.path); } // the worker's own error, kept as is
+            else if (l.startsWith("P ")) {
+              done[k] = +l.slice(2);
+              try { o.progress?.(done.reduce((x, y) => x + y, 0), n); } catch (e) { first ??= e; stop.abort(); } // a throw in an event handler would escape the render
+            }
+          }
         });
-        const [code] = await once(p, "exit");
-        if (code !== 0) throw new EditError(`render worker ${k} failed: ${err.slice(-800)}`, "render_failed");
+        const [code] = await once(p, "close"); // after stdout drained, so a late "E" line is seen
+        if (code !== 0) throw failure ?? new EditError(`render worker ${k} failed: ${err.slice(-800)}`, "render_failed");
       })()))]);
       o.signal?.removeEventListener("abort", relay);
       o.signal?.throwIfAborted();

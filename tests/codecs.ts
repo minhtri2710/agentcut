@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -408,6 +408,102 @@ writeFileSync(process.argv[3], r.data);\n`);
     check("a frame drawn after validation uses the file font, not the fallback",
       ra.status === 0 && rb.status === 0 && !readFileSync(join(tmp, "font-file.png")).equals(readFileSync(join(tmp, "font-ref.png"))));
   }
+}
+
+console.log("decode and render failures");
+{
+  const { FrameSource } = await import("../src/media.ts");
+  const code = (pr: Promise<unknown>) => pr.then(() => "ok", (e) => e?.code);
+  // A-19: a decoder that ends early or fails becomes decode_failed instead of a held or zero frame
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "short.ts"));
+  const short = (srcDuration?: number) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration });
+  const a = short(3);
+  await a.readAt(0.5);
+  check("a source that ends well inside its probed length is decode_failed, not a held frame", (await code(a.readAt(2))) === "decode_failed");
+  a.close();
+  const b = short(1.2);
+  await b.readAt(0.5);
+  check("past the probed length the last frame is still held", (await b.readAt(2)).length === 64 * 64 * 4);
+  b.close();
+  const z = short();
+  check("a decoder that yields no frame is decode_failed, not a zero frame", (await code(z.readAt(5))) === "decode_failed");
+  z.close();
+  const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });
+  await sk.readAt(0);
+  const PATH0 = process.env.PATH;
+  process.env.PATH = join(tmp, "no-such-bin"); // the re-seek cannot start ffmpeg
+  const seek = await code(sk.readAt(2.5));
+  process.env.PATH = PATH0;
+  check("a decoder that fails to start on a re-seek is decode_failed, not a held frame", seek === "decode_failed", seek);
+  sk.close();
+
+  // A-26: a worker's EditError reaches the caller with its code and no stack trace
+  const Q = join(tmp, "projq");
+  api.create(Q, { width: W, height: H, fps: 24 });
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-pix_fmt", "yuv420p", join(m, "bad.mp4")); // no audio stream: only the decode can fail
+  await api.apply(Q, [{ op: "add_clip", track: "overlay", src: join(m, "bad.mp4"), at: 0, duration: 2 }]);
+  writeFileSync(join(m, "bad.mp4"), "not media at all");
+  const qp = openProject(Q), qtl = () => qp.absolutized(openProject(Q).load());
+  const one = await expectError(() => renderVideo(qtl(), qp.root, join(Q, "renders", "w1.mp4"), { workers: 1 }));
+  const two = await expectError(() => renderVideo(qtl(), qp.root, join(Q, "renders", "w2.mp4"), { workers: 2 }));
+  check("one worker keeps the decode error code", one?.code === "decode_failed", one?.code);
+  check("several workers keep the decode error code", two?.code === "decode_failed", two?.code);
+  check("a worker error carries no stack frames", !!two && !/\n\s+at /.test(two.message), two?.message);
+
+  // A-39: bounds
+  for (const workers of [0, 2.5, -1, Number.NaN]) {
+    const e = await expectError(() => renderVideo(tl(), p.root, out("bw.mp4"), { workers, end: 0.5 }));
+    check(`workers ${workers} is refused`, e?.code === "bad_value", e?.code);
+  }
+  for (const scale of [0, -1, 5]) check(`frame scale ${scale} is refused`, (await code(api.frameImage(P, 0, { scale }))) === "bad_value");
+  check("a still render refuses scale 5", (await code(api.render(P, { out: join(tmp, "s5.png"), scale: 5 }))) === "bad_value");
+  check("sheet count above the tile cap is refused", (await code(api.sheet(P, { count: 65, tileWidth: 32 }))) === "bad_value");
+  check("sheet count 2.5 is refused", (await code(api.sheet(P, { count: 2.5, tileWidth: 32 }))) === "bad_value");
+  check("sheet times above the tile cap are refused", (await code(api.sheet(P, { times: Array.from({ length: 65 }, () => 0), tileWidth: 32 }))) === "bad_value");
+
+  // A-52: a failed tile stops the other renderers; a throwing progress callback is the render's error; dead renders' parts are swept
+  const R = await import("../src/render.ts");
+  const orig = R.Renderer.prototype.frame;
+  let calls = 0;
+  R.Renderer.prototype.frame = async function (this: any, ...args: any[]) {
+    if (++calls === 1) throw Object.assign(new Error("tile boom"), { code: "decode_failed" });
+    await new Promise((r) => setTimeout(r, 30));
+    return (orig as any).apply(this, args);
+  } as any;
+  let sheetErr: any;
+  try { await api.sheet(P, { times: [0, 0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4], tileWidth: 32 }); } catch (e) { sheetErr = e; }
+  await new Promise((r) => setTimeout(r, 400)); // renderers that were not stopped would still be calling frame()
+  R.Renderer.prototype.frame = orig;
+  check("a failed tile reports its own error", sheetErr?.code === "decode_failed", sheetErr?.message);
+  check("a failed tile stops the other renderers after their current tile", calls <= 4, calls);
+  const pe = await expectError(() => renderVideo(tl(), p.root, out("pg.mp4"), { workers: 2, end: 1, progress: () => { throw new Error("progress boom"); } }));
+  check("a throwing progress callback fails the render with its own error", pe?.message === "progress boom", pe?.message);
+
+  const dir = join(tmp, "sweep"); mkdirSync(dir);
+  const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
+  const stale = join(dir, `o.part-${dead}-0123456789ab.mp4`), liveP = join(dir, `o.part-${process.pid}-0123456789ab.mp4`);
+  const otherName = join(dir, `x.part-${dead}-0123456789ab.mp4`), odd = join(dir, `o.part-${dead}-xyz.mp4`), target = join(tmp, "sweep-target.mp4"), link = join(dir, `o.part-${dead}-ba9876543210.mp4`);
+  for (const f of [stale, liveP, otherName, odd, target]) writeFileSync(f, "x");
+  symlinkSync(target, link);
+  await renderVideo(tl(), p.root, join(dir, "o.mp4"), { workers: 1, end: 0.5 });
+  check("a dead render's part file beside the output is swept", !existsSync(stale));
+  check("a live render's part file, another output's part file, an odd name, a link and its target stay",
+    [liveP, otherName, odd, target].every((f) => existsSync(f)) && lstatSync(link).isSymbolicLink(), readdirSync(dir));
+
+  // A-27: a layer that has ended keeps no canvas
+  const C = join(tmp, "projc");
+  api.create(C, { width: W, height: H, fps: 24 });
+  await api.apply(C, Array.from({ length: 6 }, (_, i) => ({ op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: i * 0.5, duration: 0.5, scale: 0.9 })));
+  const cp = openProject(C);
+  await api.frameImage(C, 0); // loads Skia
+  const rend = new R.Renderer(structuredClone(cp.absolutized(openProject(C).load())), cp.root, 1);
+  let most = 0;
+  for (let i = 0; i < 6; i++) { await rend.frame(i * 0.5 + 0.25); most = Math.max(most, (rend as any).layerCanvases.size); }
+  await rend.frame(2.9);
+  const during = (rend as any).layerCanvases.size;
+  rend.close();
+  check("finished layers release their canvases while rendering", during <= 2 && most <= 2, { during, most });
+  check("closing the renderer releases every layer canvas", (rend as any).layerCanvases.size === 0);
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);

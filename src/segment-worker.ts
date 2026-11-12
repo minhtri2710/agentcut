@@ -20,4 +20,8 @@ export async function runSegment(jobFile: string) {
 }
 
 const isMain = process.argv[1] && /segment-worker\.(ts|js)$/.test(process.argv[1]);
-if (isMain) runSegment(process.argv[2]).catch((e) => { process.stderr.write(String(e?.stack || e)); process.exit(1); });
+if (isMain) runSegment(process.argv[2]).catch((e) => {
+  // an EditError goes to the parent as one "E <json>" line so its code, message and hint survive; anything else is a stack on stderr
+  if (e instanceof EditError) process.stdout.write(`E ${JSON.stringify({ message: e.message, code: e.code, hint: e.hint, path: e.path })}\n`, () => process.exit(1));
+  else { process.stderr.write(String(e?.stack || e)); process.exit(1); }
+});
