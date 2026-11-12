@@ -53,6 +53,26 @@ export function info(project?: string, fmt: "summary" | "json" | "both" = "summa
   return out;
 }
 
+/** A batch's identity for an issue of `tl` (resolved, as validated): tracks are named by id and a clip with an id by that id alone
+ *  (ids are unique project-wide), so inserting, moving or compounding a track or clip does not make an old issue look new. */
+function issueKey(tl: M.Timeline, i: M.Issue) {
+  let key = i.path.match(/^[^.]*/)![0], rest = i.path.slice(key.length), level: M.Track[] | undefined = tl.tracks;
+  for (let m: RegExpMatchArray | null; level && (m = rest.match(/^\.tracks\[(\d+)\]/)); ) {
+    const tr: M.Track | undefined = level[+m[1]];
+    rest = rest.slice(m[0].length); level = undefined;
+    key += tr?.id ? `.tracks{${JSON.stringify(tr.id)}}` : m[0];
+    const cm = rest.match(/^\.clips\[(\d+)\]/);
+    if (!cm) break;
+    const c: M.Clip | undefined = tr?.clips?.[+cm[1]];
+    rest = rest.slice(cm[0].length);
+    const tag = c && typeof c === "object" ? `<${c.id ?? "?"}>` : "";
+    if (tag && rest.startsWith(tag)) rest = rest.slice(tag.length);
+    key = c?.id ? `<${JSON.stringify(c.id)}>` : `${key}${cm[0]}`;
+    level = c?.tracks;
+  }
+  return `${key}${rest}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
+}
+
 /** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
  *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
  *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock). */
@@ -60,18 +80,16 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
   const list: M.Dict[] = Array.isArray(ops) ? ops : ops.ops ?? [ops];
-  // An issue keeps its identity when a clip is inserted, moved or compounded: clip ids are unique project-wide, so key by the
-  // innermost clip id and field, not by the track/clip indices of the path.
-  const key = (i: M.Issue) => `${i.path.replace(/^.*(<[^<>]*>)/, "$1")}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
   for (const until = Date.now() + 10_000; ;) {
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
-    const before = new Set(p.validate(tl).filter((i) => i.level === "error").map(key));
+    const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
+    const before = new Set(p.validate(cur).filter((i) => i.level === "error").map((i) => issueKey(cur, i)));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
     try {
       const [next, results] = applyOps(p, tl, list);
       const issues = p.validate(next);
-      const added = issues.filter((i) => i.level === "error" && !before.has(key(i)));
+      const added = issues.filter((i) => i.level === "error" && !before.has(issueKey(next, i)));
       if (added.length && !o.allowInvalid)
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });

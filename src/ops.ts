@@ -262,8 +262,8 @@ function refuseAttachedMagnetic(c: Clip, dest: Track, to = c.attach_to) {
 function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
   const byId = new Map<string, Clip>([...allClips(tl.tracks)].map((x) => [x.id, x]));
   const inSet = new Set(moved), onTrack = new Set(tr.clips);
-  // n < 16: a cycle saved with allow_invalid, or built earlier in the same batch, must not recurse forever
-  const moves = (c: Clip | undefined, n = 0): boolean => !!c && (inSet.has(c) || (!onTrack.has(c) && !!c.attach_to && n < 16 && moves(byId.get(c.attach_to), n + 1)));
+  // `seen`: a cycle saved with allow_invalid, or built earlier in the same batch, must not recurse forever; a chain of any depth is followed
+  const moves = (c: Clip | undefined, seen = new Set<Clip>()): boolean => !!c && !seen.has(c) && (seen.add(c), inSet.has(c) || (!onTrack.has(c) && !!c.attach_to && moves(byId.get(c.attach_to), seen)));
   const stay: [Clip, number][] = [];
   for (const x of tr.clips) {
     const t = x.attach_to ? byId.get(x.attach_to) : undefined;
