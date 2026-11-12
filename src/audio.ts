@@ -1,10 +1,10 @@
 // Audio mix: one FFmpeg filter graph (trim, tempo, reverse, processing, fades, automation, ducking) + 2-pass loudness.
-import { spawnSync } from "node:child_process";
 import { unlinkSync } from "node:fs";
 import { parseKfs } from "./anim.ts";
 import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
+import { run } from "./proc.ts";
 import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
@@ -80,7 +80,8 @@ export function voiceSpans(tl: Timeline): [number, number][] {
   return out;
 }
 
-export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): string {
+/** `signal` stops the running ffmpeg and rejects with signal.reason. */
+export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number, signal?: AbortSignal): Promise<string> {
   needFfmpeg();
   resolve(tl);
   const T = Math.max(0.04, totalDuration(tl));
@@ -103,7 +104,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   };
   const bus = (track: Track) => [...FX.eqFilters(track.eq), ...FX.compressorFilter(track.compressor), ...FX.panFilter(track.pan)];
   const buses = new Map<Track, string[]>(); // tracks with bus processing -> their clip labels
-  srcs.forEach((s, i) => {
+  for (const [i, s] of srcs.entries()) {
     const c = s.clip, tr = s.track;
     const fx = (k: (typeof FX.PER_CLIP_KEYS)[number]) => c[k] ?? tr[k];
     const input = [...(c.loop ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
@@ -115,13 +116,13 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
     if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples
     const dn = FX.denoiseStrength(fx("denoise"));
     if (dn) {
-      const floor = FX.noiseFloor(s.path, cin, dur * speed);
+      const floor = await FX.noiseFloor(s.path, cin, dur * speed, signal);
       if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor, sr));
     }
     ch.push(...FX.eqFilters(c.eq), ...FX.compressorFilter(c.compressor), ...FX.panFilter(c.pan));
     const target = FX.normalizeTarget(fx("normalize"));
     if (target !== null) {
-      const lufs = FX.loudness(input, ch.join(","));
+      const lufs = await FX.loudness(input, ch.join(","), signal);
       if (lufs !== null) ch.push(`volume=${(target - lufs).toFixed(2)}dB`);
     }
     ch.push(`volume=${s.volume.toFixed(4)}`);
@@ -134,7 +135,7 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
     graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
     if (onBus) buses.set(tr, [...(buses.get(tr) ?? []), `[a${i}]`]);
     else labels.push(`[a${i}]`);
-  });
+  }
   [...buses].forEach(([tr, ls], k) => {
     // ducking after the bus chain so a track compressor does not pull the ducked level back up
     const mine = srcs.filter((x) => x.track === tr), lo = Math.min(...mine.map((x) => parseTime(x.clip.start ?? 0))), hi = Math.max(...mine.map((x) => parseTime(x.clip.start ?? 0) + parseTime(x.clip.duration)));
@@ -144,21 +145,24 @@ export function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number): s
   if (labels.length) graph.push(`${labels.join("")}amix=inputs=${labels.length}:duration=longest:normalize=0,apad=whole_dur=${T},atrim=0:${T}[out]`);
   else { args.push("-f", "lavfi", "-i", `anullsrc=r=${sr}:cl=stereo`); graph.push(`[0:a]atrim=0:${T}[out]`); }
   const raw = outWav + ".raw.wav";
-  let r = spawnSync("ffmpeg", [...args, "-filter_complex", graph.join(";"), "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw], { encoding: "utf8" });
-  if (r.status !== 0) throw new EditError(`audio mix failed: ${(r.stderr || "").trim().slice(-600)}`, "audio_failed");
-  const post: string[] = [];
-  const lufs = tl.settings.loudness === undefined ? -14 : tl.settings.loudness;
-  if (lufs !== null && labels.length) {
-    const target = `I=${Number(lufs)}:TP=-1.5:LRA=11`;
-    const m = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(raw), "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { encoding: "utf8" });
-    const js = (m.stderr || "").match(/\{[^{}]*\}/g);
-    const meas = js ? JSON.parse(js[js.length - 1]) : null;
-    if (meas && meas.input_i !== "-inf" && Number(meas.input_i) > -70)
-      post.push(`loudnorm=${target}:measured_I=${meas.input_i}:measured_TP=${meas.input_tp}:measured_LRA=${meas.input_lra}:measured_thresh=${meas.input_thresh}:offset=${meas.target_offset}:linear=true,aresample=${sr}`);
+  try {
+    let r = await run("ffmpeg", [...args, "-filter_complex", graph.join(";"), "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw], { signal });
+    if (r.status !== 0) throw new EditError(`audio mix failed: ${r.stderr.trim().slice(-600)}`, "audio_failed");
+    const post: string[] = [];
+    const lufs = tl.settings.loudness === undefined ? -14 : tl.settings.loudness;
+    if (lufs !== null && labels.length) {
+      const target = `I=${Number(lufs)}:TP=-1.5:LRA=11`;
+      const m = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(raw), "-af", `loudnorm=${target}:print_format=json`, "-f", "null", "-"], { signal });
+      const js = m.stderr.match(/\{[^{}]*\}/g);
+      const meas = js ? JSON.parse(js[js.length - 1]) : null;
+      if (meas && meas.input_i !== "-inf" && Number(meas.input_i) > -70)
+        post.push(`loudnorm=${target}:measured_I=${meas.input_i}:measured_TP=${meas.input_tp}:measured_LRA=${meas.input_lra}:measured_thresh=${meas.input_thresh}:offset=${meas.target_offset}:linear=true,aresample=${sr}`);
+    }
+    post.push(`atrim=start=${t0}:end=${t1},asetpts=PTS-STARTPTS`);
+    r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(raw), "-af", post.join(","), "-ac", "2", "-ar", String(sr), "-c:a", "pcm_s16le", outWav], { signal });
+    if (r.status !== 0) throw new EditError(`audio loudness pass failed: ${r.stderr.trim().slice(-600)}`, "audio_failed");
+  } finally {
+    try { unlinkSync(raw); } catch { /* ignore */ }
   }
-  post.push(`atrim=start=${t0}:end=${t1},asetpts=PTS-STARTPTS`);
-  r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(raw), "-af", post.join(","), "-ac", "2", "-ar", String(sr), "-c:a", "pcm_s16le", outWav], { encoding: "utf8" });
-  try { unlinkSync(raw); } catch { /* ignore */ }
-  if (r.status !== 0) throw new EditError(`audio loudness pass failed: ${(r.stderr || "").trim().slice(-600)}`, "audio_failed");
   return outWav;
 }

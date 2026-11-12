@@ -206,7 +206,7 @@ export function buildServer() {
   return s;
 }
 
-// Inside the SDK client's close sequence (stdin end, 2 s, SIGTERM, 2 s, SIGKILL); children get 1.5 s of it (media.ts stopOnAbort).
+// Inside the SDK client's close sequence (stdin end, 2 s, SIGTERM, 2 s, SIGKILL); children get 1.5 s of it (proc.ts stopOnAbort).
 const SHUTDOWN_MS = 1900;
 let stopping: Promise<void> | undefined;
 /** Wait until no job is running, no accepted tool call is unanswered and every reply has left the process (jobs and calls that start

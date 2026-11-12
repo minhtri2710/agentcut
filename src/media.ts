@@ -6,22 +6,6 @@ import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
 import { EditError, FILTER_SPECS, filterParam } from "./model.ts";
 
-/** Stop `ch` when `signal` aborts: close its stdin (EOF is the stop request for ffmpeg and the vision helper), SIGTERM it, and
- *  SIGKILL it after `graceMs` if it is still running. Only the direct child is signalled (no process-group kill): what uv forwards
- *  to python is unverified, which is why the helper also watches its stdin. */
-export function stopOnAbort(ch: ChildProcess, signal?: AbortSignal, graceMs = 1500) {
-  if (!signal) return;
-  const stop = () => {
-    try { ch.stdin?.end(); } catch { /* already closed */ }
-    ch.kill();
-    const t = setTimeout(() => ch.kill("SIGKILL"), graceMs);
-    ch.once("close", () => clearTimeout(t));
-  };
-  if (signal.aborted) return stop();
-  signal.addEventListener("abort", stop, { once: true });
-  ch.once("close", () => signal.removeEventListener("abort", stop));
-}
-
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
 

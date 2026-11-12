@@ -10,7 +10,8 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
-import { hasCodec, needFfmpeg, stopOnAbort } from "./media.ts";
+import { hasCodec, needFfmpeg } from "./media.ts";
+import { run, stopOnAbort } from "./proc.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
 import { alive, refuseSource } from "./project.ts";
@@ -220,9 +221,9 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   sweepParts(output);
   const part = partSibling(output, root), tmp = renderTmp(root); // part: where ffmpeg writes before it is renamed to `output`, which never holds a partial file
   try {
-    const wav = buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end);
-    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(wav), "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { encoding: "utf8" });
-    if (r.status !== 0) throw new EditError(`audio encode failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
+    const wav = await buildAudio(structuredClone(tl), join(tmp, "mix.wav"), start, end, o.signal);
+    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(wav), "-map", "0:a", ...fmt.args, "-t", (end - start).toFixed(6), part], { signal: o.signal });
+    if (r.status !== 0) throw new EditError(`audio encode failed: ${r.stderr.slice(-600)}`, "encode_failed");
     commit(part, output);
   } finally {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
@@ -267,10 +268,10 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const part = partSibling(output, root), tmp = renderTmp(root);
   try {
     const wav = join(tmp, "mix.wav");
-    const audioJob = Promise.resolve().then(() => { if (audible) buildAudio(structuredClone(tl), wav, start, end); });
+    const mix = async (signal?: AbortSignal) => { if (audible) await buildAudio(structuredClone(tl), wav, start, end, signal); };
     const target = gif ? join(tmp, "tmp.mp4") : part;
     if (workers <= 1) {
-      await audioJob;
+      await mix(o.signal);
       await encodeFrames(new Renderer(structuredClone(rtl), root, scale), start, 0, n, [...v, ...mux], target, audible ? { wav, a } : undefined, (d) => o.progress?.(d, n), o.signal);
     } else {
       // segments are joined with `-c:v copy`, so their container must carry the codec (and alpha) losslessly
@@ -281,14 +282,14 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
         jobs.push({ tl: rtl, root, scale, fontDirs: o.fontDirs ?? [], t0: start, i0: bounds[k], i1: bounds[k + 1], v, out: join(tmp, `seg${String(k).padStart(3, "0")}${segExt}`) });
       const done = new Array(jobs.length).fill(0);
       const cmd = workerCommand();
-      // the first failure (a worker, the audio mix, or the caller's abort) stops every other worker; all of them have exited
+      // the first failure (a worker, the audio mix, or the caller's abort) stops every other worker and the mix; all of them have exited
       // before the tmp dir is removed, and the first failure is the one reported
       const stop = new AbortController();
       const relay = () => stop.abort(o.signal!.reason);
       o.signal?.addEventListener("abort", relay, { once: true });
       let first: unknown;
       const guarded = <T,>(pr: Promise<T>) => pr.catch((e) => { first ??= e; stop.abort(); throw e; });
-      await Promise.allSettled([guarded(audioJob), ...jobs.map((job, k) => guarded((async () => {
+      await Promise.allSettled([guarded(mix(stop.signal)), ...jobs.map((job, k) => guarded((async () => {
         const jf = join(tmp, `job${k}.json`);
         createFile(jf, JSON.stringify(job));
         const p = spawn(cmd[0], [...cmd.slice(1), jf], { stdio: ["ignore", "pipe", "pipe"] });

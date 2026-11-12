@@ -47,8 +47,8 @@ async function snap(tag: string) {
   for (const t of times) { const f = join(tmp, `${tag}-${t}.png`); await api.frame(P, t, { out: f, scale: 0.5 }); out.push(raw(f, ["-f", "rawvideo", "-pix_fmt", "rgba"])); }
   return out;
 }
-const mix = (tag: string) => { const p = api.openProject(P), w = join(tmp, `${tag}.wav`); buildAudio(p.absolutized(p.load()), w); return raw(w, ["-f", "s16le"]); };
-const before = await snap("before"), audioBefore = mix("before");
+const mix = async (tag: string) => { const p = api.openProject(P), w = join(tmp, `${tag}.wav`); await buildAudio(p.absolutized(p.load()), w); return raw(w, ["-f", "s16le"]); };
+const before = await snap("before"), audioBefore = await mix("before");
 const dur0 = api.info(P).duration;
 
 console.log("make_compound");
@@ -65,7 +65,7 @@ check("no validation errors", inf.errors === 0, inf.issues);
 check("duration unchanged", Math.abs(inf.duration - dur0) < 1e-6, [dur0, inf.duration]);
 const after = await snap("after");
 times.forEach((t, i) => check(`frame ${t}s identical (mean abs diff ${meanDiff(before[i], after[i]).toFixed(3)})`, meanDiff(before[i], after[i]) < 0.5));
-const audioAfter = mix("after");
+const audioAfter = await mix("after");
 check(`audio mix identical (mean abs diff ${meanDiff(audioBefore, audioAfter).toFixed(2)})`, meanDiff(audioBefore, audioAfter) < 2);
 
 console.log("validation + errors");

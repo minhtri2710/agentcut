@@ -95,19 +95,19 @@ console.log("enhance_voice on noisy speech");
 {
   const P = project("enhance");
   await api.apply(P, [{ op: "add_clip", track: "voice", src: noisy, at: 0 }]);
-  const raw = mix(P, "raw");
+  const raw = await mix(P, "raw");
   const pauseLevel = (f: string) => pauses.map(([a, b]) => level(f, a, b));
   const speechDb = (f: string) => level(f, 0.1, pauses[0][0] - 0.3).rms;
   const rawPause = pauseLevel(raw)[0].rms, rawSnr = speechDb(raw) - rawPause;
   await api.apply(P, [{ op: "enhance_voice", track: "voice" }]);
-  const enh = mix(P, "enh");
+  const enh = await mix(P, "enh");
   const ep = pauseLevel(enh), snr = speechDb(enh) - ep[0].rms;
   check(`noise floor in pauses down >= 15 dB (${rawPause.toFixed(1)} -> ${ep.map((x) => x.rms.toFixed(1)).join(", ")} dBFS)`, ep.every((x) => x.rms < rawPause - 15));
   check(`speech-to-pause ratio up >= 20 dB (${rawSnr.toFixed(1)} -> ${snr.toFixed(1)} dB)`, snr > rawSnr + 20);
   check(`no pumping: pause level steady (window std ${ep.map((x) => x.std.toFixed(1)).join(", ")} dB < 4)`, ep.every((x) => x.std < 4));
   const L = AN.loudness(enh);
   check(`clip normalised near -16 LUFS before the master (${L.integrated_lufs})`, Math.abs(L.integrated_lufs! + 16) < 2.5);
-  const fin = mix(P, "enh-final", -14), FL = AN.loudness(fin);
+  const fin = await mix(P, "enh-final", -14), FL = AN.loudness(fin);
   check(`final mix -14 LUFS, true peak < -1 dBTP (${FL.integrated_lufs} LUFS, ${FL.true_peak_dbfs} dBTP)`, Math.abs(FL.integrated_lufs! + 14) < 0.7 && FL.true_peak_dbfs! < -1);
   // listen-proxy: before/after spectrograms (kept with --keep) and audio_check findings
   await api.audioCheck(undefined, { source: noisy, spectrogram: true, out: join(tmp, "spec-before.png") });
@@ -132,7 +132,7 @@ console.log("pitch on speech");
   const tone = join(m, "tone.wav");
   ff("-f", "lavfi", "-i", "sine=f=300:duration=2", "-ar", "48000", tone);
   await api.apply(P, [{ op: "add_clip", track: "music", src: tone, at: 0, duration: 2, pitch: 7 }]);
-  const x = pcm(mix(P, "pitch-tone"));
+  const x = pcm(await mix(P, "pitch-tone"));
   let last = 0;
   for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > 0.01) last = i;
   check(`pitched clip sounds to its very end (last sample ${(last / 48000).toFixed(4)} s of 2 s)`, last / 48000 > 1.995);
@@ -175,13 +175,13 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   const ac = await api.audioCheck(P, {});
   check("audio_check at the default duck: music is ducked", !ac.findings.some((x: any) => x.type === "music_not_ducked"), ac.findings);
   const pr = api.openProject(P), base = pr.absolutized(pr.load()), span = [segs[0][0], segs[segs.length - 1][1]];
-  const stemLufs = (track: string) => {
+  const stemLufs = async (track: string) => {
     const tl: any = structuredClone(base);
     tl.settings.loudness = null;
     tl.tracks = tl.tracks.map((t: any) => ({ ...t, volume: t.id === track ? t.volume : 0 }));
-    return AN.loudness(buildAudio(tl, join(tmp, `stem-${track}.wav`), span[0], span[1])).integrated_lufs!;
+    return AN.loudness(await buildAudio(tl, join(tmp, `stem-${track}.wav`), span[0], span[1])).integrated_lufs!;
   };
-  const vL = stemLufs("voice"), mL = stemLufs("music");
+  const vL = await stemLufs("voice"), mL = await stemLufs("music");
   check(`voice ${vL} LUFS vs ducked bed ${mL} LUFS over the voiced span: >= 15 LU`, vL - mL >= 15, { vL, mL });
   if ((api.capabilities() as any).engines.transcribe.engine === null) // a CLI with a missing model still runs, and fails loudly
     console.log("  - transcribe round-trip skipped: no whisper engine selected (whisper-cli + AGENTCUT_WHISPER_MODEL, or openai-whisper)");

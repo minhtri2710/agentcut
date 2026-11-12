@@ -105,18 +105,18 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
       markers = tl.markers ?? [];
       const main = tl.tracks.find((t) => t.magnetic && (t.kind ?? "video") !== "audio");
       cuts = (main?.clips ?? []).slice(1).map(clipStart);
-      tl.tracks.forEach((tr, j) => {
+      for (const [j, tr] of tl.tracks.entries()) {
         // stem: every other track at volume 0 (still feeds ducking), raw gain stage, mix rate (16 kHz stems cost no time but dropped the voice's >8 kHz energy, ~0.9 dB)
         const stem: Timeline = { ...tl, settings: { ...tl.settings, loudness: null, sample_rate: 48000 },
           tracks: tl.tracks.map((t, i) => (i === j ? t : { ...t, volume: 0 })) };
         const srcs = audioSources(stem);
-        if (!srcs.length) return;
+        if (!srcs.length) continue;
         const wav = join(tmp, `stem${j}.wav`);
-        buildAudio(stem, wav);
+        await buildAudio(stem, wav);
         lanes.push({ id: tr.id, role: tr.role, clips: tr.clips.filter((c) => srcs.some((s) => s.clip.id === c.id) || c.type === "compound"), ...readWindows(wav) });
-      });
+      }
       mixPath = join(tmp, "mix.wav");
-      buildAudio(structuredClone(tl), mixPath);
+      await buildAudio(structuredClone(tl), mixPath);
     }
     const mw = readWindows(mixPath);
     const T = o.source ? mw.dur : Math.max(mw.dur, totalDuration(tl!));

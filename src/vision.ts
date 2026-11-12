@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { stopOnAbort } from "./media.ts";
+import { stopOnAbort } from "./proc.ts";
 import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV, sizeText } from "./model.ts";
 import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";

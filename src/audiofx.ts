@@ -1,8 +1,8 @@
 // Audio processing fields (clip + track): denoise, eq, compressor, pan, pitch, normalize.
 // Validation and FFmpeg filter strings are pure; noiseFloor/loudness run FFmpeg once per processed clip.
 // No model.ts import: model.ts imports this file for its field table and validation.
-import { spawnSync } from "node:child_process";
 import { inp } from "./ffinput.ts";
+import { run } from "./proc.ts";
 
 export const AUDIO_FX_KEYS = ["denoise", "eq", "compressor", "pan", "pitch", "normalize"] as const;
 /** Track-level keys applied to every clip on the track (they depend on each source); the rest process the track bus. */
@@ -176,11 +176,11 @@ export const normalizeTarget = (v: unknown) => (v === true ? NORMALIZE_LUFS : is
  * - a clip with no 3 noise-only windows (150 ms) returns the 10th percentile, and so does a clean recording (noise below -90) whose lead-in
  *   is under 10% of the clip, where the lead-in counts as dither: the floor then sits on speech and can clip soft endings, but it is
  *   never higher than before. */
-export function noiseFloor(path: string, start: number, len: number): number | null {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-af",
+export async function noiseFloor(path: string, start: number, len: number, signal?: AbortSignal): Promise<number | null> {
+  const r = await run("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-af",
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
     "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
-    "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
+    "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
   const all = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100);
   if (!all.length) return null;
   const byLevel = (a: number[]) => a.sort((x, y) => x - y), p10 = byLevel([...all])[Math.floor(all.length * 0.1)]; // c98537e's estimate: the ceiling
@@ -197,8 +197,8 @@ export function noiseFloor(path: string, start: number, len: number): number | n
 }
 
 /** Integrated loudness (LUFS) of `input` args through filter chain `af`; null when too short/quiet to measure. */
-export function loudness(input: string[], af: string): number | null {
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...input, "-vn", "-af", `${af ? af + "," : ""}ebur128`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
+export async function loudness(input: string[], af: string, signal?: AbortSignal): Promise<number | null> {
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...input, "-vn", "-af", `${af ? af + "," : ""}ebur128`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
   const txt = (r.stderr || "").slice((r.stderr || "").lastIndexOf("Summary:"));
   const m = /I:\s+(-?[\d.]+)\s+LUFS/.exec(txt);
   return m && +m[1] > -70 ? +m[1] : null;

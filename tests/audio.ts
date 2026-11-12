@@ -1,9 +1,9 @@
 // Audio processing (denoise, eq, compressor, pan, pitch, normalize; clip + track bus), enhance_voice, subtitle export/embed.
 // Measures rendered audio with FFmpeg. Run: bun tests/audio.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
@@ -66,16 +66,16 @@ const tracks = () => api.info(P, "json").timeline.tracks;
 const clip = (id: string) => tracks().flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply([{ op: "add_clip", track: "voice", src: join(m, "talk.wav"), at: 0, duration: 4 }]); // aud1
-const base = mix("base");
+const base = await mix("base");
 const baseNoise = rms(base, 2.5, 4), baseTone = rms(base, 0.5, 1.5);
 
 console.log("denoise");
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: true } }]);
-const dn = mix("denoise");
+const dn = await mix("denoise");
 check(`noise floor drops >= 6 dB (${baseNoise.toFixed(1)} -> ${rms(dn, 2.5, 4).toFixed(1)})`, baseNoise - rms(dn, 2.5, 4) >= 6);
 check(`tone kept within 1.5 dB (${baseTone.toFixed(1)} -> ${rms(dn, 0.5, 1.5).toFixed(1)})`, Math.abs(baseTone - rms(dn, 0.5, 1.5)) < 1.5);
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: 1 } }]);
-check("strength 1 removes more than 0.5", rms(mix("denoise1"), 2.5, 4) < rms(dn, 2.5, 4) - 2);
+check("strength 1 removes more than 0.5", rms(await mix("denoise1"), 2.5, 4) < rms(dn, 2.5, 4) - 2);
 
 /** write a mono float signal as a stereo wav in the media dir */
 const wavOf = (name: string, x: Float32Array) => {
@@ -127,18 +127,18 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   const contRaw = await project("cont-raw", contSrc, contDur, false), contDn = await project("cont-dn", contSrc, contDur, true);
   const kept = rms(contDn, fadeA, fadeEnd) - rms(contRaw, fadeA, fadeEnd);
   check(`continuous speech: last 150 ms of a soft ending keeps its level (${kept.toFixed(1)} dB, tolerance 3)`, Math.abs(kept) <= 3, kept);
-  const flo = noiseFloor(contSrc, 0, contDur);
+  const flo = await noiseFloor(contSrc, 0, contDur);
   check(`noiseFloor of a clip with few pauses (300 ms of noise before the first word) stays near the noise, not on the speech (${flo?.toFixed(1)} dBFS, true -70)`, flo !== null && flo < -60, flo);
   // 30 words (16.8 s) with only the 300 ms lead-in as noise-only windows: still found, and the ending still survives
   const long = synth(40, 30, -70, 0.6), longSrc = wavOf("cont-long.wav", long), longDur = long.length / SR;
-  const llo = noiseFloor(longSrc, 0, longDur);
+  const llo = await noiseFloor(longSrc, 0, longDur);
   check(`${longDur.toFixed(1)} s clip, 6 noise-only windows: noiseFloor is within 3 dB of the noise (${llo?.toFixed(1)} dBFS, true -70)`, llo !== null && Math.abs(llo + 70) <= 3, llo);
   const longRaw = await project("long-raw", longSrc, longDur, false), longDn = await project("long-dn", longSrc, longDur, true);
   const lkept = rms(longDn, longDur - 0.15, longDur) - rms(longRaw, longDur - 0.15, longDur);
   check(`${longDur.toFixed(1)} s clip: the soft ending keeps its level (${lkept.toFixed(1)} dB, tolerance 3)`, Math.abs(lkept) <= 3, lkept);
   // a clean recording: real noise at -95 dBFS (between the 16-bit floor and -100), normal pauses, an ending 20 dB down
   const clean = synth(600, 8, -95, 0.6), cleanSrc = wavOf("clean95.wav", clean), cleanDur = clean.length / SR;
-  const cflo = noiseFloor(cleanSrc, 0, cleanDur);
+  const cflo = await noiseFloor(cleanSrc, 0, cleanDur);
   check(`noise at -95 dBFS with pauses: noiseFloor stays at the noise, not on the speech (${cflo?.toFixed(1)} dBFS, expect <= -88)`, cflo !== null && cflo <= -88, cflo);
   const cleanRaw = await project("clean-raw", cleanSrc, cleanDur, false), cleanDn = await project("clean-dn", cleanSrc, cleanDur, true);
   const fadeEnd2 = cleanDur - 0.6, ckept = rms(cleanDn, fadeEnd2 - 0.15, fadeEnd2) - rms(cleanRaw, fadeEnd2 - 0.15, fadeEnd2); // the last word's 600 ms fade ends 0.6 s (one gap) before the clip end
@@ -149,7 +149,7 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   const pa = 0.3 + 2 * 0.48 + 0.6 + 0.3, pb = pa + 0.2; // inside the second pause (1.86-2.46 s), past the gate's release
   const reduction = rms(talkRaw, pa, pb) - rms(talkDn, pa, pb);
   check(`pauses: noise in the gaps drops >= 15 dB (${reduction.toFixed(1)})`, reduction >= 15, reduction);
-  const tflo = noiseFloor(talkSrc, 0, talkDur);
+  const tflo = await noiseFloor(talkSrc, 0, talkDur);
   check(`noiseFloor with pauses is the noise level (${tflo?.toFixed(1)} dBFS, true -50)`, tflo !== null && Math.abs(tflo + 50) < 1.5, tflo);
   // the same clip plus 2% and 6% windows of dithered silence (-96 dBFS, the 16-bit floor) appended: those windows are not the noise
   for (const share of [0.02, 0.06]) {
@@ -157,7 +157,7 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
     padded.set(talk);
     { let seed = 7; const a = 10 ** (-96 / 20) * Math.sqrt(3); for (let i = talk.length; i < padded.length; i++) padded[i] = a * (((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1); }
     const dithSrc = wavOf(`talk-dither${k}.wav`, padded), dithDur = padded.length / SR;
-    const dflo = noiseFloor(dithSrc, 0, dithDur);
+    const dflo = await noiseFloor(dithSrc, 0, dithDur);
     check(`pauses + ${k} windows of dithered silence: noiseFloor is still the noise (${dflo?.toFixed(1)} dBFS, true -50)`, dflo !== null && Math.abs(dflo + 50) < 1.5, dflo);
     const dithRaw = await project(`dither${k}-raw`, dithSrc, dithDur, false), dithDn = await project(`dither${k}-dn`, dithSrc, dithDur, true);
     const dred = rms(dithRaw, pa, pb) - rms(dithDn, pa, pb);
@@ -166,7 +166,7 @@ console.log("denoise floor: continuous speech has no pauses to measure the noise
   // a clip under 5 s (fewer than 100 windows) with one window that is 90% zero inside a pause
   const shortClip = synth(600, 3, -50, 0.3);
   shortClip.fill(0, 1.2 * SR, 1.2 * SR + 2160);
-  const shortSrc = wavOf("short-dropout.wav", shortClip), sflo = noiseFloor(shortSrc, 0, shortClip.length / SR);
+  const shortSrc = wavOf("short-dropout.wav", shortClip), sflo = await noiseFloor(shortSrc, 0, shortClip.length / SR);
   check(`${(shortClip.length / SR).toFixed(1)} s clip with one mostly-zero window: noiseFloor is still the noise (${sflo?.toFixed(1)} dBFS, true -50)`, sflo !== null && Math.abs(sflo + 50) < 1.5, sflo);
 }
 
@@ -205,7 +205,7 @@ console.log("denoise: the clip stays aligned and complete (afftdn delays its out
 
 console.log("pan");
 await apply([{ op: "update_clip", id: "aud1", set: { denoise: null, pan: -0.8 } }]);
-const pl = mix("pan");
+const pl = await mix("pan");
 const bal = rms(pl, 0.5, 1.5, 0) - rms(pl, 0.5, 1.5, 1);
 check(`pan -0.8: left louder by ~14 dB (${bal.toFixed(1)})`, Math.abs(bal - 20 * Math.log10(1 / 0.2)) < 1);
 check("centre channel kept at unity", Math.abs(rms(pl, 0.5, 1.5, 0) - rms(base, 0.5, 1.5, 0)) < 0.2);
@@ -216,34 +216,34 @@ await apply([
   { op: "update_track", id: "music", set: { duck: null } }, // levels below are absolute: no ducking under the (muted) voice clip
   { op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 3, pitch: 12 }, // aud2
 ]);
-const pt = mix("pitch");
+const pt = await mix("pitch");
 check(`+12 semitones: 440 -> ~880 Hz (${freq(pt, 0.5, 2.5).toFixed(0)})`, Math.abs(freq(pt, 0.5, 2.5) - 880) < 15);
 check("duration unchanged: tone stops at 3 s", rms(pt, 2.5, 2.95) > -40 && !(rms(pt, 3.05, 3.9) > -60));
 
 console.log("normalize + eq + compressor");
 await apply([{ op: "update_clip", id: "aud2", set: { pitch: null, volume: 0.1, normalize: -20 } }]);
-const nl = lufs(mix("norm"));
+const nl = lufs(await mix("norm"));
 check(`normalize -20 LUFS, then volume 0.1 (-20 dB) -> ~-40 LUFS (${nl.toFixed(1)})`, Math.abs(nl + 40) < 1);
 await apply([{ op: "update_clip", id: "aud2", set: { volume: null, normalize: null, eq: [{ type: "high_pass", f: 2000 }] } }]);
-const hp = rms(mix("hp"), 0.5, 2.5);
+const hp = rms(await mix("hp"), 0.5, 2.5);
 await apply([{ op: "update_clip", id: "aud2", set: { eq: null } }]);
-const plain = rms(mix("plain"), 0.5, 2.5);
+const plain = rms(await mix("plain"), 0.5, 2.5);
 check(`high_pass 2 kHz cuts a 440 Hz tone by > 20 dB (${plain.toFixed(1)} -> ${hp.toFixed(1)})`, hp < plain - 20);
 await apply([{ op: "update_clip", id: "aud2", set: { compressor: { type: "voice", makeup: 0, threshold: -30, ratio: 8 } } }]);
-check(`compressor lowers a loud tone (${plain.toFixed(1)} -> ${rms(mix("comp"), 0.5, 2.5).toFixed(1)})`, rms(mix("comp"), 0.5, 2.5) < plain - 6);
+check(`compressor lowers a loud tone (${plain.toFixed(1)} -> ${rms(await mix("comp"), 0.5, 2.5).toFixed(1)})`, rms(await mix("comp"), 0.5, 2.5) < plain - 6);
 
 console.log("track bus");
 await apply([
   { op: "update_clip", id: "aud2", set: { compressor: null } },
   { op: "update_track", id: "music", set: { pan: 1, eq: "low_cut" } },
 ]);
-const tb = mix("bus");
+const tb = await mix("bus");
 check(`track pan 1 silences the left channel (L ${rms(tb, 0.5, 2.5, 0)}, R ${rms(tb, 0.5, 2.5, 1).toFixed(1)})`, !(rms(tb, 0.5, 2.5, 0) > -80) && rms(tb, 0.5, 2.5, 1) > -40);
 // the pure-tone aud2 has no noise to remove, so measure on a noisy clip (talk.wav, its noise-only tail is 6.5-8 s here)
 await apply([{ op: "update_track", id: "music", set: { pan: null, eq: null } }, { op: "add_clip", track: "music", src: join(m, "talk.wav"), at: 4, duration: 4 }]); // aud3
-const tailPlain = rms(mix("trackdn0"), 6.5, 8);
+const tailPlain = rms(await mix("trackdn0"), 6.5, 8);
 await apply([{ op: "update_track", id: "music", set: { denoise: true } }]);
-const tailDn = rms(mix("trackdn"), 6.5, 8);
+const tailDn = rms(await mix("trackdn"), 6.5, 8);
 check(`track denoise reaches the clip: noise floor drops >= 6 dB (${tailPlain.toFixed(1)} -> ${tailDn.toFixed(1)})`, tailPlain - tailDn >= 6);
 await apply([{ op: "remove_clip", id: "aud3" }]);
 
@@ -254,10 +254,40 @@ await apply([
   { op: "update_clip", id: "aud1", set: { muted: null } },
   { op: "enhance_voice", track: "voice" },
 ]);
-const target = mix("final", -14);
+const target = await mix("final", -14);
 check(`final mix at -14 LUFS (${lufs(target).toFixed(2)})`, Math.abs(lufs(target) + 14) < 0.7);
-const again = mix("final2", -14);
+const again = await mix("final2", -14);
 check("deterministic: two mixes are byte-identical", readFileSync(target).equals(readFileSync(again)));
+
+console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
+{
+  let ticks = 0;
+  const iv = setInterval(() => ticks++, 10); // a blocking mix fires none: the 5 ffmpeg runs of this mix take well over 50 ms
+  await mix("loop", -14);
+  clearInterval(iv);
+  check(`timers fire while the mix runs (${ticks} ticks)`, ticks >= 5, ticks);
+  if (process.platform !== "win32") {
+    // a stand-in ffmpeg records its pid and then waits: the abort must end that very process
+    const bin = join(tmp, "fakebin"), pidFile = join(tmp, "fake.pid"), Q = join(tmp, "abort-proj");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\necho $$ > '${pidFile}'\nexec sleep 60\n`, { mode: 0o755 });
+    api.create(Q, { width: 320, height: 240, fps: 24 });
+    await api.apply(Q, [{ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 0, duration: 2 }]);
+    const pq = api.openProject(Q), ac = new AbortController(), realPath = process.env.PATH!;
+    let err: any, pid = 0, aliveBefore = false;
+    process.env.PATH = bin + delimiter + realPath;
+    try {
+      const done = buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, ac.signal).catch((e) => { err = e; });
+      for (let i = 0; i < 200 && !pid; i++) { await new Promise((r) => setTimeout(r, 25)); if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf8")) || 0; }
+      try { process.kill(pid, 0); aliveBefore = true; } catch { /* not running */ }
+      ac.abort();
+      await done;
+    } finally { process.env.PATH = realPath; }
+    let aliveAfter = true;
+    try { process.kill(pid, 0); } catch { aliveAfter = false; }
+    check("abort during the mix: the call rejects with the abort and the ffmpeg child it started is gone", pid > 0 && aliveBefore && err?.name === "AbortError" && !aliveAfter, { pid, aliveBefore, aliveAfter, err: err?.message });
+  }
+}
 
 console.log("enhance_voice");
 const v = tracks().find((t: any) => t.id === "voice");
@@ -306,13 +336,13 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
     { op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 4 },
     { op: "add_clip", track: "voice", src: join(m, "tone.wav"), at, duration: 2, muted: true }, // muted: only the music is in the mix, the voice interval still ducks it
   ]);
-  const dk = dmix("duck-onset"), full = rms(dk, 0.2, 0.7), steady = rms(dk, at + 0.5, at + 1.5);
+  const dk = await dmix("duck-onset"), full = rms(dk, 0.2, 0.7), steady = rms(dk, at + 0.5, at + 1.5);
   check(`duck -30: music steady ${full.toFixed(1)} -> ${steady.toFixed(1)} dB`, Math.abs(full - steady - 30) < 0.5);
   const first = rms(dk, at, at + 0.03);
   check(`music already at the ducked level in the first 30 ms of the voice (${first.toFixed(1)} vs ${steady.toFixed(1)} dB)`, Math.abs(first - steady) < 2);
 
   await api.apply(D, [{ op: "update_track", id: "music", set: { duck: null } }, { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: [[0, 1], [1.1, 1], [1.12, 0.0316]] }]);
-  const kf = dmix("kf-drop"), top = rms(kf, 0.2, 0.7), low = rms(kf, 2, 3), after = rms(kf, 1.13, 1.17);
+  const kf = await dmix("kf-drop"), top = rms(kf, 0.2, 0.7), low = rms(kf, 2, 3), after = rms(kf, 1.13, 1.17);
   check(`volume keyframe drop 1.10 -> 1.12 s: ${top.toFixed(1)} -> ${low.toFixed(1)} dB, already there at 1.13-1.17 s (${after.toFixed(1)})`, Math.abs(top - low - 30) < 0.5 && Math.abs(after - low) < 2);
 
   // 130 separate voice intervals (ffmpeg rejects an expression nested ~100 deep) over a bed split in two clips: every interval ducks, the gaps do not
@@ -325,7 +355,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   ]);
   const pv = api.openProject(V), tv = pv.absolutized(pv.load());
   tv.settings.loudness = null;
-  const many = buildAudio(tv, join(tmp, "many.wav"));
+  const many = await buildAudio(tv, join(tmp, "many.wav"));
   const dips = [10, 69, 70, 100].map((t) => [rms(many, t + 1.1, t + 1.25), rms(many, t + 1.58, t + 1.72)]); // interval at 1+t.., gap after it
   check(`130 voice intervals: each sampled one ducks by ~20 dB and its gap does not (${dips.map(([a, b]) => `${a.toFixed(0)}/${b.toFixed(0)}`).join(" ")} dB)`, dips.every(([a, b]) => Math.abs(b - a - 20) < 1.5), dips);
 
@@ -340,7 +370,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   const pw = api.openProject(W), tw = pw.absolutized(pw.load());
   tw.settings.loudness = null;
   let pump: string | null = null;
-  try { pump = buildAudio(tw, join(tmp, "pump.wav")); } catch (e: any) { check("130 volume keyframes: the mix succeeds", false, e.message); }
+  try { pump = await buildAudio(tw, join(tmp, "pump.wav")); } catch (e: any) { check("130 volume keyframes: the mix succeeds", false, e.message); }
   if (pump) {
     const js = [0, 1, 2, 31, 63, 64].map((j) => rms(pump!, j * 0.2 + 0.02, j * 0.2 + 0.08) - rms(pump!, 0.02, 0.08)); // dB relative to plateau 0 (gain 1)
     check(`130 volume keyframes: sampled plateaus sit at their keyframe value (${js.map((x) => x.toFixed(1)).join(" ")} dB)`, [0, 1, 2, 31, 63, 64].every((j, k) => Math.abs(js[k] - 20 * Math.log10(plateau(j))) < 1), js);
