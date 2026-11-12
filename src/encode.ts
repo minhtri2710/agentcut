@@ -13,6 +13,7 @@ import { inp } from "./ffinput.ts";
 import { hasCodec, needFfmpeg, stopOnAbort } from "./media.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
 import { Renderer } from "./render.ts";
+import { refuseSource } from "./project.ts";
 import { commit, createFile, ensureDir, tmpSibling } from "./safe-write.ts";
 
 export type VideoCodec = "h264" | "hevc" | "prores" | "prores_4444" | "vp9";
@@ -218,6 +219,7 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
 export async function renderVideo(tl: Timeline, root: string, output: string, o: RenderOpts = {}) {
   needFfmpeg();
   o.signal?.throwIfAborted();
+  refuseSource(root, tl, output);
   const ext = extname(output).toLowerCase();
   if (AUDIO_FORMATS[ext]) return renderAudio(tl, root, output, ext, o);
   const gif = ext === ".gif";

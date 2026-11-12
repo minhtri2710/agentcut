@@ -251,6 +251,59 @@ console.log("import_media copy=true: a link at the copy's name is never written 
   check("a link to a file at media/other.mp4: the file is unchanged", readFileSync(keep, "utf8") === "keep" && regular(join(q, "media", "other-1.mp4")));
 }
 
+// ------------------------------------------------------------------ ops that write into media/
+console.log("copy and speech ops: a dry run or a refused batch leaves nothing in media/");
+{
+  const p = await project("media-stage"), list = () => readdirSync(join(p, "media")).sort().join(","), before = list();
+  const copy = { op: "import_media", path: join(m, "other.mp4"), copy: true };
+  await api.apply(p, [copy], { dryRun: true });
+  check("dry run: media/ is unchanged", list() === before, list());
+  const bad = await code(() => api.apply(p, [copy, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
+  check("a batch refused by a later op: media/ is unchanged", bad !== "ok" && list() === before, { bad, now: list() });
+  const note = join(tmp, "note.txt");
+  writeFileSync(note, "not media");
+  const nm = await code(() => api.apply(p, [{ op: "import_media", path: note, copy: true }]));
+  check("a file that is not media is refused and not copied", nm !== "ok" && list() === before, { nm, now: list() });
+  if (process.platform === "darwin") {
+    const vo = { op: "add_voiceover", text: "Hi.", voice: "Linh" };
+    await api.apply(p, [vo], { dryRun: true });
+    const dry = list();
+    const bad2 = await code(() => api.apply(p, [vo, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
+    check("speech: a dry run and a refused batch leave no .wav in media/", dry === before && bad2 !== "ok" && list() === before, { dry, bad2, now: list() });
+    await api.apply(p, [vo]);
+    check("speech: a saved batch keeps its .wav", list().split(",").some((f) => f.endsWith(".wav")), list());
+  }
+  await api.apply(p, [copy]);
+  check("a saved batch keeps the copy", regular(join(p, "media", "other.mp4")), list());
+}
+
+// ------------------------------------------------------------------ outputs may not replace the project's own files
+console.log("render/export/caption/preview output at project.json, .agentcut/ or an asset file: output_is_source, the file is unchanged");
+{
+  const own = join(tmp, "own-source.mp4"), tgt = join(tmp, "link-target.mp4"), lnk = join(tmp, "link-source.mp4");
+  copyFileSync(join(m, "av.mp4"), own);
+  copyFileSync(join(m, "av.mp4"), tgt);
+  symlinkSync(tgt, lnk);
+  const p = await project("out-source");
+  await api.apply(p, [{ op: "import_media", path: own }, { op: "import_media", path: join(m, "other.mp4"), copy: true }, { op: "import_media", path: lnk }]);
+  const pj = join(p, "project.json"), inMedia = join(p, "media", "other.mp4"), hist = join(p, ".agentcut", "history", "undo", "x.mp4");
+  const sums = () => [pj, own, inMedia, tgt].map((f) => readFileSync(f).toString("base64")).join("|"), before = sums();
+  const rows: [string, () => unknown][] = [
+    ["render over an asset outside the project", () => api.render(p, { out: own, draft: true, sheet: false })],
+    ["render over a copied asset in media/", () => api.render(p, { out: inMedia, draft: true, sheet: false })],
+    ["render into .agentcut/", () => api.render(p, { out: hist, draft: true, sheet: false })],
+    ["export_timeline over project.json", () => api.exportTimeline(p, { format: "fcpxml", out: pj })],
+    ["otio over an asset", () => api.exportTimeline(p, { format: "otio", out: inMedia })],
+    ["export_captions over project.json", () => api.exportCaptions(p, { out: pj, format: "srt" })],
+    ["preview_frame over project.json", () => api.frame(p, 1, { out: pj })],
+    ["scopes over an asset", () => api.scopes(p, 1, { out: own })],
+    ["render over the target of a symlinked asset", () => api.render(p, { out: tgt, draft: true, sheet: false })],
+  ];
+  for (const [name, f] of rows) check(`${name}: output_is_source`, (await code(f)) === "output_is_source" && sums() === before, name);
+  const up = join(p, "PROJECT.JSON");
+  if (S.lexists(up)) check("project.json under another letter case: output_is_source", (await code(() => api.exportTimeline(p, { format: "fcpxml", out: up }))) === "output_is_source" && sums() === before);
+}
+
 // ------------------------------------------------------------------ feedback store and font cache (outside the project tree)
 console.log("the feedback store and the font cache");
 {

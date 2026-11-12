@@ -1,8 +1,8 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve as presolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve as presolve, sep } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
 import {
   clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
@@ -30,7 +30,7 @@ function parse(text: string, snapshot?: string): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
-  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", "fix the file or run `agentcut undo` to restore the last good version"); }
+  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : "fix the file or run `agentcut undo` to restore the last good version"); }
   return checkVersion(tl, source, snapshot ? `there is no upgrade; project.json itself is fine: delete .agentcut/history/${snapshot}` : undefined);
 }
 
@@ -44,6 +44,22 @@ export function checkRevision(base: number, current: number) {
   if (!Number.isInteger(base) || base < 0) throw new EditError(`revision must be a non-negative integer (got ${JSON.stringify(base)})`, "bad_revision", "pass the revision from info / project_info, or omit it");
   if (base !== current) throw new EditError(`project changed since revision ${base} (now ${current}); nothing was changed`, "conflict",
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
+}
+
+/** A render, export, caption or preview output must not replace the project's own files: project.json, anything under .agentcut/, or a file an asset
+ *  points to. Compared by path (the existing parent resolved) and, for an existing output, by file identity (a case-insensitive volume). */
+export function refuseSource(root: string, tl: Pick<Timeline, "assets"> | null, out: string) {
+  const canon = (f: string) => { const a = presolve(f); let d = dirname(a); try { d = realpathSync.native(d); } catch { /* parent not made yet */ } return join(d, basename(a)); };
+  const o = canon(out), st = lstatSync(out, { throwIfNoEntry: false }), hist = canon(join(root, ".agentcut"));
+  const same = (f: string) => {
+    if (canon(f) === o) return true;
+    const s = st?.isFile() ? statSync(f, { throwIfNoEntry: false }) : undefined; // follows a symlinked asset to the file it reads
+    return !!s && s.isFile() && s.ino === st!.ino && s.dev === st!.dev;
+  };
+  const what = o === hist || o.startsWith(hist + sep) ? "the project's history folder"
+    : same(join(root, PROJECT_FILE)) ? "project.json"
+    : Object.values(tl?.assets ?? {}).some((a) => a.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses" : null;
+  if (what) throw new EditError(`${out} is ${what}; writing there would replace it`, "output_is_source", "choose another output path, for example renders/<name>.mp4");
 }
 
 /** only ESRCH proves a pid dead; anything else (EPERM, or an impossible pid process.kill rejects with another code) counts as alive: fail closed */
@@ -127,6 +143,18 @@ export class Project {
     return new Project(root);
   }
 
+  /** Files an op wrote into media/ while a batch was applied (imports, synthesized speech). A batch that is not saved discards them. */
+  private staged: string[] = [];
+  stage(file: string) { this.staged.push(file); return file; }
+  /** Remove the staged files again; only a regular file directly in media/ is ever removed. keep: the batch was saved. */
+  discardStaged(keep = false) {
+    const media = join(this.root, "media");
+    for (const f of this.staged.splice(0)) {
+      const st = lstatSync(f, { throwIfNoEntry: false });
+      if (!keep && st?.isFile() && dirname(presolve(f)) === media) rmSync(f, { force: true });
+    }
+  }
+
   load(): Timeline { return parse(readFileSync(this.file, "utf8")); }
 
   /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. */
@@ -137,9 +165,12 @@ export class Project {
       const cur = readFileSync(this.file, "utf8");
       const disk = revisionOf(parse(cur));
       checkRevision(revisionOf(tl), disk);
-      if (snapshot) { this.entries("undo"); this.entries("redo"); this.push("undo", cur, label); this.clear("redo"); } // both stacks verified before the first write
+      let pushed: string | undefined;
+      if (snapshot) { this.entries("undo"); this.entries("redo"); pushed = this.push("undo", cur, label); } // both stacks verified before the first write
       tl.revision = disk + 1;
-      this.write(tl);
+      // a failed save leaves the history as it was: the new undo entry goes again and redo is kept
+      try { this.write(tl); } catch (e) { if (pushed) rmSync(pushed, { force: true }); throw e; }
+      if (snapshot) this.clear("redo");
       return tl.revision;
     });
   }
@@ -168,31 +199,46 @@ export class Project {
     }
     return out.sort();
   }
+  /** The next name is one more than the highest in the stack (19 digits, so names sort as text): the order never depends on the clock. Returns the new path. */
   private push(name: string, content: string, label: string) {
-    const ts = `${Date.now()}${String(Math.floor(performance.now() * 1000) % 1e6).padStart(6, "0")}`;
-    writeFile(join(this.stack(name), `${ts}.json`), JSON.stringify({ label, time: Date.now(), timeline: content }), this.root);
+    const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
+    const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);
+    writeFile(file, JSON.stringify({ label, time: Date.now(), timeline: content }), this.root);
     const e = this.entries(name);
     for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old);
+    return file;
   }
   private clear(name: string) { rmSync(this.stack(name), { recursive: true, force: true }); }
+  /** A history entry (label + timeline text); an entry that is not valid JSON is a named error, never a raw SyntaxError. */
+  private static readEntry(file: string, stack: string): { label: string; timeline: string } {
+    const at = `${stack}/${basename(file)}`;
+    try { return JSON.parse(readFileSync(file, "utf8")); }
+    catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", `project.json itself is fine: delete .agentcut/history/${at}`); }
+  }
   // restored snapshots get a fresh revision, so the revision only ever increases
   private step(from: string, to: string, steps: number, base?: number) {
     return this.locked(() => {
-      let cur = readFileSync(this.file, "utf8"), rev = revisionOf(parse(cur));
-      if (base !== undefined) checkRevision(base, rev);
+      let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
+      // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
+      try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
+      if (base !== undefined && rev !== undefined) checkRevision(base, rev);
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
-        const file = e[e.length - 1 - i], d = JSON.parse(readFileSync(file, "utf8"));
+        const file = e[e.length - 1 - i], d = Project.readEntry(file, from);
         snaps.push({ file, label: d.label, tl: parse(d.timeline, `${from}/${basename(file)}`) });
       }
-      if (!snaps.length) throw new EditError(`nothing to ${from}`, "empty_history");
+      if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       this.entries(to); // the stack this call writes to is verified before the first write
+      if (rev === undefined) { // highest revision any readable entry of either stack holds
+        const seen = [...snaps.map((sn) => sn.tl.revision), ...this.entries(to).map((f) => { try { return parse(Project.readEntry(f, to).timeline).revision; } catch { return 0; } })];
+        rev = Math.max(0, ...seen.filter(Number.isInteger));
+      }
       for (const sn of snaps) {
-        this.push(to, cur, sn.label);
-        unlinkSync(sn.file);
+        const pushed = this.push(to, cur, sn.label);
         sn.tl.revision = ++rev;
-        this.write(sn.tl);
+        try { this.write(sn.tl); } catch (err) { rmSync(pushed, { force: true }); throw err; } // the snapshot stays where it was until the project file is written
+        unlinkSync(sn.file);
         cur = readFileSync(this.file, "utf8");
       }
       return { labels: snaps.map((sn) => sn.label), revision: rev };
@@ -202,7 +248,7 @@ export class Project {
   undo(steps = 1, base?: number) { return this.step("undo", "redo", steps, base); }
   redo(steps = 1, base?: number) { return this.step("redo", "undo", steps, base); }
   history() {
-    const lab = (n: string) => this.entries(n).slice(-20).map((p) => JSON.parse(readFileSync(p, "utf8")).label);
+    const lab = (n: string) => this.entries(n).slice(-20).map((p) => Project.readEntry(p, n).label);
     return { undo: lab("undo"), redo: lab("redo") };
   }
 
