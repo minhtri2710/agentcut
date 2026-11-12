@@ -27,14 +27,20 @@ function room(tl: Timeline, c: Clip, side: Side): number {
 /** a caption word with the s/e aliases (captionWords) resolved to start/end */
 export const normWord = (w: any) => ({ ...w, start: parseTime(w.start ?? w.s ?? 0), end: parseTime(w.end ?? w.e ?? 0) }); // same parse as captionWords
 /** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp), effect windows and caption words; what ends before the clip's head is dropped. */
-export function shiftKfs(c: Clip, e: number) {
+export function shiftKfs(c: Clip, e: number, srtHint = "give the clip 'words' (seconds relative to the clip start) instead of srt, or edit the srt times") {
   if (!e) return;
   if (c.type === "captions" && !c.words?.length && c.srt)
-    throw new EditError(`captions '${c.id}' come from srt, whose times cannot be moved by this edit`, "bad_type", "give the clip 'words' (seconds relative to the clip start) instead of srt, or edit the srt times");
+    throw new EditError(`captions '${c.id}' come from srt, whose times cannot be moved by this edit`, "bad_type", srtHint);
   if (c.type === "captions" && Array.isArray(c.words))
     c.words = c.words.map(normWord).filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
   if (Array.isArray(c.effects)) { // an effect with no start/duration covers the whole clip and stays
     c.effects = c.effects.flatMap((f: any) => {
+      if (f?.type === "flash") { // fires at start + at for its own length (duration), whatever its window: keep that moment, drop it once it is over
+        const a = parseTime(f.start ?? 0) + parseTime(f.at ?? 0) + e;
+        if (a + parseTime(f.duration ?? 0.25) <= EPS) return [];
+        const { start, ...rest } = f;
+        return [{ ...rest, at: round6(a) }];
+      }
       if (!f || typeof f !== "object" || (f.start === undefined && f.duration === undefined)) return [f];
       const s = parseTime(f.start ?? 0) + e, s2 = Math.max(0, s), d = (f.duration === undefined ? Infinity : parseTime(f.duration)) - (s2 - s);
       return d > EPS ? [{ ...f, start: round6(s2), ...(Number.isFinite(d) ? { duration: round6(d) } : {}) }] : [];

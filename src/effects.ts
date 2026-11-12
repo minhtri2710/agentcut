@@ -92,7 +92,7 @@ function rgbSplit(src: Canvas, amount: number, slot: number): Canvas {
 /** Window test for effects with optional start/duration (seconds relative to the clip). */
 function active(f: Dict, t: number) {
   const s = f.start !== undefined ? parseTime(f.start) : 0;
-  const d = f.duration !== undefined ? parseTime(f.duration) : Infinity;
+  const d = f.duration !== undefined && f.type !== "flash" ? parseTime(f.duration) : Infinity; // a flash's duration is its own length, not a window
   return t >= s && t < s + d ? (t - s) : null;
 }
 

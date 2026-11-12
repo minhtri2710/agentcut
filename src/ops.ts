@@ -663,10 +663,13 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
   });
 
-op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapCut 'remove pauses'): the clip becomes its speech segments.",
+op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapCut 'remove pauses'): the clip becomes its speech segments; a video's detached audio is cut into the same segments.",
   { id: "clip id", noise_db: "-35", min_silence: "s (0.4)", padding: "s kept around speech (0.1)" }, (p, tl, a) => {
     const [tr, ci, c] = findClip(tl, a.id);
     if (c.type !== "video" && c.type !== "audio") throw new EditError("remove_silence needs a video or audio clip", "bad_type");
+    resolve(tl);
+    const la = linkedAudio(tl, c);
+    if (la?.[1].reverse) throw new EditError(`the detached audio '${la[1].id}' of '${c.id}' plays reversed, so it cannot be cut into the same segments`, "reversed_audio", `update_clip id=${la[1].id} set={reverse: null}, or remove_clip id=${la[1].id}`);
     const res = AN.silence(p.abs(tl.assets[c.asset].path), +(a.noise_db ?? -35), +(a.min_silence ?? 0.4));
     const pad = +(a.padding ?? 0.1), speed = Number(c.speed ?? 1) || 1;
     const cin = parseTime(c.in ?? 0), cout = cin + clipDur(c) * speed;
@@ -689,6 +692,35 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
       tr.clips.splice(ci + j, 0, nc);
       ids.push(nc.id);
     });
+    if (la) { // detached audio is cut into the same segments, each attached to its picture with the same lead
+      const [atr, au] = la, vs = clipStart(c), ve = clipEnd(c), as = clipStart(au), ae = as + clipDur(au), asp = Number(au.speed ?? 1) || 1;
+      // [lo, hi) is the source run (in pre-cut timeline time) and off its place from the segment's start
+      const parts: { j: number; lo: number; hi: number; off: number }[] = [];
+      const add = (j: number, lo: number, hi: number, off: number) => {
+        if (hi - lo <= 1e-3) return;
+        const l = parts[parts.length - 1]; // runs that touch in the source and on the timeline stay one piece
+        if (l && l.j === j && Math.abs(l.hi - lo) < 1e-6 && Math.abs(l.off + l.hi - l.lo - off) < 1e-6) l.hi = hi; else parts.push({ j, lo, hi, off });
+      };
+      segs.forEach(([s, e], j) => {
+        const o0 = vs + (s - cin) / speed, o1 = vs + (e - cin) / speed; // where the segment sat before the cut
+        if (j === 0 && as < vs - 1e-6) add(j, as, Math.min(vs, ae), as - vs); // a J-cut lead keeps its length before the first segment
+        add(j, Math.max(as, o0), Math.min(ae, o1), Math.max(as, o0) - o0);
+        if (j === segs.length - 1 && ae > ve + 1e-6) add(j, Math.max(ve, as), ae, o1 - o0 + Math.max(ve, as) - ve); // an L-cut lead keeps its length after the last
+      });
+      let at = atr.clips.indexOf(au);
+      atr.clips.splice(at, 1);
+      parts.forEach(({ j, lo, hi, off }, k) => {
+        const ap: Clip = structuredClone(au);
+        if (k) { ap.id = newId(tl, "aud"); ap.name = `audio of ${ids[j]}`; }
+        ap.in = round6(parseTime(au.in ?? 0) + (lo - as) * asp); ap.duration = round6(hi - lo);
+        ap.attach_to = ids[j]; ap.offset = round6(off);
+        dropFollow(ap);
+        if (k) delete ap.fade_in;
+        if (k < parts.length - 1) delete ap.fade_out;
+        if (lo > as) rightKfs(ap, lo - as);
+        atr.clips.splice(at++, 0, ap);
+      });
+    }
     resolve(tl);
     const kept = segs.reduce((x, [s, e]) => x + e - s, 0);
     return { segments: ids, kept_seconds: +(kept / speed).toFixed(3), removed_seconds: +((cout - cin - kept) / speed).toFixed(3) };
