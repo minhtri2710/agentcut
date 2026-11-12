@@ -78,8 +78,8 @@ export async function embedSubtitles(video: string, cues: Cue[], base?: string, 
   // new names next to the video; nothing exists at them. The sidecar is named like the mux output (a part name of the video, so the next
   // render of it sweeps one a SIGKILL left behind), which hides its format from ffmpeg: it is named with -f.
   const sub = partSibling(video, base), tmp = partSibling(video, base);
-  // the srt reader (and a SubRip player) reads <tags>, {\ overrides and \N line breaks: an invisible word joiner keeps them literal, as for -->
-  createFile(sub, vtt ? formatCues(cues, "vtt") : formatCues(cues.map((q) => ({ ...q, text: q.text.replace(/<|\{(?=\\)|\\(?=[Nn])/g, "$&\u2060") })), "srt"));
+  // the srt reader (and a SubRip player) reads <tags>, {...} overrides and \N line breaks: an invisible word joiner keeps them literal, as for -->
+  createFile(sub, vtt ? formatCues(cues, "vtt") : formatCues(cues.map((q) => ({ ...q, text: q.text.replace(/<|\{|\\(?=[Nn])/g, "$&\u2060") })), "srt"));
   try {
     const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), "-f", vtt ? "webvtt" : "srt", ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", ...(vtt ? [] : ["-c:s", codec]),
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { signal });
