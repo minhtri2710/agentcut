@@ -1,5 +1,5 @@
 // Edit operations. Every op is {"op": name, ...args}; batches are atomic (applied to a copy).
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
@@ -632,16 +632,13 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     return result;
   });
 
-const beatCache = new Map<string, number[]>();
 function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   if (Array.isArray(b)) return b.map(Number);
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
   const path = tl.assets[b] ? p.abs(tl.assets[b].path) : absPath(b);
   if (path.endsWith(".json")) return JSON.parse(readFileSync(path, "utf8")).beats;
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
-  const st = statSync(path), key = `${path}\0${st.mtimeMs}\0${st.size}`; // a replaced file is another key
-  if (!beatCache.has(key)) beatCache.set(key, AN.beats(path).beats);
-  return beatCache.get(key)!;
+  return AN.analysis(p, { kind: "beats", path }).beats;
 }
 
 op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. Clips with a computed length (match_duration) are kept as they are (kept_computed).",

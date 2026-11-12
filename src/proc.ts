@@ -20,10 +20,14 @@ export function stopOnAbort(ch: ChildProcess, signal?: AbortSignal, graceMs = 15
   ch.once("close", () => signal.removeEventListener("abort", stop));
 }
 
-export interface RunResult { status: number | null; stdout: string; stderr: string }
+interface RunOpts { signal?: AbortSignal; maxBuffer?: number; input?: Buffer; env?: NodeJS.ProcessEnv }
+export interface RunResult<O = string> { status: number | null; stdout: O; stderr: string }
 /** spawnSync without blocking the event loop; `input` is written to stdin, and `env` (default: the process's) is the child's environment. Output past `maxBuffer` bytes on either stream (spawnSync's default, 1 MiB) stops the child (SIGKILL after the grace period, as an abort does) and gives
- *  status null with the output kept so far, as does a failed spawn (the message goes to stderr). An abort stops the child and rejects with signal.reason. */
-export async function run(cmd: string, args: string[], { signal, maxBuffer = 1 << 20, input, env }: { signal?: AbortSignal; maxBuffer?: number; input?: Buffer; env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
+ *  status null with the output kept so far, as does a failed spawn (the message goes to stderr). An abort stops the child and rejects with signal.reason.
+ *  `binary`: stdout is the raw Buffer, not text. */
+export function run(cmd: string, args: string[], o: RunOpts & { binary: true }): Promise<RunResult<Buffer>>;
+export function run(cmd: string, args: string[], o?: RunOpts): Promise<RunResult>;
+export async function run(cmd: string, args: string[], { signal, maxBuffer = 1 << 20, input, env, binary }: RunOpts & { binary?: boolean } = {}): Promise<RunResult<string | Buffer>> {
   signal?.throwIfAborted();
   const ch = spawn(cmd, args, { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"], env });
   if (input) { ch.stdin!.on("error", () => { /* the child exited before reading it all: its status says why */ }); ch.stdin!.end(input); }
@@ -43,5 +47,6 @@ export async function run(cmd: string, args: string[], { signal, maxBuffer = 1 <
     ch.once("close", (code) => done(over ? null : code));
   });
   signal?.throwIfAborted();
-  return { status, stdout: Buffer.concat(out[0]).toString(), stderr: Buffer.concat(out[1]).toString() };
+  const stdout = Buffer.concat(out[0]);
+  return { status, stdout: binary ? stdout : stdout.toString(), stderr: Buffer.concat(out[1]).toString() };
 }

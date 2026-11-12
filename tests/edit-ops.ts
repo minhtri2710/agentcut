@@ -1091,18 +1091,18 @@ console.log("templates and beats");
   // beats read from an audio path follow the file: a replaced file gives its own beats
   const click = join(m, "click.wav");
   const makeClicks = (period: number) => ff("-f", "lavfi", "-i", `sine=f=1000:d=14,volume='lt(mod(t,${period}),0.05)':eval=frame`, "-ar", "22050", click);
-  const firstCut = () => {
-    const t = newTimeline(640, 360, 30);
-    t.assets.i = { path: png, kind: "image" };
-    const [, [, , sn]] = applyOps(null as any, t, [
-      { op: "add_clip", track: "main", asset: "i", id: "a", duration: 3 }, { op: "add_clip", track: "main", asset: "i", id: "b", duration: 3 },
+  const firstCut = async (n: number) => {
+    const Pn = join(tmp, `snap-${n}`);
+    api.create(Pn, { width: 640, height: 360, fps: 30 });
+    const { results } = await api.apply(Pn, [
+      { op: "add_clip", track: "main", src: png, id: "a", duration: 3 }, { op: "add_clip", track: "main", src: png, id: "b", duration: 3 },
       { op: "snap_to_beats", track: "main", beats: click, every: 1 }]);
-    return sn.retimed[0].duration as number;
+    return results[2].retimed[0].duration as number;
   };
   makeClicks(0.5);
-  const d1 = firstCut();
+  const d1 = await firstCut(1);
   makeClicks(1);
-  const d2 = firstCut();
+  const d2 = await firstCut(2);
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
 }
 

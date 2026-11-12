@@ -1,6 +1,6 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
@@ -12,11 +12,11 @@ import type { Project } from "./project.ts";
 import { run } from "./proc.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
-function decodeMono(path: string, sr = 22050): Float32Array {
+async function decodeMono(path: string, sr: number, signal?: AbortSignal): Promise<Float32Array> {
   needFfmpeg();
-  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-ac", "1", "-ar", String(sr), "-f", "f32le", "-"], { maxBuffer: 1 << 30 });
-  if (r.status !== 0) throw new EditError(`cannot decode audio from ${path}: ${String(r.stderr).slice(0, 300)}`, "decode_failed");
-  const b = r.stdout as Buffer;
+  const r = await run("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-ac", "1", "-ar", String(sr), "-f", "f32le", "-"], { signal, maxBuffer: 1 << 30, binary: true });
+  if (r.status !== 0) throw new EditError(`cannot decode audio from ${path}: ${r.stderr.slice(0, 300)}`, "decode_failed");
+  const b = r.stdout;
   return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 4)));
 }
 
@@ -43,9 +43,9 @@ function fft(re: Float64Array, im: Float64Array) {
   }
 }
 
-export function beats(path: string, minBpm = 60, maxBpm = 200) {
+export async function beats(path: string, signal?: AbortSignal, minBpm = 60, maxBpm = 200) {
   const sr = 22050, hop = 512, nfft = 2048;
-  const y = decodeMono(path, sr);
+  const y = await decodeMono(path, sr, signal);
   if (y.length < nfft * 4) throw new EditError("audio too short for beat detection", "too_short");
   const nfr = 1 + Math.floor((y.length - nfft) / hop);
   const bins = Math.floor(8000 / (sr / nfft));
@@ -351,14 +351,25 @@ export async function transcribe(path: string, language?: string, model?: string
 }
 
 // ------------------------------------------------------------------ analyses inside apply_ops
-// Ops are synchronous, so an op that needs transcribe, tts or silence asks the Project's memo (`analysis`). A miss throws NeedsAnalysis;
+// Ops are synchronous, so an op that needs transcribe, tts, silence or beats asks the Project's memo (`analysis`). A miss throws NeedsAnalysis;
 // api.apply computes it (`compute`, async, with the call's signal), keeps the outcome in the memo and re-runs the batch from a fresh load.
 // A failed analysis is kept as its EditError, so the re-run throws it from the same op and the batch error names that op as before.
 export type Request =
   | { kind: "transcribe"; path: string; language?: string; range?: [number, number] }
   | { kind: "tts"; text: string | undefined; voice?: string; rate?: number | null }
-  | { kind: "silence"; path: string; noiseDb: number; minSilence: number };
-type Answers = { transcribe: Awaited<ReturnType<typeof transcribe>>; tts: Awaited<ReturnType<typeof tts>>; silence: Awaited<ReturnType<typeof silence>> };
+  | { kind: "silence"; path: string; noiseDb: number; minSilence: number }
+  | { kind: "beats"; path: string };
+type Answers = { transcribe: Awaited<ReturnType<typeof transcribe>>; tts: Awaited<ReturnType<typeof tts>>; silence: Awaited<ReturnType<typeof silence>>; beats: Awaited<ReturnType<typeof beats>> };
+
+/** The one cross-call cache: the beats of an audio file, keyed by path, mtime and size (a replaced file is another key), so repeated
+ *  snap_to_beats calls on one server decode a track once. Only `compute` reads it; a direct `beats` call (analyze_beats, review) never shares it. */
+const beatCache = new Map<string, Awaited<ReturnType<typeof beats>>>();
+async function cachedBeats(path: string, signal?: AbortSignal) {
+  const st = statSync(path), key = `${path}\0${st.mtimeMs}\0${st.size}`;
+  let hit = beatCache.get(key);
+  if (!hit) beatCache.set(key, hit = await beats(path, signal));
+  return hit;
+}
 
 /** Thrown by an op on a memo miss. Not an EditError: it never leaves api.apply (any other caller of applyOps gets this internal error). */
 export class NeedsAnalysis extends Error {
@@ -384,7 +395,8 @@ export async function compute(p: Project, r: Request, signal?: AbortSignal) {
   try {
     const value = r.kind === "transcribe" ? await transcribe(r.path, r.language, undefined, r.range, signal)
       : r.kind === "tts" ? await tts(r.text, join(tmp!, "vo.wav"), r.voice, r.rate, undefined, signal)
-      : await silence(r.path, r.noiseDb, r.minSilence, signal);
+      : r.kind === "silence" ? await silence(r.path, r.noiseDb, r.minSilence, signal)
+      : await cachedBeats(r.path, signal);
     p.analyses.set(key, { value, tmp });
   } catch (e) {
     if (!(e instanceof EditError) || signal?.aborted) { if (tmp) rmSync(tmp, { recursive: true, force: true }); throw e; }

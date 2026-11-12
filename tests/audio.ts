@@ -326,10 +326,19 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     await abortRun("audio_check's loudness", "ebur128", (signal) => api.audioCheck(undefined, { source: src, out: join(tmp, "abort-check.png"), signal }));
     await abortRun("audio_check's spectrogram", "showspectrumpic", (signal) => api.audioCheck(undefined, { source: src, spectrogram: true, out: join(tmp, "abort-check.png"), signal }));
     await abortRun("audio_check's project mix", "", (signal) => api.audioCheck(Q, { out: join(tmp, "abort-check.png"), signal }));
+    // the stems run with loudness null and the final mix does not, so this key reaches only the final mix's normalisation
+    await abortRun("audio_check's final mix normalisation", "loudnorm", (signal) => api.audioCheck(Q, { out: join(tmp, "abort-check.png"), signal }));
     await abortRun("a scene scan", "scene", (signal) => api.analyze.scenes(join(m, "talk.mp4"), 0.3, signal));
     await abortRun("the scopes", "signalstats", (signal) => api.scopes(R, 0.2, { out: join(tmp, "abort-scopes.jpg"), signal }));
     // silence, transcribe and tts: the signal reaches the ffmpeg step each starts (a stand-in speech engine writes the tone, so tts reaches its convert step)
     await abortRun("a silence scan", "silencedetect", (signal) => api.analyze.silence(src, -35, 0.4, signal));
+    // beats: f32le is the argument only its decode carries
+    const BM = join(tmp, "abort-music");
+    api.create(BM, { width: 320, height: 240, fps: 24 });
+    await api.apply(BM, [{ op: "add_clip", track: "music", src, duration: 2 }]);
+    await abortRun("a beat analysis", "f32le", (signal) => api.analyze.beats(src, signal));
+    await abortRun("review's music beats", "f32le", (signal) => api.review(BM, { beats: "music", signal }));
+    await abortRun("snap_to_beats reading an audio file", "f32le", (signal) => api.apply(BM, [{ op: "snap_to_beats", track: "main", beats: src }], { signal }));
     await abortRun("a transcription's audio extraction", "-ar 16000", (signal) => api.analyze.transcribe(src, "vi", undefined, undefined, undefined, signal));
     const speaker = join(bin, process.platform === "darwin" ? "say" : "espeak-ng");
     writeFileSync(speaker, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${process.platform === "darwin" ? "-o" : "-w"}" ] && cp '${src}' "$2"; shift; done\n`, { mode: 0o755 });

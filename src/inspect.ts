@@ -53,14 +53,14 @@ export async function motionStrips(tl: Timeline, root: string, windows: Window[]
 
 // ------------------------------------------------------------------ review
 export interface ReviewOpts {
-  beats?: number[] | "music"; minShot?: number; maxShot?: number; cps?: number; black?: boolean; issues?: Issue[];
+  beats?: number[] | "music"; minShot?: number; maxShot?: number; cps?: number; black?: boolean; issues?: Issue[]; signal?: AbortSignal;
 }
 export interface Finding { type: string; t: number; end?: number; id?: string; message: string; hint?: string }
 
 const TEXTY = new Set(["text", "captions"]);
 
 /** Beat times on the timeline: explicit list, "music" (analyse the music-role tracks' clips), else markers named beat*. */
-function timelineBeats(tl: Timeline, b: ReviewOpts["beats"]): { beats: number[]; from: string } {
+async function timelineBeats(tl: Timeline, b: ReviewOpts["beats"], signal?: AbortSignal): Promise<{ beats: number[]; from: string }> {
   if (Array.isArray(b)) return { beats: b.map(Number).sort((x, y) => x - y), from: "option" };
   if (b === "music") {
     const out: number[] = [];
@@ -68,7 +68,7 @@ function timelineBeats(tl: Timeline, b: ReviewOpts["beats"]): { beats: number[];
       const a = tl.assets[c.asset];
       if (!a || c.type !== "audio" && c.type !== "video") continue;
       const cin = parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1, s = clipStart(c), e = clipEnd(c);
-      for (const x of AN.beats(a.path).beats) { const t = s + (x - cin) / sp; if (t >= s - 1e-6 && t <= e + 1e-6) out.push(t); }
+      for (const x of (await AN.beats(a.path, signal)).beats) { const t = s + (x - cin) / sp; if (t >= s - 1e-6 && t <= e + 1e-6) out.push(t); }
     }
     if (!out.length) throw new EditError("no beats found on music tracks", "no_beats", "add music (track role=music) or pass beats as a list of timeline seconds");
     return { beats: out.sort((x, y) => x - y), from: "music" };
@@ -102,7 +102,7 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
   }
 
   // cuts vs beats
-  const { beats, from } = timelineBeats(tl, o.beats);
+  const { beats, from } = await timelineBeats(tl, o.beats, o.signal);
   if (beats.length >= 2 && main) {
     const tol = Math.max(1.5 / fps, 0.05);
     main.clips.slice(1).forEach((c) => {

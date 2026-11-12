@@ -506,6 +506,31 @@ fi
           b?.ok ? { used, undo3, media: readdirSync(join(V3, "media")) } : { code: b?.code, msg: b?.message, used });
       }
 
+      // snap_to_beats on an audio file is an analysis too: 2 rounds and one save; the same file named twice in a batch is decoded once, and a later call reuses the decoded beats (a stand-in ffmpeg counts the beat decodes)
+      {
+        const binB = join(tmp, "bin-beats"), log = join(tmp, "beats.decodes"), clicks = join(tmp, "clicks.wav"), pathNow = process.env.PATH!;
+        const realFfmpeg = pathNow.split(":").map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
+        mkdirSync(binB);
+        writeFileSync(join(binB, "ffmpeg"), `#!/bin/sh\ncase "$*" in *f32le*) echo x >> '${log}';; esac\nexec '${realFfmpeg}' "$@"\n`, { mode: 0o755 });
+        ff("-f", "lavfi", "-i", "sine=f=1000:d=14,volume='lt(mod(t,0.5),0.05)':eval=frame", "-ar", "22050", clicks);
+        const decodes = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").length : 0);
+        const B = join(tmp, "beats-rounds"), cuts = [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }, { op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }];
+        api.create(B, { preset: "720p" });
+        await api.apply(B, cuts);
+        const undoB = api.history(B).undo.length;
+        process.env.PATH = `${binB}:${pathNow}`;
+        let b1: any, used = -1, n1 = -1, b2: any, n2 = -1;
+        try {
+          rounds = 0;
+          b1 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks }, { op: "snap_to_beats", track: "main", beats: clicks, every: 2 }, { op: "add_marker", t: 1, label: "m" }]);
+          used = rounds; n1 = decodes();
+          b2 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
+          n2 = decodes();
+        } finally { process.env.PATH = pathNow; }
+        check("snap_to_beats of an audio file twice and an edit: 2 rounds, one decode, one save; a later call decodes nothing",
+          used === 2 && n1 === 1 && n2 === 1 && api.history(B).undo.length === undoB + 2, { used, n1, n2, undo: api.history(B).undo.length - undoB, r: b1.results });
+      }
+
       // a writer saves between the batch's last load and its save: the batch is re-applied from the memo (the engine does not start again) even though its analysis took longer than the 10 s deadline
       let bumped = false;
       OPS._other_writer = { doc: "test", args: {}, fn: (p: any) => { if (!bumped) { bumped = true; writeFileSync(p.file, readFileSync(p.file, "utf8").replace(/("revision": )(\d+)/, (_, k, n) => `${k}${Number(n) + 1}`)); } return {}; } };

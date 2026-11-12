@@ -246,13 +246,18 @@ if (process.platform !== "win32") {
   writeFileSync(join(bin, speaker), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${speaker === "say" ? "-o" : "-w"}" ] && cp '${join(tmp, "talk.wav")}' "$2"; shift; done\n`, { mode: 0o755 });
   const SP = join(tmp, "stall-proj");
   await call("create_project", { path: SP, preset: "youtube" });
+  const SM = join(tmp, "stall-music"); // review beats="music" reads the music track's beats
+  await call("create_project", { path: SM, preset: "youtube" });
+  await call("apply_ops", { project: SM, ops: [{ op: "add_clip", track: "music", src: join(tmp, "talk.wav"), duration: 2 }] });
   const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"],
     ["transcribe", { path: join(tmp, "talk.wav") }, "-ar 16000"], ["analyze_silence", { path: join(tmp, "talk.wav") }, "silencedetect"], ["tts", { text: "Hello there.", output: join(tmp, "stall-tts.wav") }, "p0.wav"],
-    ["apply_ops", { project: SP, ops: [{ op: "add_captions", transcribe: join(tmp, "talk.wav") }] }, "-ar 16000"]] as const;
+    ["apply_ops", { project: SP, ops: [{ op: "add_captions", transcribe: join(tmp, "talk.wav") }] }, "-ar 16000"],
+    ["scopes", { project: SP, t: 0.2 }, "signalstats"], ["analyze_beats", { path: join(tmp, "talk.wav") }, "f32le"], ["review", { project: SM, beats: "music" }, "f32le"],
+    ["apply_ops", { project: SP, ops: [{ op: "snap_to_beats", track: "main", beats: join(tmp, "talk.wav") }] }, "f32le"]] as const;
   for (const [tool, args, key] of stalls) {
     stall(key);
     rmSync(pidFile, { force: true });
-    const saved = tool === "apply_ops" ? readFileSync(join(SP, "project.json"), "utf8") : "";
+    const saved = tool === "apply_ops" ? readFileSync(join(SP, "project.json"), "utf8") : ""; // both apply_ops rows use SP
     const c = new Client({ name: "agentcut-test-cancel", version: "1" });
     await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: stallEnv }));
     const ac = new AbortController();

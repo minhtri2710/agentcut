@@ -84,7 +84,7 @@ function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
 /** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
  *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
  *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock, which starts at the first conflict).
- *  An op that needs a transcription, speech or a silence scan throws AN.NeedsAnalysis; the scan runs here (async, stopped by `signal`),
+ *  An op that needs a transcription, speech, a silence scan or beats throws AN.NeedsAnalysis; the analysis runs here (async, stopped by `signal`),
  *  is kept for the call, and the batch is re-run from a fresh load: one round per analysis the batch asks for, plus the last. */
 export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal } = {}) {
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
@@ -232,7 +232,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
 }
 
 /** Editorial lint with times: unsafe/short text, shot lengths, off-beat cuts, black frames + validation warnings. */
-export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean } = {}) {
+export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal } = {}) {
   const p = openProject(project);
   const tl = p.load();
   const issues = p.validate(tl);
@@ -400,7 +400,7 @@ async function tts(text: string | undefined, out: string | undefined, voice?: st
   if (p) refuseSource(p.root, p.load(), path);
   return AN.tts(text, path, voice, rate, p?.root, signal);
 }
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
+export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
   subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {

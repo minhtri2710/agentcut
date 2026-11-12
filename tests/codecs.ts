@@ -345,11 +345,11 @@ console.log("ffmpeg reads only local files and pipes");
     const url = `tcp://127.0.0.1:${port}/a.wav`;
     const { beats, loudness } = await import("../src/analyze.ts");
     const { FrameSource, probe: probeMedia } = await import("../src/media.ts");
-    const refused = (f: () => unknown) => { try { f(); return false; } catch { return true; } };
+    const refused = async (f: () => unknown) => { try { await f(); return false; } catch { return true; } };
     // probe is the only ffprobe caller: it checks the path exists first, so a URL never reaches ffprobe
     check("probe of a URL stops at not_found", (() => { try { probeMedia(url); return "opened"; } catch (e: any) { return e.code; } })() === "not_found");
 
-    check("beats refuses a non-file source", refused(() => beats(url)));
+    check("beats refuses a non-file source", await refused(() => beats(url)));
     await loudness(url);
     const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
     check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
@@ -359,7 +359,7 @@ console.log("ffmpeg reads only local files and pipes");
     // a playlist that names a network URL: probe and decode both refuse it
     const list = join(m, "net.m3u8");
     writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
-    check("probe refuses a playlist that names a network URL", refused(() => probeMedia(list)));
+    check("probe refuses a playlist that names a network URL", await refused(() => probeMedia(list)));
     const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
     check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
     dec.close();

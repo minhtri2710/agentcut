@@ -130,7 +130,7 @@ export function buildServer() {
   s.registerTool("review", {
     description: "Editorial lint before rendering: findings with times for text outside the safe area / under 9:16 app UI, text too short to read (chars/s), shots too short/long, cuts off the beat (beats='music' analyses music tracks, or a list of seconds; default: markers named 'beat*'), black frames, plus validation warnings (e.g. clips past their media). Fix, then run again.",
     inputSchema: { project: P, beats: z.union([z.literal("music"), z.array(z.number())]).optional(), min_shot: z.number().default(0.4), max_shot: z.number().optional(), cps: z.number().default(15), black_frames: z.boolean().default(true) },
-  }, wrap((a) => api.review(proj(a.project), { beats: a.beats, minShot: a.min_shot, maxShot: a.max_shot, cps: a.cps, black: a.black_frames })));
+  }, wrap((a, signal) => api.review(proj(a.project), { beats: a.beats, minShot: a.min_shot, maxShot: a.max_shot, cps: a.cps, black: a.black_frames, signal })));
 
   const waitJob = async (id: string, secs: number) => {
     const j = jobs.get(id);
@@ -187,7 +187,7 @@ export function buildServer() {
 
   s.registerTool("probe_media", { description: "Duration, size, fps, audio, alpha of a media file (video/image/audio/Lottie).", inputSchema: { path: z.string() } }, wrap((a) => api.probe(a.path)));
   s.registerTool("analyze_beats", { description: "Tempo, beat times and bar starts of a music file (use with snap_to_beats).", inputSchema: { path: z.string(), max_beats: z.number().int().default(128) } },
-    wrap((a) => { const r: any = api.analyze.beats(a.path); if (r.beats.length > a.max_beats) { r.beats = r.beats.slice(0, a.max_beats); r.truncated = true; } return r; }));
+    wrap(async (a, signal) => { const r: any = await api.analyze.beats(a.path, signal); if (r.beats.length > a.max_beats) { r.beats = r.beats.slice(0, a.max_beats); r.truncated = true; } return r; }));
   s.registerTool("analyze_scenes", { description: "Shot boundaries of a video: cut times + shot list.", inputSchema: { path: z.string(), threshold: z.number().default(0.3) } }, wrap((a, signal) => api.analyze.scenes(a.path, a.threshold, signal)));
   s.registerTool("analyze_silence", { description: "Silent and speech ranges (see op remove_silence).", inputSchema: { path: z.string(), noise_db: z.number().default(-35), min_silence: z.number().default(0.4) } }, wrap((a, signal) => api.analyze.silence(a.path, a.noise_db, a.min_silence, signal)));
   s.registerTool("measure_loudness", { description: "EBU R128 integrated loudness (LUFS), range and true peak.", inputSchema: { path: z.string() } }, wrap((a, signal) => api.analyze.loudness(a.path, signal)));

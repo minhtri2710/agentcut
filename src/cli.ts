@@ -152,7 +152,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "history": res = api.history(P); break;
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {
-        res = api.analyze.beats(pos[0]);
+        res = await api.analyze.beats(pos[0]);
         if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` }))); res.markers_added = res.beats.length; }
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
