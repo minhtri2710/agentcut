@@ -40,13 +40,13 @@ export function importAsset(p: Project | null, tl: Timeline, path: string, id?: 
   if (!existsSync(src) && p && existsSync(join(p.root, path))) src = join(p.root, path);
   if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
   for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) return k;
+  const info = probe(src); // before the copy: a file that is not media leaves nothing in media/
   if (copy && p) {
     let dst = join(p.root, "media", basename(src));
     for (let i = 1; lexists(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
-    if (presolve(dst) !== src) copyFile(src, dst, p.root);
+    if (presolve(dst) !== src) { copyFile(src, dst, p.root); p.stage(dst); }
     src = dst;
   }
-  const info = probe(src);
   if (!id) {
     const base = basename(src, extname(src)).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "asset";
     id = base;
@@ -593,6 +593,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const out = join(p.root, "media", `vo-${Date.now()}.wav`);
+    p.stage(out);
     const res = AN.tts(a.text, out, a.voice, a.rate, p.root);
     const tid = a.track ?? "voice";
     const tr = ensureTrack(tl, tid, "audio");

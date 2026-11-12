@@ -338,6 +338,58 @@ console.log("render output is atomic");
   check("R1b: SIGTERM mid-render: a part file was in progress; afterwards no output, no part file, no render temp", job.ok && sawPart && !existsSync(ko) && !partsIn(killed).length && !renderTmpLeft(P5).length, { job, sawPart, out: existsSync(killed) ? readdirSync(killed) : null, tmp: renderTmpLeft(P5), exit: srv.exit });
 }
 
+// ---------------------------------------------------------------- undo / redo history
+console.log("history: damaged project.json, failed saves, clock steps");
+{
+  const { chmodSync, writeFileSync: wf } = await import("node:fs");
+  const code = async (f: () => unknown) => { try { await f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
+  const mk = async (name: string, labels = ["e1", "e2"]) => {
+    const d = join(tmp, name);
+    api.create(d, { preset: "reels" });
+    for (const [i, label] of labels.entries()) await api.apply(d, [{ op: "add_marker", t: i + 1, label }], { label });
+    return d;
+  };
+  const markers = (d: string) => JSON.parse(readFileSync(join(d, "project.json"), "utf8")).markers?.length ?? 0;
+  // A-08: undo recovers from a damaged project.json
+  for (const [what, damage] of [["not JSON", () => "{ not json"], ["no revision", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); delete t.revision; return JSON.stringify(t); }]] as const) {
+    const d = await mk("hist-a");
+    wf(join(d, "project.json"), damage());
+    let r: any; try { r = api.undo(d); } catch (e: any) { r = { error: e.code ?? e.message }; }
+    check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0] === "e2" && markers(d) === 1 && Number.isInteger(api.info(d).revision), r);
+    rmSync(d, { recursive: true, force: true });
+  }
+  // A-35: a failed save keeps redo and adds no undo entry; a failed undo keeps its snapshot; a damaged snapshot is a named error
+  {
+    const d = await mk("hist-b", ["e1", "e2", "e3"]);
+    await api.undo(d);
+    const h0 = JSON.stringify(api.history(d)), pj = readFileSync(join(d, "project.json"), "utf8");
+    chmodSync(d, 0o500); // no new file can be created beside project.json
+    const s = await code(() => api.apply(d, [{ op: "add_marker", t: 9, label: "x" }]));
+    const u = await code(() => api.undo(d));
+    chmodSync(d, 0o700);
+    check("a save that fails keeps the redo stack and adds no undo entry", s !== "ok" && JSON.stringify(api.history(d)) === h0, { s, h: api.history(d) });
+    check("an undo that fails keeps its snapshot and project.json", u !== "ok" && JSON.stringify(api.history(d)) === h0 && readFileSync(join(d, "project.json"), "utf8") === pj, { u, h: api.history(d) });
+    const top = join(d, ".agentcut", "history", "undo"), file = readdirSync(top).sort().pop()!;
+    wf(join(top, file), "{ not json");
+    check("a snapshot that is not JSON: undo and history say bad_json", (await code(() => api.undo(d))) === "bad_json" && (await code(() => api.history(d))) === "bad_json");
+  }
+  // A-34: the wall clock steps backwards on every read; undo still restores the latest edit
+  {
+    const d = join(tmp, "hist-c"), script = join(tmp, "clock-child.ts"), srcApi = resolve(import.meta.dir, "../src/api.ts");
+    wf(script, `let t = 2e12; Date.now = () => (t -= 1000);
+const api = await import(${JSON.stringify(srcApi)});
+api.create(${JSON.stringify(d)}, { preset: "reels" });
+for (const label of ["e1", "e2", "e3"]) await api.apply(${JSON.stringify(d)}, [{ op: "add_marker", t: 1, label }], { label });
+const hist = api.history(${JSON.stringify(d)}), undone = (await api.undo(${JSON.stringify(d)})).undone;
+process.stdout.write(JSON.stringify({ hist, undone }));
+`);
+    const r = spawnSync(process.execPath, ["--no-install", "--no-env-file", script], { encoding: "utf8" });
+    let out: any = {};
+    try { out = JSON.parse(r.stdout); } catch { /* reported below */ }
+    check("clock steps backwards: history stays in edit order and undo restores the latest edit", JSON.stringify(out.hist?.undo) === '["e1","e2","e3"]' && out.undone?.[0] === "e3", { out, err: r.stderr.slice(-300) });
+  }
+}
+
 // the server stops (stdin EOF, SIGTERM) while a job runs: every job is aborted, children and temp files are gone, and it exits inside the SDK client's 2 s window
 console.log("shutdown while a job runs");
 const slowUv = join(tmp, "slow-uv.mjs"), uvLog = join(tmp, "slow-uv.log");
