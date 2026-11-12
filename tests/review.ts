@@ -44,13 +44,13 @@ console.log("tts: script text never reaches argv");
   process.env.PATH = `${bin}:${PATH}`;
   try {
     if (process.platform !== "win32") {
-      const r = AN.tts("-5% off today", join(tmp, "vo.wav"));
+      const r = await AN.tts("-5% off today", join(tmp, "vo.wav"));
       const args = readFileSync(join(tmp, "tts.args"), "utf8").split("\n");
       check("dash-leading script is passed as a file", r.duration > 1 && !args.includes("-5% off today") && readFileSync(join(tmp, "tts.text"), "utf8") === "-5% off today", args);
     }
   } finally { process.env.PATH = PATH; }
   if (process.platform === "darwin") {
-    const r = AN.tts("-5% off today", join(tmp, "say.wav"));
+    const r = await AN.tts("-5% off today", join(tmp, "say.wav"));
     check("real macOS say speaks a dash-leading script", r.duration > 0.5, r);
   }
 }

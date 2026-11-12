@@ -8,6 +8,7 @@ import { inp } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
 import { commit, createFile, tmpSibling } from "./safe-write.ts";
+import type { Project } from "./project.ts";
 import { run } from "./proc.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
@@ -147,13 +148,13 @@ export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal
   return { source: path, threshold, cuts, shots, duration: dur };
 }
 
-export function silence(path: string, noiseDb = -35, minSilence = 0.4) {
+export async function silence(path: string, noiseDb = -35, minSilence = 0.4, signal?: AbortSignal) {
   needFfmpeg();
   const info = probe(path);
   if (!info.has_audio && info.kind !== "audio") throw new EditError("file has no audio", "no_audio");
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
-  const st = [...(r.stderr || "").matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => +m[1]);
-  const en = [...(r.stderr || "").matchAll(/silence_end: ([\d.]+)/g)].map((m) => +m[1]);
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  const st = [...r.stderr.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => +m[1]);
+  const en = [...r.stderr.matchAll(/silence_end: ([\d.]+)/g)].map((m) => +m[1]);
   const dur = Number(info.duration ?? 0);
   const sil = st.map((s, i) => [+Math.max(0, s).toFixed(3), +(en[i] ?? dur).toFixed(3)]);
   const speech: number[][] = [];
@@ -208,7 +209,7 @@ export function ttsVoices() {
 /** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
  *  Each sentence is synthesized on its own (rate applies to each), converted to 48 kHz stereo and joined in order, so `sentences` carries
  *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
-export function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string) {
+export async function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string, signal?: AbortSignal) {
   if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
   if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${typeof rate === "string" ? JSON.stringify(rate) : String(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
   needFfmpeg();
@@ -217,21 +218,22 @@ export function tts(text: string | undefined, outPath: string, voice?: string, r
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
   const sentences: { text: string; start: number; end: number }[] = [];
   try {
-    const wavs = splitSentences(text).map((s, i) => {
+    const wavs: string[] = [];
+    for (const [i, s] of splitSentences(text).entries()) {
       const dir = join(tmp, `s${i}`);
       mkdirSync(dir);
-      const raw = provider === "piper" ? piperSpeech(s, dir, v, rate ?? undefined) : provider === "openai" ? httpSpeech(s, dir, v, rate ?? undefined) : systemSpeech(s, dir, v, rate ?? undefined);
+      const raw = provider === "piper" ? await piperSpeech(s, dir, v, rate ?? undefined, undefined, signal) : provider === "openai" ? await httpSpeech(s, dir, v, rate ?? undefined, undefined, signal) : await systemSpeech(s, dir, v, rate ?? undefined, signal);
       const wav = join(tmp, `p${i}.wav`);
-      const c = spawnSync("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", wav], { encoding: "utf8" });
-      if (c.status !== 0) throw new EditError(`tts convert failed: ${(c.stderr || "").slice(0, 300)}`, "tts_failed");
+      const c = await run("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", wav], { signal });
+      if (c.status !== 0) throw new EditError(`tts convert failed: ${c.stderr.slice(0, 300)}`, "tts_failed");
       const start = sentences.length ? sentences[sentences.length - 1].end : 0;
       sentences.push({ text: s, start, end: start + probe(wav).duration });
-      return wav;
-    });
+      wavs.push(wav);
+    }
     const list = join(tmp, "parts.txt");
     createFile(list, wavs.map((w) => `file '${w.replace(/'/g, "'\\''")}'\n`).join(""));
-    const j = spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-ar", "48000", "-ac", "2", part], { encoding: "utf8" });
-    if (j.status !== 0) throw new EditError(`tts join failed: ${(j.stderr || "").slice(0, 300)}`, "tts_failed");
+    const j = await run("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-ar", "48000", "-ac", "2", part], { signal });
+    if (j.status !== 0) throw new EditError(`tts join failed: ${j.stderr.slice(0, 300)}`, "tts_failed");
     commit(part, outPath);
   } finally { rmSync(tmp, { recursive: true, force: true }); rmSync(part, { force: true }); }
   return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider, sentences };
@@ -240,7 +242,7 @@ export function tts(text: string | undefined, outPath: string, voice?: string, r
 const SAPI_VOICE = "AGENTCUT_SAPI_VOICE", SAPI_OUT = "AGENTCUT_SAPI_OUT", SAPI_NO_VOICE = 3; // SAPI_NO_VOICE: PowerShell exit code for a voice that is not installed
 
 /** OS voice: macOS `say`, Windows SAPI, Linux espeak. Returns the raw audio path in tmp. */
-function systemSpeech(text: string, tmp: string, voice?: string, rate?: number): string {
+async function systemSpeech(text: string, tmp: string, voice?: string, rate?: number, signal?: AbortSignal): Promise<string> {
   let raw = join(tmp, "tts.aiff");
   // text goes in a file, never argv: a script starting with "-" would be parsed as an option
   const txt = join(tmp, "tts.txt");
@@ -257,16 +259,16 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
       args.push("-v", voice);
     }
     if (rate) args.push("-r", String(rate));
-    r = spawnSync("say", [...args, "-f", txt], { encoding: "utf8" });
+    r = await run("say", [...args, "-f", txt], { signal });
   } else if (process.platform === "win32") {
     raw = join(tmp, "tts.wav");
     if (voice?.includes("\0")) throw new EditError("invalid voice: contains a NUL character", "bad_voice", "voice names are plain text");
     // the voice and the output path reach PowerShell as data (two environment variables), never as script text; only the integer rate is interpolated
     const pick = `$n=@($s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }); if ($n -cnotcontains $env:${SAPI_VOICE}) { [Console]::Out.Write($n -join "\`n"); exit ${SAPI_NO_VOICE} }; $s.SelectVoice($env:${SAPI_VOICE});`;
     const ps = `Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voice ? pick : ""}${rate ? `$s.Rate=${Math.round((rate - 175) / 25)};` : ""}$s.SetOutputToWaveFile($env:${SAPI_OUT}); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()`;
-    r = spawnSync("powershell", ["-NoProfile", "-Command", ps], { input: text, encoding: "utf8", env: { ...process.env, [SAPI_VOICE]: voice ?? "", [SAPI_OUT]: raw } });
+    r = await run("powershell", ["-NoProfile", "-Command", ps], { input: Buffer.from(text), signal, env: { ...process.env, [SAPI_VOICE]: voice ?? "", [SAPI_OUT]: raw } });
     if (r.status === SAPI_NO_VOICE) {
-      const installed = (r.stdout || "").split("\n").map((n) => n.trim()).filter(Boolean);
+      const installed = r.stdout.split("\n").map((n) => n.trim()).filter(Boolean);
       const s = suggest(voice!, installed);
       throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}installed voices: ${installed.join(", ") || "none"}`);
     }
@@ -275,9 +277,9 @@ function systemSpeech(text: string, tmp: string, voice?: string, rate?: number):
     if (voice && !/^[A-Za-z0-9][A-Za-z0-9_+.-]*$/.test(voice)) throw new EditError(`invalid voice '${voice}'`, "bad_voice", "espeak voice names are letters, digits and _ + . - (for example en-us, vi)");
     const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
-    r = spawnSync(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { encoding: "utf8" });
+    r = await run(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { signal });
   }
-  if (r.status !== 0) throw new EditError(`tts failed: ${(r.stderr || "").slice(0, 300)}`, "tts_failed");
+  if (r.status !== 0) throw new EditError(`tts failed: ${r.stderr.slice(0, 300)}`, "tts_failed");
   return raw;
 }
 
@@ -306,7 +308,7 @@ export function transcribeEngine() {
  * range = [start, end] seconds of the media: only that stretch is transcribed and the word times stay in media seconds.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  */
-export function transcribe(path: string, language?: string, model?: string, range?: [number, number]) {
+export async function transcribe(path: string, language?: string, model?: string, range?: [number, number], signal?: AbortSignal) {
   if (range !== undefined && !(Array.isArray(range) && range.length === 2 && range.every((x) => typeof x === "number" && Number.isFinite(x)) && range[0] >= 0 && range[1] > range[0]))
     throw new EditError("transcribe range must be [start, end] in seconds with 0 <= start < end", "bad_value", "e.g. [0, 12.5]: the speech only; analyze_silence or the voiceover's length gives it");
   const [from, to] = range ?? [0, undefined];
@@ -315,13 +317,13 @@ export function transcribe(path: string, language?: string, model?: string, rang
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const wav = join(tmp, "a.wav");
-    spawnSync("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", wav]);
+    await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", wav], { signal });
     const asr = asrEngine(model);
     if (asr && "cli" in asr) {
       const { cli, model: mdl } = asr;
       // -ml 1 alone splits inside a syllable ("ch","ào"); -sow splits only on whole words
-      const r = spawnSync(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { encoding: "utf8", maxBuffer: 1 << 28 });
-      if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
+      const r = await run(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { signal, maxBuffer: 1 << 28 });
+      if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
       // punctuation comes back as timed tokens of its own: it joins the previous word (a leading one, the next) and stretches its end
       const words: { text: string; start: number; end: number }[] = [];
@@ -337,8 +339,8 @@ export function transcribe(path: string, language?: string, model?: string, rang
       return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words };
     }
     if (asr) {
-      const r = spawnSync("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { encoding: "utf8", maxBuffer: 1 << 28 });
-      if (r.status !== 0) throw new EditError(`whisper failed: ${(r.stderr || "").slice(-300)}`, "asr_failed");
+      const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
+      if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
       const words = j.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ text: String(w.word).trim(), start: shift(w.start), end: shift(w.end) })));
       return { source: path, language: j.language, text: j.text, words };
@@ -346,4 +348,52 @@ export function transcribe(path: string, language?: string, model?: string, rang
     throw new EditError("transcription needs whisper", "missing_dependency",
       "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`; or supply an .srt to add_captions");
   } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+// ------------------------------------------------------------------ analyses inside apply_ops
+// Ops are synchronous, so an op that needs transcribe, tts or silence asks the Project's memo (`analysis`). A miss throws NeedsAnalysis;
+// api.apply computes it (`compute`, async, with the call's signal), keeps the outcome in the memo and re-runs the batch from a fresh load.
+// A failed analysis is kept as its EditError, so the re-run throws it from the same op and the batch error names that op as before.
+export type Request =
+  | { kind: "transcribe"; path: string; language?: string; range?: [number, number] }
+  | { kind: "tts"; text: string | undefined; voice?: string; rate?: number | null }
+  | { kind: "silence"; path: string; noiseDb: number; minSilence: number };
+type Answers = { transcribe: Awaited<ReturnType<typeof transcribe>>; tts: Awaited<ReturnType<typeof tts>>; silence: Awaited<ReturnType<typeof silence>> };
+
+/** Thrown by an op on a memo miss. Not an EditError: it never leaves api.apply (any other caller of applyOps gets this internal error). */
+export class NeedsAnalysis extends Error {
+  constructor(readonly req: Request) { super(`internal: the ${req.kind} analysis must be computed before the op runs; only api.apply does that`); }
+}
+
+const keyOf = (r: Request) => JSON.stringify(r);
+
+/** The result of `r` from this call's memo. */
+export function analysis<R extends Request>(p: Project, r: R): Answers[R["kind"]] {
+  const hit = p.analyses.get(keyOf(r));
+  if (!hit) throw new NeedsAnalysis(r);
+  if (hit.error) throw hit.error;
+  return hit.value as Answers[R["kind"]];
+}
+
+/** Compute `r` into the memo. An abort rejects; a failure that is an EditError is kept for the op to throw. Speech goes to a temp folder
+ *  (released by `release`), because the op copies it into media/ itself and every round discards what is staged there. */
+export async function compute(p: Project, r: Request, signal?: AbortSignal) {
+  const key = keyOf(r);
+  if (p.analyses.has(key)) throw new Error(`internal: the ${r.kind} analysis was requested again after it ran`);
+  const tmp = r.kind === "tts" ? mkdtempSync(join(tmpdir(), "agentcut-vo-")) : undefined;
+  try {
+    const value = r.kind === "transcribe" ? await transcribe(r.path, r.language, undefined, r.range, signal)
+      : r.kind === "tts" ? await tts(r.text, join(tmp!, "vo.wav"), r.voice, r.rate, undefined, signal)
+      : await silence(r.path, r.noiseDb, r.minSilence, signal);
+    p.analyses.set(key, { value, tmp });
+  } catch (e) {
+    if (!(e instanceof EditError) || signal?.aborted) { if (tmp) rmSync(tmp, { recursive: true, force: true }); throw e; }
+    p.analyses.set(key, { error: e, tmp });
+  }
+}
+
+/** Forget the memo and delete the temp folders it holds. */
+export function release(p: Project) {
+  for (const { tmp } of p.analyses.values()) if (tmp) rmSync(tmp, { recursive: true, force: true });
+  p.analyses.clear();
 }

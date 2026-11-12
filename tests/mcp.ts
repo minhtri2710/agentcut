@@ -1,6 +1,6 @@
 // MCP end-to-end: spawns the server over stdio, exercises the main tools like an agent would.
 // Run: bun tests/mcp.ts
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -241,10 +241,18 @@ if (process.platform !== "win32") {
   const waitPid = async () => { await until(() => existsSync(pidFile) && Number(readFileSync(pidFile, "utf8")) > 0, 10_000); return existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) || 0 : 0; };
   // the stand-in sleeps 60 s, so a child gone within 5 s shows the server stopped it
   const stopped = async (pid: number) => { const ok = pid > 0 && (await until(() => !alive(pid), 5000)); if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL"); return ok; };
-  const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"]] as const;
+  // transcribe, analyze_silence, tts and apply_ops add_captions transcribe= reach ffmpeg first: tts through a stand-in speech engine that writes talk.wav
+  const speaker = process.platform === "darwin" ? "say" : "espeak-ng";
+  writeFileSync(join(bin, speaker), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${speaker === "say" ? "-o" : "-w"}" ] && cp '${join(tmp, "talk.wav")}' "$2"; shift; done\n`, { mode: 0o755 });
+  const SP = join(tmp, "stall-proj");
+  await call("create_project", { path: SP, preset: "youtube" });
+  const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"],
+    ["transcribe", { path: join(tmp, "talk.wav") }, "-ar 16000"], ["analyze_silence", { path: join(tmp, "talk.wav") }, "silencedetect"], ["tts", { text: "Hello there.", output: join(tmp, "stall-tts.wav") }, "p0.wav"],
+    ["apply_ops", { project: SP, ops: [{ op: "add_captions", transcribe: join(tmp, "talk.wav") }] }, "-ar 16000"]] as const;
   for (const [tool, args, key] of stalls) {
     stall(key);
     rmSync(pidFile, { force: true });
+    const saved = tool === "apply_ops" ? readFileSync(join(SP, "project.json"), "utf8") : "";
     const c = new Client({ name: "agentcut-test-cancel", version: "1" });
     await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: stallEnv }));
     const ac = new AbortController();
@@ -255,6 +263,7 @@ if (process.platform !== "win32") {
     const gone = await stopped(pid);
     const after = await callOn(c)("guide");
     check(`a client cancel during ${tool} stops its ffmpeg child within 5 s and the server keeps serving`, gone && String(after.json).includes("Mental model"), { pid, gone });
+    if (tool === "apply_ops") check("a cancelled apply_ops saved nothing: project.json is unchanged and media/ is empty", readFileSync(join(SP, "project.json"), "utf8") === saved && readdirSync(join(SP, "media")).length === 0, { media: readdirSync(join(SP, "media")) });
     await c.close();
   }
   for (const [tool, args, key] of stalls) {

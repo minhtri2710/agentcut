@@ -328,6 +328,12 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     await abortRun("audio_check's project mix", "", (signal) => api.audioCheck(Q, { out: join(tmp, "abort-check.png"), signal }));
     await abortRun("a scene scan", "scene", (signal) => api.analyze.scenes(join(m, "talk.mp4"), 0.3, signal));
     await abortRun("the scopes", "signalstats", (signal) => api.scopes(R, 0.2, { out: join(tmp, "abort-scopes.jpg"), signal }));
+    // silence, transcribe and tts: the signal reaches the ffmpeg step each starts (a stand-in speech engine writes the tone, so tts reaches its convert step)
+    await abortRun("a silence scan", "silencedetect", (signal) => api.analyze.silence(src, -35, 0.4, signal));
+    await abortRun("a transcription's audio extraction", "-ar 16000", (signal) => api.analyze.transcribe(src, "vi", undefined, undefined, undefined, signal));
+    const speaker = join(bin, process.platform === "darwin" ? "say" : "espeak-ng");
+    writeFileSync(speaker, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${process.platform === "darwin" ? "-o" : "-w"}" ] && cp '${src}' "$2"; shift; done\n`, { mode: 0o755 });
+    await abortRun("the speech conversion", "p0.wav", (signal) => api.analyze.tts("Hello there.", join(tmp, "abort-tts.wav"), undefined, undefined, Q, signal));
     // output past the cap stops a child that ignores SIGTERM: the call settles with status null and the child is gone
     {
       let pid = 0, res: any, took = -1;

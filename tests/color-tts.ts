@@ -25,6 +25,7 @@ function ff(...args: string[]) {
   if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
 }
 const throwsCode = (f: () => unknown, code: string) => { try { f(); return false; } catch (e: any) { return e.code === code || e.message; } };
+const rejectsCode = async (f: () => Promise<unknown>, code: string) => { try { await f(); return false; } catch (e: any) { return e.code === code || e.message; } };
 /** mean R,G,B of a still (ffmpeg scales to 1x1). */
 const meanRgb = (file: string) => [...(spawnSync("ffmpeg", ["-v", "error", "-i", file, "-vf", "scale=1:1:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout as Buffer)];
 
@@ -153,17 +154,17 @@ check("url: base, /v1 and full path all normalise",
 check("key alone means api.openai.com; nothing set means unconfigured", T.speechUrl({ AGENTCUT_TTS_KEY: "k" }) === "https://api.openai.com/v1/audio/speech" && T.speechUrl({}) === null);
 const b = T.speechBody("hi", undefined, 350, { AGENTCUT_TTS_MODEL: "kokoro", AGENTCUT_TTS_VOICE: "af_bella" });
 check("body: env model/voice, wav, rate -> speed", b.model === "kokoro" && b.voice === "af_bella" && b.response_format === "wav" && b.speed === 2 && b.input === "hi", b);
-check("piper without a model is a missing_dependency", throwsCode(() => AN.tts("x", join(tmp, "p.wav"), "piper"), "missing_dependency") === true);
+check("piper without a model is a missing_dependency", await rejectsCode(() => AN.tts("x", join(tmp, "p.wav"), "piper"), "missing_dependency") === true);
 {
   // the espeak branch is the non-darwin, non-win32 one: present it as linux; no engine is installed here, so a valid voice ends at missing_dependency
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { value: "linux" });
   try {
-    const bv = (v: string) => { try { AN.tts("x", join(tmp, "v.wav"), v); return null; } catch (e: any) { return e; } };
-    const e = bv("-x");
+    const bv = async (v: string) => { try { await AN.tts("x", join(tmp, "v.wav"), v); return null; } catch (e: any) { return e; } };
+    const e = await bv("-x");
     check("espeak voice that reads as an option is a bad_voice with a hint", e?.code === "bad_voice" && !!e.hint, e && { code: e.code, msg: e.message });
-    check("espeak voice with a path separator is a bad_voice", bv("en/../x")?.code === "bad_voice");
-    check("espeak voice names like en-us and en+f3 pass the voice check", ["en-us", "en+f3", "vi", "mb-en1"].every((v) => bv(v)?.code !== "bad_voice"));
+    check("espeak voice with a path separator is a bad_voice", (await bv("en/../x"))?.code === "bad_voice");
+    check("espeak voice names like en-us and en+f3 pass the voice check", (await Promise.all(["en-us", "en+f3", "vi", "mb-en1"].map(bv))).every((r) => r?.code !== "bad_voice"));
   } finally { Object.defineProperty(process, "platform", platform); }
 }
 if (process.platform !== "win32") {
@@ -185,44 +186,44 @@ if [ -f "$d/unknown" ]; then printf 'Alpha Voice\\nBeta Voice\\n'; exit 3; fi
   chmodSync(fake, 0o755);
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   const pathWas = process.env.PATH;
-  const sapi = (voice?: string, rate?: number) => {
+  const sapi = async (voice?: string, rate?: number) => {
     const out = join(tmp, "sapi.wav");
     rmSync(out, { force: true });
     for (const f of ["argv", "voice", "out"]) rmSync(join(fakeDir, f), { force: true });
     Object.defineProperty(process, "platform", { value: "win32" });
     process.env.PATH = `${fakeDir}:${pathWas}`;
-    try { AN.tts("hello", out, voice, rate); return { out, err: null as any }; }
+    try { await AN.tts("hello", out, voice, rate); return { out, err: null as any }; }
     catch (err: any) { return { out, err }; }
     finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
   };
   const seen = (f: string) => readFileSync(join(fakeDir, f), "utf8");
   const script = () => seen("argv").split("\0")[2] ?? "";
   try {
-    const plain = sapi();
+    const plain = await sapi();
     check("sapi: a normal run produces the output file", plain.err === null && existsSync(plain.out), plain.err && plain.err.message);
     check("sapi: the output path reaches powershell as the variable, not in the script text",
       seen("out").endsWith("tts.wav") && seen("out").includes("agentcut-tts-") && !script().includes("agentcut-tts-") && !script().includes(seen("out")), { out: seen("out"), script: script() });
     check("sapi: no voice leaves the voice variable empty", seen("voice") === "");
-    sapi(undefined, 225);
+    await sapi(undefined, 225);
     check("sapi: rate stays an integer in the script", /\$s\.Rate=2;/.test(script()), script());
     const chars: [string, string][] = [["apostrophe", "'"], ["U+2018", "‘"], ["U+2019", "’"], ["U+201A", "‚"], ["U+201B", "‛"], ["dollar", "$"], ["backtick", "`"], ["semicolon", ";"], ["newline", "\n"]];
     const names: [string, string][] = [...chars.map(([n, c]): [string, string] => [n, `Zq${c}Marker${c}Zq`]), ["300 chars", `Marker${"x".repeat(294)}`]];
     for (const [label, voice] of names) {
-      const r = sapi(voice);
+      const r = await sapi(voice);
       check(`sapi: a voice name with ${label} stays out of the script text and arrives byte for byte`,
         r.err === null && !script().includes("Marker") && seen("voice") === voice && Buffer.from(seen("voice")).equals(Buffer.from(voice)), r.err ? r.err.message : { script: script(), voice: seen("voice") });
     }
-    check("sapi: a voice name with a NUL is a bad_voice", sapi("Zq\0Zq").err?.code === "bad_voice");
+    check("sapi: a voice name with a NUL is a bad_voice", (await sapi("Zq\0Zq")).err?.code === "bad_voice");
     writeFileSync(join(fakeDir, "unknown"), "");
-    const bad = sapi("Alpha Voic");
+    const bad = await sapi("Alpha Voic");
     check("sapi: the unknown-voice exit is a bad_voice that names the installed voices", bad.err?.code === "bad_voice" && /Alpha Voice/.test(bad.err.hint) && /Beta Voice/.test(bad.err.hint) && /installed voices:/.test(bad.err.hint), bad.err && { code: bad.err.code, msg: bad.err.message, hint: bad.err.hint });
     check("sapi: the unknown-voice error carries the voice and a suggestion", /Alpha Voic/.test(bad.err?.message ?? "") && /did you mean 'Alpha Voice'/.test(bad.err?.hint ?? ""), bad.err && { msg: bad.err.message, hint: bad.err.hint });
   } finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
 }
-check("openai without config is a missing_dependency", throwsCode(() => AN.tts("x", join(tmp, "o.wav"), "openai:nova"), "missing_dependency") === true);
+check("openai without config is a missing_dependency", await rejectsCode(() => AN.tts("x", join(tmp, "o.wav"), "openai:nova"), "missing_dependency") === true);
 
 console.log("tts over http (local server)");
-// tts() is synchronous (curl), so the fake /v1/audio/speech server runs in its own process.
+// the fake /v1/audio/speech server runs in its own process.
 ff("-f", "lavfi", "-i", "sine=frequency=500:duration=0.7", "-ar", "24000", join(tmp, "reply.wav"));
 const KEY = "sk-test-SECRET-123";
 const serverJs = join(tmp, "server.mjs");
@@ -238,7 +239,7 @@ const port = await new Promise<number>((res) => srv.stdout!.once("data", (d) => 
 try {
   Object.assign(process.env, { AGENTCUT_TTS_URL: `http://127.0.0.1:${port}/v1`, AGENTCUT_TTS_KEY: KEY, AGENTCUT_TTS_MODEL: "tts-test" });
   const out = join(tmp, "vo.wav");
-  const r = AN.tts("Xin chào", out, "openai:shimmer", 175);
+  const r = await AN.tts("Xin chào", out, "openai:shimmer", 175);
   const req = JSON.parse(readFileSync(reqLog, "utf8").trim().split("\n").pop()!);
   check("POST /v1/audio/speech with bearer key + json", req.method === "POST" && req.url === "/v1/audio/speech" && req.auth === `Bearer ${KEY}` && req.type === "application/json", req);
   check("request body", JSON.stringify(req.body) === JSON.stringify({ model: "tts-test", input: "Xin chào", voice: "shimmer", response_format: "wav", speed: 1 }), req.body);
@@ -252,7 +253,7 @@ try {
     const code = async (extra: any) => (await api.apply(P, [{ op: "add_voiceover", voice: "openai:alloy", text: "hello", ...extra }]).catch((x) => x)).code;
     check("add_voiceover: empty text is missing_input, a rate that is not positive is bad_value, no engine request, nothing saved",
       await code({ text: "  " }) === "missing_input" && await code({ rate: 0 }) === "bad_value" && await code({ rate: -3 }) === "bad_value" && await code({ rate: "175" }) === "bad_value" && sent() === was && JSON.stringify(api.info(P, "json").timeline) === timeline);
-    AN.tts("hello", join(tmp, "vo-null-rate.wav"), "openai:alloy", null);
+    await AN.tts("hello", join(tmp, "vo-null-rate.wav"), "openai:alloy", null);
     const last = JSON.parse(readFileSync(reqLog, "utf8").trim().split("\n").pop()!);
     check("tts: a null rate is the voice's default rate", sent() > was && !("speed" in last.body), last.body);
   }
@@ -273,20 +274,20 @@ try {
   { // one request per sentence, in order; a one-sentence script is one request
     const reqs = () => readFileSync(reqLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const n0 = reqs().length;
-    const rs = AN.tts("Một. Hai? Ba!", join(tmp, "vo3.wav"), "openai:shimmer");
+    const rs = await AN.tts("Một. Hai? Ba!", join(tmp, "vo3.wav"), "openai:shimmer");
     const got = reqs().slice(n0);
     check("http: three sentences make three requests, in order", JSON.stringify(got.map((q: any) => q.body.input)) === JSON.stringify(["Một.", "Hai?", "Ba!"]), got.map((q: any) => q.body.input));
     const ss = (rs as any).sentences ?? [];
     check("http: sentences are contiguous, start at 0 and end at the file duration",
       ss.length === 3 && ss[0].start === 0 && ss.every((s: any, i: number) => i === 0 || s.start === ss[i - 1].end) && Math.abs(ss[2].end - rs.duration) < 1 / 30 && ss.every((s: any) => Math.abs(s.end - s.start - 0.7) < 0.05), { ss, d: rs.duration });
     const n1 = reqs().length;
-    const one = AN.tts("Chỉ một câu", join(tmp, "vo1.wav"), "openai:shimmer");
+    const one = await AN.tts("Chỉ một câu", join(tmp, "vo1.wav"), "openai:shimmer");
     check("http: a one-sentence script makes one request and one sentence spanning the file", reqs().length === n1 + 1 && (one as any).sentences?.length === 1 && (one as any).sentences[0].text === "Chỉ một câu" && (one as any).sentences[0].start === 0 && Math.abs((one as any).sentences[0].end - one.duration) < 1 / 30, (one as any).sentences);
   }
 
   process.env.AGENTCUT_TTS_KEY = "sk-wrong-SECRET-456";
   let msg = "";
-  try { AN.tts("x", join(tmp, "e.wav"), "openai:nova"); } catch (e: any) { msg = `${e.code} ${e.message} ${e.hint}`; }
+  try { await AN.tts("x", join(tmp, "e.wav"), "openai:nova"); } catch (e: any) { msg = `${e.code} ${e.message} ${e.hint}`; }
   check("http error surfaces status, never the key", msg.startsWith("tts_failed") && msg.includes("401") && !msg.includes("SECRET"), msg);
 
   // piper: fake binary on PATH records argv/stdin and writes a wav
@@ -295,7 +296,7 @@ try {
   chmodSync(join(bin, "piper"), 0o755);
   writeFileSync(join(tmp, "vi.onnx"), ""); writeFileSync(join(tmp, "vi.onnx.json"), JSON.stringify({ language: { code: "vi_VN" } }));
   Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENTCUT_PIPER_MODEL: join(tmp, "vi.onnx"), AGENTCUT_TTS_PROVIDER: "piper" });
-  const pr = AN.tts("Chào bạn", join(tmp, "piper.wav"), undefined, 350);
+  const pr = await AN.tts("Chào bạn", join(tmp, "piper.wav"), undefined, 350);
   const args = readFileSync(join(tmp, "piper.args"), "utf8");
   check("piper via env default: model, length_scale, text on stdin", pr.provider === "piper" && args.includes(`--model ${join(tmp, "vi.onnx")}`) && args.includes("--length_scale 0.500") && readFileSync(join(tmp, "piper.stdin"), "utf8") === "Chào bạn", args);
   const piperCalls = () => readFileSync(join(tmp, "piper.calls"), "utf8").trim().split("\n");
@@ -328,7 +329,7 @@ fi
     try {
       writeFileSync(join(tmp, "ps.n"), "0");
       const text = "Một hai ba. Bốn năm? Sáu bảy tám chín!";
-      const r: any = AN.tts(text, join(tmp, "ps.wav"));
+      const r: any = await AN.tts(text, join(tmp, "ps.wav"));
       check("piper: three sentences make three invocations, one sentence on each stdin", calls() === 3 && [input(1), input(2), input(3)].join("|") === "Một hai ba.|Bốn năm?|Sáu bảy tám chín!", { calls: calls() });
       const ss = r.sentences ?? [];
       check("piper: sentences are contiguous, follow each part's length and sum to the file duration (1 frame)",
@@ -346,7 +347,7 @@ fi
       check("add_voiceover: caption words keep the script", cap.words.map((w: any) => w.text).join(" ") === text);
 
       writeFileSync(join(tmp, "ps.n"), "0");
-      const o1: any = AN.tts("Chỉ một câu", join(tmp, "ps1.wav"));
+      const o1: any = await AN.tts("Chỉ một câu", join(tmp, "ps1.wav"));
       check("piper: a one-sentence script is one invocation and one sentence", calls() === 1 && o1.sentences?.length === 1 && o1.sentences[0].start === 0 && Math.abs(o1.sentences[0].end - o1.duration) < 1 / 30, { calls: calls(), s: o1.sentences });
 
       { // clause pause and silent tail inside one sentence: captions follow the detected speech, not a spread over the whole span
@@ -367,7 +368,7 @@ fi
         const joined = join(tmp, "ps-join.wav");
         process.env.PATH = `${binJ}:${process.env.PATH}`;
         let err: any;
-        try { AN.tts("Một hai. Ba bốn.", joined); } catch (e: any) { err = e; } finally { process.env.PATH = `${binS}:${pathWas}`; }
+        try { await AN.tts("Một hai. Ba bốn.", joined); } catch (e: any) { err = e; } finally { process.env.PATH = `${binS}:${pathWas}`; }
         check("a failing join is tts_failed 'tts join failed' and leaves no output", err?.code === "tts_failed" && err.message.startsWith("tts join failed") && !existsSync(joined) && readdirSync(tmp).every((f) => !f.startsWith("ps-join")), err && { code: err.code, msg: err.message });
       }
 
@@ -383,13 +384,13 @@ fi
       writeFileSync(join(tmp, "ps.n"), "0");
       const direct = join(tmp, "ps-fail.wav");
       writeFileSync(join(tmp, "ps.fail"), "3");
-      check("tts(): a failing last part throws and leaves no output file", throwsCode(() => AN.tts(text, direct), "tts_failed") === true && !existsSync(direct) && readdirSync(tmp).every((f) => !f.startsWith("ps-fail")));
+      check("tts(): a failing last part throws and leaves no output file", await rejectsCode(() => AN.tts(text, direct), "tts_failed") === true && !existsSync(direct) && readdirSync(tmp).every((f) => !f.startsWith("ps-fail")));
       rmSync(join(tmp, "ps.fail"));
 
       // onnxruntime telemetry stays off for piper whatever the inherited value
       writeFileSync(join(tmp, "ps.n"), "0");
       process.env.ORT_DISABLE_TELEMETRY = "0";
-      try { AN.tts("Chào bạn", join(tmp, "ps-ort.wav")); } finally { delete process.env.ORT_DISABLE_TELEMETRY; }
+      try { await AN.tts("Chào bạn", join(tmp, "ps-ort.wav")); } finally { delete process.env.ORT_DISABLE_TELEMETRY; }
       check("piper is spawned with ORT_DISABLE_TELEMETRY=1, whatever the inherited value", readFileSync(join(tmp, "ps.ort.1"), "utf8") === "1", readFileSync(join(tmp, "ps.ort.1"), "utf8"));
     } finally { process.env.PATH = pathWas; }
   }
@@ -401,7 +402,7 @@ fi
     tok(" hôm", 1800, 2100), tok(" nay", 2100, 2400), tok("...", 2400, 2500), tok(" nhé", 3000, 3300), tok("!", 3300, 3350)] }));
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho "$1" >> "${tmp}/whisper.calls"\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; [ "$1" = "-f" ] && cp "$2" "${tmp}/whisper.wav"; shift; done\n`);
   chmodSync(join(bin, "whisper-cli"), 0o755);
-  const tr = AN.transcribe(join(tmp, "reply.wav"), "vi", join(tmp, "fake.bin"));
+  const tr = await AN.transcribe(join(tmp, "reply.wav"), "vi", join(tmp, "fake.bin"));
   const wargs = readFileSync(join(tmp, "whisper.args"), "utf8").split("\n");
   check("transcribe asks whisper.cpp for whole words: -sow with -ml 1, the model and the language", wargs.includes("-sow") && wargs.includes("-ml") && wargs[wargs.indexOf("-m") + 1] === join(tmp, "fake.bin") && wargs[wargs.indexOf("-l") + 1] === "vi", wargs);
   check("transcribe: punctuation-only tokens join the previous word (a leading one the next)", JSON.stringify(tr.words.map((w: any) => w.text)) === JSON.stringify(["“Xin", "chào", "các", "bạn,", "hôm", "nay...", "nhé!"]), tr.words);
@@ -418,14 +419,15 @@ fi
     const startDb = (f: string) => { const m = /max_volume: (\S+) dB/.exec(spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-t", "0.5", "-i", f, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" }).stderr); return m ? (m[1] === "-inf" ? -Infinity : +m[1]) : NaN; };
     const engine = [[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]], shifted = (by: number) => engine.map(([a, b]) => [+(a + by).toFixed(3), +(b + by).toFixed(3)]);
     const times = (ws: any[]) => JSON.stringify(ws.map((w) => [w.start, w.end]));
-    AN.transcribe(src, "vi", fake);
+    await AN.transcribe(src, "vi", fake);
     check("no range: the engine gets the whole media, from its silent start", Math.abs(dur(given) - 6) < 0.05 && startDb(given) < -60, { dur: dur(given), db: startDb(given) });
-    const ranged = AN.transcribe(src, "vi", fake, [2, 5]);
+    const ranged = await AN.transcribe(src, "vi", fake, [2, 5]);
     check("range [2, 5]: the engine gets end - start seconds, starting at start (not silent)", Math.abs(dur(given) - 3) < 0.05 && startDb(given) > -30, { dur: dur(given), db: startDb(given) });
     check("range [2, 5]: every word start and end is the engine's time + start", times(ranged.words) === JSON.stringify(shifted(2)), times(ranged.words));
     const before = calls();
     const bads: any[] = [[-1, 2], [2, 2], [3, 2], [NaN, 2], [0, Infinity], [0], [0, 1, 2], ["1", 2], "2-5", 3];
-    check("a bad range is bad_value and starts no engine", bads.every((r) => throwsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value") === true) && calls() === before, bads.map((r) => throwsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value")));
+    const badRange = await Promise.all(bads.map((r) => rejectsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value")));
+    check("a bad range is bad_value and starts no engine", badRange.every((x) => x === true) && calls() === before, badRange);
 
     const was = process.env.AGENTCUT_WHISPER_MODEL;
     process.env.AGENTCUT_WHISPER_MODEL = fake;
@@ -440,6 +442,63 @@ fi
       const e2: any = await api.apply(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
       check("add_captions: transcribe_range without transcribe, and a bad range, are bad_value and leave the timeline unchanged", e1.code === "bad_value" && e2.code === "bad_value" && JSON.stringify(api.info(Q, "json").timeline) === was2, { e1: e1.code, e2: e2.code });
     } finally { if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
+  }
+
+  // analyses inside apply_ops (transcribe, speech, silence) run async with the call's signal and are kept for the call: the batch is re-run once per analysis it asks for, plus the last
+  {
+    const { Project } = await import("../src/project.ts"), { OPS, applyOps } = await import("../src/ops.ts");
+    const src = join(tmp, "reply.wav"), load = Project.prototype.load, realNow = Date.now;
+    const was = process.env.AGENTCUT_WHISPER_MODEL, started = (f: string) => (existsSync(join(tmp, f)) ? readFileSync(join(tmp, f), "utf8").trim().split("\n").length : 0);
+    const leftovers = () => readdirSync(tmpdir()).filter((f) => f.startsWith("agentcut-vo-"));
+    process.env.AGENTCUT_WHISPER_MODEL = join(tmp, "fake.bin");
+    let rounds = 0;
+    Project.prototype.load = function (this: InstanceType<typeof Project>) { rounds++; return load.call(this); }; // api.apply loads once per round
+    try {
+      const Z = join(tmp, "rounds"), tmpWas = leftovers();
+      api.create(Z, { preset: "720p" });
+      const w0 = started("whisper.calls"), p0 = started("piper.calls"), rev0 = api.info(Z).revision, undo0 = api.history(Z).undo.length;
+      rounds = 0;
+      const r: any = await api.apply(Z, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "add_voiceover", text: "Chào bạn", voice: "piper" }, { op: "add_marker", t: 1, label: "m" }]);
+      const used = rounds;
+      check("two analysis ops and an edit take 3 rounds, start each engine once, save once and keep the speech in media/ only",
+        used === 3 && started("whisper.calls") === w0 + 1 && started("piper.calls") === p0 + 1 && r.revision === rev0 + 1 && api.history(Z).undo.length === undo0 + 1
+        && /^media\/vo-\d+\.wav$/.test(r.results[1].path) && readdirSync(join(Z, "media")).join() === r.results[1].path.slice(6) && leftovers().every((f) => tmpWas.includes(f)),
+        { used, whisper: started("whisper.calls") - w0, piper: started("piper.calls") - p0, rev: r.revision, results: r.results.map((x: any) => x.op), media: readdirSync(join(Z, "media")), left: leftovers() });
+      check("the results are those of the batch: captions from the transcript, the voiceover clip, the marker",
+        r.results.map((x: any) => x.op).join() === "add_captions,add_voiceover,add_marker" && api.info(Z, "json").timeline.tracks.some((t: any) => t.clips.some((c: any) => c.type === "captions" && c.words.length)) && r.results[1].duration > 0.5, r.results);
+
+      // a caller that is not api.apply (prepare, a test) gets an internal error, never a result without the analysis
+      const pz = api.openProject(Z), direct = (() => { try { applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }]); return null; } catch (x: any) { return x; } })();
+      check("applyOps without the api.apply runner fails closed on an analysis: an internal error, not an EditError, and no piper start", direct && !(direct instanceof Error && "code" in direct) && /^internal: /.test(direct.message) && started("piper.calls") === p0 + 1, direct && direct.message);
+
+      // two voiceovers in one batch, in the same millisecond: each gets its own file and keeps its own speech (a stand-in piper speaks 0.5 s per word)
+      {
+        const binV = join(tmp, "bin-vo"), pathNow = process.env.PATH;
+        mkdirSync(binV);
+        writeFileSync(join(binV, "piper"), `#!/bin/sh\ncat > "${tmp}/vo.in"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done\nexec ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $(wc -w < "${tmp}/vo.in" | tr -d ' ')*0.5}")" -ar 22050 "$o"\n`);
+        chmodSync(join(binV, "piper"), 0o755);
+        const V2 = join(tmp, "two-vo");
+        api.create(V2, { preset: "720p" });
+        process.env.PATH = `${binV}:${pathNow}`;
+        Date.now = () => 1_700_000_000_000;
+        try { await api.apply(V2, [{ op: "add_voiceover", text: "Một hai.", voice: "piper" }, { op: "add_voiceover", text: "Ba bốn năm sáu.", voice: "piper" }]); }
+        finally { Date.now = realNow; process.env.PATH = pathNow; }
+        const t2 = api.info(V2, "json").timeline, files = readdirSync(join(V2, "media")), clips = t2.tracks.find((t: any) => t.id === "voice").clips;
+        const dur = (c: any) => +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", join(V2, t2.assets[c.asset].path)], { encoding: "utf8" }).stdout;
+        check("two add_voiceover ops in one millisecond write two files, each clip keeping its own speech", files.length === 2 && clips.length === 2 && clips[0].asset !== clips[1].asset
+          && Math.abs(dur(clips[0]) - 1) < 0.1 && Math.abs(dur(clips[1]) - 2) < 0.1, { files, assets: clips.map((c: any) => c.asset), durs: clips.map(dur) });
+      }
+
+      // a writer saves between the batch's last load and its save: the batch is re-applied from the memo (the engine does not start again) even though its analysis took longer than the 10 s deadline
+      let bumped = false;
+      OPS._other_writer = { doc: "test", args: {}, fn: (p: any) => { if (!bumped) { bumped = true; writeFileSync(p.file, readFileSync(p.file, "utf8").replace(/("revision": )(\d+)/, (_, k, n) => `${k}${Number(n) + 1}`)); } return {}; } };
+      const D = join(tmp, "deadline"), w1 = started("whisper.calls");
+      api.create(D, { preset: "720p" });
+      Date.now = () => realNow() + (started("whisper.calls") > w1 ? 11_000 : 0); // the clock jumps 11 s once the engine has started
+      const e: any = await api.apply(D, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "_other_writer" }]).catch((x) => x);
+      Date.now = realNow;
+      check("a conflict after a slow analysis is re-applied, not failed, and the engine started once", e.ok === true && e.revision === 2 && started("whisper.calls") === w1 + 1, e.code ? { code: e.code, msg: e.message } : { ok: e.ok, rev: e.revision, whisper: started("whisper.calls") - w1 });
+    } finally { Project.prototype.load = load; Date.now = realNow; delete OPS._other_writer; if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
 
   // capabilities.engines: found by a PATH / env / file lookup, never by starting the binary (fakes record every start)
@@ -487,7 +546,7 @@ fi
       check("capabilities started no engine binary (whisper-cli, piper, uv, the system engine, whisper)", !existsSync(started), existsSync(started) && readFileSync(started, "utf8"));
       // transcribe(), python branch: the one start of `whisper` is the transcription itself
       setEnv({ PATH: `${eng}:${engPy}:${was.PATH}`, AGENTCUT_WHISPER_MODEL: undefined });
-      const py = AN.transcribe(join(tmp, "reply.wav"), "vi"), runs = existsSync(started) ? readFileSync(started, "utf8").trim().split("\n") : [];
+      const py = await AN.transcribe(join(tmp, "reply.wav"), "vi"), runs = existsSync(started) ? readFileSync(started, "utf8").trim().split("\n") : [];
       check("transcribe (python whisper): started once, for the transcription itself (no probe call)", runs.length === 1 && runs[0].startsWith("whisper ") && runs[0].includes("--word_timestamps") && !runs[0].includes("--help")
         && py.text === "Xin chào" && py.words.map((w: any) => w.text).join() === "Xin,chào", { runs, py });
     } finally { setEnv(was); }

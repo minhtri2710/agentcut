@@ -590,7 +590,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict) {
   if (a.transcribe) {
     const s = a.transcribe;
     const path = tl.assets[s] ? p.abs(tl.assets[s].path) : absPath(s);
-    a.words = AN.transcribe(path, a.language, undefined, a.transcribe_range).words;
+    a.words = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range }).words;
     delete a.transcribe; delete a.language; delete a.transcribe_range;
   }
   if (!(a.words?.length || a.srt)) throw new EditError("add_captions needs words, srt or transcribe", "missing_input");
@@ -608,9 +608,11 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
 
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
-    const out = join(p.root, "media", `vo-${Date.now()}.wav`);
+    const res = AN.analysis(p, { kind: "tts", text: a.text, voice: a.voice, rate: a.rate });
+    let stamp = Date.now(), out = join(p.root, "media", `vo-${stamp}.wav`);
+    while (lexists(out)) out = join(p.root, "media", `vo-${++stamp}.wav`); // a voiceover of this batch may already hold the millisecond
     p.stage(out);
-    const res = AN.tts(a.text, out, a.voice, a.rate, p.root);
+    copyFile(res.path, out, p.root);
     const tid = a.track ?? "voice";
     const tr = ensureTrack(tl, tid, "audio");
     if (!tr.role) tr.role = "voice";
@@ -618,7 +620,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     const clip = addClip(p, tl, { track: tid, src: out, at });
     const result: Dict = { clip, duration: res.duration, path: p.rel(out) };
     if (a.captions) {
-      const speech = AN.silence(out, -40, 0.15).speech;
+      const speech = AN.analysis(p, { kind: "silence", path: res.path, noiseDb: -40, minSilence: 0.15 }).speech;
       // each sentence keeps its real span; clause pauses inside it still align when detectable
       const words = res.sentences.flatMap((s) => {
         const inside = speech.map(([x, y]) => [Math.max(x, s.start), Math.min(y, s.end)]).filter(([x, y]) => y - x > 0.05);
@@ -672,7 +674,7 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
     resolve(tl);
     const la = linkedAudio(tl, c);
     if (la?.[1].reverse) throw new EditError(`the detached audio '${la[1].id}' of '${c.id}' plays reversed, so it cannot be cut into the same segments`, "reversed_audio", `update_clip id=${la[1].id} set={reverse: null}, or remove_clip id=${la[1].id}`);
-    const res = AN.silence(p.abs(tl.assets[c.asset].path), +(a.noise_db ?? -35), +(a.min_silence ?? 0.4));
+    const res = AN.analysis(p, { kind: "silence", path: p.abs(tl.assets[c.asset].path), noiseDb: +(a.noise_db ?? -35), minSilence: +(a.min_silence ?? 0.4) });
     const pad = +(a.padding ?? 0.1), speed = Number(c.speed ?? 1) || 1;
     const cin = parseTime(c.in ?? 0), cout = cin + clipDur(c) * speed;
     const segs: number[][] = [];

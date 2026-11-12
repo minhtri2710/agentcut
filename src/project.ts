@@ -143,6 +143,9 @@ export class Project {
     return new Project(root);
   }
 
+  /** Analyses (transcribe, tts, silence) that this api.apply call has computed, by request: what the synchronous ops read (analyze.ts `analysis`). `tmp` is a folder to delete at the end of the call. */
+  readonly analyses = new Map<string, { value?: unknown; error?: EditError; tmp?: string }>();
+
   /** Files an op wrote into media/ while a batch was applied (imports, synthesized speech). A batch that is not saved discards them. */
   private staged: string[] = [];
   stage(file: string) { this.staged.push(file); return file; }

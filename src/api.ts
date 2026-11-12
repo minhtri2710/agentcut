@@ -83,12 +83,18 @@ function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
 
 /** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
  *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
- *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock). */
-export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number } = {}) {
+ *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock, which starts at the first conflict).
+ *  An op that needs a transcription, speech or a silence scan throws AN.NeedsAnalysis; the scan runs here (async, stopped by `signal`),
+ *  is kept for the call, and the batch is re-run from a fresh load: one round per analysis the batch asks for, plus the last. */
+export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal } = {}) {
   if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
-  const list: M.Dict[] = Array.isArray(ops) ? ops : ops.ops ?? [ops];
-  for (const until = Date.now() + 10_000; ;) {
+  try { return await applyRounds(p, Array.isArray(ops) ? ops : ops.ops ?? [ops], o); } finally { AN.release(p); }
+}
+
+async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal }) {
+  let until = 0; // set by the first conflict: the analyses a batch waits for do not count against it
+  for (;;) {
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
@@ -103,10 +109,13 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun) {
         try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); saved = true; }
-        catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < until) continue; throw e; }
+        catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < (until ||= Date.now() + 10_000)) continue; throw e; }
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
       return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
+    } catch (e) {
+      if (!(e instanceof AN.NeedsAnalysis)) throw e;
+      await AN.compute(p, e.req, o.signal);
     } finally { p.discardStaged(saved); }
   }
 }
@@ -377,21 +386,21 @@ export function capabilities() {
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
 /** start/end: the stretch of the media to transcribe (seconds or mm:ss), like a render range: start defaults to 0, end to the media's end. */
-function transcribe(p: string, language?: string, model?: string, start?: number | string, end?: number | string) {
+async function transcribe(p: string, language?: string, model?: string, start?: number | string, end?: number | string, signal?: AbortSignal) {
   const f = presolve(p);
-  if (start === undefined && end === undefined) return AN.transcribe(f, language, model);
-  return AN.transcribe(f, language, model, [start === undefined ? 0 : M.parseTime(start, "start"), end === undefined ? Number(probeMedia(f).duration) : M.parseTime(end, "end")]);
+  if (start === undefined && end === undefined) return AN.transcribe(f, language, model, undefined, signal);
+  return AN.transcribe(f, language, model, [start === undefined ? 0 : M.parseTime(start, "start"), end === undefined ? Number(probeMedia(f).duration) : M.parseTime(end, "end")], signal);
 }
 /** Speech into a file. The output is judged as a render's is: it may not replace the project's own files. A project is used when named or found, not required. */
-function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string) {
+async function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string, signal?: AbortSignal) {
   if (!out) throw new M.EditError("tts needs an output path", "missing_input", "-o out.wav (CLI) / output=out.wav (MCP)");
   let p: Project | null = null;
   try { p = openProject(project); } catch (e: any) { if (e.code !== "no_project" || project || process.env.AGENTCUT_PROJECT) throw e; }
   const path = presolve(out);
   if (p) refuseSource(p.root, p.load(), path);
-  return AN.tts(text, path, voice, rate, p?.root);
+  return AN.tts(text, path, voice, rate, p?.root, signal);
 }
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
+export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
   subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {

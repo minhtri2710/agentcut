@@ -158,9 +158,9 @@ export async function main(argv = process.argv.slice(2)) {
         break;
       }
       case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold)); break;
-      case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
+      case "silence": res = await api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
       case "loudness": res = await api.analyze.loudness(pos[0]); break;
-      case "transcribe": res = api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
+      case "transcribe": res = await api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
       case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
         let root: string | undefined;
         try { root = api.openProject(P).root; } catch (e: any) { if (e.code !== "no_project" || P || process.env.AGENTCUT_PROJECT) throw e; }
@@ -179,7 +179,7 @@ export async function main(argv = process.argv.slice(2)) {
         else return emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
         break;
       }
-      case "tts": res = api.analyze.tts(pos[0], f.output, f.voice, num(f.rate), f.project); break;
+      case "tts": res = await api.analyze.tts(pos[0], f.output, f.voice, num(f.rate), f.project); break;
       case "voices": res = api.voices(f.lang); break;
       case "fonts": res = await api.fonts(pos[0] ?? ""); break;
       case "schema": res = api.schema(); break;

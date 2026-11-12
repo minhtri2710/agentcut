@@ -70,7 +70,7 @@ console.log("media ->", tmp);
 // speech: three sentences with ~1 s pauses (slnc) so the noise floor can be measured between them
 const speech = join(m, "linh.aiff");
 spawnSync("say", ["-v", "Linh", "-o", speech, "Xin chào các bạn. [[slnc 900]] Hôm nay chúng ta sẽ học cách dựng video. [[slnc 900]] Đừng quên đăng ký kênh nhé."]);
-const pauses = AN.silence(speech, -45, 0.4).silences.filter(([s, e]) => e - s > 0.8).map(([s, e]) => [s + 0.2, e - 0.2]);
+const pauses = (await AN.silence(speech, -45, 0.4)).silences.filter(([s, e]) => e - s > 0.8).map(([s, e]) => [s + 0.2, e - 0.2]);
 check("fixture: speech has two ~1 s pauses", pauses.length >= 2, pauses);
 // noisy room: early reflections + brown/white noise (~10 dB SNR)
 const noisy = join(m, "noisy.wav");
@@ -158,7 +158,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   const P = project("tts");
   const text = "Xin chào các bạn. Hôm nay chúng ta sẽ học cách dựng video thật nhanh. Đừng quên đăng ký kênh nhé!";
   const r = (await api.apply(P, [{ op: "add_voiceover", text, voice: "Linh", captions: "clean" }])).results[0];
-  const vo = join(P, r.path), segs = AN.silence(vo, -40, 0.15).speech;
+  const vo = join(P, r.path), segs = (await AN.silence(vo, -40, 0.15)).speech;
   const cap = api.info(P, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
   const firsts = cap.words.filter((_: any, i: number) => i === 0 || /[.!?]$/.test(cap.words[i - 1].text));
   check(`voiceover ${r.duration.toFixed(2)} s, ${segs.length} speech segments for 3 sentences`, r.duration > 3 && segs.length === 3, segs);
@@ -197,7 +197,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
       for (let i = want.length - 1; i >= 0; i--) for (let j = got.length - 1; j >= 0; j--) lcs[i][j] = want[i] === got[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
       return { hit: lcs[0][0], of: want.length, share: lcs[0][0] / want.length };
     };
-    const tr = AN.transcribe(out, "vi");
+    const tr = await AN.transcribe(out, "vi");
     const s1 = scriptShare(tr.words);
     check(`whisper returns ${s1.hit}/${s1.of} script words whole and in order (${(s1.share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%): ${tr.text.slice(0, 80)}`, s1.share >= MIN_SHARE);
     check("no transcribed word is punctuation only", tr.words.every((w: any) => !/^\p{P}+$/u.test(w.text)), tr.words.filter((w: any) => /^\p{P}+$/u.test(w.text)));
@@ -208,7 +208,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
       "[0:a]aresample=48000,aformat=channel_layouts=stereo[a];[1:a]aresample=48000,aformat=channel_layouts=stereo[b];[a][b]concat=n=2:v=0:a=1", "-ar", "48000", tailed);
     const dt = +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", tailed], { encoding: "utf8" }).stdout;
     check(`the mix has more than 30 s of music-only tail after the speech span end ${spanEnd.toFixed(2)} s (file ${dt.toFixed(1)} s)`, dt - spanEnd > 30, { dt, spanEnd });
-    const cut = AN.transcribe(tailed, "vi", undefined, [0, spanEnd + 0.3]), s2 = scriptShare(cut.words);
+    const cut = await AN.transcribe(tailed, "vi", undefined, [0, spanEnd + 0.3]), s2 = scriptShare(cut.words);
     check(`range [0, ${(spanEnd + 0.3).toFixed(2)}]: no word starts after the speech span end`, cut.words.length > 0 && cut.words.every((w: any) => w.start <= spanEnd), cut.words.filter((w: any) => w.start > spanEnd));
     check(`range [0, ${(spanEnd + 0.3).toFixed(2)}]: ${s2.hit}/${s2.of} script words (${(s2.share * 100).toFixed(0)}%, need ${MIN_SHARE * 100}%)`, s2.share >= MIN_SHARE);
   }
