@@ -6,8 +6,9 @@
 //  - the one append (feedback) opens with O_NOFOLLOW and refuses a file with other hard links.
 // A refused path is an EditError "unsafe_path"; there is no fallback to a plain write. Lock and project files are created with a hard
 // link, so a volume without hard links is refused with "unsupported_fs".
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, copyFileSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { EditError } from "./model.ts";
 
@@ -97,6 +98,16 @@ const nameBeside = (file: string) => { const ext = extname(file); return `${file
 export function tmpSibling(file: string, base?: string): string {
   ensureParent(file, base);
   return nameBeside(file);
+}
+
+/** Short tag of this machine in the part files it writes: a pid means nothing on another machine that shares the output folder. */
+export const HOST_TAG = createHash("sha1").update(hostname()).digest("hex").slice(0, 8);
+
+/** tmpSibling for an output file that a later render sweeps after a crash (encode.ts sweepParts): `<name>.part-<pid>-<HOST_TAG>-<12 hex><ext>`,
+ *  HOST_TAG before the random part. */
+export function partSibling(file: string, base?: string): string {
+  const p = tmpSibling(file, base), cut = p.length - extname(file).length - 13;
+  return `${p.slice(0, cut)}-${HOST_TAG}${p.slice(cut)}`;
 }
 
 /** Put the finished temp file at `file`; a symlink or file already there is replaced, never written through. A directory there is refused. */

@@ -373,6 +373,20 @@ console.log("the feedback store and the font cache");
   }
 }
 
+console.log("subtitle mux part file carries the host tag (the render sweep can remove it after a crash)");
+{
+  const bin = join(tmp, "fakebin"), rec = join(tmp, "mux-output.txt");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ffmpeg"), '#!/bin/sh\nfor a; do last=$a; done\nprintf %s "$last" > "$AGENTCUT_TEST_MUX_REC"\nexit 1\n', { mode: 0o755 });
+  const { embedSubtitles } = await import("../src/subtitles.ts");
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`; process.env.AGENTCUT_TEST_MUX_REC = rec;
+  let c: string;
+  try { c = await code(() => embedSubtitles(join(tmp, "out.mp4"), [{ start: 0, end: 1, text: "x", clip: "c" }])); } finally { process.env.PATH = path; delete process.env.AGENTCUT_TEST_MUX_REC; }
+  const name = existsSync(rec) ? basename(readFileSync(rec, "utf8")) : "";
+  check("embedSubtitles writes its part file under a host-tagged name", c === "encode_failed" && new RegExp(`^out\\.part-${process.pid}-${S.HOST_TAG}-[0-9a-f]{12}\\.mp4$`).test(name), { c, name, tag: S.HOST_TAG });
+}
+
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall write checks passed");
 process.exit(failures ? 1 : 0);
