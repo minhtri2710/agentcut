@@ -6,7 +6,7 @@ import { loadCanvas } from "./canvas.ts";
 import * as FB from "./feedback.ts";
 import { listFonts } from "./fonts.ts";
 import { LOOKS } from "./color.ts";
-import { probe as probeMedia } from "./media.ts";
+import { needFfmpeg, probe as probeMedia } from "./media.ts";
 import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
@@ -156,7 +156,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   refuseSource(p.root, tl, out);
   const png = await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), false, "png");
-  const res = { t: tt, ...frameScopes(png, out, p.root) };
+  const res = { t: tt, ...(await frameScopes(png, out, p.root)) };
   CACHE.capPreviews(p, out);
   return res;
 }
@@ -325,14 +325,15 @@ export async function render(project: string | undefined, o: {
   if (o.subtitles) {
     const [t0, t1] = res.range as [number, number];
     const inRange = SUB.cuesInRange(cues, t0, t1);
-    SUB.embedSubtitles(out, inRange, p.root);
+    await SUB.embedSubtitles(out, inRange, p.root, o.signal);
     res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
   }
   FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
     encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
     effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
   if (o.sheet !== false && !out.endsWith(".gif")) {
-    const loud = res.has_audio ? AN.loudnessAsync(out) : undefined;
+    const loud = res.has_audio ? AN.loudness(out, o.signal) : undefined;
+    loud?.catch(() => {}); // an abort rejects it while the contact sheet is still being drawn; the await below reports it
     try {
       const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
       const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
@@ -390,7 +391,7 @@ function tts(text: string | undefined, out: string | undefined, voice?: string, 
   if (p) refuseSource(p.root, p.load(), path);
   return AN.tts(text, path, voice, rate, p?.root);
 }
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe, tts,
+export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: async (p: string) => { needFfmpeg(); return AN.loudness(presolve(p)); }, transcribe, tts,
   subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {

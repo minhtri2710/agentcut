@@ -111,10 +111,13 @@ const sse = await fetch(base + "/api/events", { signal: ctl.signal });
     }
   } catch { /* aborted */ }
 })();
-const waitRev = async (rev: number) => {
-  for (let i = 0; i < 100; i++) { if (events.some((e) => e.event === "state" && e.data.revision === rev)) return true; await Bun.sleep(50); }
+// SSE events arrive after the HTTP answer that caused them: wait for one, bounded to 5 s
+const waitEvent = async (match: (e: any) => boolean) => {
+  for (let i = 0; i < 100; i++) { if (events.some(match)) return true; await Bun.sleep(50); }
   return false;
 };
+const waitRev = (rev: number) => waitEvent((e) => e.event === "state" && e.data.revision === rev);
+const waitJob = (id: string) => waitEvent((e) => e.event === "job" && e.data.id === id && e.data.status === "done");
 check("SSE sends the current state on connect", await waitRev(r0 + N));
 
 const ap = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: 0.5 } }], revision: r0 + N } });
@@ -170,7 +173,7 @@ const vid2 = done?.url ? await raw(done.url) : null;
 check("rendered preview served from previews/", vid2?.status === 200 && vid2.type === "video/mp4" && vid2.body.length > 1000);
 const lsDir = await raw("/files/previews/ui");
 check("a directory under previews/ answers 404 and the server keeps serving", lsDir.status === 404 && (await raw("/api/state")).status === 200, lsDir.status);
-check("SSE reported the job", events.some((e) => e.event === "job" && e.data.id === job.id && e.data.status === "done"));
+check("SSE reported the job", await waitJob(job.id));
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
 console.log("prepare");
@@ -195,7 +198,7 @@ check("prepare starts a job; a second request joins it", pj.ok && pj.kind === "p
 let pdone: any = null;
 for (let i = 0; i < 300 && !pdone; i++) { const s = (await jget(`/api/jobs/${pj.id}`)).j; if (s.status !== "running") pdone = s; else await Bun.sleep(100); }
 check("prepare job finishes done with the result", pdone?.status === "done" && pdone.result?.ready === true, pdone);
-check("SSE reported the prepare job", events.some((e) => e.event === "job" && e.data.id === pj.id && e.data.status === "done"));
+check("SSE reported the prepare job", await waitJob(pj.id));
 const after = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame succeeds after prepare", after.status === 200 && after.type === "image/jpeg", after.body.toString().slice(0, 200));
 

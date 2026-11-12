@@ -1,10 +1,10 @@
 // Subtitle export: captions clips -> timed cues (the same pages and timing the renderer burns in) -> .srt / .vtt,
 // or a soft subtitle stream muxed into a rendered video (mov_text in MP4/MOV, SubRip in MKV, WebVTT in WebM).
-import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { extname } from "node:path";
 import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
+import { run } from "./proc.ts";
 import { EditError, isRetimed, parseTime, type Timeline, type Track, visibleSpan } from "./model.ts";
 import { commit, createFile, partSibling, tmpSibling } from "./safe-write.ts";
 
@@ -72,15 +72,15 @@ export function embedCodec(video: string): string {
   return codec;
 }
 
-export function embedSubtitles(video: string, cues: Cue[], base?: string) {
+export async function embedSubtitles(video: string, cues: Cue[], base?: string, signal?: AbortSignal) {
   const ext = extname(video).toLowerCase(), codec = embedCodec(video);
   const vtt = codec === "webvtt";
   const sub = tmpSibling(`${video}.subs.${vtt ? "vtt" : "srt"}`, base), tmp = partSibling(video, base); // new names next to the video; nothing exists at them
   createFile(sub, formatCues(cues, vtt ? "vtt" : "srt"));
   try {
-    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
-      ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { encoding: "utf8" });
-    if (r.status !== 0) throw new EditError(`subtitle mux failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
+    const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
+      ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { signal });
+    if (r.status !== 0) throw new EditError(`subtitle mux failed: ${r.stderr.slice(-600)}`, "encode_failed");
     commit(tmp, video);
   } finally {
     rmSync(sub, { force: true });

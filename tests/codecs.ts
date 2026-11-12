@@ -350,7 +350,7 @@ console.log("ffmpeg reads only local files and pipes");
     check("probe of a URL stops at not_found", (() => { try { probeMedia(url); return "opened"; } catch (e: any) { return e.code; } })() === "not_found");
 
     check("beats refuses a non-file source", refused(() => beats(url)));
-    loudness(url);
+    await loudness(url);
     const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
     check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
     fs.close();
