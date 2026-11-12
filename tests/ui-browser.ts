@@ -11,7 +11,7 @@ const MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 const LINUX_CHROME = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 const CHROME = [process.env.CHROME, MAC_CHROME, ...(process.env.PATH ?? "").split(delimiter).filter(Boolean).flatMap((d) => LINUX_CHROME.map((n) => join(d, n)))]
   .find((p) => p && existsSync(p));
-if (!CHROME) { console.log(`skipped: Chrome not found (looked at $CHROME, ${MAC_CHROME}, and ${LINUX_CHROME.join(", ")} on PATH; set CHROME=/path/to/chrome)`); process.exit(0); }
+if (!CHROME) { console.log(`SKIPPED: ui-browser: Chrome not found (looked at $CHROME, ${MAC_CHROME}, and ${LINUX_CHROME.join(", ")} on PATH; set CHROME=/path/to/chrome)`); process.exit(0); }
 
 let failures = 0;
 const check = (name: string, cond: unknown, info?: unknown) => {

@@ -558,6 +558,45 @@ console.log("decode and render failures");
   const bw = workerFailure('E {"message":"m","code":"c","hint":"h"}', 0), bad = workerFailure("E not json", 3);
   check("a worker's E line keeps its message, code and hint", bw.message === "m" && bw.code === "c" && bw.hint === "h", bw);
   check("an unreadable E line is a render_failed error that names the line", bad.code === "render_failed" && bad.message.includes("E not json") && bad.message.includes("worker 3"), bad);
+  // A-29 / N5: a render does not depend on the worker count. prores is intra-only, so equal pixels give equal decoded frames.
+  const { createHash } = await import("node:crypto");
+  const frameHashes = (f: string) => {
+    const raw = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { maxBuffer: 1 << 29 }).stdout as Buffer;
+    const size = W * H * 4;
+    return Array.from({ length: Math.floor(raw.length / size) }, (_, i) => createHash("sha1").update(raw.subarray(i * size, (i + 1) * size)).digest("hex"));
+  };
+  const differ = (a: string[], b: string[]) => a.length !== b.length ? [-1] : a.flatMap((h, i) => (h === b[i] ? [] : [i]));
+  const renderTwice = async (dir: string, workers: number[]) => {
+    const pr = openProject(dir), full = () => pr.absolutized(openProject(dir).load()), hashes: string[][] = [];
+    for (const [i, w] of workers.entries()) {
+      const f = join(dir, "renders", `det${i}.mov`);
+      const e = await expectError(() => renderVideo(full(), pr.root, f, { workers: w, codec: "prores" }));
+      if (e) throw e;
+      hashes.push(frameHashes(f));
+    }
+    return hashes;
+  };
+  // 30 fps sources on a 24 fps timeline: a clip crossing the segment boundary, and a crossfade across it (boundary 1.75 s, fade 1.5-2.0 s)
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=3", "-pix_fmt", "yuv420p", join(m, "a30.mp4"));
+  ff("-f", "lavfi", "-i", "testsrc=size=64x64:rate=30:duration=3", "-pix_fmt", "yuv420p", join(m, "b30.mp4"));
+  const D = join(tmp, "projd");
+  api.create(D, { width: W, height: H, fps: 24 });
+  await api.apply(D, [
+    { op: "add_clip", track: "main", src: join(m, "a30.mp4"), duration: 2 },
+    { op: "add_clip", track: "main", src: join(m, "b30.mp4"), duration: 2, transition: { type: "crossfade", duration: 0.5 } },
+  ]);
+  const [d1, d1b, d2] = await renderTwice(D, [1, 1, 2]);
+  check("a clip and a crossfade across the segment boundary render 84 frames", d1.length === 84 && d2.length === 84, [d1.length, d2.length]);
+  check("two one-worker renders have identical frames", differ(d1, d1b).length === 0, differ(d1, d1b));
+  check("one and two workers render identical frames across a segment boundary and a transition", differ(d1, d2).length === 0, differ(d1, d2));
+  // N5: a 1 s 30 fps source held for 3 s; the second segment (from 1.5 s) starts inside the held region
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=1", "-pix_fmt", "yuv420p", join(m, "s30.mp4"));
+  const G = join(tmp, "projg");
+  api.create(G, { width: W, height: H, fps: 24 });
+  await api.apply(G, [{ op: "add_clip", track: "overlay", src: join(m, "s30.mp4"), at: 0, duration: 3 }]);
+  const [g1, g2] = await renderTwice(G, [1, 2]);
+  check("a held frame of a 30 fps source on a 24 fps timeline is the same for one and two workers", g1.length === 72 && differ(g1, g2).length === 0, [g1.length, g2.length, differ(g1, g2).slice(0, 5)]);
+
 
   // A-27: a layer that has ended keeps no canvas
   const C = join(tmp, "projc");

@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 const voices = spawnSync("say", ["-v", "?"], { encoding: "utf8" });
 if (voices.error || !/^Linh\b/m.test(voices.stdout ?? "")) {
-  console.log(`SKIP realmedia: ${voices.error ? "`say` not available (macOS only)" : "macOS voice 'Linh' not installed"}`);
+  console.log(`SKIPPED: realmedia: ${voices.error ? "`say` not available (macOS only)" : "macOS voice 'Linh' not installed"}`);
   process.exit(0);
 }
 
