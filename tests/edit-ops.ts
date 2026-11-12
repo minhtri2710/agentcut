@@ -266,6 +266,18 @@ console.log("match_duration by clip reference");
   const ok = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
   check("validate: a good reference is clean", !validate(ok).some((i: any) => i.level === "error"), validate(ok));
 
+  // saved values that would hang or crash a render are refused at validation
+  const errAt = (x: any, re: RegExp) => validate(x).some((i: any) => i.level === "error" && re.test(i.path));
+  const bx = (edit: (x: any) => void) => { const x = structuredClone(ok); edit(x); return x; };
+  for (const sp of [-1, 0]) check(`validate: speed ${sp} is an error`, errAt(bx((x) => { at(x, "vo1").speed = sp; }), /<vo1>\.speed$/));
+  check("validate: speed 2 is clean", !errAt(bx((x) => { at(x, "vo1").speed = 2; }), /speed/));
+  check("validate: a transition object without a type is an error", errAt(bx((x) => { at(x, "img2").transition = { duration: 0.3 }; }), /<img2>\.transition\.type$/));
+  check("validate: a transition object with a type is clean", !errAt(bx((x) => { at(x, "img2").transition = { type: "crossfade", duration: 0.3 }; }), /transition/));
+  check("validate: settings.effects as a string is an error, not a throw", errAt(bx((x) => { x.settings.effects = "glitch"; }), /^\$\.settings\.effects$/));
+  // a child with a timeout: before the guard, atempo looped forever
+  const at1 = spawnSync("bun", ["--no-install", "--no-env-file", "-e", `const { atempo } = await import(${JSON.stringify(join(import.meta.dir, "../src/audiofx.ts"))}); for (const v of [-1, 0, NaN, Infinity]) { try { atempo(v); process.exit(2); } catch {} }`], { timeout: 5000, encoding: "utf8" });
+  check("atempo refuses a non-positive or non-finite speed instead of looping", at1.status === 0, { status: at1.status, signal: at1.signal });
+
   // match_duration:true with attach_to, as before
   t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true, end_offset: 0.2 }])[0];
   check("match_duration:true with attach_to: target - offset - end_offset", near(at(t, "ovl").duration, 1.5) && near(at(t, "ovl").start, 0.3), at(t, "ovl"));
