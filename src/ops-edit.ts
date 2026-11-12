@@ -1,4 +1,4 @@
-// Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
+// Pro trimming/audio ops: detach_audio, attach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
 import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, newId, ownDuration, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
@@ -12,6 +12,10 @@ const cin = (c: Clip) => parseTime(c.in ?? 0, "in");
 const isAV = (c: Clip) => c.type === "video" || c.type === "audio";
 const fmt = (x: number) => (Number.isFinite(x) ? +x.toFixed(3) : "unlimited");
 const allClips = (tl: Timeline) => tl.tracks.flatMap((t) => t.clips);
+/** What detach_audio copies and attach_audio checks: the audio clip keeps the video's value, and edits that change one apart from the other put the sound out of sync. */
+const SYNC_KEYS = ["in", "speed", "reverse", "loop", "enabled"] as const;
+/** What detach_audio moves onto the audio clip (the video keeps its own volume and fades) and attach_audio moves back. */
+const MOVE_KEYS = ["volume", "fade_in", "fade_out", ...AUDIO_FX_KEYS] as const;
 
 /** source seconds available (Infinity when looping / unknown / speed-ramped) */
 function srcLen(tl: Timeline, c: Clip): number {
@@ -115,7 +119,7 @@ export function registerEditOps(h: OpHelpers) {
     const tr = h.ensureTrack(tl, tid, "audio");
     if ((tr.kind ?? "video") !== "audio" || tr.magnetic) throw new EditError(`track '${tid}' must be a non-magnetic audio track`, "bad_track", "omit track (default 'dialogue') or add_track kind=audio");
     const aud: Clip = { id: newId(tl, h.PREFIX.audio), type: "audio", name: `audio of ${v.id}`, asset: v.asset, duration: round6(clipDur(v)), attach_to: v.id, offset: 0 };
-    for (const k of ["in", "speed", "volume", "fade_in", "fade_out", "reverse", "loop", "enabled", ...AUDIO_FX_KEYS]) if (v[k] !== undefined) {
+    for (const k of [...SYNC_KEYS, ...MOVE_KEYS]) if (v[k] !== undefined) {
       aud[k] = structuredClone(v[k]);
       if ((AUDIO_FX_KEYS as readonly string[]).includes(k)) delete v[k]; // the sound now lives on aud; the muted video keeps no audio fields
     }
@@ -143,6 +147,31 @@ export function registerEditOps(h: OpHelpers) {
       const [, , v] = get(tl, a);
       const aud = detach(tl, v, a.track);
       return { id: v.id, audio: aud.id, track: tl.tracks.find((t) => t.clips.includes(aud))!.id, start: aud.start, duration: aud.duration };
+    });
+
+  h.op("attach_audio", "Inverse of detach_audio: put a video's detached sound back on the video and remove the audio clip. Its processing (eq, compressor, pan, denoise, pitch, normalize), volume, fades and volume keyframes move back to the video, which is unmuted. " +
+    "Refused (out_of_sync, naming the field) when the audio no longer lines up with the picture: offset other than 0, or in/duration/speed/reverse/loop/enabled different from the video's (a J/L-cut or slip). A speed ramp needs this first.",
+    { id: "video clip id or ref, or its detached audio clip" }, (p, tl, a) => {
+      const [, , c] = get(tl, a);
+      const v = c.type === "audio" && c.attach_to ? findClip(tl, c.attach_to)[2] : c;
+      if (v.type !== "video") throw new EditError(`attach_audio needs a video clip with detached audio; '${c.id}' is ${c.type}`, "bad_type", "pass the video's id, or the id of its audio clip");
+      const aud = linked(tl, v);
+      if (!aud) throw new EditError(`'${v.id}' has no detached audio`, "not_detached", "its sound is already on the clip; detach_audio, j_cut or l_cut create a detached audio clip");
+      resolve(tl);
+      const sync = (x: Clip) => ({ offset: x === aud ? parseTime(x.offset ?? 0, "offset") : 0, duration: clipDur(x), in: cin(x), speed: spd(x), reverse: !!x.reverse, loop: !!x.loop, enabled: x.enabled !== false });
+      const [pv, pa] = [sync(v), sync(aud)];
+      for (const k of Object.keys(pv) as (keyof typeof pv)[]) {
+        const same = typeof pv[k] === "number" ? Math.abs((pv[k] as number) - (pa[k] as number)) < 1e-3 : pv[k] === pa[k];
+        if (!same) throw new EditError(`'${aud.id}' no longer lines up with '${v.id}': ${k} is ${pa[k]}, the video's is ${pv[k]}`, "out_of_sync",
+          `make ${k} match the video's (undo the J/L-cut or slip), or remove_clip id=${aud.id} to drop that audio and its processing`, undefined, { audio: aud.id, field: k });
+      }
+      for (const k of MOVE_KEYS) { if (aud[k] !== undefined) v[k] = structuredClone(aud[k]); else delete v[k]; }
+      if (aud.keyframes?.volume) v.keyframes = { ...v.keyframes, volume: structuredClone(aud.keyframes.volume) };
+      else if (v.keyframes) { delete v.keyframes.volume; if (!Object.keys(v.keyframes).length) delete v.keyframes; }
+      delete v.muted;
+      for (const t of tl.tracks) t.clips = t.clips.filter((x) => x !== aud);
+      resolve(tl);
+      return { id: v.id, removed: aud.id };
     });
 
   const cutDoc = (lead: boolean) => (lead

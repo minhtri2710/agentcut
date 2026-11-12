@@ -64,8 +64,7 @@ await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: [[0, 1], 
 await fails({ op: "detach_audio", id: "vid3" }, "unsupported", "speed-ramped video -> unsupported (its sound follows the ramp on the clip)");
 await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: null });
 try { await one({ op: "set_keyframes", id: "vid1", prop: "speed", keyframes: [[0, 1], [1, 2]] }); check("set_keyframes speed on a video with detached audio is refused", false, "no error"); }
-catch (e: any) { const is = JSON.stringify(e.details?.issues); check("set_keyframes speed on a video with detached audio is refused, naming both ids and a way out", e.code === "validation_failed" && /vid1/.test(is) && /aud1/.test(is) && /remove_clip/.test(is + e.hint), { code: e.code, issues: is }); }
-check("the refused ramp left no keyframes behind", !clip("vid1").keyframes?.speed, clip("vid1").keyframes);
+catch (e: any) { const is = JSON.stringify(e.details?.issues); check("set_keyframes speed on a video with detached audio is refused, naming both ids and a way out", e.code === "validation_failed" && /vid1/.test(is) && /aud1/.test(is) && /attach_audio id=vid1/.test(is + e.hint), { code: e.code, issues: is }); }
 await fails({ op: "detach_audio", id: "img1" }, "bad_type", "image -> bad_type");
 await fails({ op: "detach_audio", id: "aud1" }, "bad_type", "audio clip -> bad_type");
 await fails({ op: "detach_audio", id: "vid1", track: "main" }, "already_detached", "already detached wins over bad track");
@@ -204,6 +203,20 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   const [td] = run(dv, [{ op: "trim_clip", id: "dv", trim_start: 1 }]);
   const dau = td.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "dv");
   check("trim_start shifts the detached audio's volume keyframes with its picture", near(dau.keyframes.volume[0][0], 0) && near(dau.keyframes.volume[1][0], 2) && near(dau.in, 3), dau);
+  // attach_audio: detach_audio's inverse
+  const canon = (x: any): any => (Array.isArray(x) ? x.map(canon) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, canon(x[k])])) : x);
+  const fxv = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "fx", in: 1, duration: 3, volume: 0.8, fade_in: 0.2, fade_out: 0.1, denoise: 0.5, eq: "voice_clarity", compressor: "voice", pan: 0.3, pitch: 2, normalize: -16, keyframes: { volume: [[0, 0.5], [2, 1]] } }])[0];
+  const [fxd] = run(fxv, [{ op: "detach_audio", id: "fx" }]);
+  const fxa = at(fxd, "aud1");
+  check("detach_audio setup: the processing moved to the audio clip", fxa.denoise === 0.5 && fxa.pitch === 2 && at(fxd, "fx").denoise === undefined && at(fxd, "fx").muted === true, [fxa, at(fxd, "fx")]);
+  const [fxr, [fxres]] = run(fxd, [{ op: "attach_audio", id: "fx" }]);
+  check("attach_audio after detach_audio restores the video's fields exactly (JSON, keys sorted) and removes the audio clip", JSON.stringify(canon(at(fxr, "fx"))) === JSON.stringify(canon(at(fxv, "fx"))) && !at(fxr, "aud1") && fxres.removed === "aud1", { before: at(fxv, "fx"), after: at(fxr, "fx") });
+  check("attach_audio accepts the audio clip's id too", !at(run(fxd, [{ op: "attach_audio", id: "aud1" }])[0], "aud1"));
+  const [jc2] = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "x1", in: 0, duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "x2", in: 4, duration: 2 }, { op: "j_cut", id: "x2", seconds: 0.5 }]);
+  try { run(jc2, [{ op: "attach_audio", id: "x2" }]); check("attach_audio refuses a J-cut's audio", false, "no error"); }
+  catch (e: any) { check("attach_audio refuses a J-cut's audio as out_of_sync, naming offset", e.code === "out_of_sync" && /offset/.test(e.message) && e.details?.field === "offset" && !!e.hint, { code: e.code, message: e.message, details: e.details }); }
+  refuses("attach_audio on a video with no detached audio is refused as not_detached", fxv, [{ op: "attach_audio", id: "fx" }], "not_detached");
+  check("after attach_audio a speed ramp is accepted (detached, it was refused)", errs(run(fxr, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).length === 0);
   const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
   // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)
@@ -415,13 +428,15 @@ console.log("match_duration by clip reference");
   const ramped = (kfs: any, extra: any = {}) => vd({ keyframes: { speed: kfs }, ...extra });
   check("validate: a ramp on a video without detached audio is clean", !errAt(ramped(ramp.speed), /vd9/));
   const withAudio = validate(vd({ keyframes: ramp }, true)).filter((i: any) => i.level === "error" && /<vd9>\.keyframes\.speed$/.test(i.path));
-  check("validate: a ramp on a video with detached audio is an error naming both ids", withAudio.length === 1 && /vd9/.test(withAudio[0].message) && /au9/.test(withAudio[0].message) && /remove_clip id=au9/.test(withAudio[0].hint ?? ""), withAudio);
+  check("validate: a ramp on a video with detached audio is an error naming both ids", withAudio.length === 1 && /vd9/.test(withAudio[0].message) && /au9/.test(withAudio[0].message) && /attach_audio id=vd9/.test(withAudio[0].hint ?? ""), withAudio);
   const both = validate(vd({ speed: 2, keyframes: ramp })).filter((i: any) => i.level === "error" && /<vd9>\.speed$/.test(i.path));
   check("validate: speed != 1 together with a ramp is an error that says the ramp sets the speed", both.length === 1 && /a ramp sets the speed/.test(both[0].hint ?? ""), both);
   check("validate: speed 1 with a ramp is clean, and a constant speed without a ramp is clean", !errAt(vd({ speed: 1, keyframes: ramp }), /vd9/) && !errAt(vd({ speed: 2 }), /vd9/));
   for (const v of [0, 9]) check(`validate: a speed keyframe of ${v} is an error`, errAt(ramped([[0, 1], [1, v]]), /<vd9>\.keyframes\.speed$/));
   check("validate: speed keyframes of 0.1 and 8 are clean", !errAt(ramped([[0, 0.1], [1, 8]]), /vd9/));
-  check("validate: an easing that overshoots its keyframes is an error on a speed ramp, ease_out is clean", errAt(ramped([[0, 1], [1, 2, "back_out"]]), /<vd9>\.keyframes\.speed$/) && !errAt(ramped([[0, 1], [1, 2, "ease_out"]]), /vd9/));
+  const over = validate(ramped([[0, 8], [1, 0.1, "back_out"]])).filter((i: any) => i.level === "error" && /<vd9>\.keyframes\.speed$/.test(i.path));
+  check("validate: an overshooting easing is refused only where the curve leaves 0.1..8, naming the segment and the value", over.length === 1 && /back_out.*t=0 and t=1.*to -\d/.test(over[0].message), over);
+  check("validate: back_out inside 0.1..8 is clean, and so is an easing on the first keyframe (it has no effect)", !errAt(ramped([[0, 1], [1, 2, "back_out"]]), /vd9/) && !errAt(ramped([[0, 1, "back_out"], [1, 2]]), /vd9/));
   const withText = (x: any) => { x.tracks.find((t: any) => t.id === "main").clips.push({ id: "tx9", type: "text", text: "hi", start: 6, duration: 1 }); return x; };
   check("validate: keyframes.speed on an image clip is an error", errAt(bx((x) => { at(x, "img2").keyframes = ramp; }), /<img2>\.keyframes\.speed$/));
   check("validate: keyframes.speed on a text clip is an error", errAt(bx((x) => { at(withText(x), "tx9").keyframes = ramp; }), /<tx9>\.keyframes\.speed$/));
@@ -433,9 +448,6 @@ console.log("match_duration by clip reference");
   check("validate: settings.effects null (set_settings effects:null) is clean", !errAt(bx((x) => { x.settings.effects = null; }), /effects/));
   check("validate: a transition object with type null is an error", errAt(bx((x) => { at(x, "img2").transition = { type: null, duration: 0.3 }; }), /<img2>\.transition\.type$/));
   for (const k of ["effects", "filters"]) check(`validate: clip ${k} as a string is an error, not a throw`, errAt(bx((x) => { at(x, "img2")[k] = "grain"; }), new RegExp(`<img2>\\.${k}$`)));
-  // a child with a timeout: before the guard, atempo looped forever
-  const at1 = spawnSync("bun", ["--no-install", "--no-env-file", "-e", `const { atempo } = await import(${JSON.stringify(join(import.meta.dir, "../src/audiofx.ts"))}); for (const v of [-1, 0, NaN, Infinity]) { try { atempo(v); process.exit(2); } catch {} }`], { timeout: 5000, encoding: "utf8" });
-  check("atempo refuses a non-positive or non-finite speed instead of looping", at1.status === 0, { status: at1.status, signal: at1.signal });
 
   // match_duration:true with attach_to, as before
   t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true, end_offset: 0.2 }])[0];

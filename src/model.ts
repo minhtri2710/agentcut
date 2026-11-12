@@ -1,5 +1,6 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
+import { ease, parseKfs } from "./anim.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 
@@ -161,6 +162,8 @@ export const VISUAL_FIELDS: F = {
 export const SPEED_MIN = 0.1, SPEED_MAX = 8;
 /** Easings that leave [start, end] between two keyframes, so a ramp using one can pass the speed range. */
 const OVERSHOOT = ["back_out", "elastic_out"];
+/** Samples per overshooting segment: validate costs at most this many `ease` calls per such segment. */
+const OVERSHOOT_SAMPLES = 64;
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
@@ -218,13 +221,13 @@ export const COLOR_FIELDS: F = {
 };
 export const LOTTIE_FIELDS: F = {
   asset: [T("string"), "lottie asset id"], src: [T("string"), "path to a Lottie .json"],
-  size: [T("array"), "[w, h] box"], speed: [T("number"), "playback speed"], loop: [T("boolean"), "loop (default true)"],
+  size: [T("array"), "[w, h] box"], speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX}`], loop: [T("boolean"), "loop (default true)"],
   in: [T("number", "string"), "start offset seconds"],
 };
 export const COMPOUND_FIELDS: F = {
   tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
   in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
-  speed: [T("number"), "playback speed of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)"],
+  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)`],
   volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
 };
 
@@ -645,6 +648,21 @@ interface Flow { gain: number; captions: boolean; w0: number; w1: number; sink?:
 const ROOT: Flow = { gain: 1, captions: true, w0: 0, w1: Infinity };
 const DEAD: Flow = { gain: 0, captions: false, w0: 0, w1: 0 }; // below a disabled or outside-the-window compound: nothing is mixed or exported
 
+/** A speed segment whose overshooting easing leaves SPEED_MIN..SPEED_MAX is an error naming the value it reaches. Reads each segment as kfValue does (the easing of a keyframe shapes the segment ending at it, so the first keyframe's is ignored). */
+function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
+  const pts = parseKfs([...kfs]); // a copy: parseKfs caches by array identity, and a validated list may have been edited in place
+  for (let i = 1; i < pts.length; i++) {
+    const [t0, v0] = pts[i - 1], [t1, v1, e] = pts[i];
+    if (!OVERSHOOT.includes(e as string) || t1 - t0 <= 1e-9) continue;
+    let worst = v1;
+    for (let j = 1; j <= OVERSHOOT_SAMPLES; j++) {
+      const v = v0 + (v1 - v0) * ease(e, j / OVERSHOOT_SAMPLES);
+      if (Math.abs(v - (SPEED_MIN + SPEED_MAX) / 2) > Math.abs(worst - (SPEED_MIN + SPEED_MAX) / 2)) worst = v;
+    }
+    if (!(worst >= SPEED_MIN && worst <= SPEED_MAX)) issues.push({ level: "error", path, message: `easing '${e}' between t=${t0} and t=${t1} takes the speed to ${+worst.toFixed(3)}, outside ${SPEED_MIN}..${SPEED_MAX}`, hint: "use ease_out or ease_in_out, or keep the keyframe values away from the limits" });
+  }
+}
+
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
 function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string, flow: Flow) {
   const assets = tl.assets || {};
@@ -746,6 +764,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (!(ft in EFFECTS)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
       });
       for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
+        const n0 = issues.length;
         if (!ANIMATABLE.includes(prop)) { const s = suggest(prop, ANIMATABLE); issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `'${prop}' is not animatable`, hint: s ? `did you mean '${s}'?` : `animatable: ${ANIMATABLE.join(", ")}` }); continue; }
         if (prop === "speed" && !RAMPS.has(c.type)) { issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `a ${c.type} clip cannot ramp its speed`, hint: "speed ramps work on video clips" + ("speed" in fieldsFor(c.type) ? "; this clip takes a constant `speed`" : "") }); continue; }
         if (!Array.isArray(kfs) || !kfs.length) { issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: "keyframes must be a non-empty list of [t, value, easing?]" }); continue; }
@@ -756,14 +775,15 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           else if (prop === "speed") {
             const v = Number(kk[1]);
             if (!(v >= SPEED_MIN && v <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `speed keyframe ${JSON.stringify(kk[1])} must be ${SPEED_MIN}..${SPEED_MAX}` });
-            if (OVERSHOOT.includes(kk[2])) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `easing '${kk[2]}' overshoots its keyframes, so the speed could leave ${SPEED_MIN}..${SPEED_MAX}`, hint: "use ease_out or ease_in_out" });
           }
         }
+        const parsed = issues.length === n0; // every keyframe is well formed, so parseKfs reads them
         if (prop === "speed") {
           if (isRetimed(c)) issues.push({ level: "error", path: `${p}.speed`, message: `'${c.id}' has speed ${c.speed} and a speed ramp; the ramp sets the speed and \`speed\` would be ignored`, hint: "a ramp sets the speed; remove `speed` or the ramp" });
           const la = clips.find((x) => x.type === "audio" && x.attach_to === c.id && x.asset === c.asset);
           if (la) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `video '${c.id}' has a speed ramp and detached audio '${la.id}', which plays at constant speed and drifts from the picture`,
-            hint: `no op puts detached sound back on its video: remove_clip id=${la.id}, then update_clip id=${c.id} set={muted: null}; the video's own sound follows the ramp` });
+            hint: `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la.id} to drop that audio and its processing` });
+          if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {

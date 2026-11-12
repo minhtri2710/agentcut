@@ -92,6 +92,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 
 ## Pro editing (Final Cut style)
 {"op":"detach_audio","id":"vid2"}                  video audio -> its own clip on the 'dialogue' track, connected (stays in sync)
+{"op":"attach_audio","id":"vid2"}                  the reverse: sound and its processing back on the video (refused with the field named if a J/L-cut or slip moved it)
 {"op":"j_cut","id":"main#1","seconds":0.8}         B's audio starts 0.8 s before its picture (auto-detaches)
 {"op":"l_cut","id":"main#0","seconds":1,"crossfade":0.3}   A's audio runs 1 s over B
   -> check result.under (clips still audible underneath) and fade/lower them. split_clip/trim_clip keep detached audio in sync.
@@ -155,7 +156,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing
 - text presets: title_bold, subtitle_box, neon, gradient, lower_third, quote, typewriter, sticker, outline, cinematic
 - caption presets: tiktok, bold_pop, pill, clean, reveal, neon (styles: karaoke | word | reveal | line)
-- keyframes: x y scale scale_x scale_y rotation opacity blur volume speed (speed ramps only on video clips, whose sound follows the ramp and changes pitch with it; every speed value is 0.1..8, and back_out/elastic_out are refused on a speed ramp; a ramp sets the speed, so `speed` must be 1 or absent; a video with detached audio cannot ramp: remove that audio clip first; an audio, compound or lottie clip takes a constant `speed`) focus_x focus_y; easings linear ease_in ease_out ease_in_out back_out bounce_out elastic_out hold
+- keyframes: x y scale scale_x scale_y rotation opacity blur volume speed (speed ramps only on video clips, whose sound follows the ramp and changes pitch with it; every speed value is 0.1..8, and back_out/elastic_out are refused on a speed ramp only where the curve leaves that range; a ramp sets the speed, so `speed` must be 1 or absent; a video with detached audio cannot ramp: attach_audio first; an audio, compound or lottie clip takes a constant `speed`) focus_x focus_y; easings linear ease_in ease_out ease_in_out back_out bounce_out elastic_out hold
 
 ## Rules of thumb
 - Hook in the first 1-2 s. Cut on beats. Shots 1-3 s for social. One idea per text card, >= 64 px.
