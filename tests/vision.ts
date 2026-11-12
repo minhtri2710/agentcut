@@ -334,6 +334,20 @@ check("prepare rebuilds a deleted matte", nCalls("matte") === mc + 1 && readdirS
 await fails(B, [{ op: "remove_background", id: "vid2", model: "bogus" }], "bad_value", "unknown model -> bad_value");
 const off = (await apply(B, [{ op: "remove_background", id: "vid2", off: true }]))[0];
 check("off=true removes the field", off.remove_background === false && clip(B, "vid2").remove_background === undefined);
+{ // `_matte` has one owner: a hand-set one on a clip without remove_background is not drawn, at any nesting depth
+  const mfile = join(B, ".agentcut", "cache", readdirSync(join(B, ".agentcut", "cache")).find((f) => f.startsWith("matte-"))!);
+  await apply(B, [{ op: "update_clip", id: "vid2", set: { _matte: { path: mfile, w: 640, h: 360 } } }]);
+  const hand = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-hand.png") });
+  check("a hand-set _matte on a clip without remove_background is not drawn", isColor(px(hand.image, 40, 180), [255, 0, 0]), px(hand.image, 40, 180));
+  const { attachPrepared } = await import("../src/ops-vision.ts");
+  const stray = { path: mfile, w: 1, h: 1 };
+  const tl: any = structuredClone(api.info(B, "json").timeline);
+  tl.tracks[0].clips[0].tracks = [{ id: "n", clips: [{ id: "nested", type: "video", asset: tl.tracks[0].clips[0].asset, _matte: stray }] }];
+  tl.tracks[0].clips[0].type = "compound";
+  tl.tracks[0].clips[0]._matte = stray;
+  const got: any = attachPrepared(tl, B);
+  check("attachPrepared drops a hand-set _matte on a compound and on a clip nested in it", got.tracks[0].clips[0]._matte === undefined && got.tracks[0].clips[0].tracks[0].clips[0]._matte === undefined);
+}
 const ex = await api.exportTimeline(B, { out: join(tmp, "x.fcpxml") }).catch((e: any) => e);
 await apply(B, [{ op: "remove_background", id: "vid2" }]);
 const ex2: any = await api.exportTimeline(B, { out: join(tmp, "x.fcpxml") });
