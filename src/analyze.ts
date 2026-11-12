@@ -224,7 +224,7 @@ export function ttsVoices() {
  *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
 export function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string) {
   if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
-  if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${JSON.stringify(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
+  if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${typeof rate === "string" ? JSON.stringify(rate) : String(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
   needFfmpeg();
   const part = tmpSibling(outPath, base);
   const { provider, voice: v } = pickProvider(voice);
