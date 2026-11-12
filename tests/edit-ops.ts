@@ -540,6 +540,10 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   const copyOfG2 = (t: any, start: number) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ ...t.tracks[0].clips.find((c: any) => c.id === "g2"), start });
   await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 9)) }], { allowInvalid: true }); // id g2 now twice
   check("another copy of an already duplicated clip id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 11)) }]) === "validation_failed");
+  const bothG2 = (f: (c: any) => void) => withTrack((t) => { for (const tr of t.tracks) for (const c of tr.clips) if (c.id === "g2") f(c); });
+  await api.apply(G, [{ op: "replace_timeline", timeline: bothG2((c) => { c.filters = ["nope"]; }) }], { allowInvalid: true });
+  check("a clip that shifts the index of a duplicated id's copy is accepted", await code([{ op: "add_clip", track: "overlay", src: png, id: "o0", at: 7, duration: 1 }]) === "ok");
+  check("removing one copy of a duplicated id keeps the survivor's old errors old", await code([{ op: "replace_timeline", timeline: withTrack((t) => { const o = t.tracks.find((x: any) => x.id === "overlay"); o.clips = o.clips.filter((c: any) => c.id !== "g2"); }) }]) === "ok");
   // a ripple follows an attach chain of any depth (17 links here)
   const blank = newTimeline(640, 360, 30); blank.assets.i = { path: "/none.png", kind: "image" };
   const [deep] = run(blank, [

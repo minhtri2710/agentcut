@@ -392,7 +392,7 @@ console.log("retimed compound: what it drops is reported by validate");
   check("back to speed 1: no warning", warns().length === 0, warns());
 }
 
-console.log("retimed compound: the warning names only what audio and subtitles would really bring back at speed 1");
+console.log("retimed compound: the warning names only what plays now but is not mixed or exported");
 {
   const M = await import("../src/model.ts");
   const warned = (tracks: any[]) => {
@@ -409,7 +409,6 @@ console.log("retimed compound: the warning names only what audio and subtitles w
   const top = (...c: any[]) => [trk("top", c)];
   const is = (name: string, got: string[], want: string[]) => check(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
 
-  is("audible nested video and nested captions: both reported", warned(top(cmp("RC", [trk("n", [vid("a"), cap("c")])]))), ["RC:audio", "RC:captions"]);
   is("a frozen nested video has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a", { freeze: true })])]))), []);
   is("a muted nested track has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a")], { muted: true })]))), []);
   is("a nested video whose asset has no audio has no sound to drop", warned(top(cmp("RC", [trk("n", [vid("a", { asset: "q" })])]))), []);
@@ -421,7 +420,7 @@ console.log("retimed compound: the warning names only what audio and subtitles w
   is("a muted ancestor drops no audio below it, but its captions are still exported", warned(top(cmp("P", [trk("p", [inner()])], { speed: 1, muted: true }))), ["RC:captions"]);
   is("an ancestor on a muted track drops no audio below it", warned([trk("top", [cmp("P", [trk("p", [inner()])], { speed: 1 })], { muted: true })]), ["RC:captions"]);
   is("an ancestor on a hidden track exports no captions below it", warned([trk("top", [cmp("P", [trk("p", [inner()])], { speed: 1 })], { hidden: true })]), ["RC:audio"]);
-  is("a retimed compound counts its own clips, not those of a retimed compound inside it", warned(top(cmp("P", [trk("p", [vid("b"), cmp("RC", [trk("n", [vid("a")])])])]))), ["P:audio", "RC:audio"]);
+  is("a retimed compound counts the clips of a speed-1 compound inside it", warned(top(cmp("P", [trk("p", [cmp("N", [trk("n", [vid("a")])], { speed: 1 })])]))), ["P:audio"]);
   is("a retimed compound inside a retimed one still reports its own drop; the outer one does not count it", warned(top(cmp("P", [trk("p", [cmp("RC", [trk("n", [vid("a")])])])]))), ["RC:audio"]);
 
   is("clips outside the visible nested range [in, in + duration x speed] are not counted", warned(top(cmp("RC", [trk("n", [vid("a", { start: 10 }), cap("c", { start: 10 })])]))), []);

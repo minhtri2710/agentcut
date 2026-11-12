@@ -55,13 +55,15 @@ export function info(project?: string, fmt: "summary" | "json" | "both" = "summa
 
 /** A batch's identity for an issue of `tl` (resolved, as validated): tracks are named by id and a clip with a unique id by that id alone,
  *  so inserting, moving or compounding a track or clip does not make an old issue look new. Copies of a duplicated id (a saved invalid state)
- *  are told apart by position, so a batch that adds another copy raises a new error. */
+ *  are told apart by their order among the copies (`<"x"#2>`), so a batch that adds another copy raises a new error; `bare` keys them by id
+ *  alone, which `before` also holds so that the copy left after a repair keeps its old issues. */
 const issueKeyer = (tl: M.Timeline) => {
-  const seen = new Map<string, number>();
-  for (const c of M.allClips(tl.tracks)) if (c?.id) seen.set(c.id, (seen.get(c.id) ?? 0) + 1);
-  return (i: M.Issue) => issueKey(tl, seen, i);
+  const count = new Map<string, number>(), nth = new Map<string, number>(), ord = new Map<M.Clip, number>();
+  for (const c of M.allClips(tl.tracks)) if (c?.id) count.set(c.id, (count.get(c.id) ?? 0) + 1);
+  for (const c of M.allClips(tl.tracks)) if (c?.id && count.get(c.id)! > 1) { nth.set(c.id, (nth.get(c.id) ?? 0) + 1); ord.set(c, nth.get(c.id)!); }
+  return (i: M.Issue, bare = false) => issueKey(tl, bare ? new Map() : ord, i);
 };
-function issueKey(tl: M.Timeline, seen: Map<string, number>, i: M.Issue) {
+function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
   let key = i.path.match(/^[^.]*/)![0], rest = i.path.slice(key.length), level: M.Track[] | undefined = tl.tracks;
   for (let m: RegExpMatchArray | null; level && (m = rest.match(/^\.tracks\[(\d+)\]/)); ) {
     const tr: M.Track | undefined = level[+m[1]];
@@ -73,7 +75,7 @@ function issueKey(tl: M.Timeline, seen: Map<string, number>, i: M.Issue) {
     rest = rest.slice(cm[0].length);
     const tag = c && typeof c === "object" ? `<${c.id ?? "?"}>` : "";
     if (tag && rest.startsWith(tag)) rest = rest.slice(tag.length);
-    key = c?.id && seen.get(c.id) === 1 ? `<${JSON.stringify(c.id)}>` : `${key}${cm[0]}`;
+    key = c?.id ? `<${JSON.stringify(c.id)}${ord.has(c) ? `#${ord.get(c)}` : ""}>` : `${key}${cm[0]}`;
     level = c?.tracks;
   }
   return `${key}${rest}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
@@ -90,7 +92,7 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
-    const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").map(curKey));
+    const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
     try {
       const [next, results] = applyOps(p, tl, list);

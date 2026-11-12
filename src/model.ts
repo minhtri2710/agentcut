@@ -603,7 +603,7 @@ export const visibleSpan = (s: number, e: number, w0: number, w1: number): [numb
   return b - a < 1e-3 ? null : [a, b];
 };
 
-/** What audio.ts and subtitles.ts reach at one level of validateTracks, as if every compound above played at speed 1: the gain and caption visibility
+/** What audio.ts and subtitles.ts reach at one level of validateTracks, ignoring the speed of the compounds above: the gain and caption visibility
  *  of the ancestors, the window of this level's time that is visible, and (inside the nearest retimed compound only) where to record what that compound drops. */
 interface Flow { gain: number; captions: boolean; w0: number; w1: number; sink?: { audio: boolean; captions: boolean } }
 const ROOT: Flow = { gain: 1, captions: true, w0: 0, w1: Infinity };
