@@ -585,6 +585,38 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
     check("validate: attach_to on a magnetic track is a warning that names the length it still takes", validate(t).some((i: any) => i.level === "warning" && /<m1>\.attach_to$/.test(i.path) && /match_duration/.test(i.message)), validate(t));
   }
 
+  { // until_end clips on a magnetic track settle in one resolve: each one is stretched where its start is final
+    const img = (id: string, x: any = {}) => ({ id, type: "image", asset: "i", start: 0, duration: 1, ...x });
+    const build = (clips: any[], rest: any[] = [img("p", { duration: 4 })]) => {
+      const t = base();
+      t.tracks = [{ id: "m", kind: "video", magnetic: true, clips }, { id: "o", kind: "video", clips: rest }];
+      return t;
+    };
+    const runs = (t: any) => { let x = structuredClone(t); return [1, 2, 3, 4].map(() => JSON.stringify(x = resolve(x))); };
+    const settled = (name: string, t: any, want: [string, number, number][]) => {
+      const r = runs(t), x = JSON.parse(r[0]);
+      check(`resolve: ${name} gives the same answer on every call`, r.every((y) => y === r[0]) && want.every(([id, s, d]) => near(at(x, id).start, s) && near(at(x, id).duration, d)), want.map(([id]) => [at(x, id).start, at(x, id).duration]));
+      check(`  and the timeline is valid`, !validate(x).some((i: any) => i.level === "error"), validate(x));
+    };
+    settled("two until_end clips on one magnetic track", build([img("u1", { until_end: true }), img("u2", { until_end: true })]), [["u1", 0, 4], ["u2", 4, 0.1]]);
+    settled("an until_end clip with a transition on a magnetic track", build([img("a"), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 0.3 } })]), [["u", 0.7, 3.3]]);
+    settled("an until_end clip whose transition is longer than its length ends with the rest, as long as the overlap", build([img("a", { duration: 3 }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], []), [["u", 2, 1]]);
+    settled("an until_end clip after a clip that ends past the rest keeps its transition overlap, so the clip after it keeps its place", build([img("u1", { duration: 4, until_end: true }), img("a"), img("u2", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } }), img("b")]), [["u2", 4, 1], ["b", 5, 1]]);
+    { // a clip attached to an until_end clip is counted in the end at the start it keeps (the clip before is disabled and ends past everything else)
+      const t = build([img("a", { duration: 3, enabled: false }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], [img("x", { duration: 0.5, attach_to: "u" }), img("bed", { until_end: true })]);
+      const r = runs(t), x = JSON.parse(r[0]), xEnd = at(x, "x").start + at(x, "x").duration;
+      check("resolve: a clip attached to an until_end clip ends with the until_end clips, which stay valid and stable", r.every((y) => y === r[0]) && xEnd <= at(x, "bed").start + at(x, "bed").duration + 1e-6 && !validate(x).some((i: any) => i.level === "error"), [at(x, "x"), at(x, "bed"), at(x, "u")]);
+    }
+    // attach_to on a magnetic track is a hand-edit (add_clip, update_clip, move_clip, duplicate_clip, track_to and update_track refuse it with attached_magnetic); what would not settle is refused
+    const errAt = (t: any, id: string, field: string) => validate(t).some((i: any) => i.level === "error" && i.path.endsWith(`<${id}>.${field}`));
+    const before = build([img("y", { attach_to: "u", match_duration: true }), img("u", { until_end: true })]);
+    check("validate: a magnetic clip whose attached length reaches an until_end clip is an error", errAt(before, "y", "match_duration"), validate(before));
+    const placed = build([img("a"), img("u", { until_end: true, attach_to: "a", offset: 0.5 })]);
+    check("validate: an until_end clip on a magnetic track cannot be attached", errAt(placed, "u", "attach_to"), validate(placed));
+    const off = build([], [img("p", { duration: 4 }), img("u", { until_end: true }), img("y", { attach_to: "u", match_duration: true })]);
+    check("validate: the same attached length on a track that is not magnetic is accepted", !validate(off).some((i: any) => i.level === "error"), validate(off));
+  }
+
   // the batch's "new issues" compare by clip identity
   const G = join(tmp, "proj-graph");
   api.create(G, { preset: "720p" });
