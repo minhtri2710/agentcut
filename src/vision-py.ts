@@ -2,7 +2,7 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
-import json, os, stat, subprocess, sys, threading
+import json, os, stat, subprocess, sys, tempfile, threading
 
 def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it): leave at once, no cleanup
     try:
@@ -21,7 +21,8 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     if dur is not None: args += ["-t", "%.6f" % dur]
     vf = ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errf)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
     import numpy as np
     i = 0
@@ -31,8 +32,8 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
         yield np.frombuffer(b, np.uint8).reshape(h, w, -1)
         i += 1
         sys.stderr.write("AGENTCUT_PROGRESS %d\n" % i); sys.stderr.flush()  # frames done, read by vision.ts
-    p.stdout.close(); err = p.stderr.read().decode("utf8", "replace"); p.wait()
-    if p.returncode not in (0, None) and err.strip(): raise SystemExit("ffmpeg: " + err[:400])
+    p.stdout.close(); p.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
+    if p.returncode != 0: raise SystemExit("ffmpeg exited %s: %s" % (p.returncode, err.strip()[:400]))  # a decoder that died silently still means a short result
 
 def subject(j):
     import cv2, numpy as np
@@ -109,12 +110,14 @@ def matte(j):
     enc = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "%dx%d" % (w, h),
            "-framerate", "%.6f" % float(j["fps"]), "-protocol_whitelist", "file,pipe", "-i", "pipe:0", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
            "-alpha_bits", "16", "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "mov", j["out"]]
-    e = subprocess.Popen(enc, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    errf = tempfile.TemporaryFile()
+    e = subprocess.Popen(enc, stdin=subprocess.PIPE, stderr=errf)
     n = 0
     for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24"):
         e.stdin.write(rgba(f).tobytes()); n += 1
-    e.stdin.close(); err = e.stderr.read().decode("utf8", "replace"); e.wait()
+    e.stdin.close(); e.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
     if e.returncode != 0: raise SystemExit("ffmpeg encode: " + err[:400])
+    if n == 0: raise SystemExit("no frames decoded from the source")
     return {"out": j["out"], "frames": n}
 
 job = json.loads(sys.argv[1])

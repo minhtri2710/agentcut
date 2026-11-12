@@ -57,12 +57,12 @@ check("stale undo -> conflict", und.ok === false && und.error.code === "conflict
 console.log("server");
 const ui = await startUi(dir, { port: 0 });
 const base = ui.url.replace(/\/$/, "");
-const raw = (path: string, o: { method?: string; host?: string; body?: unknown } = {}) => new Promise<{ status: number; body: Buffer; type: string }>((ok, fail) => {
+const raw = (path: string, o: { method?: string; host?: string; body?: unknown } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
   const rq = request({ host: "127.0.0.1", port: ui.port, path, method: o.method ?? "GET",
     headers: { host: o.host ?? `127.0.0.1:${ui.port}`, ...(o.body ? { "content-type": "application/json" } : {}) } }, (res) => {
     const ch: Buffer[] = [];
     res.on("data", (c) => ch.push(c));
-    res.on("end", () => ok({ status: res.statusCode!, body: Buffer.concat(ch), type: String(res.headers["content-type"]) }));
+    res.on("end", () => ok({ status: res.statusCode!, body: Buffer.concat(ch), type: String(res.headers["content-type"]), headers: res.headers }));
   });
   rq.on("error", fail);
   rq.end(o.body ? JSON.stringify(o.body) : undefined);
@@ -72,13 +72,22 @@ const jget = async (path: string, o?: any) => { const r = await raw(path, o); re
 check("bound to 127.0.0.1", ui.url.startsWith("http://127.0.0.1:"));
 const page = await raw("/");
 check("page served", page.status === 200 && page.body.toString().includes("EventSource"));
+const st0 = await raw("/api/state");
 const st = await jget("/api/state");
 check("state has timeline + revision + history", st.j.ok && st.j.revision === r0 + N && st.j.timeline.tracks.length > 0 && Array.isArray(st.j.history.undo), st.j);
 const vid = st.j.timeline.tracks.find((t: any) => t.id === "main").clips[0];
 const fr = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame is a JPEG", fr.status === 200 && fr.type === "image/jpeg" && fr.body[0] === 0xff && fr.body[1] === 0xd8);
+check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
 const th = await raw(`/api/thumb/${vid.asset}?t=0.5`);
 check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] === 0xd8);
+{ // a thumbnail ffmpeg cannot make is an error response that is not cached, never an empty 200
+  const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), away = srcAbs + ".away";
+  renameSync(srcAbs, away);
+  const bt = await raw(`/api/thumb/${vid.asset}?t=2.5`);
+  renameSync(away, srcAbs);
+  check("failed thumbnail -> error status, no long cache", bt.status >= 400 && !String(bt.headers["cache-control"]).includes("max-age"), [bt.status, bt.headers["cache-control"], bt.body.length]);
+}
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);
 
@@ -157,6 +166,8 @@ for (let i = 0; i < 300 && !done; i++) { const s = (await jget(`/api/jobs/${job.
 check("play render finishes", done?.status === "done" && typeof done.url === "string", done);
 const vid2 = done?.url ? await raw(done.url) : null;
 check("rendered preview served from previews/", vid2?.status === 200 && vid2.type === "video/mp4" && vid2.body.length > 1000);
+const lsDir = await raw("/files/previews/ui");
+check("a directory under previews/ answers 404 and the server keeps serving", lsDir.status === 404 && (await raw("/api/state")).status === 200, lsDir.status);
 check("SSE reported the job", events.some((e) => e.event === "job" && e.data.id === job.id && e.data.status === "done"));
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
@@ -196,6 +207,16 @@ const fj2 = (await jget("/api/prepare", { method: "POST", body: {} })).j;
 renameSync(pfAway, pf);
 check("prepare that throws at once: the job fails with no_project", fj.kind === "prepare" && fdone?.status === "failed" && fdone.error?.code === "no_project", { fj, fdone });
 check("  the slot is free: the next request is a new job", !!fj.id && fj2.kind === "prepare" && fj2.id !== fj.id, { fj, fj2 });
+
+// default port 4810 taken: the message names the port (this listener may fail if something else already holds it, which also blocks startUi)
+{
+  const { createServer } = await import("node:net");
+  const hold = createServer();
+  await new Promise<void>((ok) => { hold.once("error", () => ok()); hold.listen(4810, "127.0.0.1", () => ok()); });
+  const e: any = await startUi(dir).then(() => null, (x) => x);
+  hold.close();
+  check("default port in use -> port_in_use naming 4810", e?.code === "port_in_use" && /4810/.test(e.message) && !/undefined/.test(e.message), e && { code: e.code, message: e.message });
+}
 
 ctl.abort();
 ui.server.closeAllConnections?.();

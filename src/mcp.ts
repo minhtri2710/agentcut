@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // AgentCut MCP server (stdio). Tools mirror the CLI; preview tools return real images so the agent can SEE.
 // Claude Code: claude mcp add agentcut -- agentcut-mcp
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -32,13 +32,23 @@ function fail(e: any) {
   return { content: [text({ ok: false, error })], isError: true };
 }
 function proj(p?: string) {
-  if (p) { state.project = p; return p; }
+  if (p) return p; // only create_project / open_project change the remembered project
   if (state.project) return state.project;
   throw new EditError("no project selected", "no_project", "call create_project or open_project first, or pass project=<folder>");
 }
 const wrap = <A>(f: (a: A) => any) => async (a: A) => { try { return ok(await f(a)); } catch (e) { return fail(e); } };
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
 const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: MIME[path.split(".").pop()!.toLowerCase()] ?? "image/png" });
+/** view_image serves picture files only, not any readable file */
+function viewable(path: string) {
+  const ext = path.split(".").pop()!.toLowerCase();
+  if (!(ext in MIME)) throw new EditError(`not an image file: ${path}`, "bad_request", `view_image shows ${Object.keys(MIME).join(", ")} files`);
+  if (!existsSync(path) || !statSync(path).isFile()) throw new EditError(`no image file at ${path}`, "not_found", "pass the path of a file that exists, e.g. a render's contact_sheet");
+  return path;
+}
+// tool-schema bounds for the arguments that size a render or a sheet (api.sheet itself caps `every` at 64 frames)
+const SCALE = z.number().gt(0).max(4);
+const TIME = z.number().finite().min(0);
 
 export function buildServer() {
   const s = new McpServer({ name: "agentcut", version: VERSION }, { instructions: INSTRUCTIONS });
@@ -71,9 +81,9 @@ export function buildServer() {
   s.registerTool("create_project", {
     description: "Create a project folder and make it current. preset: reels|tiktok|shorts (1080x1920), youtube (1920x1080), square, portrait, 4k, 720p.",
     inputSchema: { path: z.string(), preset: z.string().default("reels"), width: z.number().int().optional(), height: z.number().int().optional(), fps: z.number().default(30), name: z.string().optional() },
-  }, wrap((a) => { const r = api.create(a.path, { preset: a.width ? undefined : a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
+  }, wrap((a) => { const r = api.create(a.path, { preset: a.width || a.height ? undefined : a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
   s.registerTool("open_project", { description: "Select an existing project folder and return its summary.", inputSchema: { path: z.string() } },
-    wrap((a) => { state.project = a.path; return api.info(a.path); }));
+    wrap((a) => { const r = api.info(a.path); state.project = a.path; return r; })); // a failed open keeps the remembered project
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {
@@ -87,7 +97,7 @@ export function buildServer() {
 
   s.registerTool("preview_frame", {
     description: "Render ONE frame at time t (seconds) and return it as an image. guides=true overlays safe areas (red = social UI zones on 9:16).",
-    inputSchema: { t: z.number(), project: P, scale: z.number().default(0.4), guides: z.boolean().default(false) },
+    inputSchema: { t: z.number(), project: P, scale: SCALE.default(0.4), guides: z.boolean().default(false) },
   }, async (a) => { try { const r = await api.frame(proj(a.project), a.t, { scale: a.scale, guides: a.guides }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("scopes", {
     description: "Colour scopes of the frame at t: image (frame | luma waveform / vectorscope | RGB histogram) + stats (luma 0..1 min/p10/avg/p90/max, saturation_avg, cast u/v: 0 = neutral, +u blue, +v red). Use to judge exposure and colour objectively before/after a color grade.",
@@ -95,7 +105,7 @@ export function buildServer() {
   }, async (a) => { try { const r = await api.scopes(proj(a.project), a.t); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("contact_sheet", {
     description: "Grid of timestamped frames across the timeline (no full render). Default 12 evenly spaced; or times=[...] / every=1.",
-    inputSchema: { project: P, times: z.array(z.number()).optional(), every: z.number().optional(), count: z.number().int().default(12), cols: z.number().int().default(4), guides: z.boolean().default(false) },
+    inputSchema: { project: P, times: z.array(TIME).max(64).optional(), every: z.number().gt(0).optional(), count: z.number().int().min(1).max(64).default(12), cols: z.number().int().default(4), guides: z.boolean().default(false) },
   }, async (a) => { try { const r = await api.sheet(proj(a.project), { times: a.times, every: a.every, count: a.count, cols: a.cols, guides: a.guides, tileWidth: 300 }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("audio_check", {
     description: "SEE the sound: image of each audible track's waveform + the rendered mix (time ruler, clip boundaries, main-track cuts, markers; spectrogram=true adds one) and findings with times: clipping/overs, true peak, long silences, audio cut off at clip ends without a fade, music not ducked under voice. source=<file> inspects a media file instead.",
@@ -116,7 +126,7 @@ export function buildServer() {
     const until = Date.now() + secs * 1000;
     while (j.status === "running" && Date.now() < until) await Promise.race([j.promise, new Promise((r) => setTimeout(r, 300))]); // wakes when the job settles
     const { promise, ctl, ...pub } = j;
-    return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })] };
+    return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })], ...(j.status === "failed" ? { isError: true } : {}) };
   };
   /** background job (render, prepare): progress 0..1, polled with render_status; `ctl` aborts it (shutdown) */
   const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void, signal: AbortSignal) => Promise<unknown>) => {
@@ -132,7 +142,7 @@ export function buildServer() {
   };
   s.registerTool("render", {
     description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac), or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes has_audio, contact_sheet (a file in previews/) + loudness - check them. A timeline with no audible clip gets no audio track: has_audio false, a warning, no loudness. For a Final Cut / Resolve project file use export_timeline.",
-    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: z.number().default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), subtitles: z.boolean().default(false).describe("also embed the captions clips as a soft subtitle track (.mp4/.mov mov_text, .mkv srt, .webm webvtt)"), wait_seconds: z.number().default(55) },
+    inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: SCALE.default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), subtitles: z.boolean().default(false).describe("also embed the captions clips as a soft subtitle track (.mp4/.mov mov_text, .mkv srt, .webm webvtt)"), wait_seconds: z.number().default(55) },
   }, async (a) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
@@ -161,7 +171,7 @@ export function buildServer() {
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
   s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("view_image", { description: "Return a local PNG/JPG (e.g. a render's contact_sheet) as an image.", inputSchema: { path: z.string() } },
-    async (a) => { try { return { content: [image(a.path)] }; } catch (e) { return fail(e); } });
+    async (a) => { try { return { content: [image(viewable(a.path))] }; } catch (e) { return fail(e); } });
 
   s.registerTool("probe_media", { description: "Duration, size, fps, audio, alpha of a media file (video/image/audio/Lottie).", inputSchema: { path: z.string() } }, wrap((a) => api.probe(a.path)));
   s.registerTool("analyze_beats", { description: "Tempo, beat times and bar starts of a music file (use with snap_to_beats).", inputSchema: { path: z.string(), max_beats: z.number().int().default(128) } },

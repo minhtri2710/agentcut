@@ -594,6 +594,33 @@ console.log("pieces of an attached clip keep their place and length");
   check("  and the project validates", si.errors === 0, si.issues);
 }
 
+console.log("untrusted field names and pending requests");
+{
+  const polluted = () => (!("polluted" in {}) && !("evil" in {}));
+  const bad = JSON.parse('{"__proto__": {"polluted": 1}}');
+  for (const dry of [false, true]) {
+    let code = "ok";
+    try { await one({ op: "update_clip", id: "vid1", set: bad }, dry); } catch (e: any) { code = e.code; }
+    check(`update_clip with a __proto__ field${dry ? " (dry run)" : ""}: refused as bad_key, Object.prototype unchanged`, code === "bad_key" && polluted(), { code });
+  }
+  const { setDotted, deepMerge } = await import("../src/model.ts");
+  let code2 = "ok";
+  try { deepMerge({ a: {} }, JSON.parse('{"a": {"constructor": {"prototype": {"evil": 1}}}}')); } catch (e: any) { code2 = e.code; }
+  check("a nested constructor.prototype field: refused, Object.prototype unchanged", code2 === "bad_key" && polluted(), { code2 });
+  let code3 = "ok";
+  try { setDotted({}, "a.__proto__.evil", 1); } catch (e: any) { code3 = e.code; }
+  check("a dotted key through __proto__: refused, Object.prototype unchanged", code3 === "bad_key" && polluted(), { code3 });
+
+  const { missingFor } = await import("../src/prepare.ts");
+  const proj = new (await import("../src/project.ts")).Project(P);
+  const t = proj.load();
+  const c = t.tracks.flatMap((x: any) => x.clips).find((x: any) => x.id === "vid1");
+  c.pending = { auto_reframe: { op: "remove_clip", id: "vid2", fps: 5 } };
+  let msg = "";
+  try { missingFor(proj, t); } catch (e: any) { msg = e.message; }
+  check("a stored request cannot change its op or clip id", msg.startsWith("pending auto_reframe on 'vid1'"), { msg, removed: !t.tracks.flatMap((x: any) => x.clips).some((x: any) => x.id === "vid2") });
+}
+
 console.log("validity + render");
 const inf = api.info(P);
 check("timeline valid", inf.errors === 0, inf.issues);

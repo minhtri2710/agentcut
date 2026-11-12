@@ -155,6 +155,46 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   check("MCP analyze_subject with a project arg that is not a project -> no_project, helper not run", n3.json.ok === false && n3.json.error.code === "no_project" && runs() === 3, n3.json);
   await c3.close();
 }
+// A-14/A-40/A-39: the remembered project, job errors, view_image, create_project height, schema bounds
+{
+  const env5: Record<string, string | undefined> = { ...env }; delete env5.AGENTCUT_PROJECT;
+  const c5 = new Client({ name: "agentcut-test-5", version: "1" });
+  await c5.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: env5 as Record<string, string> }));
+  const call5 = callOn(c5), A = join(tmp, "rem-a"), B = join(tmp, "rem-b"), rev = (d: string) => JSON.parse(readFileSync(join(d, "project.json"), "utf8")).revision;
+  await call5("create_project", { path: A, preset: "youtube" });
+  await call5("create_project", { path: B, preset: "youtube" });
+  await call5("open_project", { path: A });
+  await call5("project_info", { project: B });
+  const rb = rev(B);
+  await call5("apply_ops", { ops: [{ op: "add_marker", t: 1 }] });
+  check("a project arg on another tool does not change the remembered project", rev(A) === 1 && rev(B) === rb, { a: rev(A), b: rb });
+  const bo = await call5("open_project", { path: join(tmp, "no-such-project") });
+  await call5("apply_ops", { ops: [{ op: "add_marker", t: 2 }] });
+  check("a failed open_project keeps the remembered project", bo.json.ok === false && rev(A) === 2 && rev(B) === rb, { bo: bo.json, a: rev(A) });
+
+  const bad5 = await call5("render", { project: A, draft: true, output: join(tmp, "no-such-dir", "x.xyz"), wait_seconds: 30 });
+  check("a failed job is an error result", bad5.json.status === "failed" && bad5.json.ok === false && bad5.r.isError === true, { json: bad5.json, isError: bad5.r.isError });
+
+  const txt = join(tmp, "note.txt"); writeFileSync(txt, "not a picture");
+  const vi = await call5("view_image", { path: txt }), vm = await call5("view_image", { path: join(tmp, "missing.png") }), vd = await call5("view_image", { path: tmp + ".png" });
+  check("view_image refuses a non-image file", vi.json?.ok === false && vi.json.error.code === "bad_request" && vi.images.length === 0, [vi.json, vi.images.length]);
+  check("view_image of a missing file -> not_found", vm.json?.ok === false && vm.json.error.code === "not_found" && vd.json?.error?.code === "not_found", [vm.json ?? vm.r, vd.json ?? vd.r]);
+  const vp = await call5("view_image", { path: join(tmp, "p.png") });
+  check("view_image still returns a picture", vp.images.length === 1, vp.json ?? vp.r);
+
+  const H = join(tmp, "height-only"), ho = await call5("create_project", { path: H, preset: "reels", height: 500 });
+  check("create_project with only a height uses it, not the preset", ho.json.ok && ho.json.settings.height === 500 && ho.json.settings.width === 1920, ho.json.settings);
+
+  // the schema bounds hold whether the SDK answers with an error result or a protocol error
+  const rejected = async (name: string, args: Record<string, unknown>) => { try { const r = await call5(name, args); return r.r.isError === true || r.json?.ok === false; } catch { return true; } };
+  await call5("open_project", { path: A });
+  for (const [name, args] of [["preview_frame", { t: 0, scale: 1e6 }], ["preview_frame", { t: 0, scale: 0 }], ["render", { scale: 1e6 }], ["contact_sheet", { count: 1e6 }], ["contact_sheet", { count: 0 }],
+    ["contact_sheet", { times: Array.from({ length: 65 }, () => 0) }], ["contact_sheet", { times: [-1] }], ["contact_sheet", { every: 0 }]] as const)
+    check(`${name} ${JSON.stringify(args).slice(0, 40)} is refused at the schema`, await rejected(name, args as Record<string, unknown>), args);
+  const cs = await call5("contact_sheet", { count: 4, times: [0, 0.5] });
+  check("contact_sheet within the bounds still works", cs.images.length === 1, cs.json ?? cs.r);
+  await c5.close();
+}
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });
