@@ -1,6 +1,6 @@
 // Font resolution on top of Skia's system font manager (@napi-rs/canvas GlobalFonts).
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { C, canvasLoaded, queueFontDir } from "./canvas.ts";
@@ -30,7 +30,8 @@ function families(): Map<string, string> {
     familyMap = new Map();
     for (const f of C().GlobalFonts.families as any[]) familyMap.set(f.family.toLowerCase(), f.family);
     familyMapFromSkia = true;
-    try { writeFile(CACHE, JSON.stringify({ sig: sig(), families: [...familyMap.values()] }), dirname(CACHE)); } catch { /* cache is optional */ }
+    // 0700, not the umask default: the vision helper refuses a group-writable cache dir
+    try { mkdirSync(dirname(CACHE), { recursive: true, mode: 0o700 }); writeFile(CACHE, JSON.stringify({ sig: sig(), families: [...familyMap.values()] }), dirname(CACHE)); } catch { /* cache is optional */ }
     return familyMap;
   }
   try {

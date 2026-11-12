@@ -5,7 +5,7 @@ import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
-import { mattesFor } from "./ops-vision.ts";
+import { collectAnalyses, mattesFor } from "./ops-vision.ts";
 import { alive, type Project } from "./project.ts";
 import { cacheDir } from "./vision.ts";
 
@@ -34,9 +34,9 @@ function areaRoot(p: Project, dir: string): string | null {
   return real;
 }
 
-/** analyses the pending vision requests still need (none if a request no longer applies: prepare reports that) */
+/** analyses the pending vision requests need, cached or not (none if a request no longer applies: prepare reports that) */
 function pendingFiles(p: Project, tl: Timeline) {
-  try { return missingFor(p, tl).jobs.map((d) => d.file); } catch (e) { if (e instanceof EditError) return []; throw e; }
+  try { return collectAnalyses(() => missingFor(p, tl))[1].map((d) => d.file); } catch (e) { if (e instanceof EditError) return []; throw e; }
 }
 
 function entries(p: Project, area?: "cache" | "previews"): Entry[] {

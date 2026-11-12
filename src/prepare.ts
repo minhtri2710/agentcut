@@ -10,7 +10,7 @@ import * as V from "./vision.ts";
 // pending vision ops in dependency order (track_to maps its box through the target's reframed focus)
 const ORDER = ["auto_reframe", "track_to"];
 const pendingOps = (tl: Timeline) => ORDER.flatMap((op) =>
-  [...allClips(tl.tracks)].filter((c: Clip) => c.pending?.[op]).map((c) => ({ op, id: c.id, ...c.pending[op] })));
+  [...allClips(tl.tracks)].filter((c: Clip) => c.pending?.[op]).map((c) => ({ ...c.pending[op], op, id: c.id })));
 
 /** Derived assets the timeline still lacks, plus the pending ops (re-run here so their validation runs on the current edit). */
 export function missingFor(p: Project, tl: Timeline) {
