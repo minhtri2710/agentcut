@@ -1,7 +1,8 @@
 // Font resolution on top of Skia's system font manager (@napi-rs/canvas GlobalFonts).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { C, canvasLoaded, queueFontDir } from "./canvas.ts";
 import { EditError, suggest } from "./model.ts";
 import { writeFile } from "./safe-write.ts";
@@ -38,7 +39,7 @@ function families(): Map<string, string> {
   } catch { /* no cache yet */ }
   return (familyMap = new Map()); // unknown: callers treat an empty map as "cannot check"
 }
-export function refreshFonts() { familyMap = null; familyMapFromSkia = false; }
+export function refreshFonts() { familyMap = null; familyMapFromSkia = false; cache.clear(); }
 export const fontsKnown = () => families().size > 0;
 
 export function registerFontDir(dir: string) {
@@ -56,13 +57,14 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
   const hit = cache.get(key);
   if (hit) return hit;
   const fam = families();
-  let family: string | undefined, w = 400, it = !!italic;
+  let family: string | undefined, w = 400, it = !!italic, unregistered = false;
   if (!spec) {
     family = DEFAULTS.map((d) => fam.get(d.toLowerCase())).find(Boolean) ?? [...fam.values()][0];
     w = 700;
   } else if (/\.(ttf|otf|ttc|woff2?)$/i.test(spec) && existsSync(spec)) {
-    const alias = `agentcut-${basename(spec).replace(/\W+/g, "-")}`;
-    if (canvasLoaded() && !fam.has(alias.toLowerCase())) { C().GlobalFonts.registerFromPath(spec, alias); refreshFonts(); }
+    // the path hash keeps two files with the same name apart
+    const alias = `agentcut-${basename(spec).replace(/\W+/g, "-")}-${createHash("sha1").update(resolve(spec)).digest("hex").slice(0, 8)}`;
+    if (canvasLoaded()) { if (!fam.has(alias.toLowerCase())) { C().GlobalFonts.registerFromPath(spec, alias); refreshFonts(); } } else unregistered = true;
     family = alias;
   } else {
     const words = spec.trim().split(/\s+/);
@@ -81,10 +83,10 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
       throw new EditError(`font '${spec}' not found`, "font_not_found", `${s ? `did you mean '${s}'? ` : ""}list fonts with \`agentcut fonts <query>\` or pass a .ttf path`);
     }
   }
-  if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : WEIGHTS[String(weight).toLowerCase()] ?? 400;
+  if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : WEIGHTS[String(weight).toLowerCase()] ?? (Number(weight) || 400);
   const stack = [family!, ...SANS.filter((s) => fam.has(s.toLowerCase()) && s !== family), ...EMOJI.filter((s) => fam.has(s.toLowerCase()))];
   const out = { family: family!, weight: w, italic: it, stack };
-  cache.set(key, out);
+  if (!unregistered) cache.set(key, out); // an alias not yet registered with Skia must be resolved again once it is
   return out;
 }
 
