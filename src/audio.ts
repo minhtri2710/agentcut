@@ -85,7 +85,7 @@ export function voiceSpans(tl: Timeline): [number, number][] {
   return out;
 }
 
-/** A ramped clip's output span cut into runs of whole picture frames (<= 1 s) that one constant rate reproduces: at every frame the run's linear map is within 1/4 frame
+/** A ramped clip's output span cut into runs of whole picture frames (<= 4 s) that one constant rate reproduces: at every frame the run's linear map is within 1/4 frame
  *  of the curve render.ts follows, in output time (the source-time gap divided by the slowest local speed in the run), so sound and picture drift apart by at most that.
  *  Source seconds are clip-local (from `in`); `n` is the run's length in output samples. */
 function rampRuns(kfs: any[], dur: number, fps: number, sr: number) {
@@ -93,7 +93,7 @@ function rampRuns(kfs: any[], dur: number, fps: number, sr: number) {
   const runs: { u0: number; u1: number; len: number; n: number }[] = [];
   for (let a = 0; a < nf;) {
     let b = a + 1;
-    for (; b < nf && xs[b + 1] - xs[a] <= 1 + 1e-9; b++) {
+    for (; b < nf && xs[b + 1] - xs[a] <= 4 + 1e-9; b++) {
       const k = (us[b + 1] - us[a]) / (xs[b + 1] - xs[a]); // does one rate still reach every frame from a to b+1?
       let slow = k;
       for (let j = a; j <= b; j++) slow = Math.min(slow, (us[j + 1] - us[j]) / (xs[j + 1] - xs[j]));
@@ -161,14 +161,14 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     const onBus = bus(tr).length > 0;
     if (!onBus) ch.push(...duck(tr, start, start + dur));
     if (!runs) graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
-    else { // shortcut: every run is inline in the one -filter_complex argument, so a ramped clip of hours can pass the OS argv limit; move the graph to a script file if that is ever hit
-      // one varispeed run per label: the source span at the run's average rate, cut or padded to its exact sample count so the seams never accumulate
-      const lab = (k: number) => `[r${i}_${k}]`, N = runs.length, from = c.reverse ? `[b${i}]` : `[${i}:a]`, off = c.reverse ? 0 : cin; // reversed: the runs cut the reversed segment, so its own time starts at 0
-      if (c.reverse) graph.push(`[${i}:a]${base.join(",")}[b${i}]`);
-      if (N > 1) graph.push(`${from}asplit=${N}${runs.map((_, k) => lab(k)).join("")}`);
+    else { // one varispeed run per label: the source span at the run's average rate, cut or padded to its exact sample count so the seams never accumulate
+      // the stream goes to `sr` first (asetrate relabels samples, so it needs the project rate), is trimmed to the span once, and asegment hands each frame to exactly one run
+      const N = runs.length, cuts: number[] = [];
+      runs.slice(1).forEach((r) => cuts.push(Math.max((cuts[cuts.length - 1] ?? 0) + 1, Math.round(r.u0 * sr))));
+      graph.push(`[${i}:a]aresample=${sr},${base.join(",")}${N > 1 ? `,asegment=samples=${cuts.join("|")}${runs.map((_, k) => `[r${i}_${k}]`).join("")}` : `[r${i}_0]`}`);
       runs.forEach((r, k) => {
         const rate = Math.round(sr * Math.max(0.01, (r.u1 - r.u0) / r.len));
-        graph.push(`${N > 1 ? lab(k) : from}atrim=start=${(off + r.u0).toFixed(6)}:end=${(off + r.u1).toFixed(6)},asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
+        graph.push(`[r${i}_${k}]asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
       });
       graph.push(`${runs.map((_, k) => `[q${i}_${k}]`).join("")}concat=n=${N}:v=0:a=1[m${i}]`, `[m${i}]${ch.slice(head.length).join(",")}[a${i}]`);
     }
@@ -183,9 +183,15 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
   });
   if (labels.length) graph.push(`${labels.join("")}amix=inputs=${labels.length}:duration=longest:normalize=0,apad=whole_dur=${T},atrim=0:${T}[out]`);
   else { args.push("-f", "lavfi", "-i", `anullsrc=r=${sr}:cl=stereo`); graph.push(`[0:a]atrim=0:${T}[out]`); }
+  // the graph is one argv element: Linux caps it at 128 KiB, Windows caps the whole command line at 32767 chars (ffmpeg < 7 has no file form)
+  const filter = graph.join(";");
+  if (filter.length > (process.platform === "win32" ? 30000 : 120000)) {
+    const ids = srcs.filter((x) => x.clip.keyframes?.speed).map((x) => x.clip.id);
+    throw new EditError(`the audio mix is too large for one ffmpeg command (${filter.length} chars)${ids.length ? `; speed-ramped clips: ${ids.join(", ")}` : ""}`, "too_complex", "use fewer speed keyframes or split the clip, then ramp each part");
+  }
   const raw = outWav + ".raw.wav";
   try {
-    let r = await run("ffmpeg", [...args, "-filter_complex", graph.join(";"), "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw], { signal });
+    let r = await run("ffmpeg", [...args, "-filter_complex", filter, "-map", "[out]", "-ac", "2", "-ar", String(sr), "-c:a", "pcm_f32le", raw], { signal });
     if (r.status !== 0) throw new EditError(`audio mix failed: ${r.stderr.trim().slice(-600)}`, "audio_failed");
     const post: string[] = [];
     const lufs = tl.settings.loudness === undefined ? -14 : tl.settings.loudness;

@@ -305,6 +305,35 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const half = await rmix("ramp-half", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].volume = 0.5; });
   const d = rms(half, 0, DUR) - rms(ramped, 0, DUR);
   check(`volume 0.5 on a ramped clip is -6 dB (${d.toFixed(2)})`, Math.abs(d + 6.02) < 0.3, d);
+  // a source whose rate differs from the project's: each run is labelled at the project rate, so the clip keeps its speed and its place
+  ff("-i", join(m, "clicks.wav"), "-ar", "44100", join(m, "clicks44.wav"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6", "-i", join(m, "clicks44.wav"), "-shortest", "-pix_fmt", "yuv420p", join(m, "clicks44.mp4"));
+  const worst = (g: number[], e: number[]) => (g.length === e.length ? Math.max(...e.map((x, k) => Math.abs(g[k] - x))) : Infinity);
+  const P44 = join(tmp, "ramp-proj44");
+  api.create(P44, { width: 320, height: 240, fps: FPS });
+  await api.apply(P44, [{ op: "add_clip", track: "main", src: join(m, "clicks44.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
+  const p44 = api.openProject(P44), tl44 = p44.absolutized(p44.load());
+  tl44.settings.loudness = null;
+  const w44 = worst(onsets(await buildAudio(tl44, join(tmp, "ramp44.wav"))), expected);
+  check(`a 44.1 kHz source in a 48 kHz project: every click within one frame (worst ${(w44 * 1000).toFixed(1)} ms)`, w44 < 1 / FPS, w44);
+  const w48 = worst(onsets(await rmix("ramp-rev44", (tl) => { tl.settings.sample_rate = 44100; Object.assign(tl.tracks.find((t: any) => t.id === "main").clips[0], { reverse: true, in: CIN, keyframes: { speed: kr } }); })), rexp);
+  check(`reversed, a 48 kHz source in a 44.1 kHz project: every click within one frame (worst ${(w48 * 1000).toFixed(1)} ms)`, w48 < 1 / FPS, w48);
+  // the graph is one ffmpeg argument (capped at 128 KiB on Linux, 32767 chars on Windows): a curve with hundreds of runs is refused by name before ffmpeg starts; a long one under the bound mixes
+  const zigProject = async (name: string, secs: number) => {
+    const Z = join(tmp, name);
+    api.create(Z, { width: 320, height: 240, fps: FPS });
+    await api.apply(Z, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: secs, loop: true }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: Array.from({ length: secs * 2 + 1 }, (_, i) => [i * 0.5, i % 2 ? 4 : 0.2]) }]);
+    const pz = api.openProject(Z), tlz = pz.absolutized(pz.load());
+    tlz.settings.loudness = null;
+    return tlz;
+  };
+  const okOut = join(tmp, "zig30.wav");
+  await buildAudio(await zigProject("ramp-zig30", 30), okOut);
+  check("a 30 s zigzag ramp (under the bound) mixes", existsSync(okOut));
+  const bigOut = join(tmp, "zig100.wav");
+  let big: any;
+  try { await buildAudio(await zigProject("ramp-zig100", 100), bigOut); } catch (e: any) { big = e; }
+  check("a 100 s zigzag ramp is refused as too_complex, names the clip, and leaves no mix file behind", big?.code === "too_complex" && /vid1/.test(big.message) && !!big.hint && !existsSync(bigOut) && !existsSync(bigOut + ".raw.wav"), big && { code: big.code, message: big.message });
   const muted = await rmix("ramp-muted", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].muted = true; });
   check("muted: a ramped clip is silent", onsets(muted).length === 0, onsets(muted));
 }
