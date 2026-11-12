@@ -220,9 +220,9 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   { // state of the audio clip that keeps the sound silent (or unplayable) must not turn audible
     const mute = structuredClone(fxd); at(mute, "aud1").muted = true;
     check("attach_audio keeps a muted detached audio silent (the video ends muted)", at(run(mute, [{ op: "attach_audio", id: "fx" }])[0], "fx").muted === true);
-    for (const state of [{ muted: true }, { volume: 0 }]) {
-      const quiet = structuredClone(fxd); Object.assign(quiet.tracks.find((t: any) => t.clips.some((c: any) => c.id === "aud1"))!, state);
-      refuses(`attach_audio refuses audio on a track with ${JSON.stringify(state)} as audio_state`, quiet, [{ op: "attach_audio", id: "fx" }], "audio_state");
+    for (const side of ["aud1", "fx"]) for (const state of [{ muted: true }, { volume: 0 }]) { // the audio's track, and the video's
+      const quiet = structuredClone(fxd); Object.assign(quiet.tracks.find((t: any) => t.clips.some((c: any) => c.id === side))!, state);
+      refuses(`attach_audio refuses ${side === "fx" ? "a video" : "audio"} on a track with ${JSON.stringify(state)} as audio_state`, quiet, [{ op: "attach_audio", id: "fx" }], "audio_state");
     }
     const frozen = structuredClone(fxd); at(frozen, "fx").freeze = true;
     refuses("attach_audio refuses a frozen video as audio_state", frozen, [{ op: "attach_audio", id: "fx" }], "audio_state");

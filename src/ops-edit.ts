@@ -165,8 +165,10 @@ export function registerEditOps(h: OpHelpers) {
         if (!same) throw new EditError(`'${aud.id}' no longer lines up with '${v.id}': ${k} is ${pa[k]}, the video's is ${pv[k]}`, "out_of_sync",
           `make ${k} match the video's (undo the J/L-cut or slip), or remove_clip id=${aud.id} to drop that audio and its processing`, undefined, { audio: aud.id, field: k });
       }
-      const atr = tl.tracks.find((t) => t.clips.includes(aud))!;
-      const silent = atr.muted ? `track '${atr.id}' is muted` : !(Number(atr.volume ?? 1) > 0) ? `track '${atr.id}' has volume 0` : v.freeze ? `'${v.id}' is a freeze frame, which plays no audio` : aud.until_end || typeof aud.match_duration === "string" ? `'${aud.id}' has its own length rule (until_end or match_duration)` : "";
+      const trackOf = (c: Clip) => tl.tracks.find((t) => t.clips.includes(c))!;
+      const atr = trackOf(aud);
+      const quiet = (t: Track) => (t.muted ? `track '${t.id}' is muted` : !(Number(t.volume ?? 1) > 0) ? `track '${t.id}' has volume 0` : ""); // the sound is silent on one track and audible on the other
+      const silent = quiet(atr) || quiet(trackOf(v)) || (v.freeze ? `'${v.id}' is a freeze frame, which plays no audio` : aud.until_end || typeof aud.match_duration === "string" ? `'${aud.id}' has its own length rule (until_end or match_duration)` : "");
       if (silent) throw new EditError(`attach_audio would change what '${aud.id}' plays: ${silent}`, "audio_state",
         "unmute or raise that track and unfreeze the video; remove until_end/match_duration from the audio; or remove_clip the audio to drop it", undefined, { audio: aud.id });
       for (const k of MOVE_KEYS) { if (aud[k] !== undefined) v[k] = structuredClone(aud[k]); else delete v[k]; }
