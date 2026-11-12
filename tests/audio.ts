@@ -261,6 +261,54 @@ check(`final mix at -14 LUFS (${lufs(target).toFixed(2)})`, Math.abs(lufs(target
 const again = await mix("final2", -14);
 check("deterministic: two mixes are byte-identical", readFileSync(target).equals(readFileSync(again)));
 
+console.log("a speed-ramped video clip plays its sound, time-mapped by the curve its picture follows");
+{
+  const { speedIntegral } = await import("../src/anim.ts");
+  // 20 ms 1 kHz bursts every 0.25 s of source time (phase 0 at each onset), under a test picture
+  ff("-f", "lavfi", "-i", "aevalsrc='if(lt(mod(t,0.25),0.02),0.9*sin(2*PI*1000*t),0)':s=48000:d=6", "-ac", "2", join(m, "clicks.wav"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6", "-i", join(m, "clicks.wav"), "-shortest", "-pix_fmt", "yuv420p", join(m, "clicks.mp4"));
+  const FPS = 30, DUR = 3, kfs = [[0, 1], [1, 0.5], [2, 2]];
+  const RP = join(tmp, "ramp-proj");
+  api.create(RP, { width: 320, height: 240, fps: FPS });
+  await api.apply(RP, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
+  const rmix = (tag: string, edit?: (tl: any) => void) => { const p = api.openProject(RP), tl = p.absolutized(p.load()); tl.settings.loudness = null; edit?.(tl); return buildAudio(tl, join(tmp, `${tag}.wav`)); };
+  const onsets = (f: string) => { // times of the first sample over 0.2 in each burst (bursts are >= 10 ms long and >= 0.1 s apart in output time)
+    const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-af", "pan=mono|c0=c0", "-f", "f32le", "-ar", "48000", "-"], { maxBuffer: 1 << 26 });
+    const x = new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.length / 4), out: number[] = [];
+    let last = -1e9;
+    for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > 0.2) { if (i - last > 4800) out.push(i / 48000); last = i; }
+    return out;
+  };
+  const ramped = await rmix("ramp");
+  // the output time at which the picture shows source time u: the inverse of speedIntegral
+  const expected: number[] = [];
+  for (let j = 0; 0.25 * j < speedIntegral(kfs, DUR); j++) {
+    let lo = 0, hi = DUR;
+    for (let q = 0; q < 40; q++) { const mid = (lo + hi) / 2; if (speedIntegral(kfs, mid) < 0.25 * j) lo = mid; else hi = mid; }
+    expected.push(hi);
+  }
+  const got = onsets(ramped), errs = expected.map((e, k) => Math.abs((got[k] ?? Infinity) - e));
+  check(`every click lands within one frame of where the picture shows it (${got.length} of ${expected.length}, worst ${(Math.max(...errs) * 1000).toFixed(1)} ms)`, got.length === expected.length && Math.max(...errs) < 1 / FPS, { got: got.map((x) => +x.toFixed(3)), expected: expected.map((x) => +x.toFixed(3)) });
+  // reversed: the picture shows source time in + duration - integral, so each burst, played backwards, starts at its end (0.02 s after its source onset)
+  const kr = [[0, 1], [1, 0.5], [2, 1]], CIN = 0.5, rev = await rmix("ramp-rev", (tl) => { Object.assign(tl.tracks.find((t: any) => t.id === "main").clips[0], { reverse: true, in: CIN, keyframes: { speed: kr } }); });
+  const rexp: number[] = [];
+  for (let j = 0; 0.25 * j + 0.02 <= CIN + DUR; j++) {
+    const s = 0.25 * j + 0.02;
+    if (s < CIN + DUR - speedIntegral(kr, DUR)) continue;
+    let lo = 0, hi = DUR;
+    for (let q = 0; q < 40; q++) { const mid = (lo + hi) / 2; if (CIN + DUR - speedIntegral(kr, mid) > s) lo = mid; else hi = mid; }
+    rexp.push(hi);
+  }
+  rexp.sort((a, b) => a - b);
+  const rgot = onsets(rev), rerrs = rexp.map((e, k) => Math.abs((rgot[k] ?? Infinity) - e));
+  check(`reversed: every click lands within one frame of where the picture shows it (${rgot.length} of ${rexp.length}, worst ${(Math.max(...rerrs) * 1000).toFixed(1)} ms)`, rgot.length === rexp.length && Math.max(...rerrs) < 1 / FPS, { got: rgot.map((x) => +x.toFixed(3)), expected: rexp.map((x) => +x.toFixed(3)) });
+  const half = await rmix("ramp-half", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].volume = 0.5; });
+  const d = rms(half, 0, DUR) - rms(ramped, 0, DUR);
+  check(`volume 0.5 on a ramped clip is -6 dB (${d.toFixed(2)})`, Math.abs(d + 6.02) < 0.3, d);
+  const muted = await rmix("ramp-muted", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].muted = true; });
+  check("muted: a ramped clip is silent", onsets(muted).length === 0, onsets(muted));
+}
+
 console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
 {
   let ticks = 0;
@@ -314,6 +362,7 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // the same steps reached through api.render, which hands o.signal to each
     await abortRun("the audio-render encode", "-map 0:a", (signal) => api.render(Q, { out: join(tmp, "abort-encode.wav"), signal }));
     await abortRun("the multi-worker mix", "pcm_f32le", (signal) => api.render(R, { out: join(tmp, "abort-mix.mp4"), workers: 2, sheet: false, signal }));
+    await abortRun("the single-worker mix", "pcm_f32le", (signal) => api.render(R, { out: join(tmp, "abort-mix1.mp4"), workers: 1, sheet: false, signal }));
     const S = join(tmp, "abort-subs");
     api.create(S, { width: 320, height: 240, fps: 24 });
     await api.apply(S, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }, { op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }], preset: "clean", at: 0 }]);

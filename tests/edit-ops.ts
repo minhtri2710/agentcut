@@ -60,6 +60,9 @@ check("audio clip mirrors video", a1.attach_to === "vid1" && a1.offset === 0 && 
 check("video muted", clip("vid1").muted === true);
 await fails({ op: "detach_audio", id: "vid1" }, "already_detached", "detach twice -> already_detached");
 await fails({ op: "detach_audio", id: "vid4" }, "no_audio", "silent video -> no_audio");
+await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: [[0, 1], [1, 2]] });
+await fails({ op: "detach_audio", id: "vid3" }, "unsupported", "speed-ramped video -> unsupported (its sound follows the ramp on the clip)");
+await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: null });
 await fails({ op: "detach_audio", id: "img1" }, "bad_type", "image -> bad_type");
 await fails({ op: "detach_audio", id: "aud1" }, "bad_type", "audio clip -> bad_type");
 await fails({ op: "detach_audio", id: "vid1", track: "main" }, "already_detached", "already detached wins over bad track");

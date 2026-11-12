@@ -538,7 +538,7 @@ op("duplicate_clip", "Copy a clip (optionally to another track/time). A magnetic
   return { id: dup.id, track: dest.id, start: dup.start, ...(la ? { audio: la[0].clips.find((x) => x.attach_to === dup.id)!.id } : {}) };
 });
 
-op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative to clip start. prop 'speed' = speed ramp (video audio is dropped).",
+op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative to clip start. prop 'speed' = speed ramp (video only; its sound follows the ramp and changes pitch with it).",
   { id: "clip id", prop: "x|y|scale|scale_x|scale_y|rotation|opacity|blur|volume|speed", keyframes: "list or null" }, (p, tl, a) => {
     const [, , c] = findClip(tl, a.id);
     const k = (c.keyframes ??= {});

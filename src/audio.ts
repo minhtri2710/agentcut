@@ -1,6 +1,6 @@
 // Audio mix: one FFmpeg filter graph (trim, tempo, reverse, processing, fades, automation, ducking) + 2-pass loudness.
 import { unlinkSync } from "node:fs";
-import { parseKfs } from "./anim.ts";
+import { parseKfs, speedIntegral, speedSampler } from "./anim.ts";
 import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
@@ -8,6 +8,7 @@ import { run } from "./proc.ts";
 import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
+const STEREO = "aformat=sample_fmts=fltp:channel_layouts=stereo";
 
 // volume='expr':eval=frame holds one gain per audio frame (decoder frames are 85-93 ms). The duck ramp is linear in amplitude, so its dB error is steep near the ramp's end:
 // 256 samples (5.3 ms) keep the music within 0.25 dB of the ducked level in the first 30 ms of the voice (worst of 7 onset offsets; 128: 0.10, 480: 1.07, 1024: 4.0 dB)
@@ -35,11 +36,15 @@ function mapClip(c: Clip, w?: Win): Clip | null {
   const s = parseTime(c.start ?? 0), e = s + parseTime(c.duration), v = visibleSpan(s, e, w.w0, w.w1);
   if (!v) return null;
   const [a, b] = v;
-  const head = a - s, tail = e - b, speed = Number(c.speed ?? 1) || 1;
-  const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + (c.reverse ? tail : head) * speed };
+  const head = a - s, tail = e - b, speed = Number(c.speed ?? 1) || 1, ramp = c.keyframes?.speed;
+  // a ramped clip skips the ramp's integral over the cut head; reversed, its source segment (duration*speed long, as render.ts reads it) shrinks by head + tail and is entered at that integral
+  const skip = !ramp ? (c.reverse ? tail : head) * speed : c.reverse ? (head + tail) * speed - speedIntegral(ramp, head) : speedIntegral(ramp, head);
+  const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + skip };
   if (head > 1e-6) {
     delete m.fade_in;
-    if (c.keyframes?.volume) m.keyframes = { ...c.keyframes, volume: parseKfs(c.keyframes.volume).map(([t, v]) => [t - head, v]) };
+    const shift = (kfs: any[]) => parseKfs(kfs).map(([t, v, e]) => [t - head, v, e]);
+    if (c.keyframes?.volume) m.keyframes = { ...c.keyframes, volume: shift(c.keyframes.volume) };
+    if (ramp) m.keyframes = { ...m.keyframes, speed: shift(ramp) };
   }
   if (tail > 1e-6) delete m.fade_out;
   return m;
@@ -80,13 +85,33 @@ export function voiceSpans(tl: Timeline): [number, number][] {
   return out;
 }
 
+/** A ramped clip's output span cut into runs of whole picture frames (<= 1 s) that one constant rate reproduces: at every frame the run's linear map is within 1/4 frame
+ *  of the curve render.ts follows, in output time (the source-time gap divided by the slowest local speed in the run), so sound and picture drift apart by at most that.
+ *  Source seconds are clip-local (from `in`); `n` is the run's length in output samples. */
+function rampRuns(kfs: any[], dur: number, fps: number, sr: number) {
+  const nf = Math.max(1, Math.ceil(dur * fps - 1e-9)), xs = Array.from({ length: nf + 1 }, (_, j) => Math.min(dur, j / fps)), U = speedSampler(kfs, dur), us = xs.map((x) => U(x)), tol = 0.25 / fps;
+  const runs: { u0: number; u1: number; len: number; n: number }[] = [];
+  for (let a = 0; a < nf;) {
+    let b = a + 1;
+    for (; b < nf && xs[b + 1] - xs[a] <= 1 + 1e-9; b++) {
+      const k = (us[b + 1] - us[a]) / (xs[b + 1] - xs[a]); // does one rate still reach every frame from a to b+1?
+      let slow = k;
+      for (let j = a; j <= b; j++) slow = Math.min(slow, (us[j + 1] - us[j]) / (xs[j + 1] - xs[j]));
+      if (!(xs.slice(a + 1, b + 1).every((x, i) => Math.abs(us[a] + k * (x - xs[a]) - us[a + 1 + i]) <= tol * slow))) break;
+    }
+    runs.push({ u0: us[a], u1: us[b], len: xs[b] - xs[a], n: Math.round(xs[b] * sr) - Math.round(xs[a] * sr) });
+    a = b;
+  }
+  return runs;
+}
+
 /** `signal` stops the running ffmpeg and rejects with signal.reason. */
 export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number, signal?: AbortSignal): Promise<string> {
   needFfmpeg();
   resolve(tl);
   const T = Math.max(0.04, totalDuration(tl));
   t1 ??= T;
-  const sr = Number(tl.settings.sample_rate ?? 48000);
+  const sr = Number(tl.settings.sample_rate ?? 48000), fps = Number(tl.settings.fps);
   const srcs = audioSources(tl);
   const voice = voiceSpans(tl).sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
@@ -110,13 +135,16 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     const input = [...(c.loop ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
     args.push(...input);
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
-    const ch = [`atrim=start=${cin}:duration=${dur * speed}`, "asetpts=PTS-STARTPTS"];
-    if (c.reverse) ch.push("areverse");
-    ch.push(...atempo(speed), `aresample=${sr}`, "aformat=sample_fmts=fltp:channel_layouts=stereo");
+    // a ramped clip follows keyframes.speed alone (as render.ts does; `speed` is not read); the runs rebuild its time map before the chain below
+    // reversed, the segment is duration*speed long whatever the ramp consumes: render.ts reads that segment backwards
+    const runs = c.keyframes?.speed ? rampRuns(c.keyframes.speed, dur, fps, sr) : null, span = runs && !c.reverse ? runs[runs.length - 1].u1 : dur * speed;
+    const base = [`atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
+    const head = [...base, ...(runs ? [] : atempo(speed)), `aresample=${sr}`, STEREO]; // the plain source span: what denoise and normalize measure (a ramp changes neither level nor noise floor)
+    const ch = [...head];
     if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples
     const dn = FX.denoiseStrength(fx("denoise"));
     if (dn) {
-      const floor = await FX.noiseFloor(s.path, cin, dur * speed, signal);
+      const floor = await FX.noiseFloor(s.path, cin, span, signal);
       if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor, sr));
     }
     ch.push(...FX.eqFilters(c.eq), ...FX.compressorFilter(c.compressor), ...FX.panFilter(c.pan));
@@ -132,7 +160,18 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     ch.push(`adelay=${Math.round(start * 1000)}:all=1`);
     const onBus = bus(tr).length > 0;
     if (!onBus) ch.push(...duck(tr, start, start + dur));
-    graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
+    if (!runs) graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
+    else { // shortcut: every run is inline in the one -filter_complex argument, so a ramped clip of hours can pass the OS argv limit; move the graph to a script file if that is ever hit
+      // one varispeed run per label: the source span at the run's average rate, cut or padded to its exact sample count so the seams never accumulate
+      const lab = (k: number) => `[r${i}_${k}]`, N = runs.length, from = c.reverse ? `[b${i}]` : `[${i}:a]`, off = c.reverse ? 0 : cin; // reversed: the runs cut the reversed segment, so its own time starts at 0
+      if (c.reverse) graph.push(`[${i}:a]${base.join(",")}[b${i}]`);
+      if (N > 1) graph.push(`${from}asplit=${N}${runs.map((_, k) => lab(k)).join("")}`);
+      runs.forEach((r, k) => {
+        const rate = Math.round(sr * Math.max(0.01, (r.u1 - r.u0) / r.len));
+        graph.push(`${N > 1 ? lab(k) : from}atrim=start=${(off + r.u0).toFixed(6)}:end=${(off + r.u1).toFixed(6)},asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
+      });
+      graph.push(`${runs.map((_, k) => `[q${i}_${k}]`).join("")}concat=n=${N}:v=0:a=1[m${i}]`, `[m${i}]${ch.slice(head.length).join(",")}[a${i}]`);
+    }
     if (onBus) buses.set(tr, [...(buses.get(tr) ?? []), `[a${i}]`]);
     else labels.push(`[a${i}]`);
   }

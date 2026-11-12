@@ -9,7 +9,8 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-compound-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
-const { buildAudio } = await import("../src/audio.ts");
+const { audioSources, buildAudio } = await import("../src/audio.ts");
+const { speedIntegral } = await import("../src/anim.ts");
 
 let failures = 0;
 function check(name: string, cond: unknown, info?: unknown) {
@@ -401,6 +402,23 @@ console.log("retimed compound: what it drops is reported by validate");
   check("update_clip with keyframes.speed on a compound is refused and the compound is unchanged", refused !== null && JSON.stringify(api.openProject(R).load()).indexOf('"speed":[[') < 0, refused && { code: refused.code, msg: refused.message });
   await retime({ speed: 1.5 });
   check("a constant speed on a compound is still accepted", (api.validate(R) as any).valid === true && api.openProject(R).load().tracks.find((t: any) => t.id === "main")!.clips.find((c: any) => c.id === "RC")!.speed === 1.5);
+}
+
+console.log("a ramped clip inside a compound whose window starts after its head: the sound continues the ramp where the picture does");
+{
+  const kfs = [[0, 1], [1, 0.5], [2, 2]], tl = M.newTimeline(640, 360, 30);
+  tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true } as any;
+  const nested = { id: "rv", type: "video", asset: "v", start: 0, duration: 3, in: 0.25, keyframes: { speed: kfs } };
+  tl.tracks.push({ id: "main", kind: "video", clips: [{ id: "RC", type: "compound", start: 0, duration: 2, in: 1, tracks: [{ id: "n", kind: "video", clips: [nested] }] }] } as any);
+  M.resolve(tl);
+  const [src] = audioSources(tl), c = src.clip, x = 0.7;
+  const ahead = speedIntegral(c.keyframes!.speed, x), picture = speedIntegral(kfs, 1 + x) - speedIntegral(kfs, 1);
+  check(`the window's head is skipped by the ramp's integral (in ${Number(c.in).toFixed(3)}), and the ramp resumes at the window (${ahead.toFixed(3)} vs ${picture.toFixed(3)} source s after ${x} s)`,
+    Math.abs(Number(c.in) - (0.25 + speedIntegral(kfs, 1))) < 1e-6 && Math.abs(ahead - picture) < 1e-3, { in: c.in, ahead, picture });
+  // reversed: the segment (duration * speed = 3 s from `in`) is entered where the ramp has used up the cut head, and shrinks by head + tail
+  Object.assign(nested, { reverse: true });
+  const [rsrc] = audioSources(tl), rc = rsrc.clip;
+  check(`reversed: the window enters the reversed segment at the ramp's integral (in ${Number(rc.in).toFixed(3)})`, Math.abs(Number(rc.in) - (0.25 + 1 * 1 + 0 - speedIntegral(kfs, 1))) < 1e-6 && Number(rc.duration) === 2, { in: rc.in, duration: rc.duration });
 }
 
 console.log("retimed compound: the warning names only what plays now but is not mixed or exported");

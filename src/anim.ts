@@ -50,6 +50,16 @@ export function speedIntegral(kfs: any[], t: number, step = 1 / 240): number {
   return acc;
 }
 
+/** speedIntegral(kfs, t) for many t at once: one pass over 0..tmax, then O(1) per query (audio.ts samples it at every picture frame of a ramped clip). */
+export function speedSampler(kfs: any[], tmax: number, step = 1 / 240): (t: number) => number {
+  const cum = [0];
+  for (let x = 0; x < tmax; x += step) cum.push(cum[cum.length - 1] + kfValue(kfs, Math.min(tmax, x + step / 2)) * Math.min(step, tmax - x));
+  return (t) => {
+    const k = Math.min(cum.length - 1, Math.floor(t / step + 1e-9)), x = k * step;
+    return cum[k] + (t > x ? kfValue(kfs, Math.min(t, x + step / 2)) * (t - x) : 0);
+  };
+}
+
 export class Mods {
   opacity = 1; dx = 0; dy = 0; scale = 1; sx = 1; sy = 1; rotation = 0; blur = 0;
   masks: any[] = [];

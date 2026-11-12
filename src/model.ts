@@ -626,7 +626,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
 /** A compound at a speed other than 1: its nested audio is not mixed (audio.ts) and its nested captions are not cues (subtitles.ts). */
 export const isRetimed = (c: Clip) => Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6;
 /** A clip whose own sound is mixed (before track/compound gains): audio.ts audioSources and the retimed-compound warning share it. */
-export const hasSound = (c: Clip, assets: Timeline["assets"]) => (c.type === "audio" || c.type === "video") && !c.muted && !c.freeze && !c.keyframes?.speed
+export const hasSound = (c: Clip, assets: Timeline["assets"]) => (c.type === "audio" || c.type === "video") && !c.muted && !c.freeze
   && !!assets[c.asset] && !!(assets[c.asset].has_audio || assets[c.asset].kind === "audio");
 
 /** The part of [s, e] inside the window [w0, w1], or null when under 1 ms is left. audio.ts mapClip, subtitles.ts captionCues and the retimed-compound warning trim a nested clip to its compound's visible window with it. */

@@ -109,7 +109,8 @@ export function registerEditOps(h: OpHelpers) {
     if (ex) throw new EditError(`audio of '${v.id}' is already detached as '${ex.id}'`, "already_detached", `nothing to do: edit '${ex.id}' directly, or use j_cut/l_cut/slip_clip on '${v.id}'`, undefined, { audio: ex.id });
     if (v.muted) throw new EditError(`'${v.id}' is muted, so there is no audio to detach`, "muted", `unmute first: update_clip id=${v.id} muted=false`);
     if (!tl.assets[v.asset]?.has_audio) throw new EditError(`'${v.id}' (asset '${v.asset}') has no audio stream`, "no_audio", "add sound with add_clip type=audio instead");
-    if (v.freeze || v.keyframes?.speed) throw new EditError(`'${v.id}' is a freeze frame or speed ramp, which plays no audio`, "no_audio");
+    if (v.freeze) throw new EditError(`'${v.id}' is a freeze frame, which plays no audio`, "no_audio");
+    if (v.keyframes?.speed) throw new EditError(`'${v.id}' has a speed ramp, which only a video clip follows`, "unsupported", "its sound already plays at the ramped speed: leave it on the clip, or remove keyframes.speed to detach");
     const tid = trackId ?? "dialogue";
     const tr = h.ensureTrack(tl, tid, "audio");
     if ((tr.kind ?? "video") !== "audio" || tr.magnetic) throw new EditError(`track '${tid}' must be a non-magnetic audio track`, "bad_track", "omit track (default 'dialogue') or add_track kind=audio");
