@@ -1,6 +1,6 @@
 // End-to-end smoke test: generates synthetic media, exercises every op + template + export format through the CLI.
 // Run: bun tests/smoke.ts [--keep]          (needs ffmpeg on PATH)
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -149,6 +149,44 @@ check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.na
 check("render speed logged", fs.render?.renders >= 1, fs.render);
 check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
 check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
+{
+  // two processes write the feedback store at the same time (released together once both have loaded the module): no note and no event is lost
+  const fbDir = join(tmp, "home", "feedback");
+  const worker = join(tmp, "fb-worker.ts");
+  writeFileSync(worker, `import { existsSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+const [mode, tag, n, dir] = process.argv.slice(2);
+const F = await import(${JSON.stringify(resolve(import.meta.dir, "../src/feedback.ts"))});
+writeFileSync(dir + "/ready-" + tag, "");
+while (!existsSync(dir + "/go")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+for (let i = 0; i < Number(n); i++) {
+  if (mode === "notes") F.addNote({ kind: "idea", title: randomBytes(10).toString("hex") });
+  else F.recordEvent({ type: "race", id: tag + "-" + i });
+}
+`);
+  const race = async (mode: string, n: number) => {
+    rmSync(join(tmp, "race"), { recursive: true, force: true });
+    mkdirSync(join(tmp, "race"));
+    const dir = join(tmp, "race");
+    const kids = ["a", "b"].map((tag) => spawn(process.execPath, ["--no-install", worker, mode, tag, String(n), dir], { env: process.env, stdio: ["ignore", "ignore", "inherit"] }));
+    const done = kids.map((k) => new Promise<number | null>((res) => k.on("exit", res)));
+    for (let i = 0; i < 400 && !(existsSync(join(dir, "ready-a")) && existsSync(join(dir, "ready-b"))); i++) await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(join(dir, "go"), "");
+    return Promise.all(done);
+  };
+  const readNotes = (): any[] => JSON.parse(readFileSync(join(fbDir, "notes.json"), "utf8"));
+  const before = readNotes().length;
+  const codes = await race("notes", 15);
+  const notes = readNotes();
+  check("two processes adding notes at once: every note is kept", codes.every((c) => c === 0) && notes.length === before + 30 && new Set(notes.map((x: any) => x.id)).size === notes.length, { codes, before, now: notes.length });
+  // events.jsonl over the size limit (about 10 MB of short lines, so the trim takes long and the half kept is still under the limit): the first append trims it while the other process appends
+  const evFile = join(fbDir, "events.jsonl");
+  const seed = '{"cmd":"seed"}\n';
+  writeFileSync(evFile, seed.repeat(Math.ceil(10_000_000 / seed.length)));
+  const ecodes = await race("events", 400);
+  const ids = new Set(readFileSync(evFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).id).filter(Boolean));
+  check("two processes appending events while one trims events.jsonl: no event is lost", ecodes.every((c) => c === 0) && ids.size === 800 && statSync(evFile).size < 5 * 1024 * 1024, { ecodes, kept: ids.size, size: statSync(evFile).size });
+}
 
 console.log("schema version");
 {

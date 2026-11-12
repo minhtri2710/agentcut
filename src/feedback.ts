@@ -8,6 +8,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { EditError, similarity } from "./model.ts";
+import { withLock } from "./project.ts";
 import { appendFile, ensureDir, writeFile } from "./safe-write.ts";
 import { VERSION } from "./version.ts";
 
@@ -23,6 +24,8 @@ export const home = () => process.env.AGENTCUT_HOME ?? join(homedir(), ".agentcu
 const dir = () => ensureDir(home(), join(home(), "feedback"));
 const notesFile = () => join(dir(), "notes.json");
 const eventsFile = () => join(dir(), "events.jsonl");
+/** One cross-process lock for the store: the events trim and the notes read-modify-write must not interleave with another process's append or write. */
+const locked = <T>(fn: () => T): T => withLock(join(dir(), "lock"), fn);
 const telemetryOn = () => process.env.AGENTCUT_TELEMETRY !== "0";
 
 const HOME = homedir();
@@ -49,11 +52,13 @@ export function recordEvent(ev: Record<string, unknown>) {
   if (!telemetryOn()) return;
   try {
     const f = eventsFile();
-    if (existsSync(f) && statSync(f).size > MAX_EVENTS_BYTES) { // keep the newest half
-      const lines = readFileSync(f, "utf8").split("\n");
-      writeFile(f, lines.slice(Math.floor(lines.length / 2)).join("\n"), home());
-    }
-    appendFile(f, JSON.stringify({ t: new Date().toISOString(), v: VERSION, ...ev }) + "\n", home());
+    locked(() => {
+      if (existsSync(f) && statSync(f).size > MAX_EVENTS_BYTES) { // keep the newest half
+        const lines = readFileSync(f, "utf8").split("\n");
+        writeFile(f, lines.slice(Math.floor(lines.length / 2)).join("\n"), home());
+      }
+      appendFile(f, JSON.stringify({ t: new Date().toISOString(), v: VERSION, ...ev }) + "\n", home());
+    });
   } catch { /* feedback must never break the tool */ }
 }
 
@@ -94,32 +99,34 @@ export function addNote(input: { kind?: string; title: string; details?: string;
   const severity = input.severity ?? (kind === "bug" ? "high" : "medium");
   if (!(SEVERITIES as readonly string[]).includes(severity)) throw new EditError(`unknown severity '${severity}'`, "bad_severity", `severities: ${SEVERITIES.join(", ")}`);
   if (!input.title?.trim()) throw new EditError("feedback needs a short title", "missing_arg", "e.g. title='no way to detach audio from a video clip'");
-  const notes = loadNotes();
-  const now = new Date().toISOString();
-  const t = norm(input.title);
-  // merge with an open note of the same kind (and area, if both have one) that says the same thing
-  const dup = notes.find((n) => n.status === "open" && n.kind === kind && (!input.area || !n.area || n.area === input.area)
-    && (norm(n.title) === t || similarity(norm(n.title), t) >= 0.72));
-  const src = input.source ?? "agent";
-  if (dup) {
-    dup.count++; dup.last_seen = now;
-    if (SEV_W[severity] > SEV_W[dup.severity]) dup.severity = severity;
-    const ex = scrub(input.details || input.title, 400);
-    if (!dup.examples.includes(ex) && dup.examples.length < 6) dup.examples.push(ex);
-    if (input.suggestion && !dup.suggestion) dup.suggestion = scrub(input.suggestion, 400);
-    if (!dup.sources.includes(src)) dup.sources.push(src);
-    if (!dup.versions.includes(VERSION)) dup.versions.push(VERSION);
+  return locked(() => {
+    const notes = loadNotes();
+    const now = new Date().toISOString();
+    const t = norm(input.title);
+    // merge with an open note of the same kind (and area, if both have one) that says the same thing
+    const dup = notes.find((n) => n.status === "open" && n.kind === kind && (!input.area || !n.area || n.area === input.area)
+      && (norm(n.title) === t || similarity(norm(n.title), t) >= 0.72));
+    const src = input.source ?? "agent";
+    if (dup) {
+      dup.count++; dup.last_seen = now;
+      if (SEV_W[severity] > SEV_W[dup.severity]) dup.severity = severity;
+      const ex = scrub(input.details || input.title, 400);
+      if (!dup.examples.includes(ex) && dup.examples.length < 6) dup.examples.push(ex);
+      if (input.suggestion && !dup.suggestion) dup.suggestion = scrub(input.suggestion, 400);
+      if (!dup.sources.includes(src)) dup.sources.push(src);
+      if (!dup.versions.includes(VERSION)) dup.versions.push(VERSION);
+      saveNotes(notes);
+      return { id: dup.id, merged: true, count: dup.count, message: "merged with an existing note (+1)" };
+    }
+    const id = `fb${(notes.length + 1).toString().padStart(3, "0")}`;
+    notes.push({
+      id, kind, title: scrub(input.title, 160), details: input.details ? scrub(input.details, 1200) : undefined, area: input.area,
+      severity, suggestion: input.suggestion ? scrub(input.suggestion, 600) : undefined, count: 1, first_seen: now, last_seen: now,
+      status: "open", examples: input.details ? [scrub(input.details, 400)] : [], sources: [src], versions: [VERSION],
+    });
     saveNotes(notes);
-    return { id: dup.id, merged: true, count: dup.count, message: "merged with an existing note (+1)" };
-  }
-  const id = `fb${(notes.length + 1).toString().padStart(3, "0")}`;
-  notes.push({
-    id, kind, title: scrub(input.title, 160), details: input.details ? scrub(input.details, 1200) : undefined, area: input.area,
-    severity, suggestion: input.suggestion ? scrub(input.suggestion, 600) : undefined, count: 1, first_seen: now, last_seen: now,
-    status: "open", examples: input.details ? [scrub(input.details, 400)] : [], sources: [src], versions: [VERSION],
+    return { id, merged: false, count: 1, message: "recorded - thank you" };
   });
-  saveNotes(notes);
-  return { id, merged: false, count: 1, message: "recorded - thank you" };
 }
 
 export function listNotes(o: { status?: string; kind?: string } = {}) {
@@ -129,13 +136,15 @@ export function listNotes(o: { status?: string; kind?: string } = {}) {
 const score = (n: Note) => n.count * SEV_W[n.severity] * (n.kind === "bug" ? 2 : 1);
 
 export function resolveNote(id: string, status: "resolved" | "wontfix" | "open" = "resolved", resolution?: string) {
-  const notes = loadNotes();
-  const n = notes.find((x) => x.id === id);
-  if (!n) throw new EditError(`feedback note '${id}' not found`, "not_found", "list notes with `agentcut feedback list`");
-  n.status = status;
-  if (resolution) n.resolution = resolution;
-  saveNotes(notes);
-  return { id, status };
+  return locked(() => {
+    const notes = loadNotes();
+    const n = notes.find((x) => x.id === id);
+    if (!n) throw new EditError(`feedback note '${id}' not found`, "not_found", "list notes with `agentcut feedback list`");
+    n.status = status;
+    if (resolution) n.resolution = resolution;
+    saveNotes(notes);
+    return { id, status };
+  });
 }
 
 // ------------------------------------------------------------------ summary
