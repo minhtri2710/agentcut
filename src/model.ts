@@ -433,9 +433,11 @@ export function resolve(tl: Timeline): Timeline {
     if (c.until_end) any = true;
     else if (c.enabled !== false && !pos.has(c)) end = Math.max(end, len.has(c) ? clipStart(c) + 0.1 : clipEnd(c));
   }
-  if (any) {
-    for (const [, , , c] of iterClips(tl)) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
-    layout(tl);
+  if (any) { // an until_end clip is stretched where its start is final: on a magnetic track as the track is laid out, elsewhere once the attached starts are set; the lengths that follow it come last
+    resolveMagnetic(tl, end);
+    resolveAttached(tl);
+    for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
+    resolveLengths(tl);
   }
   return tl;
 }
@@ -516,18 +518,17 @@ function resolveAttached(tl: Timeline) {
   for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
 }
 
-function resolveMagnetic(tl: Timeline) {
+/** `end`: where until_end clips stretch to. The transition overlap of an until_end clip is not limited by its own length, so its start comes from the clips before it alone. */
+function resolveMagnetic(tl: Timeline, end?: number) {
   for (const tr of tl.tracks) {
     if (!tr.magnetic) continue;
     let t = 0;
     tr.clips.forEach((c, i) => {
-      const dur = clipDur(c);
-      let td = 0;
       const spec = i > 0 ? normAnim(c.transition, 0.5) : null;
-      if (spec) td = Math.min(spec.duration, dur, clipDur(tr.clips[i - 1]));
-      const start = Math.max(0, t - td);
+      const start = Math.max(0, spec ? t - Math.min(spec.duration, clipDur(tr.clips[i - 1]), c.until_end ? Infinity : clipDur(c)) : t);
       c.start = round6(start);
-      t = start + dur;
+      if (end !== undefined && c.until_end) c.duration = round6(Math.max(0.1, end - c.start));
+      t = start + clipDur(c);
     });
   }
 }
@@ -758,6 +759,12 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           if (x.attach_to === c.id) { issues.push({ level: "error", path: at, message: `attached to '${t.id}', which is attached back to it`, hint: "break the cycle: remove attach_to from one of the clips" }); break; }
         }
         if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "on a magnetic track attach_to places this clip at its target, and with match_duration true takes its length from it, but the clips after it stay in track order (their starts are computed)" });
+        if (tr.magnetic && c.until_end) issues.push({ level: "error", path: `${p}.attach_to`, message: "an until_end clip on a magnetic track is placed by track order, so attach_to cannot place it", hint: "remove attach_to, or put the clip on a track that is not magnetic" });
+        if (tr.magnetic && c.match_duration === true) {
+          let x = byId(c.attach_to);
+          for (const seen = new Set<Clip>(); x && !x.until_end && !seen.has(x); x = lengthTarget(x) === undefined ? undefined : byId(lengthTarget(x)!)) seen.add(x);
+          if (x?.until_end) issues.push({ level: "error", path: `${p}.match_duration`, message: `on a magnetic track this length follows '${x.id}', which has until_end: the clips after it would move that clip's end`, hint: "give the clip its own duration, or put it on a track that is not magnetic" });
+        }
       }
       if (typeof c.match_duration === "string") {
         const at = `${p}.match_duration`;
