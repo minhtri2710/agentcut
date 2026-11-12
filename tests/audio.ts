@@ -319,7 +319,7 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const w48 = worst(onsets(await rmix("ramp-rev44", (tl) => { tl.settings.sample_rate = 44100; Object.assign(tl.tracks.find((t: any) => t.id === "main").clips[0], { reverse: true, in: CIN, keyframes: { speed: kr } }); })), rexp);
   check(`reversed, a 48 kHz source in a 44.1 kHz project: every click within one frame (worst ${(w48 * 1000).toFixed(1)} ms)`, w48 < 1 / FPS, w48);
   // a reversed ramped clip inside a compound whose window starts after the clip's head: the picture shows source time in + 5 - integral (held at `in` once the ramp has used the segment up),
-  // so the sound plays that segment from the window's entry point and nothing below `in` (the mapped in-point goes below 0 when the ramp outruns the cut head)
+  // so the sound covers exactly the source the picture shows over the window: from its entry point down to where the ramp ends (a cut tail included), and nothing below `in`
   const { newTimeline, resolve: res } = await import("../src/model.ts"), ND = 5, k2 = [[0, 2], [ND, 2]];
   const nestedRev = async (tag: string, srcIn: number, head: number, cdur: number) => {
     const t2 = newTimeline(320, 240, FPS);
@@ -336,8 +336,8 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
     }
     return { got: onsets(await buildAudio(t2, join(tmp, `${tag}.wav`))), exp: exp.sort((a, b) => a - b) };
   };
-  for (const [what, srcIn, head, cdur] of [["in-point below 0", 0, 2, 3], ["in-point below the clip's own `in`", 0.5, 2.2, 2.8], ["window past the segment's start", 0, 3, 2]] as const) {
-    const r = await nestedRev(`ramp-nest-${srcIn}-${head}`, srcIn, head, cdur), w = worst(r.got, r.exp);
+  for (const [what, srcIn, head, cdur] of [["in-point below the clip's own `in`", 0.5, 2.2, 2.8], ["window past the segment's start", 0, 3, 2], ["tail cut", 0, 0, 2], ["head and tail cut", 0, 1, 2]] as const) {
+    const r = await nestedRev(`ramp-nest-${srcIn}-${head}-${cdur}`, srcIn, head, cdur), w = worst(r.got, r.exp);
     check(`reversed in a compound window, ${what}: every click within one frame of the picture (${r.got.length} of ${r.exp.length})`, w < 1 / FPS, r);
   }
   // the graph is one ffmpeg argument (the OS caps it: linux 128 KiB for one argument, win32 32767 chars for the command line, darwin 1 MiB for argv plus environment, see ARGV_LIMITS):

@@ -44,11 +44,11 @@ function mapClip(c: Clip, w?: Win): Clip | null {
   const skip = !ramp ? (c.reverse ? tail : head) * speed : c.reverse ? (head + tail) * speed - speedIntegral(ramp, head) : speedIntegral(ramp, head);
   const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + skip };
   if (ramp && c.reverse) {
-    // the window enters the reversed segment at `end`; the segment never reaches below the clip's own `in` (the picture holds its first frame there), so a head the ramp
-    // has outrun clamps `in` and shortens the segment (`_span`), and a window that enters past the segment's start has no sound
-    const lo = parseTime(c.in ?? 0), end = lo + (e - s) * speed - speedIntegral(ramp, head);
+    // the picture shows source lo + duration*speed - integral(t), held at the clip's own `in` (lo) once the ramp has used the segment up: the window enters the reversed segment at `end`
+    // and the ramp takes it down to `low` by the window's close, so the sound covers [max(lo, low), end]; a window that enters at or past lo has no sound
+    const lo = parseTime(c.in ?? 0), top = lo + (e - s) * speed, end = top - speedIntegral(ramp, head);
     if (end <= lo + 1e-6) return null;
-    m.in = Math.max(lo, m.in as number);
+    m.in = Math.max(lo, top - speedIntegral(ramp, b - s));
     m._span = end - m.in;
   }
   if (head > 1e-6) {

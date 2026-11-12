@@ -415,10 +415,11 @@ console.log("a ramped clip inside a compound whose window starts after its head:
   const ahead = speedIntegral(c.keyframes!.speed, x), picture = speedIntegral(kfs, 1 + x) - speedIntegral(kfs, 1);
   check(`the window's head is skipped by the ramp's integral (in ${Number(c.in).toFixed(3)}), and the ramp resumes at the window (${ahead.toFixed(3)} vs ${picture.toFixed(3)} source s after ${x} s)`,
     Math.abs(Number(c.in) - (0.25 + speedIntegral(kfs, 1))) < 1e-6 && Math.abs(ahead - picture) < 1e-3, { in: c.in, ahead, picture });
-  // reversed: the segment (duration * speed = 3 s from `in`) is entered where the ramp has used up the cut head, and shrinks by head + tail
+  // reversed: the picture shows source in + 3 - integral, held at `in`; the window enters it at 3.25 - integral(1) and the sound covers down to where the ramp takes the picture by the window's close (clamped at `in`)
   Object.assign(nested, { reverse: true });
-  const [rsrc] = audioSources(tl), rc = rsrc.clip;
-  check(`reversed: the window enters the reversed segment at the ramp's integral (in ${Number(rc.in).toFixed(3)})`, Math.abs(Number(rc.in) - (0.25 + 1 * 1 + 0 - speedIntegral(kfs, 1))) < 1e-6 && Number(rc.duration) === 2, { in: rc.in, duration: rc.duration });
+  const [rsrc] = audioSources(tl), rc = rsrc.clip, top = 0.25 + 3, entry = top - speedIntegral(kfs, 1), low = Math.max(0.25, top - speedIntegral(kfs, 3));
+  check(`reversed: the sound covers the source the picture shows over the window (${Number(rc.in).toFixed(3)}..${(Number(rc.in) + rc._span).toFixed(3)} of ${low.toFixed(3)}..${entry.toFixed(3)})`,
+    Math.abs(Number(rc.in) - low) < 1e-6 && Math.abs(Number(rc.in) + rc._span - entry) < 1e-6 && Number(rc.duration) === 2, { in: rc.in, span: rc._span, duration: rc.duration });
 }
 
 console.log("retimed compound: the warning names only what plays now but is not mixed or exported");
