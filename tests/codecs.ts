@@ -436,6 +436,11 @@ console.log("decode and render failures");
   const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
   await la.readAt(0.5);
   check("a video shorter than its audio holds its last frame at the container's length", (await code(la.readAt(2))) === "ok");
+  // a fresh source (later render segment, preview) read past the video's end of the same file: the held frame comes from the video's end, not the container's
+  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+  const lh = await la2.readAt(2).catch(() => Buffer.alloc(0));
+  check("a fresh read past the video's end of a file with longer audio holds the last frame", lh.length === 64 * 64 * 4 && lh.some((x) => x !== 0), lh.length);
+  la2.close();
   la.close();
   b.close();
   const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });
@@ -479,7 +484,7 @@ console.log("decode and render failures");
   {
     const job = join(tmp, "seg-job.json");
     writeFileSync(job, JSON.stringify({ tl: qtl(), root: qp.root, scale: 1, fontDirs: [], t0: 0, i0: 0, i1: 24, v: ["-c:v", "libx264", "-pix_fmt", "yuv420p"], out: join(tmp, "seg-out.mkv") }));
-    const sg = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "__segment", job], { encoding: "utf8" });
+    const sg = spawnSync(process.execPath, ["--no-install", "--no-env-file", `--config=${join(import.meta.dir, "../scripts/bunfig.empty.toml")}`, join(import.meta.dir, "../src/cli.ts"), "__segment", job], { encoding: "utf8" });
     const eLine = sg.stdout.split("\n").find((l) => l.startsWith("E "));
     check("the __segment entry reports an EditError as an E line with its code", sg.status === 1 && JSON.parse(eLine?.slice(2) ?? "{}").code === "decode_failed", { s: sg.status, o: sg.stdout.slice(0, 200), e: sg.stderr.slice(0, 200) });
   }

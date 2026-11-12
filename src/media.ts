@@ -307,10 +307,13 @@ export class FrameSource {
     return r.out.subarray(0, n);
   }
 
-  /** The last frame of the source (null: none): decodes the final second and keeps the final frame. */
+  /** The last frame of the source's video (null: none): decodes its final second (or two frames) and keeps the final frame. */
   private async tailFrame(): Promise<Buffer | null> {
     const o = this.o;
-    const p = spawn("ffmpeg", ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","),
+    // seek from the video's own end (not the container's, which a longer audio stream extends), at least two source frames back
+    const end = videoStreamDuration(o.path) ?? o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
+    const seek = end ? ["-ss", Math.max(0, end - back).toFixed(6)] : ["-sseof", "-1"];
+    const p = spawn("ffmpeg", ["-v", "error", "-nostdin", ...seek, ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","),
       "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "pipe"] });
     p.stderr!.resume();
     const fs = new FrameStream(p, this.w * this.h * 4);
