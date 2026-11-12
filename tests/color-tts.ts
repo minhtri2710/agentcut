@@ -247,6 +247,15 @@ try {
   check("voices lists openai as available with key status only", lv.providers.find((p: any) => p.name === "openai")?.available === true && lv.voices.some((v: any) => v.name === "openai:nova") && !JSON.stringify(lv).includes(KEY));
   await api.apply(P, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]);
   check("add_voiceover goes through the http provider", api.info(P, "json").timeline.tracks.find((t: any) => t.id === "voice").clips.length === 1);
+  { // bad input is refused before any engine request, and the batch saves nothing
+    const sent = () => readFileSync(reqLog, "utf8").length, was = sent(), timeline = JSON.stringify(api.info(P, "json").timeline);
+    const code = async (extra: any) => (await api.apply(P, [{ op: "add_voiceover", voice: "openai:alloy", text: "hello", ...extra }]).catch((x) => x)).code;
+    check("add_voiceover: empty text is missing_input, a rate that is not positive is bad_value, no engine request, nothing saved",
+      await code({ text: "  " }) === "missing_input" && await code({ rate: 0 }) === "bad_value" && await code({ rate: -3 }) === "bad_value" && await code({ rate: "175" }) === "bad_value" && sent() === was && JSON.stringify(api.info(P, "json").timeline) === timeline);
+    AN.tts("hello", join(tmp, "vo-null-rate.wav"), "openai:alloy", null);
+    const last = JSON.parse(readFileSync(reqLog, "utf8").trim().split("\n").pop()!);
+    check("tts: a null rate is the voice's default rate", sent() > was && !("speed" in last.body), last.body);
+  }
   { // media/ as a link: add_voiceover is refused and the target is unchanged (content, entries, mtimes)
     const W = join(tmp, "vo-link"), t = join(tmp, "vo-link-target");
     api.create(W, { preset: "720p" });

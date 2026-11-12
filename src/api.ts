@@ -383,9 +383,7 @@ function transcribe(p: string, language?: string, model?: string, start?: number
 }
 /** Speech into a file. The output is judged as a render's is: it may not replace the project's own files. A project is used when named or found, not required. */
 function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string) {
-  if (!text?.trim()) throw new M.EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
   if (!out) throw new M.EditError("tts needs an output path", "missing_input", "-o out.wav (CLI) / output=out.wav (MCP)");
-  if (rate !== undefined && !(Number.isFinite(rate) && rate > 0)) throw new M.EditError(`rate must be a positive number of words per minute, got ${rate}`, "bad_value", "e.g. 175");
   let p: Project | null = null;
   try { p = openProject(project); } catch (e: any) { if (e.code !== "no_project" || project || process.env.AGENTCUT_PROJECT) throw e; }
   const path = presolve(out);

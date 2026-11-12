@@ -521,6 +521,32 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   const first = structuredClone(resolve(once)), second = structuredClone(resolve(structuredClone(first)));
   check("resolve is a fixed point on a timeline with attach chains", JSON.stringify(first) === JSON.stringify(second), { first, second });
 
+  // a clip whose length follows an until_end clip cannot set where that clip ends (each resolve would grow both)
+  const chase = (x: any) => {
+    const t = base();
+    t.tracks.push({ id: "bed", kind: "audio", clips: [{ id: "u", type: "audio", asset: "i", start: 0, duration: 1, until_end: true }] });
+    t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "x", type: "image", asset: "i", start: 0, duration: 1, ...x });
+    const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
+    return { stable: JSON.stringify(a) === JSON.stringify(b), len: at(a, "u").duration, a, b };
+  };
+  for (const [name, x] of [
+    ["attached, negative end_offset", { attach_to: "u", match_duration: true, end_offset: -0.5 }],
+    ["attached, an offset clamped at 0", { attach_to: "u", match_duration: true, offset: -1 }],
+    ["named, negative end_offset", { match_duration: "u", end_offset: -0.5 }],
+  ] as const) {
+    const r = chase(x);
+    check(`resolve: an until_end clip with a follower (${name}) is a fixed point and ends with the rest`, r.stable && near(r.len, 2), r);
+  }
+  const floor = chase({ attach_to: "u", match_duration: true, offset: 5 });
+  check("resolve: a follower that starts past the rest still extends the until_end clip by its minimum length", floor.stable && near(floor.len, 5.1), floor);
+  { // on a magnetic track the clips after an until_end clip, and clips attached to them, move with it
+    const t = base();
+    t.tracks.find((tr: any) => tr.id === "main")!.clips.unshift({ id: "u", type: "image", asset: "i", start: 0, duration: 1, until_end: true });
+    t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "c", type: "image", asset: "i", start: 0, duration: 1, attach_to: "k0", offset: 0.5 });
+    const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
+    check("resolve: an until_end clip first on a magnetic track is a fixed point and ends with the clips that do not move with it", JSON.stringify(a) === JSON.stringify(b) && near(at(a, "u").duration, 1), { a, b });
+  }
+
   // the batch's "new issues" compare by clip identity
   const G = join(tmp, "proj-graph");
   api.create(G, { preset: "720p" });
