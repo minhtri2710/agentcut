@@ -477,16 +477,18 @@ export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): 
 function resolveAttached(tl: Timeline) {
   const byId = new Map<string, Clip>();
   for (const [, , , c] of iterClips(tl)) byId.set(c.id, c);
-  for (let pass = 0; pass < 3; pass++) { // allows short chains (A attached to B attached to C)
-    for (const [, , , c] of iterClips(tl)) {
-      if (!c.attach_to) continue;
-      const t = byId.get(c.attach_to);
-      if (!t || t === c) continue;
-      const off = parseTime(c.offset ?? 0);
-      c.start = round6(Math.max(0, clipStart(t) + off));
-      if (c.match_duration === true) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
-    }
-  }
+  const done = new Set<Clip>();
+  const settle = (c: Clip) => { // the target settles first, so a chain of any depth is placed in one call; a cycle (invalid) stops where it closes
+    if (done.has(c)) return;
+    done.add(c);
+    const t = c.attach_to ? byId.get(c.attach_to) : undefined;
+    if (!t || t === c) return;
+    settle(t);
+    const off = parseTime(c.offset ?? 0);
+    c.start = round6(Math.max(0, clipStart(t) + off));
+    if (c.match_duration === true) c.duration = round6(Math.max(0.1, clipDur(t) - off - parseTime(c.end_offset ?? 0)));
+  };
+  for (const [, , , c] of iterClips(tl)) settle(c);
   for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
 }
 
@@ -593,6 +595,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
 function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string) {
   const assets = tl.assets || {};
   const ids = new Map<string, string>(); // track ids: unique per level
+  const clips = tl.tracks.flatMap((x) => x.clips ?? []), byId = (id: string) => clips.find((x) => x.id === id);
   const dup = (id: string) => ids.get(id) ?? clipIds.get(id);
   tl.tracks.forEach((tr, ti) => {
     const tp = `${root}.tracks[${ti}]`;
@@ -700,12 +703,17 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         else if (r.fallback) issues.push({ level: "info", path: `${p}.font`, message: `font '${c.font}' lacks some characters; '${r.fallback}' is used for them` });
       }
       if (c.attach_to) {
-        const exists = tl.tracks.some((t2) => t2.clips.some((x) => x.id === c.attach_to));
-        if (!exists) issues.push({ level: "error", path: `${p}.attach_to`, message: `attached to missing clip '${c.attach_to}'`, hint: "attach to an existing clip id, or remove attach_to" });
+        const t = byId(c.attach_to), at = `${p}.attach_to`;
+        if (!t) issues.push({ level: "error", path: at, message: `attached to missing clip '${c.attach_to}'`, hint: "attach to an existing clip id, or remove attach_to" });
+        else if (t === c) issues.push({ level: "error", path: at, message: "a clip cannot attach to itself", hint: "attach to another clip, or remove attach_to" });
+        else for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && !seen.has(x); x = x.attach_to ? byId(x.attach_to) : undefined) {
+          seen.add(x);
+          if (x.attach_to === c.id) { issues.push({ level: "error", path: at, message: `attached to '${t.id}', which is attached back to it`, hint: "break the cycle: remove attach_to from one of the clips" }); break; }
+        }
         if (tr.magnetic) issues.push({ level: "warning", path: `${p}.attach_to`, message: "attach_to is ignored on magnetic tracks (their starts are computed)" });
       }
       if (typeof c.match_duration === "string") {
-        const at = `${p}.match_duration`, clips = tl.tracks.flatMap((x) => x.clips ?? []), byId = (id: string) => clips.find((x) => x.id === id);
+        const at = `${p}.match_duration`;
         if (c.until_end) issues.push({ level: "error", path: at, message: "until_end and match_duration both set the length", hint: "keep one" });
         const t = byId(c.match_duration), bad = (message: string, hint: string) => issues.push({ level: "error", path: at, message, hint });
         if (!t) bad(`follows missing clip '${c.match_duration}'`, "name an existing clip id, or remove match_duration");

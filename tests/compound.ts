@@ -69,7 +69,9 @@ const audioAfter = mix("after");
 check(`audio mix identical (mean abs diff ${meanDiff(audioBefore, audioAfter).toFixed(2)})`, meanDiff(audioBefore, audioAfter) < 2);
 
 console.log("validation + errors");
-check("duplicate nested id rejected", await rejects(() => api.apply(P, [{ op: "add_clip", track: "overlay", type: "color", color: "red", id: "img1", at: 0, duration: 1 }]), "validation_failed"));
+const dupNested = [{ op: "add_clip", track: "overlay", type: "color", color: "red", id: "img1", at: 0, duration: 1 }];
+check("duplicate nested id rejected as exists", await rejects(() => api.apply(P, dupNested), "exists"));
+check("  also with allow_invalid", await rejects(() => api.apply(P, dupNested, { allowInvalid: true }), "exists"));
 check("new ids skip nested ones", (await api.apply(P, [{ op: "add_clip", track: "overlay", src: join(m, "p.png"), at: 0, duration: 1 }], { dryRun: true })).results[0].id === "img2");
 check("expand needs a compound", await rejects(() => api.apply(P, [{ op: "expand_compound", id: "vid2" }]), "bad_type"));
 await api.apply(P, [{ op: "update_clip", id: "cmp1", set: { effects: [{ type: "bw" }], opacity: 0.8 } }]);

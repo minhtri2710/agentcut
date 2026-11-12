@@ -487,6 +487,73 @@ console.log("match_duration by clip reference");
   }
 }
 
+console.log("attach graph: cycles are invalid, chains settle in one resolve, batch issue identity");
+{
+  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  const attachErrs = (t: any) => validate(t).filter((i: any) => i.level === "error" && /\.attach_to$/.test(i.path));
+  const base = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.i = { path: "/none.png", kind: "image" };
+    return run(t, [{ op: "add_clip", track: "main", asset: "i", id: "k0", duration: 2 }, { op: "add_clip", track: "overlay", asset: "i", id: "k1", at: 0, duration: 1 }])[0];
+  };
+  const self = run(base(), [{ op: "update_clip", id: "k1", attach_to: "k1" }])[0];
+  check("validate: a clip attached to itself is an error with a hint", attachErrs(self).length === 1 && !!attachErrs(self)[0].hint, validate(self));
+  const cyc = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "k2", attach_to: "k1", at: 0, duration: 1 }, { op: "update_clip", id: "k1", attach_to: "k2" }])[0];
+  check("validate: an attach cycle is an error on each clip of it, with a hint", attachErrs(cyc).length === 2 && attachErrs(cyc).every((i: any) => !!i.hint), validate(cyc));
+  const tail = structuredClone(cyc);
+  at(tail, "k0").attach_to = "k1"; // k0 leads into the cycle without being in it
+  check("validate: a clip leading into a cycle is not flagged", attachErrs(tail).length === 2 && attachErrs(tail).every((i: any) => !/<k0>/.test(i.path)), validate(tail));
+  check("resolve: a saved cycle terminates", (() => { resolve(structuredClone(cyc)); return true; })());
+
+  // a chain of 6 links, listed dependent-first, with stale starts
+  const stale = () => {
+    const t = base();
+    t.tracks.find((x: any) => x.id === "overlay")!.clips = [6, 5, 4, 3, 2, 1].map((n) => ({ id: `ch${n}`, type: "image", asset: "i", start: 0, duration: 1, attach_to: n === 1 ? "k0" : `ch${n - 1}`, offset: 1 }));
+    return t;
+  };
+  const chain = resolve(stale());
+  check("resolve: a 6-link chain listed dependent-first settles in one call", [1, 2, 3, 4, 5, 6].every((n) => near(at(chain, `ch${n}`).start, n)), [1, 2, 3, 4, 5, 6].map((n) => at(chain, `ch${n}`).start));
+  check("  and the chain is valid", validate(chain).every((i: any) => i.level !== "error"), validate(chain));
+  const once = stale();
+  at(once, "ch3").match_duration = true; at(once, "ch3").end_offset = 0.25;
+  once.tracks.push({ id: "bed", kind: "audio", clips: [{ id: "bd", type: "audio", asset: "i", start: 0, duration: 1, until_end: true }] });
+  const first = structuredClone(resolve(once)), second = structuredClone(resolve(structuredClone(first)));
+  check("resolve is a fixed point on a timeline with attach chains", JSON.stringify(first) === JSON.stringify(second), { first, second });
+
+  // the batch's "new issues" compare by clip identity
+  const G = join(tmp, "proj-graph");
+  api.create(G, { preset: "720p" });
+  const png = join(m, "p.png");
+  await api.apply(G, [
+    { op: "add_clip", track: "main", src: png, id: "g1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "g2", duration: 1 },
+    { op: "add_clip", track: "overlay", src: png, id: "o1", at: 0, duration: 1 },
+  ]);
+  const code = async (ops: any[], o: any = {}) => { try { await api.apply(G, ops, o); return "ok"; } catch (e: any) { return e.code; } };
+  await api.apply(G, [{ op: "update_clip", id: "g1", filters: ["nope"] }], { allowInvalid: true }); // a pre-existing error on main[0]
+  check("an insert before a clip with an existing error is accepted", await code([{ op: "add_clip", track: "main", src: png, id: "g0", index: 0, duration: 1 }]) === "ok");
+  const withTrack = (f: (t: any) => void) => { const t = structuredClone(api.info(G, "json").timeline); f(t); return t; };
+  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.push({ id: "bed", kind: "audio", clips: [], volume: "loud" })) }], { allowInvalid: true });
+  check("a new video track that moves a track with an existing error is accepted", await code([{ op: "add_clip", track: "overlay2", src: png, id: "o9", at: 0, duration: 1 }]) === "ok");
+  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 })) }], { allowInvalid: true });
+  check("a second clip without an id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 7, duration: 1 })) }]) === "validation_failed");
+  // a ripple follows an attach chain of any depth (17 links here)
+  const blank = newTimeline(640, 360, 30); blank.assets.i = { path: "/none.png", kind: "image" };
+  const [deep] = run(blank, [
+    { op: "add_clip", track: "free", asset: "i", id: "R", at: 0, duration: 1 }, { op: "add_clip", track: "free", asset: "i", id: "B", at: 3, duration: 1 },
+    ...Array.from({ length: 17 }, (_, k) => ({ op: "add_clip", track: "links", asset: "i", id: `k${k}`, attach_to: k ? `k${k - 1}` : "B", offset: 0.1, duration: 0.1 })),
+    { op: "add_clip", track: "free", asset: "i", id: "A", attach_to: "k16", offset: 2, duration: 1 },
+    { op: "remove_clip", id: "R", ripple: true }]);
+  check("a ripple moves a clip at the end of a 17-link attach chain once, with its chain", near(at(deep, "B").start, 2) && near(at(deep, "A").start, 2 + 1.7 + 2), [at(deep, "B").start, at(deep, "k16").start, at(deep, "A").start]);
+  const N = join(tmp, "proj-nested");
+  api.create(N, { preset: "720p" });
+  await api.apply(N, [{ op: "add_clip", track: "main", src: png, id: "n1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "n2", duration: 1 }, { op: "make_compound", ids: ["n1", "n2"], name: "grp" }]);
+  const withFilter = (ids: string[]) => { const t = structuredClone(api.info(N, "json").timeline); for (const c of t.tracks.find((x: any) => x.id === "main").clips[0].tracks[0].clips) if (ids.includes(c.id)) c.filters = ["nope"]; return t; };
+  await api.apply(N, [{ op: "replace_timeline", timeline: withFilter(["n1"]) }], { allowInvalid: true }); // one nested error already there
+  const rejected = await api.apply(N, [{ op: "replace_timeline", timeline: withFilter(["n1", "n2"]) }]).catch((e: any) => e);
+  check("a second nested error with the same message is new, not collapsed onto the compound", rejected.code === "validation_failed" && api.info(N).errors === 1, rejected.code);
+}
+
 console.log("pieces of an attached clip keep their place and length");
 {
   const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
