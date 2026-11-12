@@ -124,6 +124,7 @@ export function panFilter(pan: unknown): string[] {
 }
 
 export function atempo(speed: number): string[] {
+  if (!(Number.isFinite(speed) && speed > 0)) throw new Error(`speed must be a finite number > 0, got ${speed}`); // validation rejects this earlier
   const out: string[] = [];
   let s = speed;
   while (s > 2) { out.push("atempo=2.0"); s /= 2; }
