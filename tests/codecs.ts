@@ -369,6 +369,47 @@ console.log("ffmpeg reads only local files and pipes");
   }
 }
 
+console.log("font given by file path");
+{
+  const FD = "/System/Library/Fonts/Supplemental";
+  const srcA = join(FD, "Apple Chancery.ttf"), srcB = join(FD, "Andale Mono.ttf");
+  if (!existsSync(srcA) || !existsSync(srcB)) console.log("  - skipped: no system .ttf to copy");
+  else {
+    const fa = join(tmp, "fontsA"), fb = join(tmp, "fontsB");
+    mkdirSync(fa); mkdirSync(fb);
+    writeFileSync(join(fa, "Brand.ttf"), readFileSync(srcA));
+    writeFileSync(join(fb, "Brand.ttf"), readFileSync(srcB));
+    const { resolveFont, refreshFonts } = await import("../src/fonts.ts");
+    const a = resolveFont(join(fa, "Brand.ttf")), b = resolveFont(join(fb, "Brand.ttf"));
+    check("same-named font files get different families", a.family !== b.family, { a: a.family, b: b.family });
+    check("weight '700' (string) is 700", resolveFont("Arial", "700").weight === 700 && resolveFont("Arial", "bold").weight === 700);
+    const before = resolveFont("Arial");
+    refreshFonts();
+    check("refreshFonts drops resolved fonts", resolveFont("Arial") !== before);
+    // validation runs before Skia loads (CLI frame/sheet/review, 1-worker render): the preview must still use the file
+    const pf = (name: string) => {
+      const d = join(tmp, name);
+      api.create(d, { width: 320, height: 120, fps: 24 });
+      return d;
+    };
+    const fileP = pf("fontp"), refP = pf("fontref");
+    await api.apply(fileP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: join(fa, "Brand.ttf") });
+    await api.apply(refP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: "Arial", weight: 400 });
+    const childJs = join(tmp, "frame-child.ts");
+    writeFileSync(childJs, `import { writeFileSync } from "node:fs";
+const api = await import(${JSON.stringify(join(import.meta.dir, "../src/api.ts"))});
+const r = await api.frameImage(process.argv[2], 0);
+writeFileSync(process.argv[3], r.data);\n`);
+    const shot = (proj: string, o: string) => spawnSync(process.execPath, ["--no-install", childJs, proj, o], { encoding: "utf8" });
+    // the first run of a project writes the family cache that its later runs validate against (the cache is keyed by the project's fonts dir)
+    shot(refP, join(tmp, "font-ref.png")); const rb = shot(refP, join(tmp, "font-ref.png"));
+    shot(fileP, join(tmp, "font-file.png")); const ra = shot(fileP, join(tmp, "font-file.png"));
+    check("frame children ran", ra.status === 0 && rb.status === 0, { a: ra.stderr?.slice(0, 300), b: rb.stderr?.slice(0, 300) });
+    check("a frame drawn after validation uses the file font, not the fallback",
+      ra.status === 0 && rb.status === 0 && !readFileSync(join(tmp, "font-file.png")).equals(readFileSync(join(tmp, "font-ref.png"))));
+  }
+}
+
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);
