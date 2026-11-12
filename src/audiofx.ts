@@ -181,7 +181,7 @@ export async function noiseFloor(path: string, start: number, len: number, signa
     `atrim=start=${start}:duration=${len},aresample=48000,aformat=channel_layouts=mono,asetnsamples=n=2400:p=0,` +
     "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
     "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
-  const all = [...(r.stdout || "").matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100);
+  const all = [...r.stdout.matchAll(/RMS_level=(-?[\d.]+)/g)].map((m) => +m[1]).filter((x) => x > -100);
   if (!all.length) return null;
   const byLevel = (a: number[]) => a.sort((x, y) => x - y), p10 = byLevel([...all])[Math.floor(all.length * 0.1)]; // c98537e's estimate: the ceiling
   const kept = all.length > 1 ? all.slice(0, -1) : all, low = byLevel(kept.filter((x) => x <= FLOOR_SILENCE_DB));
@@ -199,7 +199,7 @@ export async function noiseFloor(path: string, start: number, len: number, signa
 /** Integrated loudness (LUFS) of `input` args through filter chain `af`; null when too short/quiet to measure. */
 export async function loudness(input: string[], af: string, signal?: AbortSignal): Promise<number | null> {
   const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...input, "-vn", "-af", `${af ? af + "," : ""}ebur128`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
-  const txt = (r.stderr || "").slice((r.stderr || "").lastIndexOf("Summary:"));
+  const txt = r.stderr.slice(r.stderr.lastIndexOf("Summary:"));
   const m = /I:\s+(-?[\d.]+)\s+LUFS/.exec(txt);
   return m && +m[1] > -70 ? +m[1] : null;
 }

@@ -11,6 +11,7 @@ process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set be
 const api = await import("../src/api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
 const { hasCodec } = await import("../src/media.ts");
+const { run } = await import("../src/proc.ts");
 const { noiseFloor, denoiseFilters, eqFilters, compressorFilter } = await import("../src/audiofx.ts");
 
 let failures = 0;
@@ -310,6 +311,29 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     const subbed = join(tmp, "abort-sub.mp4");
     await abortRun("the subtitle mux", "-c:s", async (signal) => { copyFileSync(join(m, "talk.mp4"), subbed); await embedSubtitles(subbed, [{ start: 0, end: 1, text: "x", clip: "c" }], undefined, signal); });
     await abortRun("a loudness measurement", "ebur128", (signal) => loudness(join(m, "talk.mp4"), signal));
+    // the same steps reached through api.render, which hands o.signal to each
+    await abortRun("the audio-render encode", "-map 0:a", (signal) => api.render(Q, { out: join(tmp, "abort-encode.wav"), signal }));
+    await abortRun("the multi-worker mix", "pcm_f32le", (signal) => api.render(R, { out: join(tmp, "abort-mix.mp4"), workers: 2, sheet: false, signal }));
+    const S = join(tmp, "abort-subs");
+    api.create(S, { width: 320, height: 240, fps: 24 });
+    await api.apply(S, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }, { op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }], preset: "clean", at: 0 }]);
+    await abortRun("the render subtitle mux", "-c:s", (signal) => api.render(S, { out: join(tmp, "abort-render-sub.mp4"), workers: 1, sheet: false, subtitles: true, signal }));
+    // the contact sheet is drawn while the loudness measurement runs: the render still rejects with the abort
+    await abortRun("the render-tail loudness", "ebur128", (signal) => api.render(R, { out: join(tmp, "abort-tail.mp4"), workers: 1, signal }));
+    // output past the cap stops a child that ignores SIGTERM: the call settles with status null and the child is gone
+    {
+      let pid = 0, res: any, took = -1;
+      const t1 = Date.now();
+      const settled = await Promise.race([
+        run("sh", ["-c", `echo $$ > '${pidFile}'; trap '' TERM; exec yes`], { maxBuffer: 4096 }).then((r) => { res = r; took = Date.now() - t1; return true; }),
+        new Promise((r) => setTimeout(() => r(false), 5000)),
+      ]);
+      pid = Number(readFileSync(pidFile, "utf8")) || 0;
+      let alive = true;
+      try { process.kill(pid, 0); } catch { alive = false; }
+      if (alive) process.kill(pid, "SIGKILL"); // a child that outlived the bound is the failure; do not leave it running
+      check("output past the cap: a child that ignores SIGTERM is killed and the call settles with status null within 5 s", settled === true && res?.status === null && !alive && took < 5000, { settled, status: res?.status, alive, took });
+    }
   }
 }
 

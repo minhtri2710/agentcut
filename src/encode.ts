@@ -318,12 +318,12 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       createFile(list, jobs.map((j) => `file '${j.out.replace(/\\/g, "/").replace(/'/g, "'\\''")}'\n`).join(""));
       const cc = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", ...inp(list), ...(audible ? inp(wav) : []),
         "-map", "0:v", ...(audible ? ["-map", "1:a"] : []), "-c:v", "copy", ...mux, ...(audible ? a : ["-an"]), "-t", (n / fps).toFixed(6), target], { signal: o.signal });
-      if (cc.status !== 0) throw new EditError(`concat failed: ${(cc.stderr || "").slice(-600)}`, "encode_failed");
+      if (cc.status !== 0) throw new EditError(`concat failed: ${cc.stderr.slice(-600)}`, "encode_failed");
     }
     if (gif) {
       const g = await run("ffmpeg", ["-v", "error", "-y", ...inp(target), "-vf",
         `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, part], { signal: o.signal });
-      if (g.status !== 0) throw new EditError(`gif conversion failed: ${(g.stderr || "").slice(-400)}`, "encode_failed");
+      if (g.status !== 0) throw new EditError(`gif conversion failed: ${g.stderr.slice(-400)}`, "encode_failed");
     }
     commit(part, output);
   } finally {

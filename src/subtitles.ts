@@ -80,7 +80,7 @@ export async function embedSubtitles(video: string, cues: Cue[], base?: string, 
   try {
     const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(video), ...inp(sub), "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
       ...(ext === ".mp4" ? ["-movflags", "+faststart"] : []), tmp], { signal });
-    if (r.status !== 0) throw new EditError(`subtitle mux failed: ${(r.stderr || "").slice(-600)}`, "encode_failed");
+    if (r.status !== 0) throw new EditError(`subtitle mux failed: ${r.stderr.slice(-600)}`, "encode_failed");
     commit(tmp, video);
   } finally {
     rmSync(sub, { force: true });
