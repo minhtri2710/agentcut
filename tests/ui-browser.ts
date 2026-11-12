@@ -122,6 +122,13 @@ try {
   await js(`(function(){var c=JSON.parse($("insp").value); c.text="Edited in Chrome"; c.color="#ffcc00"; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
   check("inspector edit lands in project.json", await untilFile((tl) => clipOf(tl, "txt1")?.text === "Edited in Chrome" && clipOf(tl, "txt1")?.color === "#ffcc00"), clipOf(load(), "txt1"));
   check("page picks up the new revision", await until("revision", `S.revision === ${load().revision} && document.querySelector('[data-id="txt1"]').textContent.indexOf("Edited") > 0`));
+  await api.apply(dir, [{ op: "update_clip", id: "vid1", set: { color: { exposure: 0.2, contrast: 0.1 } } }]);
+  await click(`[data-id="vid1"]`);
+  check("click selects the graded clip", await until("selection2", `$("selinfo").textContent.indexOf("vid1") === 0 && $("insp").value.indexOf('"contrast"') > 0`));
+  await js(`(function(){var c=JSON.parse($("insp").value); delete c.color.contrast; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
+  check("a key deleted inside a nested field is removed from project.json", await untilFile((tl) => { const g = clipOf(tl, "vid1")?.color; return g?.exposure === 0.2 && !("contrast" in g); }), clipOf(load(), "vid1")?.color);
+  await click(`[data-id="txt1"]`);
+  check("txt1 selected again", await until("reselect", `$("selinfo").textContent.indexOf("txt1") === 0 && $("kfadd") && !$("kfadd").disabled && S.revision === ${load().revision}`), await js(`$("selinfo").textContent`));
 
   console.log("keyframes");
   await js(`seek(1)`);

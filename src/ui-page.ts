@@ -436,7 +436,10 @@ function kfDrag(ev, c, kt) {
 $("applyc").addEventListener("click", function () {
   var now; try { now = JSON.parse($("insp").value); } catch (e) { return fail({ code: "bad_json", message: e.message }); }
   var was = JSON.parse(inspBase), set = {}, n = 0;
-  Object.keys(now).forEach(function (k) { if (k !== "id" && JSON.stringify(now[k]) !== JSON.stringify(was[k])) { set[k] = now[k]; n++; } });
+  function isO(v) { return v && typeof v === "object" && !Array.isArray(v); }
+  // update_clip merges dicts (keyframes replace), so a key removed inside one has to be sent as null
+  function gone(a, b) { var o = JSON.parse(JSON.stringify(b)); Object.keys(a).forEach(function (k) { if (!(k in b)) o[k] = null; else if (isO(a[k]) && isO(b[k])) o[k] = gone(a[k], b[k]); }); return o; }
+  Object.keys(now).forEach(function (k) { if (k !== "id" && JSON.stringify(now[k]) !== JSON.stringify(was[k])) { set[k] = k !== "keyframes" && isO(was[k]) && isO(now[k]) ? gone(was[k], now[k]) : now[k]; n++; } });
   Object.keys(was).forEach(function (k) { if (!(k in now)) { set[k] = null; n++; } });
   if (!n) return show("ok", "nothing changed");
   ops([{ op: "update_clip", id: sel, set: set }], "update " + sel).then(function (r) { if (r) inspBase = $("insp").value; });
