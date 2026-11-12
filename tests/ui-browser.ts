@@ -331,7 +331,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   console.log("download consent");
   await js(`(function(){
     var f = window.fetch; window.prepBodies = [];
-    window.fetch = function (u, o) { if (String(u) === "/api/prepare") window.prepBodies.push(JSON.parse(o.body)); return f.apply(this, arguments); };
+    window.fetch = function (u, o) { if (String(u) === "/api/prepare") window.prepBodies.push(JSON.parse(o.body)); else window.otherUrls.push(String(u)); return f.apply(this, arguments); };
+    window.otherUrls = [];
   })()`);
   await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb2" }, { op: "remove_background", id: "rb2", model: "u2net_human_seg" }]);
   const ask = async () => {
@@ -351,6 +352,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await sleep(500);
   check("neither Escape nor Cancel sent a second request", JSON.stringify(await bodies()) === "[{},{}]", await bodies());
   check("a new dialog is not remembered: it opens again and the flag is still unset", await ask() && JSON.stringify(await bodies()) === "[{},{},{}]", await bodies());
+  await js(`window.otherUrls = []; [{ key: "z", ctrlKey: true }, { key: "z", metaKey: true }, { key: " " }].forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ bubbles: true }, k))); })`);
+  await sleep(300);
+  check("while the dialog is open, the page's shortcuts (undo, play) do nothing", (await js(`window.otherUrls`)).length === 0 && await js(`$("consent").open`), await js(`window.otherUrls`));
   await click("#cgo");
   check("Confirm sends exactly one request with the flag, and the prepare completes",
     await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]', await bodies());

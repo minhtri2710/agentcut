@@ -467,7 +467,7 @@ function hist(kind) { api("/api/" + kind, { revision: S.revision }).then(functio
 $("undo").addEventListener("click", function () { hist("undo"); });
 $("redo").addEventListener("click", function () { hist("redo"); });
 document.addEventListener("keydown", function (e) {
-  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if ($("consent").open || e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return; // the dialog owns the keys while open
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); }
   else if (e.key === " ") { e.preventDefault(); $("play").click(); }
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { var f = 1 / S.timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(t + (e.key === "ArrowLeft" ? -f : f)); }
