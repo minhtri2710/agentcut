@@ -135,7 +135,7 @@ export function registerCompoundOps(h: OpHelpers) {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
-      if (isRetimed(c) || c.keyframes?.speed)
+      if (isRetimed(c))
         throw new EditError(`'${c.id}' plays at a different speed; expand_compound needs speed 1`, "retimed", `reset it first: update_clip id=${c.id} set={speed: null}`);
       const lost = layerProps(c, !!home.magnetic);
       if (lost.length) throw new EditError(`'${c.id}' has layer properties (${lost.join(", ")}) that apply to the compound as one picture; expanding would drop them`, "layer_properties",

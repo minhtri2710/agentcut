@@ -907,6 +907,16 @@ console.log("pieces of an attached clip keep their place and length");
   check("remove_silence with tail silence and an L-cut: the lead stays 0.3 s of the sound after the picture",
     lp.length === 2 && near(lp[0].offset, 0) && near(lp[0].duration, ls.duration) && near(lp[1].offset, ls.duration) && near(lp[1].duration, 0.3) && near(lp[1].in, 2.3)
     && near(lp[1].start, ls.start + ls.duration), { ls, lp });
+  { // the detached audio starts after segment 0 ends: its first piece attaches to a later segment and is named after it
+    const S4 = join(tmp, "proj-late-audio");
+    api.create(S4, { preset: "720p" });
+    await api.apply(S4, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "la", at: 0, in: 0, duration: 6 }, { op: "detach_audio", id: "la" }]);
+    const au4 = api.info(S4, "json").timeline.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio");
+    await api.apply(S4, [{ op: "update_clip", id: au4.id, set: { offset: 2.6 } }]);
+    const r4 = (await api.apply(S4, [{ op: "remove_silence", id: "la" }])).results[0];
+    const all4 = api.info(S4, "json").timeline.tracks.flatMap((tr: any) => tr.clips), pc = all4.filter((c: any) => c.type === "audio");
+    check("remove_silence: an audio piece is named after the segment it attaches to, also when the first segment has none", r4.segments.length === 2 && pc.length > 0 && pc.every((c: any) => c.name === `audio of ${c.attach_to}`) && pc.some((c: any) => c.attach_to === r4.segments[1]) && !pc.some((c: any) => c.attach_to === r4.segments[0]), { r4, pc });
+  }
   const rv = (() => {
     const t = newTimeline(640, 360, 30);
     t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };

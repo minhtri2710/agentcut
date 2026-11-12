@@ -34,7 +34,7 @@ export class TextStyle {
   get css() { return cssFont(this.font, this.size); }
 }
 
-interface Word { text: string; x: number; w: number; i: number }
+interface Word { text: string; x: number; w: number; i: number; more?: true } // more: a piece of a broken word that continues on the next line
 interface Line { words: Word[]; w: number }
 
 let mctx: SKRSContext2D | null = null;
@@ -51,6 +51,21 @@ function metrics(style: TextStyle) {
   return { asc, desc };
 }
 
+const graphemes = (s: string) => "Segmenter" in Intl ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].map((g) => g.segment) : [...s];
+
+/** Greedy pieces of one word that each fit maxWidth (a single glyph wider than that stands alone). Measures per grapheme, so only for words that do not fit. */
+function breakWord(style: TextStyle, word: string, maxWidth: number): [string, number][] {
+  const out: [string, number][] = [];
+  let cur = "", curW = 0;
+  for (const g of graphemes(word)) {
+    const w = measure(style, cur + g);
+    if (cur && w > maxWidth) { out.push([cur, curW]); cur = g; curW = measure(style, g); }
+    else { cur += g; curW = w; }
+  }
+  out.push([cur, curW]);
+  return out;
+}
+
 export function layout(text: string, style: TextStyle, maxWidth: number) {
   const space = measure(style, " ") + style.letterSpacing;
   const lines: Line[] = [];
@@ -60,6 +75,16 @@ export function layout(text: string, style: TextStyle, maxWidth: number) {
     for (const word of para.split(" ")) {
       if (!word) continue;
       const ww = measure(style, word);
+      if (ww > maxWidth) { // wider than an empty line (a long token, or CJK text with no spaces): break it by grapheme; every piece keeps the word's index
+        if (cur.length) { lines.push({ words: cur, w: curW }); cur = []; curW = 0; }
+        const pieces = breakWord(style, word, maxWidth);
+        pieces.forEach(([piece, w], k) => {
+          if (k < pieces.length - 1) lines.push({ words: [{ text: piece, x: 0, w, i: idx, more: true }], w });
+          else { cur = [{ text: piece, x: 0, w, i: idx }]; curW = w; }
+        });
+        idx++;
+        continue;
+      }
       if (cur.length && curW + space + ww > maxWidth) { lines.push({ words: cur, w: curW }); cur = []; curW = 0; }
       const x = curW + (cur.length ? space : 0);
       cur.push({ text: word, x, w: ww, i: idx++ });
@@ -121,7 +146,7 @@ export function renderText(text: string, style: TextStyle, maxWidth: number, o: 
         if (charsLeft <= 0) break;
         const ch = [...w.text];
         s = ch.slice(0, charsLeft).join("");
-        charsLeft -= ch.length + 1;
+        charsLeft -= ch.length + (w.more ? 0 : 1);
       }
       let color = fill;
       if (o.activeWord != null && w.i === o.activeWord) {

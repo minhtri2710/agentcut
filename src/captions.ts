@@ -8,7 +8,7 @@ export interface CWord { text: string; start: number; end: number }
 export function parseSrt(path: string): CWord[] {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
-  catch (e: any) { throw e.code === "ENOENT" ? new EditError(`subtitle file not found: ${path}`, "not_found", `check the srt path: ${path}`) : e; }
+  catch (e: any) { throw new EditError(`cannot read subtitle file ${path}: ${e.code === "ENOENT" ? "not found" : e.code ?? e.message}`, e.code === "ENOENT" ? "not_found" : "bad_media", `check the srt path: ${path}`); }
   const raw = text.replace(/^﻿/, "").replace(/\r/g, "");
   const ts = /(\d+:)?(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+:)?(\d+):(\d+)[,.](\d+)/;
   const sec = (h: string | undefined, m: string, s: string, ms: string) => (h ? parseInt(h) : 0) * 3600 + +m * 60 + +s + +ms / 10 ** ms.length;

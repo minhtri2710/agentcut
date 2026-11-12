@@ -168,6 +168,32 @@ check("piper without a model is a missing_dependency", await rejectsCode(() => A
   } finally { Object.defineProperty(process, "platform", platform); }
 }
 if (process.platform !== "win32") {
+  // an espeak-ng stand-in (first on PATH, presented as linux): it lists two voices and fails for a voice it does not list
+  const eDir = join(tmp, "fake-espeak");
+  mkdirSync(eDir);
+  ff("-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", "-ar", "22050", join(eDir, "ok.wav"));
+  writeFileSync(join(eDir, "espeak-ng"), `#!/bin/sh
+d=$(dirname "$0")
+out=; voice=
+while [ $# -gt 0 ]; do case "$1" in --voices) printf 'Pty Language       Age/Gender VoiceName          File                 Other Languages\\n 5  en-us          --/M      English_(America)  gmw/en-US            (en 3)\\n 5  vi             --/M      Vietnamese         aav/vi\\n'; exit 0;; -w) out=$2;; -v) voice=$2;; esac; shift; done
+[ -f "$d/broken" ] && { echo "synthesis broke" >&2; exit 1; }
+case "$voice" in ""|en-us|en-us+f3|vi) cp "$d/ok.wav" "$out";; *) echo "Failed to read voice $voice" >&2; exit 1;; esac
+`);
+  chmodSync(join(eDir, "espeak-ng"), 0o755);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!, pathWas = process.env.PATH;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  process.env.PATH = `${eDir}:${pathWas}`;
+  try {
+    const speak = async (v: string) => { try { await AN.tts("x", join(tmp, "e.wav"), v); return null; } catch (e: any) { return e; } };
+    const bad = await speak("zz-nope");
+    check("espeak: a voice that is not installed is a bad_voice that names list_voices", bad?.code === "bad_voice" && /list_voices/.test(bad.hint ?? ""), bad && { code: bad.code, msg: bad.message, hint: bad.hint });
+    check("espeak: an installed voice, with or without a variant, synthesizes", (await speak("vi")) === null && (await speak("en-us+f3")) === null);
+    writeFileSync(join(eDir, "broken"), "");
+    const broke = await speak("vi");
+    check("espeak: a failure with an installed voice stays tts_failed", broke?.code === "tts_failed", broke && { code: broke.code, msg: broke.message });
+  } finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
+}
+if (process.platform !== "win32") {
   // the SAPI branch: the platform is presented as win32 and a fake `powershell` (in the test tmp, first on PATH) stands in for the real one.
   // The voice and the output path must reach it as the two named variables, never as script text.
   const fakeDir = join(tmp, "fake-ps");

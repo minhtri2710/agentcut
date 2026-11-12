@@ -221,6 +221,7 @@ export const COMPOUND_FIELDS: F = {
   tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
   in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
   speed: [T("number"), "playback speed of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)"],
+  keyframes: [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.filter((k) => k !== "speed").join(",") + " (a compound takes a constant speed)"],
   volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
 };
 
@@ -737,6 +738,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       });
       for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
         if (!ANIMATABLE.includes(prop)) { const s = suggest(prop, ANIMATABLE); issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `'${prop}' is not animatable`, hint: s ? `did you mean '${s}'?` : `animatable: ${ANIMATABLE.join(", ")}` }); continue; }
+        if (prop === "speed" && c.type === "compound") { issues.push({ level: "error", path: `${p}.keyframes.speed`, message: "a compound clip cannot ramp its speed", hint: "speed ramps work on video and audio clips; a compound takes a constant `speed`" }); continue; }
         if (!Array.isArray(kfs) || !kfs.length) { issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: "keyframes must be a non-empty list of [t, value, easing?]" }); continue; }
         for (const k of kfs as any[]) {
           const kk = Array.isArray(k) ? k : k && typeof k === "object" ? [k.t, k.v ?? k.value, k.ease] : null;

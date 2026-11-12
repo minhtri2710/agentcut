@@ -712,7 +712,8 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
       atr.clips.splice(at, 1);
       parts.forEach(({ j, lo, hi, off }, k) => {
         const ap: Clip = structuredClone(au);
-        if (k) { ap.id = newId(tl, "aud"); ap.name = `audio of ${ids[j]}`; }
+        if (k) ap.id = newId(tl, "aud");
+        if (k || j) ap.name = `audio of ${ids[j]}`; // a piece named after the segment it attaches to; the first piece of the first segment keeps its name
         ap.in = round6(parseTime(au.in ?? 0) + (lo - as) * asp); ap.duration = round6(hi - lo);
         ap.attach_to = ids[j]; ap.offset = round6(off);
         dropFollow(ap);

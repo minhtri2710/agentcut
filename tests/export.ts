@@ -4,7 +4,7 @@
 // reads both files back with OpenTimelineIO and compares track counts, clip ranges and durations.
 // Optional DTD check: AGENTCUT_FCPXML_DTD=/path/to/FCPXMLv1_10.dtd (uses xmllint).
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -220,6 +220,19 @@ console.log("caption sources and subtitle export");
   let err: any;
   try { parseSrt(gone); } catch (e) { err = e; }
   check("a missing srt is a named not_found error with the path in the hint", err?.code === "not_found" && err.hint?.includes(gone), { code: err?.code, hint: err?.hint });
+  const asDir = join(tmp, "dir.srt");
+  mkdirSync(asDir);
+  let dirErr: any;
+  try { parseSrt(asDir); } catch (e) { dirErr = e; }
+  check("a directory given as the srt is a named error with the path in the hint, not an internal one", dirErr?.code === "bad_media" && dirErr.hint?.includes(asDir), { code: dirErr?.code, hint: dirErr?.hint });
+  if (process.getuid?.() !== 0) {
+    const locked = join(tmp, "locked.srt");
+    writeFileSync(locked, "1\n00:00:00,000 --> 00:00:01,000\nhi\n");
+    chmodSync(locked, 0);
+    let lockErr: any;
+    try { parseSrt(locked); } catch (e) { lockErr = e; }
+    check("an unreadable srt is a named error with the path in the hint", lockErr?.code === "bad_media" && lockErr.hint?.includes(locked), { code: lockErr?.code, hint: lockErr?.hint });
+  } else console.log("  - running as root: the unreadable-srt row is skipped");
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all export checks passed"}  (${tmp})`);

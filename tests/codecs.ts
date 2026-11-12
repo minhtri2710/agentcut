@@ -237,6 +237,33 @@ console.log("timeline without an audible clip: no audio track");
   check("a quiet audible clip keeps its track: audio stream, has_audio true, no warning, loudness measured", kinds(so("tone.mp4")) === "audio,video" && loud.has_audio === true && !loud.warnings && loud.loudness?.integrated_lufs != null, { k: kinds(so("tone.mp4")), loud });
 }
 
+console.log("text wrap: a word wider than the line breaks into pieces");
+{
+  const { TextStyle, layout, renderText } = await import("../src/text.ts");
+  const st = new TextStyle({ font_size: 40, color: "#ffffff" }, 1, 360);
+  const MAX = 300;
+  const fits = (t: string) => layout(t, st, MAX).lines.every((l) => l.w <= MAX + 1e-6);
+  const cjk = "今日は天気がとても良いので公園へ散歩に行きましょう";
+  const long = "supercalifragilisticexpialidocious_and_more_letters_without_a_space";
+  check("a CJK sentence with no spaces wraps within maxWidth", layout(cjk, st, MAX).lines.length > 1 && fits(cjk), layout(cjk, st, MAX).lines.map((l) => l.w));
+  check("one Latin token wider than the line wraps within maxWidth", layout(long, st, MAX).lines.length > 1 && fits(long), layout(long, st, MAX).lines.map((l) => l.w));
+  const L = layout(`a ${long} b`, st, MAX);
+  const idxs = L.lines.flatMap((l) => l.words.map((w) => w.i));
+  const pieces = L.lines.flatMap((l) => l.words).filter((w) => w.i === 1);
+  check("the pieces of one word share one index and the words around it keep theirs", pieces.length > 1 && pieces.map((w) => w.text).join("") === long && idxs.filter((i) => i !== 1).join() === "0,2" && L.count === 3, { idxs, count: L.count });
+  const shortWords = "the quick brown fox jumps over the lazy dog again and again";
+  const S = layout(shortWords, st, MAX);
+  check("text whose words all fit still wraps at the spaces, one word per piece", S.lines.length > 1 && S.lines.map((l) => l.words.map((w) => w.text).join(" ")).join(" ") === shortWords && S.lines.every((l) => l.words.every((w) => !w.more)));
+  const white = (cv: any, y0: number, y1: number) => { const d = cv.getContext("2d").getImageData(0, y0, cv.width, y1 - y0).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200 && d[i] > 200 && d[i + 1] > 200 && d[i + 2] > 200) n++; return n; };
+  const red = (cv: any) => { const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200 && d[i] > 200 && d[i + 1] < 60 && d[i + 2] < 60) n++; return n; };
+  const hl = renderText(long, st, MAX, { activeWord: 0, highlightColor: "#ff0000" });
+  check("a highlighted word that was broken is marked on every piece", red(hl) > 0 && white(hl, 0, hl.height) === 0, { red: red(hl), white: white(hl, 0, hl.height) });
+  const hl2 = renderText(`ab ${long}`, st, MAX, { activeWord: 1, highlightColor: "#ff0000" });
+  const first = Math.ceil(layout("ab", st, MAX).glyphH) + 4; // the first line holds only "ab"
+  check("only the active word's pieces are marked", white(hl2, 0, first) > 0 && white(hl2, first + 4, hl2.height) === 0, { first, h: hl2.height });
+  check("a plain frame has no highlight colour", red(renderText(long, st, MAX, { activeWord: null, highlightColor: "#ff0000" })) === 0);
+}
+
 console.log("audio only");
 for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix.m4a", "aac"], ["mix.flac", "flac"], ["mix.aac", "aac"]]) {
   r = await timed(file, () => renderVideo(tl(), p.root, out(file), {}));

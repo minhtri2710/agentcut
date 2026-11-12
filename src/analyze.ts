@@ -285,6 +285,12 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
     const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
     r = await run(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { signal });
+    if (r.status !== 0 && voice) { // diagnose only after a failure, so a good synthesis pays no extra call
+      const listed = await run(exe, ["--voices"], { signal });
+      const known = listed.status !== 0 ? [] : listed.stdout.split("\n").slice(1).flatMap((l) => l.trim().split(/\s+/).slice(1)).flatMap((t) => [t, t.split("/").pop()!, t.replace(/[()]/g, "")]).map((t) => t.toLowerCase());
+      if (known.length && !known.includes(voice.split("+")[0].toLowerCase())) // "en+f3" is the voice en with the f3 variant
+        throw new EditError(`voice '${voice}' not installed`, "bad_voice", "list the voices with list_voices, or run `espeak-ng --voices`");
+    }
   }
   if (r.status !== 0) throw new EditError(`tts failed: ${r.stderr.slice(0, 300)}`, "tts_failed");
   return raw;

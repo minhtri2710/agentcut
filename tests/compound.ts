@@ -24,6 +24,7 @@ const raw = (file: string, fmt: string[]) => spawnSync("ffmpeg", ["-v", "error",
 const meanDiff = (a: Buffer, b: Buffer) => { if (a.length !== b.length || !a.length) return Infinity; let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 async function rejects(f: () => Promise<unknown>, code: string) { try { await f(); return false; } catch (e: any) { return e.code === code; } }
 
+const M = await import("../src/model.ts");
 const m = join(tmp, "media");
 mkdirSync(m);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=5", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", "-shortest", "-pix_fmt", "yuv420p", join(m, "a.mp4"));
@@ -390,11 +391,20 @@ console.log("retimed compound: what it drops is reported by validate");
   check("a muted compound drops no audio: only the captions warning stays", warns().length === 1 && /captions/.test(warns()[0].message), warns());
   await retime({ muted: false, speed: 1 });
   check("back to speed 1: no warning", warns().length === 0, warns());
+  const rampErr = (tl: any) => (M.validate(tl) as any[]).filter((i) => i.level === "error" && i.path.endsWith(".keyframes.speed"));
+  const tlR = api.openProject(R).load();
+  tlR.tracks.find((t: any) => t.id === "main")!.clips.find((c: any) => c.id === "RC")!.keyframes = { speed: [[0, 1], [1, 2]] };
+  const ie = rampErr(tlR);
+  check("validate: keyframes.speed on a compound is an error that names video/audio clips and a constant speed", ie.length === 1 && /video and audio/.test(ie[0].hint) && /constant `speed`/.test(ie[0].hint), ie);
+  let refused: any = null;
+  try { await api.apply(R, [{ op: "update_clip", id: "RC", set: { keyframes: { speed: [[0, 1], [1, 2]] } } }]); } catch (e: any) { refused = e; }
+  check("update_clip with keyframes.speed on a compound is refused and the compound is unchanged", refused !== null && JSON.stringify(api.openProject(R).load()).indexOf('"speed":[[') < 0, refused && { code: refused.code, msg: refused.message });
+  await retime({ speed: 1.5 });
+  check("a constant speed on a compound is still accepted", (api.validate(R) as any).valid === true && api.openProject(R).load().tracks.find((t: any) => t.id === "main")!.clips.find((c: any) => c.id === "RC")!.speed === 1.5);
 }
 
 console.log("retimed compound: the warning names only what plays now but is not mixed or exported");
 {
-  const M = await import("../src/model.ts");
   const warned = (tracks: any[]) => {
     const tl = M.newTimeline(640, 360, 30);
     tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true } as any;
