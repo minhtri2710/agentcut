@@ -243,9 +243,10 @@ export function mattesFor(tl: Timeline, root: string) {
     .map((c) => ({ clip: c, job: matteFor(root, tl, c, tl.assets[c.asset].path) }));
 }
 
-/** Render prep on an absolutized copy: point every remove_background clip at its matte (`_matte`, never saved). Fails fast
+/** Render prep on an absolutized copy: point every remove_background clip at its matte (`_matte`, never saved; any other `_matte` is dropped). Fails fast
  *  with not_prepared while a matte is missing or a vision request is pending, instead of computing inside a preview. */
 export function attachPrepared(tl: Timeline, root: string) {
+  for (const c of allClips(tl.tracks)) delete c._matte; // this is the only source of `_matte`: a hand-set one is never drawn
   const mattes = mattesFor(tl, root).filter(({ clip, job }) => {
     if (!V.isReady(job)) return true;
     clip._matte = { path: job.file, w: job.w, h: job.h };

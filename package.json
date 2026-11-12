@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "bun --no-install scripts/build.ts",
-    "test": "bun --no-install tests/smoke.ts && bun --no-install tests/mcp.ts && bun --no-install tests/edit-ops.ts && bun --no-install tests/compound.ts && bun --no-install tests/codecs.ts && bun --no-install tests/export.ts && bun --no-install tests/ui.ts && bun --no-install tests/audio.ts && bun --no-install tests/color-tts.ts && bun --no-install tests/verify.ts && bun --no-install tests/writes.ts && bun --no-install tests/vision.ts && bun --no-install tests/review.ts && bun --no-install tests/jobs.ts && bun --no-install tests/ui-browser.ts && bun --no-install tests/realmedia.ts && bun --no-install tests/launchers.ts",
+    "test": "bun --no-install scripts/test.ts",
     "docs": "bun --no-install -e \"import {GUIDE} from './src/docs.ts'; require('node:fs').writeFileSync('AGENTS.md', GUIDE.trim() + '\\n')\"",
     "typecheck": "tsc --noEmit -p .",
     "prepublishOnly": "bun --no-install scripts/build.ts"

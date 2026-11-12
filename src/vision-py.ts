@@ -2,13 +2,31 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 export const VISION_PY = String.raw`
-import json, os, stat, subprocess, sys, tempfile, threading
+import json, os, signal, stat, subprocess, sys, tempfile, threading
 
-def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it): leave at once, no cleanup
+_kids, _lock = [], threading.Lock()
+def _spawn(args, **kw):  # every child goes through here so a stop can kill it; while a stop runs this blocks until the process exits
+    with _lock:
+        p = subprocess.Popen(args, **kw); _kids.append(p); return p
+
+def _stop():  # kill and reap our own ffmpeg children, then leave at once; the lock is held to the end, so no child starts meanwhile
+    with _lock:
+        for p in _kids:
+            try: p.kill()
+            except OSError: pass
+        for p in _kids:
+            try: p.wait()
+            except OSError: pass
+        os._exit(143)
+
+def _stop_on_eof():  # vision.ts closes our stdin to stop us (or dies, which closes it)
     try:
         while os.read(0, 65536): pass  # the raw fd: sys.stdin.buffer would hold its lock and abort the interpreter at a normal exit
     except Exception: pass
-    os._exit(143)
+    _stop()
+# SIGTERM (an abort, possibly forwarded by uv) stops us the same way. The handler runs on the main thread, which may hold the lock
+# inside _spawn, so it hands the stop to a thread; that thread is not a daemon, so a main thread that exits first still waits for it.
+signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=_stop).start())
 # Armed only when stdin is a pipe or socket, i.e. vision.ts holds the other end. If uv handed us /dev/null or a tty instead, EOF
 # would arrive at once and kill every run: then only the kill / EPIPE path stops us.
 try: _m = os.fstat(0).st_mode
@@ -22,7 +40,7 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     vf = ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errf)
+    p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
     import numpy as np
     i = 0
@@ -111,7 +129,7 @@ def matte(j):
            "-framerate", "%.6f" % float(j["fps"]), "-protocol_whitelist", "file,pipe", "-i", "pipe:0", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
            "-alpha_bits", "16", "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "mov", j["out"]]
     errf = tempfile.TemporaryFile()
-    e = subprocess.Popen(enc, stdin=subprocess.PIPE, stderr=errf)
+    e = _spawn(enc, stdin=subprocess.PIPE, stderr=errf)
     n = 0
     for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24"):
         e.stdin.write(rgba(f).tobytes()); n += 1

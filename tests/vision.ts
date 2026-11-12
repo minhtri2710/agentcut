@@ -4,7 +4,7 @@
 // models unless AGENTCUT_TEST_VISION_MODELS names a dir laid out as <name>/<name>.onnx to copy into its own cache); with
 // AGENTCUT_TEST_VISION_FACE=<image or video with one face> it also checks that the face branch finds it. Without the flag a SKIPPED line lists the rows.
 // Run: bun tests/vision.ts [--keep]          (needs ffmpeg on PATH)
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync as lstat, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync as symlink, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -334,6 +334,20 @@ check("prepare rebuilds a deleted matte", nCalls("matte") === mc + 1 && readdirS
 await fails(B, [{ op: "remove_background", id: "vid2", model: "bogus" }], "bad_value", "unknown model -> bad_value");
 const off = (await apply(B, [{ op: "remove_background", id: "vid2", off: true }]))[0];
 check("off=true removes the field", off.remove_background === false && clip(B, "vid2").remove_background === undefined);
+{ // `_matte` has one owner: a hand-set one on a clip without remove_background is not drawn, at any nesting depth
+  const mfile = join(B, ".agentcut", "cache", readdirSync(join(B, ".agentcut", "cache")).find((f) => f.startsWith("matte-"))!);
+  await apply(B, [{ op: "update_clip", id: "vid2", set: { _matte: { path: mfile, w: 640, h: 360 } } }]);
+  const hand = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-hand.png") });
+  check("a hand-set _matte on a clip without remove_background is not drawn", isColor(px(hand.image, 40, 180), [255, 0, 0]), px(hand.image, 40, 180));
+  const { attachPrepared } = await import("../src/ops-vision.ts");
+  const stray = { path: mfile, w: 1, h: 1 };
+  const tl: any = structuredClone(api.info(B, "json").timeline);
+  tl.tracks[0].clips[0].tracks = [{ id: "n", clips: [{ id: "nested", type: "video", asset: tl.tracks[0].clips[0].asset, _matte: stray }] }];
+  tl.tracks[0].clips[0].type = "compound";
+  tl.tracks[0].clips[0]._matte = stray;
+  const got: any = attachPrepared(tl, B);
+  check("attachPrepared drops a hand-set _matte on a compound and on a clip nested in it", got.tracks[0].clips[0]._matte === undefined && got.tracks[0].clips[0].tracks[0].clips[0]._matte === undefined);
+}
 const ex = await api.exportTimeline(B, { out: join(tmp, "x.fcpxml") }).catch((e: any) => e);
 await apply(B, [{ op: "remove_background", id: "vid2" }]);
 const ex2: any = await api.exportTimeline(B, { out: join(tmp, "x.fcpxml") });
@@ -779,6 +793,31 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       fakeFfmpeg("yes x | head -c 400000 >&2; exit 0");
       const flood = decode(8_000);
       check("helper: a decoder that fills stderr does not block the run (finishes, no timeout)", flood.signal === null && flood.status !== null && /no frames decoded/.test(flood.stderr), flood);
+
+      // stdin closed while a decode and an encode are in flight: the helper stops both ffmpeg children before it exits, so the
+      // encoder cannot finish writing `out` afterwards. The fake decoder never writes a frame; the fake encoder writes `out` one second after its stdin ends.
+      writeFileSync(join(stubs, "rembg.py"), "def new_session(model): return None\ndef remove(*a, **k): raise SystemExit('stub rembg')\n");
+      const pids = join(run, "children.pids"), late = join(run, "late.mov");
+      fakeFfmpeg(`echo $$ >> ${JSON.stringify(pids)}\ncase " $* " in *" pipe:0 "*) cat >/dev/null; sleep 1; for a; do o=$a; done; echo late > "$o";; *) exec sleep 30;; esac`);
+      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, allow_download: true });
+      const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const kids = () => (existsSync(pids) ? readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
+      const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (const how of ["stdin closed", "SIGTERM"] as const) {
+        rmSync(pids, { force: true }); rmSync(late, { force: true });
+        const h = spawn("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, matteJob], { cwd: run, stdio: ["pipe", "ignore", "ignore"], env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
+        const exited = new Promise<number | null>((res) => h.on("exit", (c) => res(c)));
+        try {
+          for (let i = 0; i < 200 && kids().length < 2; i++) await pause(50);
+          const started = kids().length;
+          if (how === "SIGTERM") h.kill("SIGTERM"); else h.stdin!.end();
+          const code = await Promise.race([exited, pause(10_000).then(() => "timeout" as const)]);
+          for (let i = 0; i < 60 && kids().some(isAlive); i++) await pause(50);
+          await pause(1500); // longer than the fake encoder's delay
+          check(`helper: ${how} during a decode and an encode: both ffmpeg children are gone and no output is written afterwards`,
+            started === 2 && code !== "timeout" && !kids().some(isAlive) && !existsSync(late), { started, code, alive: kids().filter(isAlive), late: existsSync(late) });
+        } finally { for (const pid of kids()) if (isAlive(pid)) process.kill(pid, "SIGKILL"); if (h.exitCode === null) h.kill("SIGKILL"); }
+      }
     }
   } finally { process.env.AGENTCUT_UV = fake; }
 }

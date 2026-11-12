@@ -139,6 +139,22 @@ if (!bin) {
   check("loudnessAsync with no ffmpeg on PATH resolves with unknown metrics", r.status === 0 && r.stdout.includes('"integrated_lufs":null'), [r.status, r.stdout.slice(0, 200), r.stderr.slice(-300)]);
 }
 
+// the test runner: a failing suite does not hide the later ones, the exit code is 1 and the failed suites are named at the end
+if (!bin) {
+  console.log("test runner");
+  const dir = join(tmp, "runner-suites");
+  mkdirSync(dir);
+  const suite = (name: string, body: string) => { writeFileSync(join(dir, name), body); return join(dir, name); };
+  const failA = suite("fail-a.ts", 'console.log("FAIL-A ran"); process.exit(3);\n'), passB = suite("pass-b.ts", 'console.log("PASS-B ran");\n'), failC = suite("fail-c.ts", 'console.log("FAIL-C ran"); process.exit(1);\n');
+  const run = (...files: string[]) => spawnSync("bun", ["--no-install", join(root, "scripts/test.ts"), ...files], { cwd: tmp, env: { ...env(), PATH: process.env.PATH }, encoding: "utf8", timeout: 60000 });
+  const bad = run(failA, passB, failC), good = run(passB);
+  const tail = bad.stderr.slice(bad.stderr.lastIndexOf("suites failed"));
+  check("test runner: a failing suite does not stop the later ones; exit 1; the failed suites are named, the passing one is not",
+    bad.status === 1 && /FAIL-A ran[\s\S]*PASS-B ran[\s\S]*FAIL-C ran/.test(bad.stdout) && tail.includes("fail-a.ts (exit 3)") && tail.includes("fail-c.ts (exit 1)") && !tail.includes("pass-b.ts"),
+    [bad.status, bad.stdout.slice(-200), bad.stderr.slice(-300)]);
+  check("test runner: all suites passing exits 0", good.status === 0 && /all 1 suites passed/.test(good.stdout), [good.status, good.stdout.slice(-200), good.stderr.slice(-200)]);
+}
+
 // every bun command in a package.json script is `bun --no-install ...`: --no-install given to `bun run` does not reach the bun processes a script starts
 const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts as Record<string, string>;
 const bareBun = Object.entries(scripts).flatMap(([n, line]) => line.split("&&").map((c) => c.trim().split(/\s+/)).filter((w) => w[0] === "bun" && w[1] !== "--no-install").map((w) => `${n}: ${w.slice(0, 3).join(" ")}`));

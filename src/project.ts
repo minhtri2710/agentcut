@@ -98,7 +98,7 @@ export function withLock<T>(file: string, fn: () => T, waitMs = LOCK_WAIT_MS): T
   while (!createExclusive(file, token)) {
     const held = readOr(file);
     if (held !== null) reclaim(file, held, token);
-    if (Date.now() > until) throw new EditError("project is locked by another AgentCut process", "locked", `retry; if no AgentCut process is running, delete ${file}`);
+    if (Date.now() > until) throw new EditError(`${file} is held by another AgentCut process`, "locked", `retry; if no AgentCut process is running, delete ${file}`);
     Atomics.wait(SLEEP, 0, 0, 5);
   }
   try { return fn(); }
