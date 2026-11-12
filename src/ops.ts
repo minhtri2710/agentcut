@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, newId,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration,
+  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline, totalDuration, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -239,8 +239,8 @@ function lengthOnce(c: Clip) {
     throw new EditError("until_end and match_duration both set the length; keep one", "bad_value", `update_clip id=${c.id} until_end=null, or match_duration=null`);
 }
 
-/** a clip whose length was computed (it followed a clip, or its attach_to target) becomes a plain-duration clip (its resolved length stays) */
-function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } }
+/** a clip whose length was computed (it followed a clip, or its attach_to target) or stretched (until_end) becomes a plain-duration clip (its resolved length stays) */
+function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } delete c.until_end; }
 
 /** Put a piece cut from a clip at timeline time `start`. An attached piece keeps its target and moves by offset (resolve() recomputes its start from the target); others set start on non-magnetic tracks. */
 function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
@@ -378,7 +378,7 @@ op("move_clip", "Move a clip in time and/or to another track. An attached clip m
   return { id: c.id, track: dest.id, start: c.start };
 });
 
-op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_end from the tail; or set in/duration/end. An attached clip keeps its target and moves by its offset.",
+op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of video/audio/lottie/compound clips and shifts keyframes), trim_end from the tail; or set in/duration/end. A length edit ends until_end. An attached clip keeps its target and moves by its offset.",
   { id: "clip id", trim_start: "s", trim_end: "s", in: "source in", duration: "s", end: "timeline end" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
     if (a.duration !== undefined || a.end !== undefined || a.trim_start || a.trim_end) ownDuration(c);
@@ -389,18 +389,28 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point), trim_
     if (a.end !== undefined) c.duration = round6(parseAt(tl, a.end) - clipStart(c));
     if (a.trim_start) {
       const d = parseTime(a.trim_start);
-      c.in = round6(parseTime(c.in ?? 0) + d * speed);
+      // a reversed clip plays its source backwards: its head is the end of the content, so `in` stays; a freeze keeps its frame
+      if (hasSourceTime(c) && !c.reverse && !c.freeze) c.in = round6(parseTime(c.in ?? 0) + d * speed);
+      shiftKfs(c, -d);
       c.duration = round6(clipDur(c) - d);
       if (!tr.magnetic) placeAt(tl, tr, c, clipStart(c) + d);
     }
-    if (a.trim_end) c.duration = round6(clipDur(c) - parseTime(a.trim_end));
+    if (a.trim_end) {
+      const e = parseTime(a.trim_end);
+      if (hasSourceTime(c) && c.reverse && !c.freeze) { // the tail of a reversed clip is the start of the content
+        const ni = parseTime(c.in ?? 0) + e * speed;
+        if (ni < 0) throw new EditError(`trim_end=${e} would move the in-point of '${c.id}' before 0`, "out_of_range", "the source has nothing before its start to extend into");
+        c.in = round6(ni);
+      }
+      c.duration = round6(clipDur(c) - e);
+    }
     if (clipDur(c) <= 0) throw new EditError("trim leaves a non-positive duration", "bad_trim");
     const out: Dict = { id: c.id, in: c.in ?? 0, start: c.start, duration: c.duration };
     // detached audio follows: same source in-point change, same amount cut from the head/tail
     const la = linkedAudio(tl, c);
     if (la && !c.reverse) {
       const au = la[1], head = a.trim_start ? parseTime(a.trim_start) : 0, tail = d0 - head - clipDur(c);
-      const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0) * ((Number(au.speed ?? 1) || 1) / speed);
+      const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0 + (c.freeze ? head * speed : 0)) * ((Number(au.speed ?? 1) || 1) / speed); // a freeze keeps its frame, its audio still advances
       if (nd > 0.04 && ni >= 0 && !computedDuration(au)) { au.in = round6(ni); au.duration = round6(nd); out.audio = au.id; }
       else out.warning = `detached audio '${au.id}' was not trimmed (it would become empty, or its length is computed); trim it yourself`;
     }
@@ -641,7 +651,7 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
       const nxt = tr.clips[i + 1];
       const td = nxt?.transition ? normAnim(nxt.transition, 0.5)!.duration : 0;
       const dur = starts[i + 1] - starts[i] + td;
-      if (dur > 0.05) { c.duration = round6(dur); changed.push(c); }
+      if (dur > 0.05) { c.duration = round6(dur); delete c.until_end; changed.push(c); }
     });
     resolve(tl);
     return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
@@ -696,8 +706,9 @@ op("replace_timeline", "Replace the whole timeline JSON (validated, undoable).",
   if (n.version !== SCHEMA_VERSION)
     throw new EditError(`the op input timeline has schema version ${JSON.stringify(n.version) ?? "missing"}; this build uses version ${SCHEMA_VERSION}`, "bad_version", `set "version": ${SCHEMA_VERSION}`);
   n.assets ??= {}; n.markers ??= [];
+  const revision = tl.revision; // the project's own counter: an input's revision is ignored
   for (const k of Object.keys(tl)) delete (tl as Dict)[k];
-  Object.assign(tl, structuredClone(n));
+  Object.assign(tl, structuredClone(n), { revision });
   return { tracks: tl.tracks.length, duration: totalDuration(resolve(tl)) };
 });
 

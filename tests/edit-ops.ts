@@ -141,6 +141,95 @@ console.log("reverse / pure timeline");
   check("volume keyframes shift with the head", near(au.keyframes.volume[0][0], 1) && near(au.keyframes.volume[1][0], 2), au.keyframes);
 }
 
+console.log("explicit length edits, trim_start by clip type, edits at timeline 0, source-time types");
+{
+  const mk = () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    t.assets.s = { path: "/none.wav", kind: "audio", duration: 20 };
+    t.assets.i = { path: "/none.png", kind: "image" };
+    t.assets.l = { path: "/none.json", kind: "lottie" };
+    return t;
+  };
+  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  const errs = (t: any) => validate(t).filter((i: any) => i.level === "error");
+  const refuses = (name: string, t: any, ops: any[], code: string) => {
+    try { run(t, ops); check(name, false, "no error"); }
+    catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
+  };
+  // until_end clips: an explicit length edit replaces the stretch
+  const bed = () => run(mk(), [
+    { op: "add_clip", track: "main", asset: "v", id: "mv", duration: 10 },
+    { op: "add_clip", track: "music", asset: "s", type: "audio", id: "bed", at: 0, until_end: true },
+  ])[0];
+  check("until_end setup: the bed stretches to the end of the rest", near(at(bed(), "bed").duration, 10), at(bed(), "bed"));
+  const [us, [sr]] = run(bed(), [{ op: "split_clip", id: "bed", at: 4 }]);
+  check("split_clip of an until_end clip: neither half stretches", near(at(us, "bed").duration, 4) && near(at(us, sr.right).duration, 6) && near(at(us, sr.right).start, 4) && !at(us, "bed").until_end && !at(us, sr.right).until_end, [at(us, "bed"), at(us, sr.right)]);
+  const [ut] = run(bed(), [{ op: "trim_clip", id: "bed", trim_end: 3 }]);
+  check("trim_clip on an until_end clip keeps the trimmed length", near(at(ut, "bed").duration, 7) && !at(ut, "bed").until_end, at(ut, "bed"));
+  const [uu] = run(bed(), [{ op: "update_clip", id: "bed", duration: 5 }]);
+  check("update_clip duration on an until_end clip keeps the length", near(at(uu, "bed").duration, 5) && !at(uu, "bed").until_end, at(uu, "bed"));
+  const [ur] = run(bed(), [{ op: "update_clip", id: "bed", name: "x" }]);
+  check("an until_end clip not edited in length keeps stretching", at(ur, "bed").until_end === true && near(at(ur, "bed").duration, 10), at(ur, "bed"));
+  // trim_start by clip type
+  const kinds = run(mk(), [
+    { op: "add_clip", track: "overlay", asset: "i", id: "im", at: 0, duration: 4, keyframes: { opacity: [[1, 0], [2, 1]] } },
+    { op: "add_clip", track: "overlay", type: "text", text: "hi", id: "tx", at: 0, duration: 4 },
+    { op: "add_clip", track: "overlay", type: "shape", shape: "rect", id: "sh", at: 0, duration: 4 },
+    { op: "add_clip", track: "main", asset: "v", id: "vd", in: 2, duration: 4, keyframes: { volume: [[1, 0.5], [3, 1]] } },
+    { op: "add_clip", track: "main", asset: "v", id: "rv", in: 2, duration: 4, reverse: true },
+    { op: "add_clip", track: "main", asset: "v", id: "fz", in: 2, duration: 4, freeze: true },
+  ])[0];
+  const [tk] = run(kinds, ["im", "tx", "sh", "vd", "rv", "fz"].map((id) => ({ op: "trim_clip", id, trim_start: 1 })));
+  check("trim_start on an image, text and shape clip leaves no in-point and the batch validates", ["im", "tx", "sh"].every((id) => at(tk, id).in === undefined && near(at(tk, id).duration, 3)) && errs(tk).length === 0, errs(tk));
+  check("trim_start shifts the keyframes of the trimmed clip by the trimmed amount", near(at(tk, "im").keyframes.opacity[0][0], 0) && near(at(tk, "im").keyframes.opacity[1][0], 1) && near(at(tk, "vd").keyframes.volume[0][0], 0) && near(at(tk, "vd").in, 3), [at(tk, "im").keyframes, at(tk, "vd")]);
+  check("trim_start on a reversed clip trims the end of the content: in stays", near(at(tk, "rv").in, 2) && near(at(tk, "rv").duration, 3), at(tk, "rv"));
+  check("trim_start on a freeze clip keeps the frozen frame", near(at(tk, "fz").in, 2) && near(at(tk, "fz").duration, 3), at(tk, "fz"));
+  const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
+  check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
+  // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)
+  const jc = () => run(mk(), [
+    { op: "add_clip", track: "main", asset: "v", id: "x1", in: 0, duration: 2 },
+    { op: "add_clip", track: "main", asset: "v", id: "x2", in: 4, duration: 2 },
+    { op: "add_clip", track: "main", asset: "v", id: "x3", in: 1, duration: 2 }, // spare source before its head
+    { op: "j_cut", id: "x2", seconds: 2 },
+  ])[0];
+  check("J-cut setup: the lead sits at timeline 0", near(at(jc(), "aud1").start, 0) && near(at(jc(), "aud1").in, 2), at(jc(), "aud1"));
+  refuses("roll_edit that would push a J-cut lead before 0 is refused", jc(), [{ op: "roll_edit", id: "x1", by: -0.5 }], "out_of_range");
+  refuses("slide_clip that would push its own J-cut lead before 0 is refused", jc(), [{ op: "slide_clip", id: "x2", by: -0.5 }], "out_of_range");
+  const [rl] = run(jc(), [{ op: "roll_edit", id: "x1", by: 0.5 }]);
+  check("roll_edit later with the lead at 0 still works and keeps audio and picture in step", near(at(rl, "x2").start, 2.5) && near(at(rl, "aud1").start, 0.5) && near(at(rl, "aud1").in, 2.5) && errs(rl).length === 0, [at(rl, "x2"), at(rl, "aud1")]);
+  // roll_edit and slide_clip move the in-point of every type with source time
+  const nested = { id: "tr0", kind: "video", clips: [{ id: "n1", type: "shape", shape: "rect", start: 0, duration: 6 }] };
+  const src = run(mk(), [
+    { op: "add_clip", track: "main", asset: "v", id: "p1", in: 0, duration: 2 },
+    { op: "add_clip", track: "main", type: "compound", tracks: [nested], id: "cp", in: 1, duration: 3 },
+    { op: "add_clip", track: "main", asset: "v", id: "p2", in: 0, duration: 2 },
+    { op: "add_clip", track: "main", type: "lottie", asset: "l", id: "lt", in: 1, duration: 3 },
+    { op: "add_clip", track: "main", asset: "v", id: "p3", in: 0, duration: 2 },
+  ])[0];
+  const [ro] = run(src, [{ op: "roll_edit", id: "p1", by: 0.5 }, { op: "roll_edit", id: "p2", by: 0.5 }]);
+  check("roll_edit moves the in-point of a compound and a lottie clip whose head is cut", near(at(ro, "cp").in, 1.5) && near(at(ro, "cp").duration, 2.5) && near(at(ro, "lt").in, 1.5) && near(at(ro, "lt").duration, 2.5), [at(ro, "cp"), at(ro, "lt")]);
+  const [sl2] = run(src, [{ op: "slide_clip", id: "p2", by: 0.5 }]);
+  check("slide_clip moves the in-point of a lottie next to it", near(at(sl2, "lt").in, 1.5) && near(at(sl2, "lt").duration, 2.5) && near(at(sl2, "cp").duration, 3.5), [at(sl2, "cp"), at(sl2, "lt")]);
+}
+
+console.log("replace_timeline keeps the project's revision");
+{
+  const R = join(tmp, "proj-replace");
+  api.create(R, { preset: "720p" });
+  const cur = api.info(R, "json").timeline;
+  for (const [label, revision] of [["a wrong revision", 999], ["no revision", undefined]] as const) {
+    const input = { ...structuredClone(cur), name: `replaced ${label}` };
+    if (revision === undefined) delete (input as any).revision; else input.revision = revision;
+    const t1 = performance.now();
+    const res: any = await api.apply(R, [{ op: "replace_timeline", timeline: input }]).catch((e: any) => e);
+    const now = api.info(R, "json");
+    check(`replace_timeline with ${label} is applied at once and bumps the project's own revision`, res.ok === true && now.timeline.name === `replaced ${label}` && now.revision === res.revision && performance.now() - t1 < 5000, { code: res.code, message: res.message, revision: now.revision });
+  }
+}
+
 console.log("match_duration by clip reference");
 {
   const base = () => {

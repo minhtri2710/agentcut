@@ -457,10 +457,14 @@ function resolveFollowers(tl: Timeline) {
 /** A clip whose duration is computed, not stored: it follows a clip (match_duration names one) or its attach_to target (match_duration true). */
 export const computedDuration = (c: Clip) => typeof c.match_duration === "string" || (c.match_duration === true && !!c.attach_to);
 
-/** An explicit duration edit of a computed-duration clip would be overwritten by resolve(): refuse it. */
+/** clip types with source time (the model allows `in` on them): video, audio, lottie, compound */
+export const hasSourceTime = (c: Clip) => "in" in fieldsFor(c.type);
+
+/** An explicit duration edit of a computed-duration clip would be overwritten by resolve(): refuse it. An until_end clip gives up its stretch (the explicit length replaces it). */
 export function ownDuration(c: Clip) {
   if (typeof c.match_duration === "string") throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows '${c.match_duration}': change end_offset, or update_clip id=${c.id} match_duration=null first`);
   if (c.match_duration === true && c.attach_to) throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows its attach_to target '${c.attach_to}': change offset or end_offset, or update_clip id=${c.id} match_duration=null first`);
+  delete c.until_end;
 }
 
 /** Stop following: clips whose match_duration names a clip for which gone(id) is true keep the length they last resolved to. Returns their ids. */

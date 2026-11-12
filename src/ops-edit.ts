@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, newId, ownDuration, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
+import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, newId, ownDuration, parseTime, resolve, round6, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -20,7 +20,7 @@ function srcLen(tl: Timeline, c: Clip): number {
 }
 /** timeline seconds a side can grow before running out of source media */
 function room(tl: Timeline, c: Clip, side: Side): number {
-  if (!isAV(c) || c.freeze) return Infinity;
+  if (!hasSourceTime(c) || c.freeze) return Infinity;
   const before = cin(c) / spd(c), after = (srcLen(tl, c) - cin(c) - clipDur(c) * spd(c)) / spd(c);
   return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
 }
@@ -31,7 +31,7 @@ export function shiftKfs(c: Clip, e: number) {
 }
 /** grow one side of a clip by e seconds (negative shrinks), keeping its content in place */
 function extend(c: Clip, side: Side, e: number) {
-  const src = isAV(c) && !c.freeze;
+  const src = hasSourceTime(c) && !c.freeze;
   if (side === "head") { if (src && !c.reverse) c.in = round6(Math.max(0, cin(c) - e * spd(c))); shiftKfs(c, e); }
   else if (src && c.reverse) c.in = round6(Math.max(0, cin(c) - e * spd(c)));
   c.duration = round6(clipDur(c) + e);
@@ -39,12 +39,13 @@ function extend(c: Clip, side: Side, e: number) {
 function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
   for (const [c] of edges) ownDuration(c); // a computed length would be overwritten
   for (const [c, side, sg] of edges) {
-    const r = room(tl, c, side), d = clipDur(c);
+    const r = room(tl, c, side), d = clipDur(c), s0 = clipStart(c);
     if (sg > 0) { lo = Math.max(lo, MIN - d); hi = Math.min(hi, r); } else { lo = Math.max(lo, -r); hi = Math.min(hi, d - MIN); }
+    if (side === "head") { if (sg > 0) hi = Math.min(hi, s0); else lo = Math.max(lo, -s0); } // a head cannot move before timeline 0: a clamp there would desync its content
   }
   if (by < lo - EPS || by > hi + EPS)
     throw new EditError(`${what}: by=${by} is out of range`, "out_of_range",
-      `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (clips must stay >= ${MIN}s and within their source media)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+      `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (clips must stay >= ${MIN}s, within their source media and at or after timeline 0)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
   for (const [c, side, sg] of edges) extend(c, side, sg * by);
 }
 
@@ -181,7 +182,7 @@ export function registerEditOps(h: OpHelpers) {
     });
 
   h.op("roll_edit", "Roll: move the cut between this clip and the NEXT clip on its track by `by` seconds; total length is unchanged " +
-    "(this.duration += by; next.in += by*speed, next.duration -= by). Both need spare source media. Detached audio rolls with the picture.",
+    "(this.duration += by; next.in += by*speed, next.duration -= by). Both need spare source media; refused (out_of_range) if a head would move before timeline 0. Detached audio rolls with the picture.",
     { id: "outgoing (left) clip id or ref", by: "+/- seconds (positive = cut later)" }, (p, tl, a) => {
       const [tr, ci, l] = get(tl, a);
       const r = tr.clips[ci + 1];
@@ -198,7 +199,7 @@ export function registerEditOps(h: OpHelpers) {
 
   h.op("slide_clip", "Slide: move a clip along its track keeping its content and length; the previous clip grows/shrinks by `by` and the next one " +
     "gives/takes the same time from its head (next.in += by*speed). Magnetic tracks need a clip before and after. On other tracks start += by and only " +
-    "touching neighbours are adjusted (others are left alone; result.overlaps warns). Detached audio follows.",
+    "touching neighbours are adjusted (others are left alone; result.overlaps warns). Detached audio follows; refused (out_of_range) if it would move before timeline 0.",
     { id: "clip id or ref", by: "+/- seconds (positive = later)" }, (p, tl, a) => {
       const [tr, ci, c] = get(tl, a);
       const by = amount(a, ["by", "seconds", "shift"], false);
@@ -215,7 +216,8 @@ export function registerEditOps(h: OpHelpers) {
       const edges: Edge[] = [];
       if (prev) edges.push([prev, "tail", 1]);
       if (next) edges.push([next, "head", -1]);
-      applyEdges(tl, withAudio(tl, edges), by, "slide_clip", tr.magnetic ? -Infinity : -clipStart(c));
+      const own = linked(tl, c); // c's detached audio follows it and must not be pushed before 0 either
+      applyEdges(tl, withAudio(tl, edges), by, "slide_clip", Math.max(tr.magnetic ? -Infinity : -clipStart(c), own ? -clipStart(own) : -Infinity));
       if (!tr.magnetic) {
         c.start = round6(clipStart(c) + by);
         if (next) next.start = round6(clipStart(next) + by);
