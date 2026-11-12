@@ -160,7 +160,7 @@ export const VISUAL_FIELDS: F = {
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
-  speed: [T("number"), "playback speed 0.1..8 (keyframes.speed for ramps)"],
+  speed: [T("number"), "playback speed 0.1..8 (keyframes.speed for ramps on video)"],
   volume: [T("number"), "linear gain 0..4"], muted: [T("boolean"), "drop audio"],
   fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
@@ -224,17 +224,20 @@ export const COMPOUND_FIELDS: F = {
   volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
 };
 
-/** The clip types that play media at a ramped speed (render.ts reads keyframes.speed only for these). */
-const RAMPS = new Set(["video", "audio"]);
+/** The clip types that play at a ramped speed (render.ts reads keyframes.speed only for a video clip; an audio clip with a ramp would drop out of the mix). */
+const RAMPS = new Set(["video"]);
 
 export function fieldsFor(t: string): F {
   const f: F = { ...COMMON_FIELDS };
-  if (VISUAL_TYPES.has(t)) Object.assign(f, VISUAL_FIELDS);
+  if (VISUAL_TYPES.has(t)) {
+    Object.assign(f, VISUAL_FIELDS);
+    if (!RAMPS.has(t)) f.keyframes = [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.filter((k) => k !== "speed").join(",") + " (speed ramps only on video clips)"];
+  }
   if (t === "video" || t === "image" || t === "audio") Object.assign(f, MEDIA_FIELDS);
   if (t === "video" || t === "audio") Object.assign(f, AUDIO_FX_FIELDS);
   if (t === "audio") {
     for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze", "remove_background"]) delete f[k];
-    f.keyframes = [T("object"), "{volume: [[t, gain]], speed: [[t, s]]}"];
+    f.keyframes = [T("object"), "{volume: [[t, gain]]}"];
   }
   if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];
   if (t === "text" || t === "captions") Object.assign(f, TEXT_FIELDS);
@@ -243,7 +246,6 @@ export function fieldsFor(t: string): F {
   if (t === "color") Object.assign(f, COLOR_FIELDS);
   if (t === "lottie") Object.assign(f, LOTTIE_FIELDS);
   if (t === "compound") Object.assign(f, COMPOUND_FIELDS);
-  if (f.keyframes && !RAMPS.has(t)) f.keyframes = [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.filter((k) => k !== "speed").join(",") + " (speed ramps only on video and audio clips)"];
   return f;
 }
 
@@ -741,7 +743,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       });
       for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
         if (!ANIMATABLE.includes(prop)) { const s = suggest(prop, ANIMATABLE); issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `'${prop}' is not animatable`, hint: s ? `did you mean '${s}'?` : `animatable: ${ANIMATABLE.join(", ")}` }); continue; }
-        if (prop === "speed" && !RAMPS.has(c.type)) { issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `a ${c.type} clip cannot ramp its speed`, hint: "speed ramps work on video and audio clips" + ("speed" in fieldsFor(c.type) ? "; this clip takes a constant `speed`" : "") }); continue; }
+        if (prop === "speed" && !RAMPS.has(c.type)) { issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `a ${c.type} clip cannot ramp its speed`, hint: "speed ramps work on video clips" + ("speed" in fieldsFor(c.type) ? "; this clip takes a constant `speed`" : "") }); continue; }
         if (!Array.isArray(kfs) || !kfs.length) { issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: "keyframes must be a non-empty list of [t, value, easing?]" }); continue; }
         for (const k of kfs as any[]) {
           const kk = Array.isArray(k) ? k : k && typeof k === "object" ? [k.t, k.v ?? k.value, k.ease] : null;

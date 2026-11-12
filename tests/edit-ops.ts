@@ -403,7 +403,7 @@ console.log("match_duration by clip reference");
   check("validate: keyframes.speed on an image clip is an error", errAt(bx((x) => { at(x, "img2").keyframes = ramp; }), /<img2>\.keyframes\.speed$/));
   check("validate: keyframes.speed on a text clip is an error", errAt(bx((x) => { at(withText(x), "tx9").keyframes = ramp; }), /<tx9>\.keyframes\.speed$/));
   check("validate: keyframes.speed on a video clip is clean", !errAt(bx((x) => { x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10 }; x.tracks.find((t: any) => t.id === "main").clips.push({ id: "vd9", type: "video", asset: "vv", start: 6, duration: 2, keyframes: ramp }); }), /keyframes\.speed$/));
-  check("validate: keyframes.speed on an audio clip is clean", !errAt(bx((x) => { at(x, "vo1").keyframes = ramp; }), /keyframes\.speed$/));
+  check("validate: keyframes.speed on an audio clip is an error", errAt(bx((x) => { at(x, "vo1").keyframes = ramp; }), /<vo1>\.keyframes\.speed$/));
   check("validate: a transition object without a type is an error", errAt(bx((x) => { at(x, "img2").transition = { duration: 0.3 }; }), /<img2>\.transition\.type$/));
   check("validate: a transition object with a type is clean", !errAt(bx((x) => { at(x, "img2").transition = { type: "crossfade", duration: 0.3 }; }), /transition/));
   check("validate: settings.effects as a string is an error, not a throw", errAt(bx((x) => { x.settings.effects = "glitch"; }), /^\$\.settings\.effects$/));

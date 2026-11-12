@@ -395,7 +395,7 @@ console.log("retimed compound: what it drops is reported by validate");
   const tlR = api.openProject(R).load();
   tlR.tracks.find((t: any) => t.id === "main")!.clips.find((c: any) => c.id === "RC")!.keyframes = { speed: [[0, 1], [1, 2]] };
   const ie = rampErr(tlR);
-  check("validate: keyframes.speed on a compound is an error that names video/audio clips and a constant speed", ie.length === 1 && /video and audio/.test(ie[0].hint) && /constant `speed`/.test(ie[0].hint), ie);
+  check("validate: keyframes.speed on a compound is an error that names video clips and a constant speed", ie.length === 1 && /video clips/.test(ie[0].hint) && /constant `speed`/.test(ie[0].hint), ie);
   let refused: any = null;
   try { await api.apply(R, [{ op: "update_clip", id: "RC", set: { keyframes: { speed: [[0, 1], [1, 2]] } } }]); } catch (e: any) { refused = e; }
   check("update_clip with keyframes.speed on a compound is refused and the compound is unchanged", refused !== null && JSON.stringify(api.openProject(R).load()).indexOf('"speed":[[') < 0, refused && { code: refused.code, msg: refused.message });
