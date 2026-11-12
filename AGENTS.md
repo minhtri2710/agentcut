@@ -96,7 +96,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"j_cut","id":"main#1","seconds":0.8}         B's audio starts 0.8 s before its picture (auto-detaches)
 {"op":"l_cut","id":"main#0","seconds":1,"crossfade":0.3}   A's audio runs 1 s over B
   -> check result.under (clips still audible underneath) and fade/lower them. split_clip/trim_clip keep detached audio in sync.
-  Splitting the detached audio clip leaves a video with several audio pieces: split_clip and duplicate_clip on the video handle every piece; the other ops that follow the audio refuse it (audio_pieces), so edit a piece by its id.
+  Splitting the detached audio clip leaves a video with several audio pieces: split_clip, duplicate_clip, slip_clip and enhance_voice on the video handle every piece; the other ops that follow the audio refuse it (audio_pieces), so edit a piece by its id.
 {"op":"slip_clip","id":"vid2","by":0.5}            different part of the source, same place on the timeline
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
@@ -113,7 +113,7 @@ low_pass, low_shelf, high_shelf, de_ess] · compressor "voice"|"music"|"gentle" 
 · pan -1..1 · pitch semitones -12..12 (duration unchanged; formants shift with it: large shifts sound chipmunk/giant) · normalize true (-16 LUFS) | LUFS. The final mix is still loudness-normalised
 (settings.loudness, -14) after all of this.
 {"op":"enhance_voice","track":"voice"}             denoise + high-pass + voice EQ + de-ess + compressor + normalize for every clip on the track
-{"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip)
+{"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip, or every piece of it)
 {"op":"update_track","id":"music","set":{"eq":"low_cut","compressor":"music","pan":-0.2}}   track = bus: eq/compressor/pan process the
   track mix once; denoise/normalize/pitch on a track apply to each of its clips that does not set its own.
 Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) writes the captions clips in timeline time;

@@ -239,9 +239,18 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
     const [pieces] = run(fxd, [{ op: "split_clip", id: "aud1", at: 1 }, { op: "add_clip", track: "main", asset: "v", id: "p1", duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "p2", duration: 2 }]);
     const attached = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio" && c.attach_to === id);
     check("two audio pieces on one video validate clean", attached(pieces, "fx").length === 2 && errs(pieces).length === 0, errs(pieces));
-    for (const o of [{ op: "attach_audio", id: "fx" }, { op: "trim_clip", id: "fx", trim_start: 0.5 }, { op: "j_cut", id: "fx", seconds: 0.2 }, { op: "l_cut", id: "fx", seconds: 0.2 }, { op: "slip_clip", id: "fx", by: 0.2 },
-      { op: "enhance_voice", id: "fx" }, { op: "remove_silence", id: "fx" }, { op: "roll_edit", id: "fx", by: 0.2 }, { op: "slide_clip", id: "p1", by: 0.2 }])
+    for (const o of [{ op: "attach_audio", id: "fx" }, { op: "trim_clip", id: "fx", trim_start: 0.5 }, { op: "j_cut", id: "fx", seconds: 0.2 }, { op: "l_cut", id: "fx", seconds: 0.2 }, { op: "remove_silence", id: "fx" }, { op: "roll_edit", id: "fx", by: 0.2 }, { op: "slide_clip", id: "p1", by: 0.2 }])
       refuses(`${o.op} on a video with two audio pieces is refused as audio_pieces`, pieces, [o], "audio_pieces");
+    const rev = structuredClone(pieces); at(rev, "fx").reverse = true;
+    const soft = (name: string, f: () => void) => { try { f(); } catch (e: any) { check(name, false, { code: e.code, message: e.message }); } }; // a refusal fails its own row, not the suite
+    soft("trim_clip on a reversed video with two audio pieces is not refused", () => { const [tr2] = run(rev, [{ op: "trim_clip", id: "fx", trim_start: 0.5 }]);
+    check("trim_clip on a reversed video with two audio pieces trims the picture and leaves both pieces alone", near(at(tr2, "fx").duration, 2.5) && attached(tr2, "fx").every((x: any, i: number) => near(x.duration, attached(rev, "fx")[i].duration) && near(x.in, attached(rev, "fx")[i].in)), [at(tr2, "fx"), attached(tr2, "fx")]); });
+    soft("slip_clip on a video with two audio pieces is not refused", () => { const [sl, [slr]] = run(pieces, [{ op: "slip_clip", id: "fx", by: 0.2 }]);
+    check("slip_clip slips the picture and every audio piece by the same amount, and lists them", near(at(sl, "fx").in, 1.2) && near(at(sl, "aud1").in, 1.2) && near(at(sl, "aud2").in, 2.2) && slr.audio.length === 2, [slr, attached(sl, "fx")]); });
+    const tight = structuredClone(pieces); at(tight, "aud2").in = 0.3; // only this piece cannot slip earlier by 0.5
+    refuses("slip_clip is bounded by every audio piece, not only the picture", tight, [{ op: "slip_clip", id: "fx", by: -0.5 }], "out_of_range");
+    soft("enhance_voice on a video with two audio pieces is not refused", () => { const [ev, [evr]] = run(pieces, [{ op: "enhance_voice", id: "fx" }]);
+    check("enhance_voice enhances every audio piece and lists them", attached(ev, "fx").length === 2 && attached(ev, "fx").every((x: any) => x.normalize === true && x.compressor === "voice") && at(ev, "fx").normalize === undefined && evr.clips.length === 2, [evr, attached(ev, "fx")]); });
     const [sp] = run(pieces, [{ op: "split_clip", id: "fx", at: 2 }]);
     const [left, right] = [attached(sp, "fx"), attached(sp, sp.tracks[0].clips[1].id)];
     check("split_clip on a video splits the piece it crosses, and every piece stays with its picture", left.length === 2 && right.length === 1 && near(right[0].start, 2) && near(right[0].duration, 1) && errs(sp).length === 0, [left, right]);
@@ -249,6 +258,7 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
     check("duplicate_clip copies every audio piece", Array.isArray(dr.audio) && dr.audio.length === 2 && attached(dp, dr.id).length === 2 && errs(dp).length === 0, [dr, attached(dp, dr.id)]);
     const ramp = errs(run(pieces, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).filter((i: any) => /detached audio/.test(i.message));
     check("validate: a speed ramp on a video with two audio pieces is an error naming both", ramp.length === 1 && /aud1/.test(ramp[0].message) && /aud2/.test(ramp[0].message), ramp);
+    check("validate: the hint for two audio pieces names a removal of each and offers no attach_audio", /remove_clip id=aud1/.test(ramp[0]?.hint ?? "") && /remove_clip id=aud2/.test(ramp[0]?.hint ?? "") && !/attach_audio/.test(ramp[0]?.hint ?? ""), ramp[0]?.hint);
   }
   const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));

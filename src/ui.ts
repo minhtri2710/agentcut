@@ -99,8 +99,8 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     }
 
     if (req.method === "POST") {
-      const gone = new AbortController(); // the browser closed or aborted the request before the response was sent: stop the work it was waiting on
-      res.on("close", () => { if (!res.writableEnded) gone.abort(); });
+      const gone = new AbortController(); // the response closes once it is sent or the client goes away; only the second finds work still waiting
+      res.on("close", () => gone.abort());
       const body = await readJson(req);
       const rev = body.revision === undefined ? undefined : Number(body.revision);
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, signal: gone.signal }));

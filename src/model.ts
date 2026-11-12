@@ -807,7 +807,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           if (isRetimed(c)) issues.push({ level: "error", path: `${p}.speed`, message: `'${c.id}' has speed ${c.speed} and a speed ramp; the ramp sets the speed and \`speed\` would be ignored`, hint: "a ramp sets the speed; remove `speed` or the ramp" });
           const la = linkedAudio(tl, c).map(([, x]) => x.id);
           if (la.length) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `video '${c.id}' has a speed ramp and detached audio '${la.join("', '")}', which plays at constant speed and drifts from the picture`,
-            hint: `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
+            hint: la.length > 1 ? `no op joins the ${la.length} audio pieces: ${la.map((id) => `remove_clip id=${id}`).join(", ")} to drop that audio and its processing, then update_clip id=${c.id} muted=false so the video's own sound (which follows the ramp) plays`
+              : `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
           if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
         }
       }

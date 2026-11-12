@@ -226,7 +226,7 @@ export function registerEditOps(h: OpHelpers) {
       const [, , c] = get(tl, a);
       if (!isAV(c)) throw new EditError(`slip_clip needs a video or audio clip; '${c.id}' is ${c.type}`, "bad_type", "images/text have no source in-point; use move_clip to move them");
       const by = amount(a, ["by", "seconds", "shift"], false);
-      const own = soleAudio(tl, c, "slip_clip")?.[1], list = own ? [c, own] : [c];
+      const pieces = linkedAudio(tl, c).map(([, x]) => x), list = [c, ...pieces];
       let lo = -Infinity, hi = Infinity;
       for (const x of list) {
         lo = Math.max(lo, -cin(x) / spd(x));
@@ -237,7 +237,7 @@ export function registerEditOps(h: OpHelpers) {
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };
-      if (list[1]) out.audio = { id: list[1].id, in: list[1].in };
+      if (pieces.length) out.audio = pieces.map((x) => ({ id: x.id, in: x.in }));
       return out;
     });
 

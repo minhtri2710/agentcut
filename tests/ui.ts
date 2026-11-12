@@ -281,6 +281,16 @@ if (process.platform !== "win32") {
   if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL"); // a child that outlived the bound is the failure; do not leave it running
   check("a UI apply stops its analysis when the request goes away, within 5 s", pid > 0 && aliveBefore && stopped, { pid, aliveBefore, stopped });
   check("the aborted apply saved nothing and the server keeps serving", readFileSync(join(dirA, "project.json"), "utf8") === before && (await raw("/api/state", { port: ua.port })).status === 200);
+  // the same apply with the client connected is not aborted: the stand-in piper now writes its output and exits
+  ff("-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", join(tmp, "tone.wav"));
+  writeFileSync(join(binA, "piper"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && cp '${join(tmp, "tone.wav")}' "$2"; shift; done\ncat > /dev/null\n`, { mode: 0o755 });
+  process.env.PATH = `${binA}:${was.PATH}`;
+  process.env.AGENTCUT_PIPER_MODEL = join(media, "p.jpg");
+  const rev0 = api.info(dirA).revision as number;
+  let done: { status: number; j: any } | undefined;
+  try { done = await jget("/api/ops", { method: "POST", port: ua.port, body: { ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }] } }); }
+  finally { for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  check("a UI apply whose client stays connected completes and saves a revision", done?.status === 200 && api.info(dirA).revision === rev0 + 1 && done.j.results?.[0]?.clip?.id, { status: done?.status, j: done?.j, rev0 });
   ua.server.closeAllConnections?.();
   await new Promise((ok) => ua.server.close(ok));
 }
