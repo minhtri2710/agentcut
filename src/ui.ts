@@ -109,7 +109,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
       }
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
-      if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare() });
+      if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare(body.allow_download === true) });
     }
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
@@ -137,13 +137,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   }
 
   /** compute mattes / vision analyses and apply the pending vision requests (the slow step not_prepared asks for) */
-  function prepare() {
+  function prepare(allowDownload: boolean) {
     if (preparing) return preparing;
     const job: Dict = { id: Math.random().toString(36).slice(2, 10), kind: "prepare", status: "running", progress: 0, started: Date.now() };
     jobs.set(job.id, job);
     preparing = job;
     let last = 0;
-    Promise.resolve().then(() => api.prepare(root, { progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
+    Promise.resolve().then(() => api.prepare(root, { allowDownload, progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: "failed", error: errJson(e) }))
       .finally(() => { preparing = null; broadcast("job", job); });

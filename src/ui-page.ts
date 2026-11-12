@@ -12,6 +12,7 @@ header{display:flex;gap:8px;align-items:center;padding:6px 10px;background:#1f22
 header b{font-size:14px}
 button{background:#2d323c;color:#eee;border:1px solid #444;border-radius:4px;padding:3px 9px;cursor:pointer;font:inherit}
 button:hover{background:#3a404c}button:disabled{opacity:.4;cursor:default}
+dialog{background:#1f2229;color:#dde;border:1px solid #555;border-radius:6px;max-width:420px}
 #main{display:grid;grid-template-columns:1fr 360px;min-height:0}
 #viewer{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;background:#0d0e11;position:relative}
 #viewer img,#viewer video{max-width:100%;max-height:calc(100% - 30px);object-fit:contain;background:#000}
@@ -74,6 +75,8 @@ progress{width:100%}
     <div id="out"></div>
   </div>
 </div>
+<dialog id="consent" aria-labelledby="ctitle"><p id="ctitle"><b>Download a vision model?</b></p><ul id="clist"></ul>
+  <p class="mut">Nothing is downloaded unless you confirm.</p><div><button id="cgo">Download and prepare</button> <button id="cno">Cancel</button></div></dialog>
 <div id="tl">
   <div id="tbar"><span class="mut">zoom</span><input type="range" id="zoom" min="10" max="400" value="80"><span class="mut" id="dur"></span>
     <span id="crumbs"></span>
@@ -315,10 +318,21 @@ $("play").addEventListener("click", function () {
 });
 var prepJob = null;
 /** run prepare (mattes, vision analyses, pending requests) as a server job; the viewer redraws when it is done */
-$("prepare").addEventListener("click", function () {
+function startPrepare(allowDownload) {
   $("prepare").disabled = true; $("prepare").textContent = "Preparing…";
-  api("/api/prepare", {}).then(function (j) { prepJob = j.id; settle(j); }, function (e) { $("prepare").disabled = false; $("prepare").textContent = "Prepare"; fail(e); });
-});
+  api("/api/prepare", allowDownload ? { allow_download: true } : {}).then(function (j) { prepJob = j.id; settle(j); }, function (e) { $("prepare").disabled = false; $("prepare").textContent = "Prepare"; fail(e); });
+}
+$("prepare").addEventListener("click", function () { startPrepare(false); });
+/** a missing model is downloaded only after a click here: Cancel and Escape show the failure instead, and nothing retries by itself */
+var consentErr = null;
+function askDownload(err) {
+  consentErr = err; var d = $("consent"), l = $("clist"); l.innerHTML = "";
+  err.models.forEach(function (m) { var li = document.createElement("li"); li.textContent = m.model + " (" + (m.approx_mb == null ? "size unknown" : "~" + m.approx_mb + " MB") + ")"; l.appendChild(li); });
+  d.returnValue = ""; d.showModal(); $("cgo").focus();
+}
+$("cgo").addEventListener("click", function () { $("consent").close("go"); });
+$("cno").addEventListener("click", function () { $("consent").close("no"); });
+$("consent").addEventListener("close", function () { if ($("consent").returnValue === "go") startPrepare(true); else fail(consentErr); });
 function stopPlay() { var v = $("video"); if (v.style.display === "none") return; v.pause(); v.style.display = "none"; $("frame").style.display = ""; $("play").textContent = "Play"; requestFrame(); }
 $("video").addEventListener("timeupdate", function () { t = playStart + $("video").currentTime; movePlayhead(); });
 $("video").addEventListener("ended", stopPlay);
@@ -453,7 +467,7 @@ function hist(kind) { api("/api/" + kind, { revision: S.revision }).then(functio
 $("undo").addEventListener("click", function () { hist("undo"); });
 $("redo").addEventListener("click", function () { hist("redo"); });
 document.addEventListener("keydown", function (e) {
-  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if ($("consent").open || e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return; // the dialog owns the keys while open
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); }
   else if (e.key === " ") { e.preventDefault(); $("play").click(); }
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { var f = 1 / S.timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(t + (e.key === "ArrowLeft" ? -f : f)); }
@@ -469,7 +483,7 @@ function onJob(j) {
   if (j.id === prepJob) {
     if (j.status === "running") { $("prepare").textContent = "Preparing " + Math.round(j.progress * 100) + "%"; return; }
     prepJob = null; $("prepare").disabled = false; $("prepare").textContent = "Prepare";
-    if (j.status === "failed") fail(j.error); else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
+    if (j.status === "failed") { if (j.error.code === "model_not_cached" && j.error.models) askDownload(j.error); else fail(j.error); } else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
   } else if (j.id === playJob) {
     if (j.status === "running") $("play").textContent = "Preparing " + Math.round(j.progress * 100) + "%";
     else if (j.status === "failed") { playJob = null; $("play").textContent = "Play"; fail(j.error); }

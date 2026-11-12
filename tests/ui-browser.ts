@@ -327,6 +327,37 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   check("Prepare with nothing to compute is not stuck when its job event beats the POST response",
     await until("prepare reset", `$("prepare").style.display === "none" && !$("prepare").disabled && $("prepare").textContent === "Prepare"`, 10_000),
     await js(`[$("prepare").style.display, $("prepare").disabled, $("prepare").textContent, $("msg").textContent]`));
+  // a missing model is downloaded only after a click in the dialog: Escape and Cancel send nothing, Confirm sends one request with the flag
+  console.log("download consent");
+  await js(`(function(){
+    var f = window.fetch; window.prepBodies = [];
+    window.fetch = function (u, o) { if (String(u) === "/api/prepare") window.prepBodies.push(JSON.parse(o.body)); else window.otherUrls.push(String(u)); return f.apply(this, arguments); };
+    window.otherUrls = [];
+  })()`);
+  await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb2" }, { op: "remove_background", id: "rb2", model: "u2net_human_seg" }]);
+  const ask = async () => {
+    await js(`$("prepare").style.display = ""`);
+    await click("#prepare");
+    return until("consent dialog", `$("consent").open`);
+  };
+  const bodies = () => js(`window.prepBodies`);
+  check("Prepare with a missing model opens the dialog naming the model and its size, focus on the confirm button", await ask()
+    && (await js(`$("clist").textContent`)).includes("u2net_human_seg (~176 MB)") && (await js(`document.activeElement.id`)) === "cgo", await js(`[$("consent") && $("consent").open, $("clist") && $("clist").textContent, document.activeElement.id]`));
+  check("  the first request carried no flag", JSON.stringify(await bodies()) === "[{}]", await bodies());
+  await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await page("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  check("Escape closes the dialog and shows the normal failure", await until("escaped", `!$("consent").open && $("msg").textContent.indexOf("[model_not_cached]") === 0 && !$("prepare").disabled && $("prepare").textContent === "Prepare"`),
+    await js(`[$("consent").open, $("msg").textContent, $("prepare").textContent]`));
+  check("Cancel closes the dialog too", await ask() && (await click("#cno"), await until("cancelled", `!$("consent").open && !$("prepare").disabled`)));
+  await sleep(500);
+  check("neither Escape nor Cancel sent a second request", JSON.stringify(await bodies()) === "[{},{}]", await bodies());
+  check("a new dialog is not remembered: it opens again and the flag is still unset", await ask() && JSON.stringify(await bodies()) === "[{},{},{}]", await bodies());
+  await js(`window.otherUrls = []; [{ key: "z", ctrlKey: true }, { key: "z", metaKey: true }, { key: " " }].forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ bubbles: true }, k))); })`);
+  await sleep(300);
+  check("while the dialog is open, the page's shortcuts (undo, play) do nothing", (await js(`window.otherUrls`)).length === 0 && await js(`$("consent").open`), await js(`window.otherUrls`));
+  await click("#cgo");
+  check("Confirm sends exactly one request with the flag, and the prepare completes",
+    await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]', await bodies());
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

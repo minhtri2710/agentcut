@@ -43,9 +43,9 @@ export function modelsToDownload(jobs: Derived[]) {
   }
   return [...need.values()];
 }
-/** The error for models that are missing while downloads are not allowed. */
+/** The error for models that are missing while downloads are not allowed; `models` carries the list (model, approx_mb, path) for callers that ask for consent. */
 export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new EditError(`a vision model is not downloaded: ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)})`).join(", ")}`, "model_not_cached",
-  `nothing was downloaded or run; models are fetched only on request: run with allow_download=true (CLI: prepare --allow-download, subject --allow-download; MCP: allow_download=true on prepare or analyze_subject) to download ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)}) to ${n.path}`).join("; ")}, or put the file there`);
+  `nothing was downloaded or run; models are fetched only on request: run with allow_download=true (CLI: prepare --allow-download, subject --allow-download; MCP: allow_download=true on prepare or analyze_subject) to download ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)}) to ${n.path}`).join("; ")}, or put the file there`, undefined, { models: need });
 
 /** Fetch `m` into the models dir. The whole body is read and checked (size, then sha256) before anything is written, so a failure leaves
  *  nothing behind; the file then lands under a temp name and is renamed into place. Network failures, a bad status, a timeout (60 s)
