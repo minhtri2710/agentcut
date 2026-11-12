@@ -367,10 +367,11 @@ export function capabilities() {
 }
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
-/** start and end go together: the stretch of the media to transcribe (seconds or mm:ss); neither means the whole file. */
+/** start/end: the stretch of the media to transcribe (seconds or mm:ss), like a render range: start defaults to 0, end to the media's end. */
 function transcribe(p: string, language?: string, model?: string, start?: number | string, end?: number | string) {
-  if ((start === undefined) !== (end === undefined)) throw new M.EditError("transcribe needs start and end together", "bad_value", "pass both to transcribe one stretch of the media, or neither for the whole file");
-  return AN.transcribe(presolve(p), language, model, start === undefined ? undefined : [M.parseTime(start, "start"), M.parseTime(end, "end")]);
+  const f = presolve(p);
+  if (start === undefined && end === undefined) return AN.transcribe(f, language, model);
+  return AN.transcribe(f, language, model, [start === undefined ? 0 : M.parseTime(start, "start"), end === undefined ? Number(probeMedia(f).duration) : M.parseTime(end, "end")]);
 }
 /** Speech into a file. The output is judged as a render's is: it may not replace the project's own files. A project is used when named or found, not required. */
 function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string) {

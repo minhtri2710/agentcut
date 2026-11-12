@@ -78,7 +78,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    provider env AGENTCUT_TTS_PROVIDER. list_voices shows which providers are available. Each sentence is synthesized separately
    (openai: one request per sentence), so captions follow the real sentence timing.
    Outside the timeline: tts (CLI: agentcut tts "text" -o out.wav [--voice V] [--rate WPM]) writes the speech to a file; transcribe (CLI: agentcut transcribe F
-   [--language L] [--model M] [--start S --end S]) returns word timings, of one stretch of the media when start and end are both given.
+   [--language L] [--model M] [--start S --end S]) returns word timings, of one stretch of the media when start or end is given (start defaults to 0, end to the media end).
 {"op":"update_clip","id":"vid1","set":{"color":{"look":"teal_orange","exposure":0.3,"temperature":-0.2,"vibrance":0.4}}}
 {"op":"update_clip","id":"vid2","set":{"color":{"lift":[0,0,0.05],"gain":[0.05,0,-0.03],"curves":{"master":[[0,0.03],[0.5,0.55],[1,1]]},"hsl":{"blues":{"saturation":-0.3}}}}}
 {"op":"snap_to_beats","track":"main","beats":"/abs/song.mp3","every":2}

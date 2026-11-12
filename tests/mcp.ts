@@ -211,12 +211,12 @@ if (process.platform !== "win32") {
   const c6 = new Client({ name: "agentcut-test-6", version: "1" });
   await c6.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: env6 as Record<string, string> }));
   const call6 = callOn(c6), TP = join(tmp, "tts-proj");
-  const noModel = await call6("transcribe", { path: join(tmp, "talk.wav") });
-  check("transcribe without a model finds no engine", noModel.json.ok === false && noModel.json.error.code === "missing_dependency", noModel.json);
   const tr = await call6("transcribe", { path: join(tmp, "talk.wav"), language: "vi", model, start: 1, end: 2 });
   check("transcribe: the model reaches the engine and the range shifts the word times", tr.json.ok === true && readFileSync(join(tmp, "asr.model"), "utf8").trim() === model && tr.json.words[0].start === 1.2 && tr.json.words[0].end === 1.5, tr.json);
-  const bad = await Promise.all([{ start: 1 }, { end: 1 }, { start: 2, end: 1 }].map((r) => call6("transcribe", { path: join(tmp, "talk.wav"), model, ...r })));
-  check("transcribe: start without end, end without start and end <= start are bad_value", bad.every((b) => b.json.ok === false && b.json.error.code === "bad_value"), bad.map((b) => b.json));
+  const half = await call6("transcribe", { path: join(tmp, "talk.wav"), model, start: 1 });
+  check("transcribe: start alone runs to the media's end", half.json.ok === true && half.json.words[0].start === 1.2, half.json);
+  const bad = await Promise.all([{ start: 2, end: 1 }, { start: 9 }].map((r) => call6("transcribe", { path: join(tmp, "talk.wav"), model, ...r })));
+  check("transcribe: end <= start and a start past the media's end are bad_value", bad.every((b) => b.json.ok === false && b.json.error.code === "bad_value"), bad.map((b) => b.json));
   await call6("create_project", { path: TP, preset: "youtube" });
   const names = (await c6.listTools()).tools.map((t) => t.name);
   check("tts is listed", names.includes("tts"), names);

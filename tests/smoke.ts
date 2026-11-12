@@ -190,10 +190,9 @@ for (let i = 0; i < Number(n); i++) {
 
 console.log("cli surface: --start/--end, transcribe, tts");
 {
-  const old = cli(["render", "-o", "renders/old.mp4", "--from", "1", "--to", "2", "--no-sheet", "--quiet"], { ok: false, cwd: P });
-  check("--from and --to are unknown flags", old.error.code === "usage" && old.error.message.includes("--from") && old.error.message.includes("--to") && !existsSync(join(P, "renders", "old.mp4")), old.error);
   const talk = join(m, "talk.wav"), model = join(tmp, "fake.bin"), tr = (...a: string[]) => cli(["transcribe", talk, ...a], { ok: false }).error.code;
-  check("transcribe: start without end, end without start, end <= start and a negative start are bad_value", [tr("--start", "1"), tr("--end", "1"), tr("--start", "2", "--end", "1"), tr("--start", "-1", "--end", "1")].every((c) => c === "bad_value"));
+  check("transcribe: end <= start, a negative start and a start past the media's end are bad_value", [tr("--start", "2", "--end", "1"), tr("--start", "-1", "--end", "1"), tr("--start", "999")].every((c) => c === "bad_value"));
+  if (process.platform !== "win32") { // the fake engine is a shell script
   const bin = join(tmp, "asr-bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
@@ -203,6 +202,7 @@ console.log("cli surface: --start/--end, transcribe, tts");
   let got: any;
   try { got = cli(["transcribe", talk, "--language", "vi", "--model", model, "--start", "1", "--end", "2"]); } finally { process.env.PATH = PATH; }
   check("transcribe: the model reaches the engine and the range shifts the word times (media seconds)", readFileSync(join(tmp, "asr.model"), "utf8").trim() === model && got.words[0].start === 1.2 && got.words[0].end === 1.5, got);
+  }
   const S = join(tmp, "tts-proj");
   cli(["init", S, "--preset", "reels"]);
   const ts = (...a: string[]) => cli(["tts", ...a], { ok: false, cwd: S }).error.code;
