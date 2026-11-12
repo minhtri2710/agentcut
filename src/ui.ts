@@ -181,9 +181,9 @@ function errJson(e: any) {
 }
 
 async function readJson(req: IncomingMessage): Promise<Dict> {
-  let s = "";
-  for await (const c of req) { s += c; if (s.length > 5e6) throw new EditError("request body too large", "bad_request"); }
-  try { const v = JSON.parse(s || "{}"); if (v && typeof v === "object") return v; } catch { /* below */ }
+  const b: Buffer[] = []; let n = 0;
+  for await (const c of req) { b.push(c); n += c.length; if (n > 5e6) throw new EditError("request body too large", "bad_request"); }
+  try { const v = JSON.parse(Buffer.concat(b).toString("utf8") || "{}"); if (v && typeof v === "object") return v; } catch { /* below */ }
   throw new EditError("request body must be a JSON object", "bad_json");
 }
 

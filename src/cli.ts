@@ -5,7 +5,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
 import { VERSION } from "./version.ts";
-const BOOL = new Set(["md", "pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "ripple", "copy", "alpha", "keep-attached", "subtitles", "spectrogram", "no-black", "status", "allow-download"]);
+const BOOL = new Set(["pretty", "json", "text", "dry-run", "allow-invalid", "guides", "draft", "no-sheet", "quiet", "markers", "full", "empty", "fast", "help", "version", "ripple", "alpha", "keep-attached", "subtitles", "spectrogram", "no-black", "allow-download"]);
+// bare flag, or a value when the next argument is not a flag: `prepare --status` vs `feedback resolve ID --status wontfix`; `feedback summary --md [FILE]`
+const OPT = new Set(["md", "status"]);
+// value flags; any other --flag is a usage error (a dropped flag would silently change what runs)
+const VALUE = new Set(["preset", "width", "height", "fps", "name", "ops", "revision", "scale", "times", "every", "count", "cols", "tile-width", "format", "ids", "beats", "min-shot", "max-shot", "cps", "source", "from", "to", "frames", "pad", "quality", "workers", "codec", "threshold", "noise-db", "min-silence", "language", "port", "max-mb", "older-than", "voice", "rate", "lang", "days", "limit", "kind", "note", "title", "details", "area", "severity", "suggestion", "project", "output"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -43,8 +47,10 @@ function parseArgs(argv: string[]) {
     else if (a === "-h") flags.help = true;
     else if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split(/=(.*)/s, 2);
-      if (v !== undefined) flags[k] = v;
+      if (v !== undefined) flags[k] = (BOOL.has(k) || OPT.has(k)) && (v === "false" || v === "true") ? v === "true" : v;
       else if (BOOL.has(k) && !/^[[{]/.test(argv[i + 1] ?? "")) flags[k] = true;
+      else if (OPT.has(k) && !(argv[i + 1] ?? "-").startsWith("-")) flags[k] = argv[++i];
+      else if (OPT.has(k)) flags[k] = true;
       else flags[k] = argv[++i];
     } else pos.push(a);
   }
@@ -64,16 +70,21 @@ function kv(pairs: string[]) {
 
 let pretty = false;
 const call = { cmd: "", t0: performance.now(), ops: undefined as string[] | undefined };
-function emit(obj: unknown, code = 0): never {
+// exits from the write callback: a pipe may take the bytes after write() returns, and process.exit() would cut them; callers `return emit(...)`
+function emit(obj: unknown, code = 0) {
   recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {});
-  process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n");
-  process.exit(code);
+  process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n", () => process.exit(code));
+}
+function fail(e: any) {
+  if (e instanceof EditError) return emit({ ok: false, error: e.toJSON() }, e.code === "usage" ? 2 : 1);
+  if (e instanceof SyntaxError) return emit({ ok: false, error: { code: "bad_json", message: e.message, hint: "ops must be valid JSON" } }, 2);
+  return emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
 }
 
 async function readOps(file: string | undefined, inline: string | undefined) {
   let data: any;
   if (inline) data = JSON.parse(inline);
-  else if (!file || file === "-") { let s = ""; for await (const c of process.stdin) s += c; data = JSON.parse(s); }
+  else if (!file || file === "-") { const b: Buffer[] = []; for await (const c of process.stdin) b.push(c); data = JSON.parse(Buffer.concat(b).toString("utf8")); }
   else {
     if (!existsSync(file)) throw new EditError(`ops file not found: ${file}`, "not_found", "pass a JSON file, '-' for stdin, or --ops '[...]'");
     data = JSON.parse(readFileSync(file, "utf8"));
@@ -89,10 +100,12 @@ export async function main(argv = process.argv.slice(2)) {
   pretty = !!f.pretty || !!process.stdout.isTTY;
   const cmd = pos.shift();
   call.cmd = cmd === "op" ? (pos[0] ?? "op") : cmd ?? "";
+  if (f.version || cmd === "version") { console.log(VERSION); return; }
   if (!cmd || f.help || cmd === "help") { console.log(HELP); return; }
-  if (cmd === "--version" || cmd === "version") { console.log(VERSION); return; }
   if (cmd === "guide" || cmd === "docs") { const { GUIDE } = await import("./docs.ts"); console.log(GUIDE.trim()); return; }
   if (cmd === "mcp") { const { startMcp } = await import("./mcp.ts"); await startMcp(); return; }
+  const bad = Object.keys(f).filter((k) => !BOOL.has(k) && !OPT.has(k) && !VALUE.has(k));
+  if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
   const api = await import("./api.ts");
   const P = f.project;
   let res: any;
@@ -107,8 +120,8 @@ export async function main(argv = process.argv.slice(2)) {
       case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision) }); break;
       case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision) }); break;
       case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision) }); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple }], { revision: num(f.revision) }); break;
-      case "validate": { const v = api.validate(P); emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision) }); break;
+      case "validate": { const v = api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale), guides: f.guides }); break;
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale) }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
@@ -163,7 +176,7 @@ export async function main(argv = process.argv.slice(2)) {
         const sub = pos.shift() ?? "info";
         if (sub === "info") res = api.cache.info(P);
         else if (sub === "prune") res = api.cache.prune(P, { maxMb: num(f["max-mb"]), olderThan: f["older-than"] });
-        else emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
+        else return emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
         break;
       }
       case "tts": res = api.analyze.tts(pos[0], f.output, f.voice, num(f.rate)); break;
@@ -180,18 +193,16 @@ export async function main(argv = process.argv.slice(2)) {
           if (f.md !== undefined || sub === "report") { const r = api.feedback.report(typeof f.md === "string" ? f.md : undefined, num(f.days)); if (r.markdown && !f.pretty) { console.log(r.markdown); return; } res = r; }
           else res = api.feedback.summary(num(f.days), num(f.limit));
         } else if (sub === "resolve") res = api.feedback.resolve(pos[0], f.status, f.note);
-        else emit({ ok: false, error: { code: "usage", message: `unknown feedback command '${sub}'`, hint: "feedback add|list|summary|resolve" } }, 2);
+        else return emit({ ok: false, error: { code: "usage", message: `unknown feedback command '${sub}'`, hint: "feedback add|list|summary|resolve" } }, 2);
         break;
       }
-      default: emit({ ok: false, error: { code: "usage", message: `unknown command '${cmd}'`, hint: "run `agentcut help`" } }, 2);
+      default: return emit({ ok: false, error: { code: "usage", message: `unknown command '${cmd}'`, hint: "run `agentcut help`" } }, 2);
     }
     emit({ ok: true, ...res });
   } catch (e: any) {
-    if (e instanceof EditError) emit({ ok: false, error: e.toJSON() }, 1);
-    if (e instanceof SyntaxError) emit({ ok: false, error: { code: "bad_json", message: e.message, hint: "ops must be valid JSON" } }, 2);
-    emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
+    fail(e);
   }
 }
 
 const self = process.argv[1] ?? "";
-if (/cli\.(ts|js)$/.test(self) || self.includes("$bunfs") || self.includes("~BUN") || /agentcut(\.exe)?$/.test(self)) main();
+if (/cli\.(ts|js)$/.test(self) || self.includes("$bunfs") || self.includes("~BUN") || /agentcut(\.exe)?$/.test(self)) main().catch(fail);

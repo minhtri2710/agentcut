@@ -138,6 +138,16 @@ const xo = await new Promise<number>((ok) => {
   rq.end(JSON.stringify({ ops: [] }));
 });
 check("cross-origin POST refused", xo === 403);
+// a 3-byte character split across two request writes; the rejected op echoes its name back, so no revision moves
+const split = await new Promise<string>((ok) => {
+  const body = Buffer.from(JSON.stringify({ ops: [{ op: "nope_ệ" }] })), cut = body.indexOf(Buffer.from("ệ")) + 1;
+  const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ui.port}`, "content-type": "application/json" } }, (res) => {
+    const ch: Buffer[] = []; res.on("data", (c) => ch.push(c)); res.on("end", () => ok(Buffer.concat(ch).toString("utf8")));
+  });
+  rq.write(body.subarray(0, cut));
+  setTimeout(() => rq.end(body.subarray(cut)), 300);
+});
+check("POST body keeps multi-byte text whole across chunks", split.includes("nope_ệ") && !split.includes("\uFFFD"), split.slice(0, 300));
 
 // ---------------------------------------------------------------- render job
 console.log("render");
