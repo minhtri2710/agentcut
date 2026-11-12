@@ -367,7 +367,23 @@ export function capabilities() {
 }
 export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe: (p: string, l?: string) => AN.transcribe(presolve(p), l), tts: AN.tts,
+/** start and end go together: the stretch of the media to transcribe (seconds or mm:ss); neither means the whole file. */
+function transcribe(p: string, language?: string, model?: string, start?: number | string, end?: number | string) {
+  if ((start === undefined) !== (end === undefined)) throw new M.EditError("transcribe needs start and end together", "bad_value", "pass both to transcribe one stretch of the media, or neither for the whole file");
+  return AN.transcribe(presolve(p), language, model, start === undefined ? undefined : [M.parseTime(start, "start"), M.parseTime(end, "end")]);
+}
+/** Speech into a file. The output is judged as a render's is: it may not replace the project's own files. A project is used when named or found, not required. */
+function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string) {
+  if (!text?.trim()) throw new M.EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
+  if (!out) throw new M.EditError("tts needs an output path", "missing_input", "-o out.wav (CLI) / output=out.wav (MCP)");
+  if (rate !== undefined && !(Number.isFinite(rate) && rate > 0)) throw new M.EditError(`rate must be a positive number of words per minute, got ${rate}`, "bad_value", "e.g. 175");
+  let p: Project | null = null;
+  try { p = openProject(project); } catch (e: any) { if (e.code !== "no_project" || project || process.env.AGENTCUT_PROJECT) throw e; }
+  const path = presolve(out);
+  if (p) refuseSource(p.root, p.load(), path);
+  return AN.tts(text, path, voice, rate, p?.root);
+}
+export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: (p: string) => AN.loudness(presolve(p)), transcribe, tts,
   subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {

@@ -77,6 +77,8 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default
    provider env AGENTCUT_TTS_PROVIDER. list_voices shows which providers are available. Each sentence is synthesized separately
    (openai: one request per sentence), so captions follow the real sentence timing.
+   Outside the timeline: tts (CLI: agentcut tts "text" -o out.wav [--voice V] [--rate WPM]) writes the speech to a file; transcribe (CLI: agentcut transcribe F
+   [--language L] [--model M] [--start S --end S]) returns word timings, of one stretch of the media when start and end are both given.
 {"op":"update_clip","id":"vid1","set":{"color":{"look":"teal_orange","exposure":0.3,"temperature":-0.2,"vibrance":0.4}}}
 {"op":"update_clip","id":"vid2","set":{"color":{"lift":[0,0,0.05],"gain":[0.05,0,-0.03],"curves":{"master":[[0,0.03],[0.5,0.55],[1,1]]},"hsl":{"blues":{"saturation":-0.3}}}}}
 {"op":"snap_to_beats","track":"main","beats":"/abs/song.mp3","every":2}
@@ -101,6 +103,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"make_compound","from":"cmp1"}                regroup: takes every clip/gap stamped group.id "cmp1" (also after split_clip), same id + name, clears the stamps; rebuild inner groups before outer ones (inner_expanded); a rebuilt inner compound rejoins its outer group (group.parent)
   -> magnetic-track clips must be contiguous; the first id picks the track. Nested clips can't be edited by id: expand, edit,
      regroup (from, not ids; duplicate_clip drops the stamp). Nested audio is mixed (compound volume/muted apply) at compound speed 1.
+     Nested captions are exported as subtitles (export_captions, render subtitles=true) at compound speed 1 only; validate warns on a retimed compound that holds audio or captions.
 
 ## Audio (pro)
 Clip fields (video/audio): denoise true|0..1 · eq "voice_clarity"|"low_cut"|"de_ess" or bands [{type:"high_pass",f:80},{type:"peak",f:3000,gain:3,q:1},
@@ -165,6 +168,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - `agentcut ui [DIR] [--port 4810]` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
   editor, compound open/expand/regroup, prepare, render). The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
+  The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.
 - project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
   apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
   Without a revision the batch is applied to the latest state. A replace_timeline whose timeline carries a "revision" other than the project's is refused the same way.

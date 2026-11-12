@@ -1,9 +1,9 @@
 // End-to-end smoke test: generates synthetic media, exercises every op + template + export format through the CLI.
 // Run: bun tests/smoke.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 const CLI = process.env.AGENTCUT_BIN ? [process.env.AGENTCUT_BIN] : [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -115,11 +115,11 @@ const out = cli(["render", "-o", "renders/full.mp4", "--quiet"], C);
 check("mp4 frames; has_audio; the contact sheet is in previews/ and none sits next to the output", out.frames > 0 && out.has_audio === true && existsSync(out.contact_sheet)
   && realpathSync(dirname(out.contact_sheet)) === realpathSync(join(P, "previews")) && readdirSync(join(P, "renders")).every((f) => !f.endsWith(".sheet.jpg")), out);
 check("loudness ≈ -14 LUFS", out.loudness?.integrated_lufs != null && Math.abs(out.loudness.integrated_lufs + 14) < 2.5, out.loudness);
-const part = cli(["render", "-o", "renders/part.webm", "--from", "1", "--to", "3", "--draft", "--no-sheet", "--quiet", "--workers", "1"], C);
+const part = cli(["render", "-o", "renders/part.webm", "--start", "1", "--end", "3", "--draft", "--no-sheet", "--quiet", "--workers", "1"], C);
 check("section render 2s", Math.abs(part.duration - 2) < 0.05, part.duration);
-cli(["render", "-o", "renders/clip.gif", "--to", "2", "--no-sheet", "--quiet"], C);
-cli(["render", "-o", "renders/master.mov", "--to", "1", "--no-sheet", "--quiet", "--scale", "0.5"], C);
-cli(["render", "-o", "renders/fast.mp4", "--to", "2", "--fast", "--no-sheet", "--quiet"], C);
+cli(["render", "-o", "renders/clip.gif", "--end", "2", "--no-sheet", "--quiet"], C);
+cli(["render", "-o", "renders/master.mov", "--end", "1", "--no-sheet", "--quiet", "--scale", "0.5"], C);
+cli(["render", "-o", "renders/fast.mp4", "--end", "2", "--fast", "--no-sheet", "--quiet"], C);
 for (const f of ["full.mp4", "part.webm", "clip.gif", "master.mov", "fast.mp4"]) check(`export ${f}`, statSync(join(P, "renders", f)).size > 1000);
 const pr = cli(["probe", "renders/full.mp4"], C);
 check("output 1080x1080 with audio", pr.width === 1080 && pr.has_audio, pr);
@@ -186,6 +186,28 @@ for (let i = 0; i < Number(n); i++) {
   const ecodes = await race("events", 400);
   const ids = new Set(readFileSync(evFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).id).filter(Boolean));
   check("two processes appending events while one trims events.jsonl: no event is lost", ecodes.every((c) => c === 0) && ids.size === 800 && statSync(evFile).size < 5 * 1024 * 1024, { ecodes, kept: ids.size, size: statSync(evFile).size });
+}
+
+console.log("cli surface: --start/--end, transcribe, tts");
+{
+  const old = cli(["render", "-o", "renders/old.mp4", "--from", "1", "--to", "2", "--no-sheet", "--quiet"], { ok: false, cwd: P });
+  check("--from and --to are unknown flags", old.error.code === "usage" && old.error.message.includes("--from") && old.error.message.includes("--to") && !existsSync(join(P, "renders", "old.mp4")), old.error);
+  const talk = join(m, "talk.wav"), model = join(tmp, "fake.bin"), tr = (...a: string[]) => cli(["transcribe", talk, ...a], { ok: false }).error.code;
+  check("transcribe: start without end, end without start, end <= start and a negative start are bad_value", [tr("--start", "1"), tr("--end", "1"), tr("--start", "2", "--end", "1"), tr("--start", "-1", "--end", "1")].every((c) => c === "bad_value"));
+  const bin = join(tmp, "asr-bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
+  chmodSync(join(bin, "whisper-cli"), 0o755);
+  const PATH = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${PATH}`;
+  let got: any;
+  try { got = cli(["transcribe", talk, "--language", "vi", "--model", model, "--start", "1", "--end", "2"]); } finally { process.env.PATH = PATH; }
+  check("transcribe: the model reaches the engine and the range shifts the word times (media seconds)", readFileSync(join(tmp, "asr.model"), "utf8").trim() === model && got.words[0].start === 1.2 && got.words[0].end === 1.5, got);
+  const S = join(tmp, "tts-proj");
+  cli(["init", S, "--preset", "reels"]);
+  const ts = (...a: string[]) => cli(["tts", ...a], { ok: false, cwd: S }).error.code;
+  check("tts: a rate that is not a positive number is bad_value, a missing text or output is missing_input, the project's own file is refused",
+    ts("hi", "-o", "x.wav", "--rate", "abc") === "bad_value" && ts("hi", "-o", "x.wav", "--rate", "0") === "bad_value" && ts("-o", "x.wav") === "missing_input" && ts("hi") === "missing_input" && ts("hi", "-o", "project.json") === "output_is_source");
 }
 
 console.log("schema version");

@@ -9,7 +9,7 @@ const BOOL = new Set(["pretty", "json", "text", "dry-run", "allow-invalid", "gui
 // bare flag, or a value when the next argument is not a flag: `prepare --status` vs `feedback resolve ID --status wontfix`; `feedback summary --md [FILE]`
 const OPT = new Set(["md", "status"]);
 // value flags; any other --flag is a usage error (a dropped flag would silently change what runs)
-const VALUE = new Set(["preset", "width", "height", "fps", "name", "ops", "revision", "scale", "times", "every", "count", "cols", "tile-width", "format", "ids", "beats", "min-shot", "max-shot", "cps", "source", "from", "to", "frames", "pad", "quality", "workers", "codec", "threshold", "noise-db", "min-silence", "language", "port", "max-mb", "older-than", "voice", "rate", "lang", "days", "limit", "kind", "note", "title", "details", "area", "severity", "suggestion", "project", "output"]);
+const VALUE = new Set(["preset", "width", "height", "fps", "name", "ops", "revision", "scale", "times", "every", "count", "cols", "tile-width", "format", "ids", "beats", "min-shot", "max-shot", "cps", "source", "start", "end", "model", "frames", "pad", "quality", "workers", "codec", "threshold", "noise-db", "min-silence", "language", "port", "max-mb", "older-than", "voice", "rate", "lang", "days", "limit", "kind", "note", "title", "details", "area", "severity", "suggestion", "project", "output"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -19,16 +19,16 @@ Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · ad
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black]
-             audio [--source F] [--spectrogram] [--from S --to S] [-o a.png] · motion [--from S --to S] [--frames 10] [-o m.jpg]
+             audio [--source F] [--spectrogram] [--start S --end S] [-o a.png] · motion [--start S --end S] [--frames 10] [-o m.jpg]
 Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
              preview and video render fail with code not_prepared until it ran)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
-Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--from S --to S] [--draft] [--fast] [--quality draft|standard|high]
+Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--start S --end S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N] [--no-sheet]
              (the result has has_audio, contact_sheet in previews/ and loudness; a timeline with no audible clip gets no audio track)
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
-Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F · subject F [--fps 6] [--allow-download]
+Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F [--language vi] [--model M] [--start S --end S] · subject F [--fps 6] [--allow-download]
              (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download;
              cached in the project when one is found, so auto_reframe on a clip covering the same range at the same fps reuses it)
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
@@ -127,15 +127,15 @@ export async function main(argv = process.argv.slice(2)) {
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
       case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
       case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"]), maxShot: num(f["max-shot"]), cps: num(f.cps), black: !f["no-black"] }); break;
-      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.from, end: f.to, width: num(f.width), minSilence: num(f["min-silence"]), out: f.output }); break;
-      case "motion": res = await api.motion(P, { start: f.from, end: f.to, frames: num(f.frames), pad: num(f.pad), out: f.output, tileWidth: num(f["tile-width"]) }); break;
+      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width), minSilence: num(f["min-silence"]), out: f.output }); break;
+      case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames), pad: num(f.pad), out: f.output, tileWidth: num(f["tile-width"]) }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
         if (f.format === "srt" || f.format === "vtt") { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
         let last = 0;
         res = await api.render(P, {
-          out: f.output, start: f.from, end: f.to, scale: num(f.scale), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
+          out: f.output, start: f.start, end: f.end, scale: num(f.scale), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
           workers: num(f.workers), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles,
           progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } },
         });
@@ -160,7 +160,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "scenes": res = api.analyze.scenes(pos[0], num(f.threshold)); break;
       case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
       case "loudness": res = api.analyze.loudness(pos[0]); break;
-      case "transcribe": res = api.analyze.transcribe(pos[0], f.language); break;
+      case "transcribe": res = api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
       case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
         let root: string | undefined;
         try { root = api.openProject(P).root; } catch (e: any) { if (e.code !== "no_project" || P || process.env.AGENTCUT_PROJECT) throw e; }
@@ -179,7 +179,7 @@ export async function main(argv = process.argv.slice(2)) {
         else return emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
         break;
       }
-      case "tts": res = api.analyze.tts(pos[0], f.output, f.voice, num(f.rate)); break;
+      case "tts": res = api.analyze.tts(pos[0], f.output, f.voice, num(f.rate), f.project); break;
       case "voices": res = api.voices(f.lang); break;
       case "fonts": res = await api.fonts(pos[0] ?? ""); break;
       case "schema": res = api.schema(); break;

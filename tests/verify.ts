@@ -149,7 +149,7 @@ check("source file: 2s silence found at 1-3s", src.findings.some((x: any) => x.t
 console.log("motion");
 const mo = cli("motion", "-p", P, "--frames", 8);
 check("one strip per transition", mo.ok && mo.strips.length === 1 && mo.strips[0].times.length === 8 && existsSync(mo.images[0]), mo);
-const mr = cli("motion", "-p", P, "--from", 1, "--to", 2, "--frames", 5);
+const mr = cli("motion", "-p", P, "--start", 1, "--end", 2, "--frames", 5);
 check("range strip: evenly spaced times", JSON.stringify(mr.strips[0].times) === "[1,1.25,1.5,1.75,2]", mr.strips);
 
 console.log("mcp");

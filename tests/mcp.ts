@@ -198,6 +198,36 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   check("contact_sheet within the bounds still works", cs.images.length === 1, cs.json ?? cs.r);
   await c5.close();
 }
+// transcribe model/start/end and the tts tool, against fake engines on PATH (no real ASR or TTS runs)
+if (process.platform !== "win32") {
+  const { chmodSync, existsSync, mkdirSync } = await import("node:fs");
+  const bin = join(tmp, "engine-bin"), model = join(tmp, "fake.bin"), say = process.platform === "darwin";
+  mkdirSync(bin);
+  spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=5", join(tmp, "talk.wav")]);
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
+  writeFileSync(join(bin, say ? "say" : "espeak-ng"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${say ? "-o" : "-w"}" ] && cp "${join(tmp, "talk.wav")}" "$2"; shift; done\n`);
+  for (const f of ["whisper-cli", say ? "say" : "espeak-ng"]) chmodSync(join(bin, f), 0o755);
+  const env6: Record<string, string | undefined> = { ...env, PATH: `${bin}:${process.env.PATH}` }; delete env6.AGENTCUT_PROJECT; delete env6.AGENTCUT_WHISPER_MODEL;
+  const c6 = new Client({ name: "agentcut-test-6", version: "1" });
+  await c6.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: env6 as Record<string, string> }));
+  const call6 = callOn(c6), TP = join(tmp, "tts-proj");
+  const noModel = await call6("transcribe", { path: join(tmp, "talk.wav") });
+  check("transcribe without a model finds no engine", noModel.json.ok === false && noModel.json.error.code === "missing_dependency", noModel.json);
+  const tr = await call6("transcribe", { path: join(tmp, "talk.wav"), language: "vi", model, start: 1, end: 2 });
+  check("transcribe: the model reaches the engine and the range shifts the word times", tr.json.ok === true && readFileSync(join(tmp, "asr.model"), "utf8").trim() === model && tr.json.words[0].start === 1.2 && tr.json.words[0].end === 1.5, tr.json);
+  const bad = await Promise.all([{ start: 1 }, { end: 1 }, { start: 2, end: 1 }].map((r) => call6("transcribe", { path: join(tmp, "talk.wav"), model, ...r })));
+  check("transcribe: start without end, end without start and end <= start are bad_value", bad.every((b) => b.json.ok === false && b.json.error.code === "bad_value"), bad.map((b) => b.json));
+  await call6("create_project", { path: TP, preset: "youtube" });
+  const names = (await c6.listTools()).tools.map((t) => t.name);
+  check("tts is listed", names.includes("tts"), names);
+  const own = await call6("tts", { text: "hello", output: join(TP, "project.json") });
+  check("tts refuses the project's own file", own.json.ok === false && own.json.error.code === "output_is_source", own.json);
+  const rates = await Promise.all([0, -3].map((rate) => call6("tts", { text: "hello", output: join(tmp, "r.wav"), rate })));
+  check("tts: a rate that is not positive is bad_value", rates.every((r) => r.json.ok === false && r.json.error.code === "bad_value"), rates.map((r) => r.json));
+  const out = join(TP, "media", "v.wav"), sp = await call6("tts", { text: "Hello there. Bye.", output: out, rate: 175 });
+  check("tts writes the file and reports it", sp.json.ok === true && existsSync(out) && sp.json.path === out && sp.json.duration > 4 && sp.json.sentences.length === 2, sp.json);
+  await c6.close();
+}
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });
