@@ -428,10 +428,13 @@ export function resolve(tl: Timeline): Timeline {
   resolveFollowers(tl);
   resolveMagnetic(tl);
   resolveAttached(tl);
-  // until_end clips stretch to the end of everything else, except the clips that move with them
-  const moving = movesWithUntilEnd(tl);
+  // until_end clips stretch to the end of everything else; a clip whose length follows one counts only at its floor length, a clip whose start moves with one not at all
+  const { len, pos } = movesWithUntilEnd(tl);
   let end = 0, any = false;
-  for (const [, , , c] of iterClips(tl)) { if (c.until_end) any = true; else if (c.enabled !== false && !moving.has(c)) end = Math.max(end, clipEnd(c)); }
+  for (const [, , , c] of iterClips(tl)) {
+    if (c.until_end) any = true;
+    else if (c.enabled !== false && !pos.has(c)) end = Math.max(end, len.has(c) ? clipStart(c) + 0.1 : clipEnd(c));
+  }
   if (any) {
     for (const [, , , c] of iterClips(tl)) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
     resolveFollowers(tl);
@@ -441,9 +444,9 @@ export function resolve(tl: Timeline): Timeline {
   return tl;
 }
 
-/** The clips whose end moves with the length of an until_end clip: their length follows it (match_duration), they sit after it on a magnetic track, or they attach to the start of such a clip.
+/** The clips whose end moves with the length of an until_end clip. `len`: their length follows it (match_duration). `pos`: their start moves with it, because they sit after such a clip on a magnetic track or attach to the start of a clip that does.
  *  Counted in the end an until_end clip stretches to, each resolve would grow both (a follower with a negative end_offset ends past it). */
-function movesWithUntilEnd(tl: Timeline): Set<Clip> {
+function movesWithUntilEnd(tl: Timeline): { len: Set<Clip>; pos: Set<Clip> } {
   const byId = new Map<string, Clip>(), len = new Set<Clip>(), pos = new Set<Clip>();
   for (const [, , , c] of iterClips(tl)) { byId.set(c.id, c); if (c.until_end) len.add(c); }
   const lengthOf = (c: Clip) => (typeof c.match_duration === "string" ? c.match_duration : c.match_duration === true ? c.attach_to : undefined);
@@ -457,7 +460,7 @@ function movesWithUntilEnd(tl: Timeline): Set<Clip> {
       if (tr.magnetic && prev && (len.has(prev) || pos.has(prev))) add(pos, c);
     });
   }
-  return new Set([...len, ...pos]);
+  return { len, pos };
 }
 
 /** match_duration naming a clip: duration = that clip's duration - end_offset (same timeline level). Chains settle in one pass per follower; a cycle (invalid) cannot loop. */

@@ -13,7 +13,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine (later on top).
 - Clip types: video · image · text · captions · shape · color (solid/gradient) · lottie · audio · gap · compound (nested tracks).
 - Times: 2.5, "2.5s", "1500ms", "00:02.5". Lengths: px or "10%". Colours: "#RRGGBB[AA]", rgba(), basic names.
-- until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits; an explicit length edit of that clip (split, trim, roll, slide, duration) ends the stretch.
+- until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits; a clip whose length follows it (match_duration) counts only at its minimum length, and clips that move with it not at all; an explicit length edit of that clip (split, trim, roll, slide, duration) ends the stretch.
 - Connected clips (Final Cut): attach_to "vid3" (or "main#2" = 3rd clip of main, "main#-1" = last) + offset (+ match_duration,
   end_offset) pins a title/overlay to a clip: retiming (snap_to_beats, trims, reorders) keeps it in sync; removing the
   clip removes what is attached. PREFER this over absolute 'at' for anything that belongs to a specific shot.
