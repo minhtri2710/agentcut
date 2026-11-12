@@ -270,7 +270,8 @@ export class Project {
     if (errs.length) throw new EditError(`timeline has ${errs.length} error(s); first: ${errs[0].path}: ${errs[0].message}`, "invalid_timeline", errs[0].hint ?? "run validate for the full list");
   }
   defaultOutput(ext = ".mp4", tag = "") {
-    const name = this.load().name || "video";
+    // one file-name component: no separators or control characters, no leading dot (so never ".." or a hidden file)
+    const name = String(this.load().name ?? "").replace(/[\\/\x00-\x1f]/g, "_").replace(/^\.+/, "") || "video";
     const d = new Date(), pad = (n: number) => String(n).padStart(2, "0");
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     return join(this.root, "renders", `${name}${tag ? "-" + tag : ""}-${stamp}${ext}`);

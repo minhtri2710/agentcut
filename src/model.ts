@@ -744,8 +744,15 @@ export function schemaDoc() {
   };
 }
 
+/** Keys that would reach the prototype chain are refused wherever a patch or a dotted key walks into an object. */
+function plainKey(k: string) {
+  if (k === "__proto__" || k === "constructor" || k === "prototype") throw new EditError(`field name '${k}' is not allowed`, "bad_key", "use a different field name");
+  return k;
+}
+
 export function deepMerge(dst: Dict, patch: Dict): Dict {
   for (const [k, v] of Object.entries(patch)) {
+    plainKey(k);
     if (v === null) delete dst[k];
     else if (v && typeof v === "object" && !Array.isArray(v) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k]) && k !== "keyframes") deepMerge(dst[k], v);
     else dst[k] = structuredClone(v);
@@ -754,7 +761,7 @@ export function deepMerge(dst: Dict, patch: Dict): Dict {
 }
 
 export function setDotted(obj: Dict, key: string, value: unknown) {
-  const parts = key.split(".");
+  const parts = key.split(".").map(plainKey);
   let o = obj;
   for (const p of parts.slice(0, -1)) o = o[p] ??= {};
   if (value === null) delete o[parts.at(-1)!];

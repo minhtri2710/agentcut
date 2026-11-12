@@ -167,6 +167,20 @@ console.log("a project directory that is a link to the project root: refused, no
   }
 }
 
+// ------------------------------------------------------------------ a timeline name in a default output path
+console.log("a timeline name with separators or dots: default outputs stay one file in renders/");
+{
+  for (const name of ["../../up", "a/b\\c", "..", ".hidden", "/abs/x", ""]) {
+    const p = await project(`name-${++n}`);
+    const f = JSON.parse(readFileSync(join(p, "project.json"), "utf8")); f.name = name; writeFileSync(join(p, "project.json"), JSON.stringify(f)); // a received project.json is not limited to what set_settings accepts
+    const out: any = await api.exportTimeline(p, {});
+    const cap: any = api.exportCaptions(p, {});
+    for (const [what, o] of [["export_timeline", out.output], ["export_captions", cap.output]]) {
+      check(`name ${JSON.stringify(name)}: ${what} writes directly in renders/, not hidden`, typeof o === "string" && dirname(o) === join(p, "renders") && !basename(o).startsWith("."), { o });
+    }
+  }
+}
+
 // ------------------------------------------------------------------ a directory at the output's name
 console.log("an output path that is a directory: refused with unsafe_path, no temp file is left");
 {
