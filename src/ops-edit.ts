@@ -25,7 +25,7 @@ function room(tl: Timeline, c: Clip, side: Side): number {
   return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
 }
 /** a caption word with the s/e aliases (captionWords) resolved to start/end */
-export const normWord = (w: any) => ({ ...w, start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) });
+export const normWord = (w: any) => ({ ...w, start: parseTime(w.start ?? w.s ?? 0), end: parseTime(w.end ?? w.e ?? 0) }); // same parse as captionWords
 /** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp), effect windows and caption words; what ends before the clip's head is dropped. */
 export function shiftKfs(c: Clip, e: number) {
   if (!e) return;

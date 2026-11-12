@@ -50,9 +50,9 @@ function stamp(sec: number, sep: string) {
 }
 
 // WebVTT cue text is markup: & < > must be entities (this also removes any `-->`). SubRip has no escapes and its players read <tags>;
-// only the cue arrow, which would end the cue early in a strict parser, is turned into text.
+// only the cue arrow, which a strict parser reads as a timing line, is broken by an invisible word joiner (it still shows as -->).
 const escapeCue = (text: string, fmt: "srt" | "vtt") =>
-  fmt === "vtt" ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : text.replace(/-->/g, "--&gt;");
+  fmt === "vtt" ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : text.replace(/-->/g, "--\u2060>");
 
 export function formatCues(cues: Cue[], fmt: "srt" | "vtt"): string {
   const sep = fmt === "srt" ? "," : ".";

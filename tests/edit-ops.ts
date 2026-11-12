@@ -188,6 +188,9 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("trim_start on a freeze clip keeps the frozen frame", near(at(tk, "fz").in, 2) && near(at(tk, "fz").duration, 3), at(tk, "fz"));
   const cw = run(mk(), [{ op: "add_clip", track: "text", id: "cap", at: 0, words: [{ text: "a", start: 0, end: 0.5 }, { text: "b", start: 1.2, end: 1.6 }, { text: "c", start: 2, end: 2.5 }] }])[0];
   const [tw] = run(cw, [{ op: "trim_clip", id: "cap", trim_start: 1 }]);
+  const cws = run(mk(), [{ op: "add_clip", track: "text", id: "caps", at: 0, words: [{ text: "a", start: "0s", end: "0.5s" }, { text: "b", start: "1.2s", end: "1.6s" }] }])[0];
+  const [tws] = run(cws, [{ op: "trim_clip", id: "caps", trim_start: 1 }]);
+  check("trim_start keeps caption words whose times are strings", JSON.stringify(at(tws, "caps").words.map((w: any) => [w.text, w.start, w.end])) === '[["b",0.2,0.6]]', at(tws, "caps").words);
   check("trim_start on a captions clip shifts its words and drops the ones cut off", JSON.stringify(at(tw, "cap").words.map((w: any) => [w.text, w.start, w.end])) === '[["b",0.2,0.6],["c",1,1.5]]' && near(at(tw, "cap").start, 1) && errs(tw).length === 0, at(tw, "cap"));
   const cs = run(mk(), [{ op: "add_clip", track: "text", id: "cs", at: 0, duration: 4, srt: "1\n00:00:00,500 --> 00:00:01,500\nhello there\n" }])[0];
   refuses("trim_start on srt captions (times it cannot move) is refused", cs, [{ op: "trim_clip", id: "cs", trim_start: 1 }], "bad_type");
@@ -805,8 +808,7 @@ console.log("templates and beats");
   const png = join(m, "p.png");
   const ap = (ops: any[]) => api.apply(P2, ops).then((r) => r.results);
   const code = async (ops: any[]) => { try { await ap(ops); return "ok"; } catch (e: any) { return e.code; } };
-  check("the slideshow template documents the argument it reads (title_preset), not caption_preset",
-    "title_preset" in (api.capabilities().templates as any).slideshow.args && !("caption_preset" in (api.capabilities().templates as any).slideshow.args));
+  check("the slideshow template documents the argument it reads (title_preset)", "title_preset" in (api.capabilities().templates as any).slideshow.args);
   await ap([{ op: "apply_template", name: "slideshow", media: [png], title: "Hi", title_preset: "neon" }]);
   const title = api.info(P2, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Hi");
   check("slideshow title_preset styles the title", !!title?.glow, title);

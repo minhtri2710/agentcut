@@ -214,6 +214,7 @@ console.log("caption sources and subtitle export");
     const body = formatCues(cue, fmt).split("\n").filter((l) => l.includes("-->"));
     check(`${fmt}: only the timing line holds the cue arrow`, body.length === 1 && /^\d\d:\d\d:\d\d[,.]\d{3} --> /.test(body[0]), body);
   }
+  check("srt: cue text keeps its characters (no entity shows literally)", formatCues(cue, "srt").includes("<i>x</i> & c") && !formatCues(cue, "srt").includes("&gt;"), formatCues(cue, "srt"));
   check("vtt: cue text markup characters are escaped", formatCues(cue, "vtt").includes("a --&gt; b &lt;i&gt;x&lt;/i&gt; &amp; c"), formatCues(cue, "vtt"));
   const gone = join(tmp, "missing.srt");
   let err: any;
