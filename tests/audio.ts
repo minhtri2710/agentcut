@@ -10,6 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
+const { hasCodec } = await import("../src/media.ts");
 const { noiseFloor, denoiseFilters, eqFilters, compressorFilter } = await import("../src/audiofx.ts");
 
 let failures = 0;
@@ -273,19 +274,29 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\necho $$ > '${pidFile}'\nexec sleep 60\n`, { mode: 0o755 });
     api.create(Q, { width: 320, height: 240, fps: 24 });
     await api.apply(Q, [{ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 0, duration: 2 }]);
-    const pq = api.openProject(Q), ac = new AbortController(), realPath = process.env.PATH!;
-    let err: any, pid = 0, aliveBefore = false;
-    process.env.PATH = bin + delimiter + realPath;
-    try {
-      const done = buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, ac.signal).catch((e) => { err = e; });
-      for (let i = 0; i < 200 && !pid; i++) { await new Promise((r) => setTimeout(r, 25)); if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf8")) || 0; }
-      try { process.kill(pid, 0); aliveBefore = true; } catch { /* not running */ }
-      ac.abort();
-      await done;
-    } finally { process.env.PATH = realPath; }
-    let aliveAfter = true;
-    try { process.kill(pid, 0); } catch { aliveAfter = false; }
-    check("abort during the mix: the call rejects with the abort and the ffmpeg child it started is gone", pid > 0 && aliveBefore && err?.name === "AbortError" && !aliveAfter, { pid, aliveBefore, aliveAfter, err: err?.message });
+    hasCodec("encoders", "pcm_s16le"); // the encoder list is read once per process: read it from the real ffmpeg before the stand-in takes PATH
+    const pq = api.openProject(Q), realPath = process.env.PATH!;
+    // the stand-in sleeps 60 s, so a rejection within 5 s of the abort shows the abort stopped it rather than the child ending on its own
+    const abortRun = async (name: string, start: (signal: AbortSignal) => Promise<unknown>) => {
+      const ac = new AbortController();
+      let err: any, pid = 0, aliveBefore = false, took = -1;
+      rmSync(pidFile, { force: true });
+      process.env.PATH = bin + delimiter + realPath;
+      try {
+        const done = start(ac.signal).catch((e) => { err = e; });
+        for (let i = 0; i < 200 && !pid; i++) { await new Promise((r) => setTimeout(r, 25)); if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf8")) || 0; }
+        try { process.kill(pid, 0); aliveBefore = true; } catch { /* not running */ }
+        const t0 = Date.now();
+        ac.abort();
+        await done;
+        took = Date.now() - t0;
+      } finally { process.env.PATH = realPath; }
+      let aliveAfter = true;
+      try { process.kill(pid, 0); } catch { aliveAfter = false; }
+      check(`abort during ${name}: the call rejects with the abort within 5 s and the ffmpeg child it started is gone`, pid > 0 && aliveBefore && err?.name === "AbortError" && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message });
+    };
+    await abortRun("the mix", (signal) => buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, signal));
+    await abortRun("an audio render", (signal) => api.render(Q, { out: join(tmp, "abort-render.wav"), signal }));
   }
 }
 
