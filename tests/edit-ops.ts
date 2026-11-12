@@ -63,6 +63,9 @@ await fails({ op: "detach_audio", id: "vid4" }, "no_audio", "silent video -> no_
 await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: [[0, 1], [1, 2]] });
 await fails({ op: "detach_audio", id: "vid3" }, "unsupported", "speed-ramped video -> unsupported (its sound follows the ramp on the clip)");
 await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: null });
+try { await one({ op: "set_keyframes", id: "vid1", prop: "speed", keyframes: [[0, 1], [1, 2]] }); check("set_keyframes speed on a video with detached audio is refused", false, "no error"); }
+catch (e: any) { const is = JSON.stringify(e.details?.issues); check("set_keyframes speed on a video with detached audio is refused, naming both ids and a way out", e.code === "validation_failed" && /vid1/.test(is) && /aud1/.test(is) && /remove_clip/.test(is + e.hint), { code: e.code, issues: is }); }
+check("the refused ramp left no keyframes behind", !clip("vid1").keyframes?.speed, clip("vid1").keyframes);
 await fails({ op: "detach_audio", id: "img1" }, "bad_type", "image -> bad_type");
 await fails({ op: "detach_audio", id: "aud1" }, "bad_type", "audio clip -> bad_type");
 await fails({ op: "detach_audio", id: "vid1", track: "main" }, "already_detached", "already detached wins over bad track");
@@ -399,9 +402,26 @@ console.log("match_duration by clip reference");
   // saved values that would hang or crash a render are refused at validation
   const errAt = (x: any, re: RegExp) => validate(x).some((i: any) => i.level === "error" && re.test(i.path));
   const bx = (edit: (x: any) => void) => { const x = structuredClone(ok); edit(x); return x; };
-  for (const sp of [-1, 0]) check(`validate: speed ${sp} is an error`, errAt(bx((x) => { at(x, "vo1").speed = sp; }), /<vo1>\.speed$/));
-  check("validate: speed 2 is clean", !errAt(bx((x) => { at(x, "vo1").speed = 2; }), /speed/));
+  for (const sp of [-1, 0, 9]) check(`validate: speed ${sp} is an error`, errAt(bx((x) => { at(x, "vo1").speed = sp; }), /<vo1>\.speed$/));
+  for (const sp of [0.1, 2, 8]) check(`validate: speed ${sp} is clean`, !errAt(bx((x) => { at(x, "vo1").speed = sp; }), /speed/));
   const ramp = { speed: [[0, 1], [1, 2]] };
+  // a video clip vd9 on the main track, with `extra` fields; its sound (au9) is detached when `detached`
+  const vd = (extra: any, detached = false) => bx((x) => {
+    x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    const main = x.tracks.find((t: any) => t.id === "main");
+    main.clips.push({ id: "vd9", type: "video", asset: "vv", start: 6, duration: 2, ...extra });
+    if (detached) main.clips.push({ id: "au9", type: "audio", asset: "vv", start: 6, duration: 2, attach_to: "vd9" });
+  });
+  const ramped = (kfs: any, extra: any = {}) => vd({ keyframes: { speed: kfs }, ...extra });
+  check("validate: a ramp on a video without detached audio is clean", !errAt(ramped(ramp.speed), /vd9/));
+  const withAudio = validate(vd({ keyframes: ramp }, true)).filter((i: any) => i.level === "error" && /<vd9>\.keyframes\.speed$/.test(i.path));
+  check("validate: a ramp on a video with detached audio is an error naming both ids", withAudio.length === 1 && /vd9/.test(withAudio[0].message) && /au9/.test(withAudio[0].message) && /remove_clip id=au9/.test(withAudio[0].hint ?? ""), withAudio);
+  const both = validate(vd({ speed: 2, keyframes: ramp })).filter((i: any) => i.level === "error" && /<vd9>\.speed$/.test(i.path));
+  check("validate: speed != 1 together with a ramp is an error that says the ramp sets the speed", both.length === 1 && /a ramp sets the speed/.test(both[0].hint ?? ""), both);
+  check("validate: speed 1 with a ramp is clean, and a constant speed without a ramp is clean", !errAt(vd({ speed: 1, keyframes: ramp }), /vd9/) && !errAt(vd({ speed: 2 }), /vd9/));
+  for (const v of [0, 9]) check(`validate: a speed keyframe of ${v} is an error`, errAt(ramped([[0, 1], [1, v]]), /<vd9>\.keyframes\.speed$/));
+  check("validate: speed keyframes of 0.1 and 8 are clean", !errAt(ramped([[0, 0.1], [1, 8]]), /vd9/));
+  check("validate: an easing that overshoots its keyframes is an error on a speed ramp, ease_out is clean", errAt(ramped([[0, 1], [1, 2, "back_out"]]), /<vd9>\.keyframes\.speed$/) && !errAt(ramped([[0, 1], [1, 2, "ease_out"]]), /vd9/));
   const withText = (x: any) => { x.tracks.find((t: any) => t.id === "main").clips.push({ id: "tx9", type: "text", text: "hi", start: 6, duration: 1 }); return x; };
   check("validate: keyframes.speed on an image clip is an error", errAt(bx((x) => { at(x, "img2").keyframes = ramp; }), /<img2>\.keyframes\.speed$/));
   check("validate: keyframes.speed on a text clip is an error", errAt(bx((x) => { at(withText(x), "tx9").keyframes = ramp; }), /<tx9>\.keyframes\.speed$/));

@@ -157,10 +157,14 @@ export const VISUAL_FIELDS: F = {
   effects: [T("array"), "list of {type, ...params, start?, duration?}: " + Object.keys(EFFECTS).join(",")],
   pending: [T("object"), "{op: args} vision requests (auto_reframe, track_to) waiting for prepare; written by those ops, cleared when prepared"],
 };
+/** The playback speed range, for the constant `speed` and for every keyframes.speed value. */
+export const SPEED_MIN = 0.1, SPEED_MAX = 8;
+/** Easings that leave [start, end] between two keyframes, so a ramp using one can pass the speed range. */
+const OVERSHOOT = ["back_out", "elastic_out"];
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
-  speed: [T("number"), "playback speed 0.1..8 (keyframes.speed for ramps on video)"],
+  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1)`],
   volume: [T("number"), "linear gain 0..4"], muted: [T("boolean"), "drop audio"],
   fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
@@ -667,7 +671,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
-      if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed > 0)) issues.push({ level: "error", path: `${p}.speed`, message: "speed must be > 0" });
+      if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
       if (!c.id) issues.push({ level: "error", path: `${p}.id`, message: "clip needs an id" });
@@ -749,6 +753,17 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           const kk = Array.isArray(k) ? k : k && typeof k === "object" ? [k.t, k.v ?? k.value, k.ease] : null;
           if (!kk || kk.length < 2 || kk[1] === undefined) issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `bad keyframe ${JSON.stringify(k)}; use [t, value] or [t, value, 'ease_out']` });
           else if (kk[2] && !EASINGS.includes(kk[2])) issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `unknown easing '${kk[2]}'`, hint: `easings: ${EASINGS.join(", ")}` });
+          else if (prop === "speed") {
+            const v = Number(kk[1]);
+            if (!(v >= SPEED_MIN && v <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `speed keyframe ${JSON.stringify(kk[1])} must be ${SPEED_MIN}..${SPEED_MAX}` });
+            if (OVERSHOOT.includes(kk[2])) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `easing '${kk[2]}' overshoots its keyframes, so the speed could leave ${SPEED_MIN}..${SPEED_MAX}`, hint: "use ease_out or ease_in_out" });
+          }
+        }
+        if (prop === "speed") {
+          if (isRetimed(c)) issues.push({ level: "error", path: `${p}.speed`, message: `'${c.id}' has speed ${c.speed} and a speed ramp; the ramp sets the speed and \`speed\` would be ignored`, hint: "a ramp sets the speed; remove `speed` or the ramp" });
+          const la = clips.find((x) => x.type === "audio" && x.attach_to === c.id && x.asset === c.asset);
+          if (la) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `video '${c.id}' has a speed ramp and detached audio '${la.id}', which plays at constant speed and drifts from the picture`,
+            hint: `no op puts detached sound back on its video: remove_clip id=${la.id}, then update_clip id=${c.id} set={muted: null}; the video's own sound follows the ramp` });
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {

@@ -318,6 +318,28 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   check(`a 44.1 kHz source in a 48 kHz project: every click within one frame (worst ${(w44 * 1000).toFixed(1)} ms)`, w44 < 1 / FPS, w44);
   const w48 = worst(onsets(await rmix("ramp-rev44", (tl) => { tl.settings.sample_rate = 44100; Object.assign(tl.tracks.find((t: any) => t.id === "main").clips[0], { reverse: true, in: CIN, keyframes: { speed: kr } }); })), rexp);
   check(`reversed, a 48 kHz source in a 44.1 kHz project: every click within one frame (worst ${(w48 * 1000).toFixed(1)} ms)`, w48 < 1 / FPS, w48);
+  // a reversed ramped clip inside a compound whose window starts after the clip's head: the picture shows source time in + 5 - integral (held at `in` once the ramp has used the segment up),
+  // so the sound plays that segment from the window's entry point and nothing below `in` (the mapped in-point goes below 0 when the ramp outruns the cut head)
+  const { newTimeline, resolve: res } = await import("../src/model.ts"), ND = 5, k2 = [[0, 2], [ND, 2]];
+  const nestedRev = async (tag: string, srcIn: number, head: number, cdur: number) => {
+    const t2 = newTimeline(320, 240, FPS);
+    t2.assets.v = { path: join(m, "clicks.mp4"), kind: "video", duration: 6, has_audio: true } as any;
+    t2.tracks.push({ id: "main", kind: "video", clips: [{ id: "RC", type: "compound", start: 0, duration: cdur, in: head, tracks: [{ id: "n", kind: "video", clips: [{ id: "rv", type: "video", asset: "v", start: 0, duration: ND, in: srcIn, reverse: true, keyframes: { speed: k2 } }] }] }] } as any);
+    res(t2); t2.settings.loudness = null;
+    const exp: number[] = [];
+    for (let j = 0; 0.25 * j + 0.02 <= 6; j++) { // each burst, played backwards, starts at its end
+      const s = 0.25 * j + 0.02, at = (x: number) => srcIn + ND - speedIntegral(k2, head + x);
+      if (s < srcIn || at(0) < s || at(cdur) > s) continue;
+      let lo = 0, hi = cdur;
+      for (let q = 0; q < 40; q++) { const mid = (lo + hi) / 2; if (at(mid) > s) lo = mid; else hi = mid; }
+      exp.push(hi);
+    }
+    return { got: onsets(await buildAudio(t2, join(tmp, `${tag}.wav`))), exp: exp.sort((a, b) => a - b) };
+  };
+  for (const [what, srcIn, head, cdur] of [["in-point below 0", 0, 2, 3], ["in-point below the clip's own `in`", 0.5, 2.2, 2.8], ["window past the segment's start", 0, 3, 2]] as const) {
+    const r = await nestedRev(`ramp-nest-${srcIn}-${head}`, srcIn, head, cdur), w = worst(r.got, r.exp);
+    check(`reversed in a compound window, ${what}: every click within one frame of the picture (${r.got.length} of ${r.exp.length})`, w < 1 / FPS, r);
+  }
   // the graph is one ffmpeg argument (the OS caps it: linux 128 KiB for one argument, win32 32767 chars for the command line, darwin 1 MiB for argv plus environment, see ARGV_LIMITS):
   // a curve with hundreds of runs is refused by name before ffmpeg starts; a short one mixes with its graph under the smallest bound
   const zigProject = async (name: string, secs: number) => {

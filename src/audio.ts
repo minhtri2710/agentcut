@@ -43,6 +43,14 @@ function mapClip(c: Clip, w?: Win): Clip | null {
   // a ramped clip skips the ramp's integral over the cut head; reversed, its source segment (duration*speed long, as render.ts reads it) shrinks by head + tail and is entered at that integral
   const skip = !ramp ? (c.reverse ? tail : head) * speed : c.reverse ? (head + tail) * speed - speedIntegral(ramp, head) : speedIntegral(ramp, head);
   const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + skip };
+  if (ramp && c.reverse) {
+    // the window enters the reversed segment at `end`; the segment never reaches below the clip's own `in` (the picture holds its first frame there), so a head the ramp
+    // has outrun clamps `in` and shortens the segment (`_span`), and a window that enters past the segment's start has no sound
+    const lo = parseTime(c.in ?? 0), end = lo + (e - s) * speed - speedIntegral(ramp, head);
+    if (end <= lo + 1e-6) return null;
+    m.in = Math.max(lo, m.in as number);
+    m._span = end - m.in;
+  }
   if (head > 1e-6) {
     delete m.fade_in;
     const shift = (kfs: any[]) => parseKfs(kfs).map(([t, v, e]) => [t - head, v, e]);
@@ -140,7 +148,7 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
     // a ramped clip follows keyframes.speed alone (as render.ts does; `speed` is not read); the runs rebuild its time map before the chain below
     // reversed, the segment is duration*speed long whatever the ramp consumes: render.ts reads that segment backwards
-    const runs = c.keyframes?.speed ? rampRuns(c.keyframes.speed, dur, fps, sr) : null, span = runs && !c.reverse ? runs[runs.length - 1].u1 : dur * speed;
+    const runs = c.keyframes?.speed ? rampRuns(c.keyframes.speed, dur, fps, sr) : null, span = runs && !c.reverse ? runs[runs.length - 1].u1 : c._span ?? dur * speed;
     const base = [`atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
     const head = [...base, ...(runs ? [] : atempo(speed)), `aresample=${sr}`, STEREO]; // the plain source span: what denoise and normalize measure (a ramp changes neither level nor noise floor)
     const ch = [...head];
@@ -170,7 +178,7 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
       runs.slice(1).forEach((r) => cuts.push(Math.max((cuts[cuts.length - 1] ?? 0) + 1, Math.round(r.u0 * sr))));
       graph.push(`[${i}:a]aresample=${sr},${base.join(",")}${N > 1 ? `,asegment=samples=${cuts.join("|")}${runs.map((_, k) => `[r${i}_${k}]`).join("")}` : `[r${i}_0]`}`);
       runs.forEach((r, k) => {
-        const rate = Math.round(sr * Math.max(0.01, (r.u1 - r.u0) / r.len));
+        const rate = Math.round(sr * (r.u1 - r.u0) / r.len);
         graph.push(`[r${i}_${k}]asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
       });
       graph.push(`${runs.map((_, k) => `[q${i}_${k}]`).join("")}concat=n=${N}:v=0:a=1[m${i}]`, `[m${i}]${ch.slice(head.length).join(",")}[a${i}]`);
