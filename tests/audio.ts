@@ -320,6 +320,14 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     await abortRun("the render subtitle mux", "-c:s", (signal) => api.render(S, { out: join(tmp, "abort-render-sub.mp4"), workers: 1, sheet: false, subtitles: true, signal }));
     // the contact sheet is drawn while the loudness measurement runs: the render still rejects with the abort
     await abortRun("the render-tail loudness", "ebur128", (signal) => api.render(R, { out: join(tmp, "abort-tail.mp4"), workers: 1, signal }));
+    // audio_check, scenes and scopes: the signal reaches each of their ffmpeg steps
+    const src = join(m, "tone.wav");
+    await abortRun("audio_check decoding a source", "pcm_s16le", (signal) => api.audioCheck(undefined, { source: src, out: join(tmp, "abort-check.png"), signal }));
+    await abortRun("audio_check's loudness", "ebur128", (signal) => api.audioCheck(undefined, { source: src, out: join(tmp, "abort-check.png"), signal }));
+    await abortRun("audio_check's spectrogram", "showspectrumpic", (signal) => api.audioCheck(undefined, { source: src, spectrogram: true, out: join(tmp, "abort-check.png"), signal }));
+    await abortRun("audio_check's project mix", "", (signal) => api.audioCheck(Q, { out: join(tmp, "abort-check.png"), signal }));
+    await abortRun("a scene scan", "scene", (signal) => api.analyze.scenes(join(m, "talk.mp4"), 0.3, signal));
+    await abortRun("the scopes", "signalstats", (signal) => api.scopes(R, 0.2, { out: join(tmp, "abort-scopes.jpg"), signal }));
     // output past the cap stops a child that ignores SIGTERM: the call settles with status null and the child is gone
     {
       let pid = 0, res: any, took = -1;

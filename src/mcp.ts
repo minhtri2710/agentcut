@@ -22,6 +22,8 @@ const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
 const jobs = new Map<string, any>();
 /** tool calls the server has accepted and not yet finished; shutdown answers them before it exits */
 const calls = new Set<Promise<unknown>>();
+/** aborted by shutdown(): every tool call's signal follows it */
+const stopCalls = new AbortController();
 /** transport sends not yet taken by stdout */
 const sends = new Set<Promise<void>>();
 
@@ -36,7 +38,8 @@ function proj(p?: string) {
   if (state.project) return state.project;
   throw new EditError("no project selected", "no_project", "call create_project or open_project first, or pass project=<folder>");
 }
-const wrap = <A>(f: (a: A) => any) => async (a: A) => { try { return ok(await f(a)); } catch (e) { return fail(e); } };
+// the signal is the call's own (see registerTool in buildServer); `extra` is typed optional only because the SDK calls a tool without an inputSchema with one argument
+const wrap = <A>(f: (a: A, signal: AbortSignal) => any) => async (a: A, extra?: { signal: AbortSignal }) => { try { return ok(await f(a, extra!.signal)); } catch (e) { return fail(e); } };
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
 const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: MIME[path.split(".").pop()!.toLowerCase()] ?? "image/png" });
 /** view_image serves picture files only, not any readable file */
@@ -53,12 +56,21 @@ const TIME = z.number().finite().min(0);
 export function buildServer() {
   const s = new McpServer({ name: "agentcut", version: VERSION }, { instructions: INSTRUCTIONS });
   // every tool call is timed and its outcome logged for the feedback summary (errors, guessed names, slow calls);
-  // it is also tracked in `calls` until it settles, so shutdown can answer it before exiting
+  // it is also tracked in `calls` until it settles, so shutdown can answer it before exiting;
+  // each handler gets one signal (extra.signal, replaced) that aborts when the client cancels the call or the server shuts down
   const register = s.registerTool.bind(s);
-  (s as any).registerTool = (name: string, cfg: any, handler: any) => (register as any)(name, cfg, (a: any, extra: any) => {
+  (s as any).registerTool = (name: string, cfg: any, handler: any) => (register as any)(name, cfg, (...args: any[]) => {
+    const a = args[0], extra = args[args.length - 1]; // a tool without an inputSchema is called with (extra) alone
+    const ctl = new AbortController();
+    const relays: [AbortSignal, () => void][] = [
+      [extra.signal, () => ctl.abort(new EditError("the call was cancelled", "aborted"))],
+      [stopCalls.signal, () => ctl.abort(stopCalls.signal.reason)],
+    ];
+    for (const [sig, fn] of relays) sig.aborted ? fn() : sig.addEventListener("abort", fn, { once: true });
     const p = (async () => {
       const t0 = performance.now();
-      const r = await handler(a, extra);
+      let r;
+      try { r = await handler(a, { ...extra, signal: ctl.signal }); } finally { for (const [sig, fn] of relays) sig.removeEventListener("abort", fn); }
       let res: any = { ok: !r?.isError };
       try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
       recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
@@ -102,7 +114,7 @@ export function buildServer() {
   s.registerTool("scopes", {
     description: "Colour scopes of the frame at t: image (frame | luma waveform / vectorscope | RGB histogram) + stats (luma 0..1 min/p10/avg/p90/max, saturation_avg, cast u/v: 0 = neutral, +u blue, +v red). Use to judge exposure and colour objectively before/after a color grade.",
     inputSchema: { t: z.number(), project: P },
-  }, async (a) => { try { const r = await api.scopes(proj(a.project), a.t); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  }, async (a, { signal }) => { try { const r = await api.scopes(proj(a.project), a.t, { signal }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("contact_sheet", {
     description: "Grid of timestamped frames across the timeline (no full render). Default 12 evenly spaced; or times=[...] / every=1.",
     inputSchema: { project: P, times: z.array(TIME).max(64).optional(), every: z.number().gt(0).optional(), count: z.number().int().min(1).max(64).default(12), cols: z.number().int().default(4), guides: z.boolean().default(false) },
@@ -110,7 +122,7 @@ export function buildServer() {
   s.registerTool("audio_check", {
     description: "SEE the sound: image of each audible track's waveform + the rendered mix (time ruler, clip boundaries, main-track cuts, markers; spectrogram=true adds one) and findings with times: clipping/overs, true peak, long silences, audio cut off at clip ends without a fade, music not ducked under voice. source=<file> inspects a media file instead.",
     inputSchema: { project: P, source: z.string().optional(), spectrogram: z.boolean().default(false), start: z.number().optional(), end: z.number().optional(), min_silence: z.number().default(1) },
-  }, async (a) => { try { const r = await api.audioCheck(a.source ? undefined : proj(a.project), { source: a.source, spectrogram: a.spectrogram, start: a.start, end: a.end, minSilence: a.min_silence }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
+  }, async (a, { signal }) => { try { const r = await api.audioCheck(a.source ? undefined : proj(a.project), { source: a.source, spectrogram: a.spectrogram, start: a.start, end: a.end, minSilence: a.min_silence, signal }); return { content: [image(r.image), text({ ok: true, ...r })] }; } catch (e) { return fail(e); } });
   s.registerTool("motion_strip", {
     description: "Judge transitions/animations: rows of `frames` consecutive timestamped frames. Default one row per transition (with pad s either side); start/end inspect any range instead (e.g. a text's enter animation).",
     inputSchema: { project: P, start: z.number().optional(), end: z.number().optional(), frames: z.number().int().default(10), pad: z.number().default(0.15) },
@@ -176,9 +188,9 @@ export function buildServer() {
   s.registerTool("probe_media", { description: "Duration, size, fps, audio, alpha of a media file (video/image/audio/Lottie).", inputSchema: { path: z.string() } }, wrap((a) => api.probe(a.path)));
   s.registerTool("analyze_beats", { description: "Tempo, beat times and bar starts of a music file (use with snap_to_beats).", inputSchema: { path: z.string(), max_beats: z.number().int().default(128) } },
     wrap((a) => { const r: any = api.analyze.beats(a.path); if (r.beats.length > a.max_beats) { r.beats = r.beats.slice(0, a.max_beats); r.truncated = true; } return r; }));
-  s.registerTool("analyze_scenes", { description: "Shot boundaries of a video: cut times + shot list.", inputSchema: { path: z.string(), threshold: z.number().default(0.3) } }, wrap((a) => api.analyze.scenes(a.path, a.threshold)));
+  s.registerTool("analyze_scenes", { description: "Shot boundaries of a video: cut times + shot list.", inputSchema: { path: z.string(), threshold: z.number().default(0.3) } }, wrap((a, signal) => api.analyze.scenes(a.path, a.threshold, signal)));
   s.registerTool("analyze_silence", { description: "Silent and speech ranges (see op remove_silence).", inputSchema: { path: z.string(), noise_db: z.number().default(-35), min_silence: z.number().default(0.4) } }, wrap((a) => api.analyze.silence(a.path, a.noise_db, a.min_silence)));
-  s.registerTool("measure_loudness", { description: "EBU R128 integrated loudness (LUFS), range and true peak.", inputSchema: { path: z.string() } }, wrap((a) => api.analyze.loudness(a.path)));
+  s.registerTool("measure_loudness", { description: "EBU R128 integrated loudness (LUFS), range and true peak.", inputSchema: { path: z.string() } }, wrap((a, signal) => api.analyze.loudness(a.path, signal)));
   s.registerTool("analyze_subject", { description: "Subject centre over time (a face found by YuNet, with a confidence score per sample, else the most salient region; x/y 0..1 of the frame). The result says what it followed: subject = face|saliency|mixed|none, plus warnings when it is unsure. Needs uv; cached. With a project open (project arg, or the one create_project / open_project remembered) the result is cached in that project, and auto_reframe on a clip covering the same range at the same fps reuses it; with none it is cached in the user cache. The 0.23 MB face model is downloaded only with allow_download=true; without it a missing model fails with code model_not_cached. Usually you want op auto_reframe / track_to instead.", inputSchema: { path: z.string(), fps: z.number().default(6), allow_download: z.boolean().default(false), project: z.string().optional() } }, wrap((a) => api.analyze.subject(a.path, a.fps, a.allow_download, a.project ? proj(a.project) : state.project)));
   s.registerTool("transcribe", { description: "Word-level transcript (needs whisper.cpp + AGENTCUT_WHISPER_MODEL, or openai-whisper). model: a ggml model file (whisper.cpp) or a model name (openai-whisper), instead of AGENTCUT_WHISPER_MODEL. start/end (seconds of the media; start defaults to 0, end to the media end) transcribe only that stretch: pass the speech only, since whisper may invent text over a long music-only stretch; word times stay in media seconds.",
     inputSchema: { path: z.string(), language: z.string().optional(), model: z.string().optional(), start: TIME.optional(), end: TIME.optional() } }, wrap((a) => api.analyze.transcribe(a.path, a.language, a.model, a.start, a.end)));
@@ -224,6 +236,7 @@ async function drain() {
  *  Idempotent: a second signal during shutdown does nothing. */
 export function shutdown(code: number) {
   stopping ??= (async () => {
+    stopCalls.abort(new EditError("the server is shutting down", "aborted"));
     for (const j of jobs.values()) if (j.status === "running") j.ctl.abort(new EditError("the server is shutting down", "aborted"));
     await Promise.race([drain(), new Promise((r) => setTimeout(r, SHUTDOWN_MS))]);
     process.exit(code);

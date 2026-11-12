@@ -24,13 +24,13 @@ const GRAPH = [
  * stats: luma 0..1 (min, 10th pct, avg, 90th pct, max), average saturation, chroma cast (+u = blue, +v = red; 0 = neutral).
  * The image is written under a new name and renamed to outPath; `base` is the project folder when outPath is inside it.
  */
-export async function scopes(still: Buffer, outPath: string, base?: string) {
+export async function scopes(still: Buffer, outPath: string, base?: string, signal?: AbortSignal) {
   needFfmpeg();
   const tmp = tmpSibling(outPath, base);
   let r;
   try {
     r = await run("ffmpeg", ["-v", "error", "-nostdin", "-y", "-f", "image2pipe", ...inp("pipe:0"), "-filter_complex", GRAPH,
-      "-map", "[out]", "-frames:v", "1", tmp, "-map", "[s]", "-f", "null", "-"], { input: still, maxBuffer: 1 << 24 });
+      "-map", "[out]", "-frames:v", "1", tmp, "-map", "[s]", "-f", "null", "-"], { input: still, maxBuffer: 1 << 24, signal });
     if (r.status === 0) commit(tmp, outPath);
   } finally { rmSync(tmp, { force: true }); }
   if (r.status !== 0) throw new EditError(`scopes failed: ${r.stderr.slice(0, 300)}`, "scopes_failed");

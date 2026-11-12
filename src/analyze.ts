@@ -136,11 +136,11 @@ export function beats(path: string, minBpm = 60, maxBpm = 200) {
   };
 }
 
-export function scenes(path: string, threshold = 0.3) {
+export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal) {
   needFfmpeg();
   const info = probe(path);
-  const r = spawnSync("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { encoding: "utf8", maxBuffer: 1 << 28 });
-  const cuts = [...(r.stderr || "").matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  const cuts = [...r.stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
   const dur = info.duration ?? 0;
   const b = [0, ...cuts, dur];
   const shots = b.slice(0, -1).map((s, i) => ({ start: s, end: b[i + 1], duration: +(b[i + 1] - s).toFixed(3) })).filter((s) => s.duration > 0.05);

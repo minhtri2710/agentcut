@@ -157,7 +157,7 @@ export async function main(argv = process.argv.slice(2)) {
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }
-      case "scenes": res = api.analyze.scenes(pos[0], num(f.threshold)); break;
+      case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold)); break;
       case "silence": res = api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
       case "loudness": res = await api.analyze.loudness(pos[0]); break;
       case "transcribe": res = api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;

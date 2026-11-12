@@ -1,9 +1,9 @@
 // MCP end-to-end: spawns the server over stdio, exercises the main tools like an agent would.
 // Run: bun tests/mcp.ts
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { delimiter, join, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -227,6 +227,58 @@ if (process.platform !== "win32") {
   const out = join(TP, "media", "v.wav"), sp = await call6("tts", { text: "Hello there. Bye.", output: out, rate: 175 });
   check("tts writes the file and reports it", sp.json.ok === true && existsSync(out) && sp.json.path === out && sp.json.duration > 4 && sp.json.sentences.length === 2, sp.json);
   await c6.close();
+}
+// a client's cancel and the server's stop each end a tool call's ffmpeg child: a stand-in ffmpeg records its pid and waits 60 s
+if (process.platform !== "win32") {
+  const bin = join(tmp, "stall-bin"), pidFile = join(tmp, "stall.pid");
+  const real = process.env.PATH!.split(delimiter).map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
+  mkdirSync(bin);
+  const stall = (key: string) => writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const stallEnv = { ...env, PATH: bin + delimiter + process.env.PATH };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const until = async (cond: () => unknown, ms: number) => { const t = performance.now(); while (performance.now() - t < ms && !cond()) await sleep(25); return !!cond(); };
+  const waitPid = async () => { await until(() => existsSync(pidFile) && Number(readFileSync(pidFile, "utf8")) > 0, 10_000); return existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) || 0 : 0; };
+  // the stand-in sleeps 60 s, so a child gone within 5 s shows the server stopped it
+  const stopped = async (pid: number) => { const ok = pid > 0 && (await until(() => !alive(pid), 5000)); if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL"); return ok; };
+  const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"]] as const;
+  for (const [tool, args, key] of stalls) {
+    stall(key);
+    rmSync(pidFile, { force: true });
+    const c = new Client({ name: "agentcut-test-cancel", version: "1" });
+    await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: stallEnv }));
+    const ac = new AbortController();
+    const pending = c.callTool({ name: tool, arguments: args }, undefined, { signal: ac.signal }).then(() => null, (e) => e);
+    const pid = await waitPid();
+    ac.abort();
+    await pending;
+    const gone = await stopped(pid);
+    const after = await callOn(c)("guide");
+    check(`a client cancel during ${tool} stops its ffmpeg child within 5 s and the server keeps serving`, gone && String(after.json).includes("Mental model"), { pid, gone });
+    await c.close();
+  }
+  for (const [tool, args, key] of stalls) {
+    stall(key);
+    rmSync(pidFile, { force: true });
+    const child = spawn(cmd[0], cmd.slice(1), { env: stallEnv, stdio: ["pipe", "pipe", "inherit"] });
+    let buf = "";
+    const st = { exit: null as { code: number | null; at: number } | null, reply: null as any };
+    child.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { const m = JSON.parse(l); if (m.id === 2) st.reply = m; } } });
+    child.on("exit", (code) => { st.exit = { code, at: performance.now() }; });
+    const send = (m: object) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+    send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agentcut-test-stop", version: "1" } } });
+    send({ method: "notifications/initialized" });
+    send({ id: 2, method: "tools/call", params: { name: tool, arguments: args } });
+    const pid = await waitPid();
+    const t1 = performance.now();
+    child.stdin.end();
+    await until(() => st.exit, 10_000);
+    const gone = await stopped(pid);
+    const body = st.reply ? JSON.parse(st.reply.result.content[0].text) : null;
+    check(`stdin end during ${tool} answers it as aborted, stops its ffmpeg child, and the server exits 0 within 3 s`,
+      gone && body?.ok === false && body.error.code === "aborted" && st.exit?.code === 0 && st.exit.at - t1 < 3000, { pid, gone, body, exit: st.exit, ms: st.exit ? st.exit.at - t1 : null });
+    if (!st.exit) child.kill("SIGKILL");
+  }
 }
 await client.close();
 console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

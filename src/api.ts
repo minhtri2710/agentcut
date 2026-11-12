@@ -147,7 +147,7 @@ export async function frame(project: string | undefined, t: number | string, o: 
 }
 
 /** Objective exposure/colour check of the composited frame at t: waveform + vectorscope + histogram image and luma/chroma stats. */
-export async function scopes(project: string | undefined, t: number | string, o: { out?: string; scale?: number } = {}) {
+export async function scopes(project: string | undefined, t: number | string, o: { out?: string; scale?: number; signal?: AbortSignal } = {}) {
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
@@ -156,7 +156,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   refuseSource(p.root, tl, out);
   const png = await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), false, "png");
-  const res = { t: tt, ...(await frameScopes(png, out, p.root)) };
+  const res = { t: tt, ...(await frameScopes(png, out, p.root, o.signal)) };
   CACHE.capPreviews(p, out);
   return res;
 }
@@ -187,14 +187,14 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
 const inspectMod = async () => { await loadCanvas(); return import("./inspect.ts"); };
 
 /** Audio as an image (waveform per track + rendered mix, ruler, clip boundaries, markers, optional spectrogram) + findings. */
-export async function audioCheck(project: string | undefined, o: { source?: string; spectrogram?: boolean; start?: number | string; end?: number | string; width?: number; minSilence?: number; out?: string } = {}) {
+export async function audioCheck(project: string | undefined, o: { source?: string; spectrogram?: boolean; start?: number | string; end?: number | string; width?: number; minSilence?: number; out?: string; signal?: AbortSignal } = {}) {
   const p = o.source ? null : openProject(project);
   const tl = p ? p.load() : null;
   if (p && tl) p.requireValid(tl);
   await loadCanvas();
   const { inspectAudio } = await import("./inspect-audio.ts");
   const res = await inspectAudio(p && tl ? p.absolutized(tl) : null, {
-    source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence,
+    source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence, signal: o.signal,
     start: o.start !== undefined ? M.parseTime(o.start) : undefined, end: o.end !== undefined ? M.parseTime(o.end) : undefined });
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p ? join(p.root, `previews/audio-${Date.now()}.png`) : presolve(`${o.source}.audio.png`);
   writeOut(p, out, res.image);
@@ -391,7 +391,7 @@ function tts(text: string | undefined, out: string | undefined, voice?: string, 
   if (p) refuseSource(p.root, p.load(), path);
   return AN.tts(text, path, voice, rate, p?.root);
 }
-export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number) => AN.scenes(presolve(p), th), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: async (p: string) => { needFfmpeg(); return AN.loudness(presolve(p)); }, transcribe, tts,
+export const analyze = { beats: (p: string) => AN.beats(presolve(p)), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number) => AN.silence(presolve(p), n, m), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
   subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {

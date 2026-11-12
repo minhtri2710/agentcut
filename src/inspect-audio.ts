@@ -1,6 +1,5 @@
 // Audio inspection for agents that can only see stills: one image (time ruler, per-track waveforms, the rendered mix,
 // optional spectrogram, clip boundaries, markers, findings) + numeric findings (clipping/overs, silences, cut-offs, ducking).
-import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +8,7 @@ import * as AN from "./analyze.ts";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
+import { run } from "./proc.ts";
 import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Timeline, totalDuration } from "./model.ts";
 
 const WIN = 0.02; // analysis window (s)
@@ -80,14 +80,14 @@ function runs(n: number, pred: (k: number) => boolean, min = 0, gap = 0): [numbe
   return out.filter(([s, e]) => e - s >= min - 1e-9);
 }
 
-function toWav(src: string, out: string, sr: number) {
+async function toWav(src: string, out: string, sr: number, signal?: AbortSignal) {
   needFfmpeg();
   // keep the channel layout: upmixing mono to stereo pans it down 3 dB and would hide clipping
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(src), "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { encoding: "utf8" });
-  if (r.status !== 0) throw new EditError(`cannot decode audio from ${src}: ${(r.stderr || "").slice(-300)}`, "decode_failed", "is it a media file with an audio stream?");
+  const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(src), "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { signal });
+  if (r.status !== 0) throw new EditError(`cannot decode audio from ${src}: ${r.stderr.slice(-300)}`, "decode_failed", "is it a media file with an audio stream?");
 }
 
-export interface AudioCheckOpts { source?: string; spectrogram?: boolean; start?: number; end?: number; width?: number; minSilence?: number }
+export interface AudioCheckOpts { source?: string; spectrogram?: boolean; start?: number; end?: number; width?: number; minSilence?: number; signal?: AbortSignal }
 
 /** tl must be absolutized. Returns the encoded image (PNG) + findings. */
 export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) {
@@ -98,7 +98,7 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
     let markers: Dict[] = [], cuts: number[] = [];
     if (o.source) {
       mixPath = join(tmp, "mix.wav");
-      toWav(o.source, mixPath, 48000);
+      await toWav(o.source, mixPath, 48000, o.signal);
     } else {
       if (!tl) throw new EditError("no project or source", "no_project");
       resolve(tl);
@@ -112,16 +112,16 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
         const srcs = audioSources(stem);
         if (!srcs.length) continue;
         const wav = join(tmp, `stem${j}.wav`);
-        await buildAudio(stem, wav);
+        await buildAudio(stem, wav, 0, undefined, o.signal);
         lanes.push({ id: tr.id, role: tr.role, clips: tr.clips.filter((c) => srcs.some((s) => s.clip.id === c.id) || c.type === "compound"), ...readWindows(wav) });
       }
       mixPath = join(tmp, "mix.wav");
-      await buildAudio(structuredClone(tl), mixPath);
+      await buildAudio(structuredClone(tl), mixPath, 0, undefined, o.signal);
     }
     const mw = readWindows(mixPath);
     const T = o.source ? mw.dur : Math.max(mw.dur, totalDuration(tl!));
     const findings: Dict[] = [];
-    const loud = await AN.loudness(mixPath);
+    const loud = await AN.loudness(mixPath, o.signal);
 
     // 1. clipping (sample peak >= -0.1 dBFS) and overs (> -1 dBFS, the usual true-peak ceiling)
     for (const [s, e] of runs(mw.peak.length, (k) => mw.peak[k] >= 0.9886, 0, 0.1))
@@ -187,7 +187,7 @@ export async function inspectAudio(tl: Timeline | null, o: AudioCheckOpts = {}) 
     const spec = o.spectrogram ? join(tmp, "spec.png") : null;
     const t0 = Math.max(0, o.start ?? 0), t1 = Math.min(T, o.end ?? T);
     if (!(t1 > t0)) throw new EditError(`empty range ${t0}-${t1}`, "bad_range", `use start/end inside 0-${r3(T)}`);
-    const img = await draw({ lanes, mix: mw, findings, markers, cuts, t0, t1, width: o.width ?? 1400, spec, mixPath, source: o.source });
+    const img = await draw({ lanes, mix: mw, findings, markers, cuts, t0, t1, width: o.width ?? 1400, spec, mixPath, source: o.source, signal: o.signal });
     return {
       image: img, duration: r3(T), range: [r3(t0), r3(t1)],
       lanes: [...lanes.map((l) => ({ track: l.id, role: l.role, peak_dbfs: r1(db(Math.max(...l.peak))), rms_dbfs: r1(levelDb(l.rms, 0, l.dur)) })),
@@ -202,7 +202,7 @@ const COL: Record<string, string> = { voice: "#4fc3f7", dialogue: "#4fc3f7", mus
 const FIND: Record<string, string> = { clipping: "#ff1744", over: "#ff9100", silence: "#9e9e9e", cut_off: "#ff9100", music_not_ducked: "#e040fb" };
 
 async function draw(a: { lanes: Lane[]; mix: Win; findings: Dict[]; markers: Dict[]; cuts: number[];
-  t0: number; t1: number; width: number; spec: string | null; mixPath: string; source?: string }): Promise<Buffer> {
+  t0: number; t1: number; width: number; spec: string | null; mixPath: string; source?: string; signal?: AbortSignal }): Promise<Buffer> {
   const G = 120, RH = 26, LH = 76, MH = 120, SH = 170, W = Math.max(400, Math.round(a.width)), PW = W - G - 8;
   const H = RH + a.lanes.length * (LH + 4) + MH + (a.spec ? SH + 4 : 0) + 6;
   const cv = createCanvas(W, H), ctx = cv.getContext("2d");
@@ -257,10 +257,10 @@ async function draw(a: { lanes: Lane[]; mix: Win; findings: Dict[]; markers: Dic
     }
   }
   if (a.spec) {
-    const ss = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", "-ss", String(a.t0), "-t", String(a.t1 - a.t0), ...inp(a.mixPath),
-      "-lavfi", `aformat=channel_layouts=mono,showspectrumpic=s=${PW}x${SH}:legend=0:fscale=log:color=intensity`, a.spec], { encoding: "utf8" });
+    const ss = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", "-ss", String(a.t0), "-t", String(a.t1 - a.t0), ...inp(a.mixPath),
+      "-lavfi", `aformat=channel_layouts=mono,showspectrumpic=s=${PW}x${SH}:legend=0:fscale=log:color=intensity`, a.spec], { signal: a.signal });
     if (ss.status === 0) { ctx.drawImage(await loadImage(a.spec), G, y, PW, SH); ctx.fillStyle = "#ccc"; ctx.fillText("spectrogram", 6, y + 16); ctx.fillStyle = "#888"; ctx.fillText("(log freq)", 6, y + 32); }
-    else { ctx.fillStyle = "#f55"; ctx.fillText(`spectrogram failed: ${(ss.stderr || "").slice(-80)}`, G + 6, y + 20); }
+    else { ctx.fillStyle = "#f55"; ctx.fillText(`spectrogram failed: ${ss.stderr.slice(-80)}`, G + 6, y + 20); }
   }
   // cuts on the main track (faint) + markers (yellow, labelled) across every lane
   ctx.fillStyle = "rgba(255,255,255,0.22)";
