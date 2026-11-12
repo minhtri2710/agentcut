@@ -51,7 +51,8 @@ function metrics(style: TextStyle) {
   return { asc, desc };
 }
 
-const graphemes = (s: string) => "Segmenter" in Intl ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].map((g) => g.segment) : [...s];
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const graphemes = (s: string) => [...segmenter.segment(s)].map((g) => g.segment);
 
 /** Greedy pieces of one word that each fit maxWidth (a single glyph wider than that stands alone). Measures per grapheme, so only for words that do not fit. */
 function breakWord(style: TextStyle, word: string, maxWidth: number): [string, number][] {

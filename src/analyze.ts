@@ -248,6 +248,21 @@ export async function tts(text: string | undefined, outPath: string, voice?: str
 
 const SAPI_VOICE = "AGENTCUT_SAPI_VOICE", SAPI_OUT = "AGENTCUT_SAPI_OUT", SAPI_NO_VOICE = 3; // SAPI_NO_VOICE: PowerShell exit code for a voice that is not installed
 
+/** Every name a voice may be given as (language, voice name, file, other languages) in espeak's plain and mbrola listings; null when a listing cannot be read, so no verdict is drawn. */
+async function espeakVoices(exe: string, signal?: AbortSignal): Promise<Set<string> | null> {
+  const names = new Set<string>();
+  for (const arg of ["--voices", "--voices=mb"]) { // plain --voices omits the mbrola voices
+    const l = await run(exe, [arg], { signal });
+    if (l.status !== 0) return null;
+    for (const line of l.stdout.split("\n").slice(1)) {
+      const c = line.trim().split(/\s+/); // priority, language, age/gender, voice name, file
+      for (const col of [c[1], c[3], c[4]]) if (col) names.add(col.toLowerCase()).add(col.split("/").pop()!.toLowerCase());
+      for (const m of line.matchAll(/\(([^\s()]+) \d+\)/g)) names.add(m[1].toLowerCase()); // "(zh-cmn 5)(zh 5)": groups run together
+    }
+  }
+  return names.size ? names : null;
+}
+
 /** OS voice: macOS `say`, Windows SAPI, Linux espeak. Returns the raw audio path in tmp. */
 async function systemSpeech(text: string, tmp: string, voice?: string, rate?: number, signal?: AbortSignal): Promise<string> {
   let raw = join(tmp, "tts.aiff");
@@ -286,10 +301,9 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
     r = await run(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { signal });
     if (r.status !== 0 && voice) { // diagnose only after a failure, so a good synthesis pays no extra call
-      const listed = await run(exe, ["--voices"], { signal });
-      const known = listed.status !== 0 ? [] : listed.stdout.split("\n").slice(1).flatMap((l) => l.trim().split(/\s+/).slice(1)).flatMap((t) => [t, t.split("/").pop()!, t.replace(/[()]/g, "")]).map((t) => t.toLowerCase());
-      if (known.length && !known.includes(voice.split("+")[0].toLowerCase())) // "en+f3" is the voice en with the f3 variant
-        throw new EditError(`voice '${voice}' not installed`, "bad_voice", "list the voices with list_voices, or run `espeak-ng --voices`");
+      const known = await espeakVoices(exe, signal);
+      if (known && !known.has(voice.split("+")[0].toLowerCase())) // "en+f3" is the voice en with the f3 variant
+        throw new EditError(`voice '${voice}' not installed (${exe}: ${r.stderr.trim().slice(0, 300)})`, "bad_voice", `list the voices with list_voices, or run \`${exe} --voices\``);
     }
   }
   if (r.status !== 0) throw new EditError(`tts failed: ${r.stderr.slice(0, 300)}`, "tts_failed");

@@ -1,7 +1,7 @@
 // Colour grading (color field -> FFmpeg), scopes, and TTS provider selection / HTTP request building (local server, no network).
 // Run: bun tests/color-tts.ts [--keep]          (needs ffmpeg + curl on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -175,7 +175,7 @@ if (process.platform !== "win32") {
   writeFileSync(join(eDir, "espeak-ng"), `#!/bin/sh
 d=$(dirname "$0")
 out=; voice=
-while [ $# -gt 0 ]; do case "$1" in --voices) printf 'Pty Language       Age/Gender VoiceName          File                 Other Languages\\n 5  en-us          --/M      English_(America)  gmw/en-US            (en 3)\\n 5  vi             --/M      Vietnamese         aav/vi\\n'; exit 0;; -w) out=$2;; -v) voice=$2;; esac; shift; done
+while [ $# -gt 0 ]; do case "$1" in --voices) printf 'Pty Language       Age/Gender VoiceName          File                 Other Languages\\n 5  en-us          --/M      English_(America)  gmw/en-US            (en 3)\\n 5  vi             --/M      Vietnamese         aav/vi\\n 5  zh-cmn         --/M      Chinese_(Mandarin) sit/cmn              (zh-cmn 5)(zh 5)\\n'; exit 0;; --voices=mb) printf 'Pty Language       Age/Gender VoiceName          File                 Other Languages\\n 5  en             M         english-mb-en1     mb/mb-en1            (en 2)\\n'; exit 0;; -w) out=$2;; -v) voice=$2;; esac; shift; done
 [ -f "$d/broken" ] && { echo "synthesis broke" >&2; exit 1; }
 case "$voice" in ""|en-us|en-us+f3|vi) cp "$d/ok.wav" "$out";; *) echo "Failed to read voice $voice" >&2; exit 1;; esac
 `);
@@ -187,7 +187,20 @@ case "$voice" in ""|en-us|en-us+f3|vi) cp "$d/ok.wav" "$out";; *) echo "Failed t
     const speak = async (v: string) => { try { await AN.tts("x", join(tmp, "e.wav"), v); return null; } catch (e: any) { return e; } };
     const bad = await speak("zz-nope");
     check("espeak: a voice that is not installed is a bad_voice that names list_voices", bad?.code === "bad_voice" && /list_voices/.test(bad.hint ?? ""), bad && { code: bad.code, msg: bad.message, hint: bad.hint });
+    check("espeak: the bad_voice message keeps what espeak printed", /Failed to read voice zz-nope/.test(bad?.message ?? ""), bad && bad.message);
+    const second = await speak("zh"), mb = await speak("mb-en1");
+    check("espeak: a failing synthesis with a voice from a later language group is a tts_failed, not a bad_voice", second?.code === "tts_failed", second && { code: second.code, msg: second.message });
+    check("espeak: a failing synthesis with a voice only the mbrola listing shows is a tts_failed, not a bad_voice", mb?.code === "tts_failed", mb && { code: mb.code, msg: mb.message });
     check("espeak: an installed voice, with or without a variant, synthesizes", (await speak("vi")) === null && (await speak("en-us+f3")) === null);
+    const plain = join(tmp, "fake-espeak-plain");
+    mkdirSync(plain);
+    copyFileSync(join(eDir, "espeak-ng"), join(plain, "espeak"));
+    chmodSync(join(plain, "espeak"), 0o755);
+    copyFileSync(join(eDir, "ok.wav"), join(plain, "ok.wav"));
+    process.env.PATH = `${plain}:${pathWas}`;
+    const badPlain = await speak("zz-nope");
+    check("espeak: the hint names the binary that ran (espeak, not espeak-ng)", badPlain?.code === "bad_voice" && /espeak --voices/.test(badPlain.hint ?? "") && !/espeak-ng/.test(badPlain.hint ?? ""), badPlain && { code: badPlain.code, hint: badPlain.hint });
+    process.env.PATH = `${eDir}:${pathWas}`;
     writeFileSync(join(eDir, "broken"), "");
     const broke = await speak("vi");
     check("espeak: a failure with an installed voice stays tts_failed", broke?.code === "tts_failed", broke && { code: broke.code, msg: broke.message });
