@@ -220,7 +220,7 @@ export const LOTTIE_FIELDS: F = {
 export const COMPOUND_FIELDS: F = {
   tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
   in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
-  speed: [T("number"), "playback speed of the nested timeline (nested audio is only mixed at speed 1)"],
+  speed: [T("number"), "playback speed of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)"],
   volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
 };
 
@@ -591,6 +591,29 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   return issues;
 }
 
+/** A compound at a speed other than 1: its nested audio is not mixed (audio.ts) and its nested captions are not cues (subtitles.ts). */
+export const isRetimed = (c: Clip) => Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6;
+/** A clip whose own sound is mixed (before track/compound gains): audio.ts audioSources and the retimed-compound warning share it. */
+export const hasSound = (c: Clip, assets: Timeline["assets"]) => (c.type === "audio" || c.type === "video") && !c.muted && !c.freeze && !c.keyframes?.speed
+  && !!assets[c.asset] && !!(assets[c.asset].has_audio || assets[c.asset].kind === "audio");
+
+/** What a compound drops when it plays at a speed other than 1: audible nested clips (audio.ts flatClips) and nested captions (subtitles.ts captionCues). */
+function retimedDrops(assets: Timeline["assets"], tr: Track, c: Clip): { audio: boolean; captions: boolean } {
+  const out = { audio: false, captions: false };
+  const walk = (tracks: Track[], gain: number) => {
+    for (const t of tracks) for (const n of t.clips ?? []) {
+      if (n.enabled === false) continue;
+      const g = t.muted ? 0 : gain * Number(t.volume ?? 1);
+      if (n.type === "captions") { if (!t.hidden) out.captions = true; }
+      else if (n.type === "compound") { if (Array.isArray(n.tracks)) walk(n.tracks, n.muted ? 0 : g * Number(n.volume ?? 1)); }
+      else if (hasSound(n, assets) && Number(n.volume ?? 1) * g > 0) out.audio = true;
+    }
+  };
+  walk(c.tracks!, tr.muted || c.muted ? 0 : Number(tr.volume ?? 1) * Number(c.volume ?? 1));
+  out.captions &&= !tr.hidden;
+  return out;
+}
+
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
 function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string) {
   const assets = tl.assets || {};
@@ -732,6 +755,11 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       if (c.type === "compound") {
         if (!Array.isArray(c.tracks)) { issues.push({ level: "error", path: `${p}.tracks`, message: "compound clip needs 'tracks' (a list of nested tracks)", hint: "create one with make_compound" }); return; }
         try { if (parseTime(c.in ?? 0) < 0) issues.push({ level: "error", path: `${p}.in`, message: "in must be >= 0" }); } catch (e: any) { issues.push({ level: "error", path: `${p}.in`, message: e.message, hint: e.hint }); }
+        if (isRetimed(c) && c.enabled !== false) {
+          const drops = retimedDrops(assets, tr, c), at = `${p}.speed`;
+          if (drops.audio) issues.push({ level: "warning", path: at, message: `compound plays at speed ${c.speed}: its nested audio is not mixed`, hint: "set speed 1, or detach the audio before retiming" });
+          if (drops.captions) issues.push({ level: "warning", path: at, message: `compound plays at speed ${c.speed}: its nested captions are not exported as subtitles (export_captions, render subtitles=true)`, hint: "set speed 1, or move the captions out of the compound" });
+        }
         validateTracks(subTimeline(tl, c), o, issues, clipIds, p);
       }
     });

@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { extname } from "node:path";
 import { inp } from "./ffinput.ts";
 import { captionPages, captionWords, pageSpans } from "./captions.ts";
-import { EditError, parseTime, type Timeline, type Track } from "./model.ts";
+import { EditError, isRetimed, parseTime, type Timeline, type Track } from "./model.ts";
 import { commit, createFile, partSibling, tmpSibling } from "./safe-write.ts";
 
 export interface Cue { start: number; end: number; text: string; clip: string }
@@ -22,7 +22,7 @@ export function captionCues(tl: Timeline, ids?: string[]): Cue[] {
         if (c.enabled === false) continue;
         const s = parseTime(c.start ?? 0), e = s + parseTime(c.duration);
         if (c.type === "compound" && Array.isArray(c.tracks)) {
-          if (Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6) continue; // retimed compounds: not representable as plain cues
+          if (isRetimed(c)) continue; // not representable as plain cues
           const a = Math.max(s, w0), b = Math.min(e, w1), cin = parseTime(c.in ?? 0);
           if (b > a) walk(c.tracks, base + a - w0, cin + (a - s), cin + (b - s));
           continue;

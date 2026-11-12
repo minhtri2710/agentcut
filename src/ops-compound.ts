@@ -1,6 +1,6 @@
 // Compound clips (Final Cut "compound clip" / CapCut "group"): make_compound, expand_compound.
 import {
-  allClips, type Clip, clipDur, clipEnd, clipStart, EditError, fieldsFor, findClip, hasSourceTime, iterClips, newId, normAnim, parseTime, resolve, round6,
+  allClips, type Clip, clipDur, clipEnd, clipStart, EditError, fieldsFor, findClip, hasSourceTime, isRetimed, iterClips, newId, normAnim, parseTime, resolve, round6,
   type Timeline, type Track, unfollow,
 } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
@@ -135,7 +135,7 @@ export function registerCompoundOps(h: OpHelpers) {
       resolve(tl);
       const [home, ci, c] = findClip(tl, h.resolveRef(tl, String(a.id ?? "")));
       if (c.type !== "compound") throw new EditError(`'${c.id}' is a ${c.type} clip, not a compound`, "bad_type", "pass the id of a compound clip (see info)");
-      if (Math.abs((Number(c.speed ?? 1) || 1) - 1) > EPS || c.keyframes?.speed)
+      if (isRetimed(c) || c.keyframes?.speed)
         throw new EditError(`'${c.id}' plays at a different speed; expand_compound needs speed 1`, "retimed", `reset it first: update_clip id=${c.id} set={speed: null}`);
       const lost = layerProps(c, !!home.magnetic);
       if (lost.length) throw new EditError(`'${c.id}' has layer properties (${lost.join(", ")}) that apply to the compound as one picture; expanding would drop them`, "layer_properties",
