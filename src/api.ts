@@ -16,7 +16,7 @@ import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
-import { checkRevision, findProject, Project, summarize } from "./project.ts";
+import { checkRevision, findProject, Project, refuseSource, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
@@ -27,6 +27,7 @@ export const openProject = (p?: string) => new Project(findProject(p));
 const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
 function writeOut(p: Project | null, out: string, data: string | Uint8Array) {
+  if (p) refuseSource(p.root, p.load(), out);
   writeFile(out, data, p?.root);
   if (p) CACHE.capPreviews(p, out);
 }
@@ -64,18 +65,21 @@ export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict,
     const tl = p.load();
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
     const before = new Set(p.validate(tl).filter((i) => i.level === "error").map(key));
-    const [next, results] = applyOps(p, tl, list);
-    const issues = p.validate(next);
-    const added = issues.filter((i) => i.level === "error" && !before.has(key(i)));
-    if (added.length && !o.allowInvalid)
-      throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
-        added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
-    if (!o.dryRun) {
-      try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); }
-      catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < until) continue; throw e; }
-    }
-    const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
-    return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
+    let saved = false; // files the ops wrote into media/ stay only when the batch is saved
+    try {
+      const [next, results] = applyOps(p, tl, list);
+      const issues = p.validate(next);
+      const added = issues.filter((i) => i.level === "error" && !before.has(key(i)));
+      if (added.length && !o.allowInvalid)
+        throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
+          added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
+      if (!o.dryRun) {
+        try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); saved = true; }
+        catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < until) continue; throw e; }
+      }
+      const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
+      return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
+    } finally { p.discardStaged(saved); }
   }
 }
 
@@ -114,6 +118,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
+  refuseSource(p.root, tl, out);
   const png = await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, false, "png");
   const res = { t: tt, ...frameScopes(png, out, p.root) };
   CACHE.capPreviews(p, out);
@@ -211,6 +216,7 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
   const cues = SUB.captionCues(p.absolutized(M.resolve(tl)), o.ids);
   if (!cues.length) throw new M.EditError(o.ids ? `no caption cues in ${o.ids.join(", ")}` : "the timeline has no captions clips", "empty", "add captions first: add_captions words=[...] | srt=... | transcribe=...");
   const out = o.out ? presolve(o.out) : p.defaultOutput(`.${format}`);
+  refuseSource(p.root, tl, out);
   writeFile(out, SUB.formatCues(cues, format), p.root);
   return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
 }

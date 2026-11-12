@@ -11,6 +11,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
+import { refuseSource } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
 export interface Skipped { id: string; type: string; reason: string }
@@ -509,6 +510,7 @@ export function exportTimeline(tl: Timeline, format: InterchangeFormat | string,
   if (f === "fcpxml") ({ xml: body, skipped, clips } = exportFcpxml(tl));
   else if (f === "otio") ({ json: body, skipped, clips } = exportOtio(tl));
   else throw new EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
+  if (base) refuseSource(base, tl, out);
   writeFile(out, body, base);
   return {
     output: out, format: f, clips, skipped,
