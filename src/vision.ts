@@ -84,7 +84,9 @@ export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cach
 const hashes = new Map<string, string>();
 /** sha256 of the file content (memoized per path + size + mtime). */
 export function fileHash(path: string): string {
-  const st = statSync(path), memo = `${path}|${st.size}|${st.mtimeMs}`;
+  const st = statSync(path, { throwIfNoEntry: false });
+  if (!st) throw new EditError(`media file not found: ${path}`, "not_found", "restore the file (or relink the asset) before prepare, cache info or cache prune");
+  const memo = `${path}|${st.size}|${st.mtimeMs}`;
   let h = hashes.get(memo);
   if (!h) {
     const hs = createHash("sha256"), buf = Buffer.alloc(1 << 20), fd = openSync(path, "r");
@@ -113,8 +115,9 @@ export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(read
  *  `unsafe_helper_dir`. Windows has no uid or mode bits: there only the real-directory checks apply. */
 function helperRoot(): string {
   const base = userCache(), uid = process.getuid?.(), posix = uid !== undefined;
-  const refuse = (what: string) => new EditError(`the vision helper's run dir is refused: ${what}`, "unsafe_helper_dir",
-    "nothing was written or run; the helper runs only under a directory in the user cache (~/.cache/agentcut, or AGENTCUT_CACHE) that only you can write");
+  const refuse = (dir: string, why: string) => new EditError(`the vision helper's run dir is refused: ${dir} ${why}`, "unsafe_helper_dir",
+    "nothing was written or run; the helper runs only under a directory in the user cache (~/.cache/agentcut, or AGENTCUT_CACHE) that only you can write; "
+    + `if ${dir} is yours, make it private with: chmod go-w ${dir}`);
   let top = base; // the deepest part of the cache path that exists; what is missing below it is created here, under a checked parent
   while (!lstatSync(top, { throwIfNoEntry: false })) top = dirname(top);
   const real = realpathSync(top);
@@ -124,13 +127,13 @@ function helperRoot(): string {
     const st = lstatSync(d), isHome = d === home;
     // the home dir may be group-writable (user-private groups); no other directory on the way may be group- or world-writable
     const loose = posix && (st.mode & (isHome ? 0o002 : 0o022)) !== 0;
-    if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(`${d} is not a directory that only you can write`);
+    if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(d, "is not a directory that only you can write");
     if (d === dirname(d)) break;
   }
   const root = join(real, relative(top, base), "helper-runs");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const st = lstatSync(root);
-  if (!st.isDirectory() || (posix && (st.uid !== uid || (st.mode & 0o777) !== 0o700))) throw refuse(`${root} is not a private directory (owner you, mode 0700)`);
+  if (!st.isDirectory() || (posix && (st.uid !== uid || (st.mode & 0o777) !== 0o700))) throw refuse(root, "is not a private directory (owner you, mode 0700)");
   return root;
 }
 
@@ -235,7 +238,11 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
     const r = await runHelper(root, d, tmp, allowDownload, onFrames, signal);
-    if (d.kind === "matte") commit(tmp, d.file);
+    if (d.kind === "matte") {
+      // never cache a matte that holds no frames (the cache is trusted by existence alone)
+      if (!(r?.frames >= 1)) throw new EditError(`vision helper wrote a matte with no frames (${d.job.path})`, "vision_failed", "check the media file decodes (probe_media); nothing was cached");
+      commit(tmp, d.file);
+    }
     else writeFile(d.file, JSON.stringify(r), baseOf(d));
   } finally { rmSync(tmp, { force: true }); }
   return { cached: false };

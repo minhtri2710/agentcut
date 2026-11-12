@@ -241,12 +241,15 @@ api.create(Y, { preset: "youtube" });
 await apply(Y, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }]);
 await fails(Y, [{ op: "auto_reframe", id: "vid1" }], "nothing_to_do", "16:9 in 16:9 -> nothing_to_do");
 await fails(P, [{ op: "auto_reframe", id: "vid1", axis: "z" }], "bad_value", "bad axis -> bad_value");
+await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "hflip" }] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with an hflip filter -> unsupported");
+await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["vflip"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a vflip filter (string form) -> unsupported");
 
 // ---------------------------------------------------------------- track_to
 console.log("track_to");
 await apply(Y, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 1, duration: 2 }]);
 const tr = (await applyPrep(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5, fps: 10 }]))[0];
 const sh = clip(Y, "shp1");
+await fails(Y, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "hflip" }] } }, { op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5 }], "unsupported", "track_to on a target with an hflip filter -> unsupported");
 check("attached to the target at the same start", sh.attach_to === "vid1" && near(sh.offset, 1) && tr.lost === 1, { sh, tr });
 // fake track: centre x 0.25 -> 0.75 of the source over the follower's 2 s; 1920 px canvas shows the whole frame
 check("x keyframes map source -> canvas", near(sh.keyframes.x[0][1], 480, 0.6) && near(sh.keyframes.x.at(-1)[1], 1440, 0.6) && near(sh.keyframes.y[0][1], 540, 0.6), sh.keyframes);
@@ -523,6 +526,29 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       check("default root: a world-writable directory above the home dir is refused (unsafe_helper_dir), uv not run, nothing created",
         above.ok === false && above.error?.code === "unsafe_helper_dir" && runs().length === n2 && !existsSync(join(home2, ".cache", "agentcut", "helper-runs")), above);
       chmod(open2, 0o755);
+
+      // under umask 002 (a child: the umask is set at spawn, never in this process) the font-family cache creates the user cache dir first;
+      // a later vision run must still accept it, and a group-writable dir that already exists is refused with a hint that says how to fix it
+      const um = fresh("umask"), umCache = join(um, "agentcut"), umHome = fresh("umask-home"), umScript = join(tmp, "umask-child.ts"), src = (f: string) => join(import.meta.dir, "../src", f);
+      writeFileSync(umScript, `import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [cache, media, face, canvas, fonts, api] = JSON.parse(process.argv[2]);
+process.umask(0o002);
+await (await import(canvas)).loadCanvas();
+(await import(fonts)).fontsKnown();               // writes <cache>/font-families.json, creating <cache>
+mkdirSync(join(cache, "models", face), { recursive: true }); writeFileSync(join(cache, "models", face, face + ".onnx"), "");
+const a = await import(api), run = async (fps) => { try { await a.analyze.subject(media, fps); return {}; } catch (e) { return { code: e.code, hint: e.hint }; } };
+const first = await run(5), mode = statSync(cache).mode & 0o777;
+chmodSync(cache, 0o775);
+const loose = await run(7);
+process.stdout.write(JSON.stringify({ first, mode, loose }));
+`);
+      const nUm = runs().length;
+      const ur = spawnSync(process.execPath, ["--no-install", umScript, JSON.stringify([umCache, join(m, "rb.mp4"), FACE, src("canvas.ts"), src("fonts.ts"), src("api.ts")])],
+        { encoding: "utf8", env: { ...process.env, HOME: umHome, AGENTCUT_CACHE: umCache, AGENTCUT_UV: rec } as NodeJS.ProcessEnv });
+      const uj = JSON.parse(ur.stdout || "{}");
+      check("umask 002: the font cache creates the user cache dir private (0700) and the vision run is accepted", uj.mode === 0o700 && uj.first && !uj.first.code && runs().length === nUm + 1, { uj, status: ur.status, err: ur.stderr.slice(-300) });
+      check("umask 002: an existing group-writable cache dir is still refused, and the hint says how to make it private", uj.loose?.code === "unsafe_helper_dir" && /chmod go-w /.test(uj.loose.hint) && uj.loose.hint.includes(umCache) && runs().length === nUm + 1, uj.loose);
     }
 
     // the check run before every spawn refuses any file that is not the embedded helper
@@ -731,6 +757,27 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       check("helper, allow_download false: the proxy variables point at an unreachable address and NO_PROXY is cleared when rembg is imported",
         !!closed.seen && ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].every((k) => dead(closed.seen[k])) && !closed.seen.NO_PROXY && !closed.seen.no_proxy, closed);
       check("helper, allow_download true: the proxy variables are left as they were", open.seen?.HTTPS_PROXY === "http://allowed.example:3128" && open.seen?.NO_PROXY === "*", open);
+
+      // the decoder child: a fake ffmpeg (a shell script first on PATH) and a stub numpy; the `track` command reads every frame with the real helper text
+      writeFileSync(join(stubs, "numpy.py"), "uint8 = 0\nclass _A:\n  def __init__(s, b): s.b = b\n  def reshape(s, *a): return s\ndef frombuffer(b, t): return _A(b)\n");
+      writeFileSync(join(stubs, "cv2.py"), "");
+      const bin = join(tmp, "fake-ffmpeg-bin");
+      mkdirSync(bin);
+      const fakeFfmpeg = (body: string) => { writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, "ffmpeg"), 0o755); };
+      const decode = (timeout: number) => {
+        const job = JSON.stringify({ cmd: "track", path: "x", w: 2, h: 2, fps: 1, start: 0, duration: 2, at: 0, box: [0, 0, 0.5, 0.5] });
+        const r = spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout,
+          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
+        return { status: r.status, signal: r.signal, stderr: r.stderr.slice(-300) };
+      };
+      // a decoder that dies with no error text after two frames (2x2 bgr24 = 12 bytes a frame)
+      fakeFfmpeg("head -c 24 /dev/zero; exit 1");
+      const silent = decode(20_000);
+      check("helper: a decoder that exits non-zero with empty stderr fails the run (no short result)", silent.status !== 0 && silent.signal === null && /ffmpeg exited 1/.test(silent.stderr), silent);
+      // a decoder that writes far more than a pipe holds to stderr before it writes any frame
+      fakeFfmpeg("yes x | head -c 400000 >&2; exit 0");
+      const flood = decode(8_000);
+      check("helper: a decoder that fills stderr does not block the run (finishes, no timeout)", flood.signal === null && flood.status !== null && /no frames decoded/.test(flood.stderr), flood);
     }
   } finally { process.env.AGENTCUT_UV = fake; }
 }
@@ -1008,6 +1055,55 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
       return [existsSync(mt.computed[0].file) && again.cached === true, mt];
     });
   } finally { process.env.AGENTCUT_CACHE = mainCache; }
+}
+
+// ---------------------------------------------------------------- a matte with no frames; a missing source; pending analyses and prune
+console.log("matte frame count, missing source, prune");
+{
+  // a helper that exits 0 with a file at the output path but reports no frames: it must not be cached
+  const emptyUv = join(tmp, "empty-matte-uv.mjs");
+  writeFileSync(emptyUv, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const job = JSON.parse(process.argv.at(-1));
+writeFileSync(job.out, "x");
+process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
+`);
+  chmodSync(emptyUv, 0o755);
+  const Z = join(tmp, "empty-matte");
+  api.create(Z, { preset: "720p" });
+  await apply(Z, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
+  process.env.AGENTCUT_UV = emptyUv;
+  let zr: any;
+  try { zr = await api.prepare(Z).catch((e) => e); } finally { process.env.AGENTCUT_UV = fake; }
+  const zc = join(Z, ".agentcut", "cache");
+  check("a matte reported with no frames is refused (vision_failed) and not cached", zr.code === "vision_failed" && (!existsSync(zc) || readdirSync(zc).every((f) => !f.startsWith("matte-"))), { code: zr.code, files: existsSync(zc) ? readdirSync(zc) : null });
+
+  // cache info / prune on a project whose matte clip lost its media: a named error, not a raw ENOENT
+  const gone = join(tmp, "gone.mp4");
+  cpSync(join(m, "rb.mp4"), gone);
+  const M = join(tmp, "gone-src");
+  api.create(M, { preset: "720p" });
+  await apply(M, [{ op: "add_clip", track: "main", src: gone, duration: 2 }, { op: "remove_background", id: "vid1" }]);
+  rmSync(gone);
+  for (const [what, f] of [["cache info", () => api.cache.info(M)], ["cache prune", () => api.cache.prune(M)]] as const) {
+    let e: any; try { f(); } catch (x) { e = x; }
+    check(`${what} with a matte clip whose media is missing: not_found naming the file, with a hint`, e?.code === "not_found" && e.message.includes(gone) && !!e.hint, { code: e?.code, message: e?.message });
+  }
+
+  // an analysis a pending request needs, already computed but not yet applied, is referenced: prune keeps it
+  const R = join(tmp, "pending-keep");
+  api.create(R, { preset: "reels" });
+  await apply(R, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "auto_reframe", id: "vid1" }]);
+  check("pending-keep: the request is recorded", !!clip(R, "vid1").pending?.auto_reframe);
+  const an = await api.analyze.subject(join(m, "rb.mp4"), 6, false, R);
+  const cdir = join(R, ".agentcut", "cache"), subjFiles = () => readdirSync(cdir).filter((f) => f.startsWith("subject-"));
+  check("pending-keep: the analysis exists in the project cache", an.cached === false && subjFiles().length === 1, subjFiles());
+  const inf: any = api.cache.info(R);
+  check("cache info counts the computed analysis of a pending request as referenced", inf.cache.referenced.files === 1, inf.cache);
+  api.cache.prune(R);
+  check("prune keeps the computed analysis of a pending request", subjFiles().length === 1, subjFiles());
+  const pr: any = await api.prepare(R);
+  check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !clip(R, "vid1").pending, pr);
 }
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
