@@ -226,6 +226,8 @@ export class FrameSource {
   private eof = false;
   private ended: Promise<string> | null = null; // what the running ffmpeg reports once it is done: "" for a clean exit, else why it failed
   private still: Buffer | null = null;
+  private tail: { frame: Buffer | null } | undefined; // tailFrame's answer, constant for the source: back-seeks into a held region do not decode again
+  private streamEnd: { d: number | null } | undefined; // videoStreamDuration's answer, likewise
   private hw = HWACCEL;
   private input: string[];
   constructor(private o: SourceOpts) {
@@ -309,9 +311,15 @@ export class FrameSource {
 
   /** The last frame of the source's video (null: none): decodes its final second (or two frames) and keeps the final frame. */
   private async tailFrame(): Promise<Buffer | null> {
+    return (this.tail ??= { frame: await this.decodeTail() }).frame;
+  }
+
+  private videoEnd() { return (this.streamEnd ??= { d: videoStreamDuration(this.o.path) }).d; }
+
+  private async decodeTail(): Promise<Buffer | null> {
     const o = this.o;
     // seek from the video's own end (not the container's, which a longer audio stream extends), at least two source frames back
-    const end = videoStreamDuration(o.path) ?? o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
+    const end = this.videoEnd() ?? o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
     const seek = end ? ["-ss", Math.max(0, end - back).toFixed(6)] : ["-sseof", "-1"];
     const p = spawn("ffmpeg", ["-v", "error", "-nostdin", ...seek, ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","),
       "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "pipe"] });
@@ -345,7 +353,7 @@ export class FrameSource {
         const inside = (d?: number) => !o.reverse && !o.loop && !!d && at < d - 0.5 - 1 / o.rate;
         const gone = (why: string) => new EditError(`decode failed for ${o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "re-run prepare or re-import the media; the file may be truncated or have changed");
         // the container length counts the longest stream: a clip may run past the video stream's own end (audio longer than video)
-        if (inside(o.srcDuration) && inside(videoStreamDuration(o.path) ?? o.srcDuration)) throw gone(`the source ended after ${this.pos + 1} frames`);
+        if (inside(o.srcDuration) && inside(this.videoEnd() ?? o.srcDuration)) throw gone(`the source ended after ${this.pos + 1} frames`);
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
         this.last = this.tip ?? (o.reverse || o.loop ? null : await this.tailFrame());

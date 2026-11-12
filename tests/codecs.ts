@@ -9,7 +9,7 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
-const { renderVideo } = await import("../src/encode.ts");
+const { renderVideo, HOST_TAG, workerFailure } = await import("../src/encode.ts");
 const { openProject } = api;
 
 let failures = 0;
@@ -442,6 +442,26 @@ console.log("decode and render failures");
   check("a fresh read past the video's end of a file with longer audio holds the last frame", lh.length === 64 * 64 * 4 && lh.some((x) => x !== 0), lh.length);
   la2.close();
   la.close();
+  // N3/N4: the video's end and its last frame are asked once per source, however often a jump past the end repeats
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "shim-bin"), log = join(tmp, "shim.log");
+    mkdirSync(bin);
+    for (const tool of ["ffmpeg", "ffprobe"]) {
+      const real = spawnSync("which", [tool], { encoding: "utf8" }).stdout.trim();
+      writeFileSync(join(bin, tool), `#!/bin/sh\necho "${tool} $*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+    }
+    const PATH1 = process.env.PATH;
+    process.env.PATH = `${bin}:${PATH1}`;
+    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+    const first = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
+    await rs.readAt(0.5);
+    const again = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
+    process.env.PATH = PATH1;
+    rs.close();
+    const lines = readFileSync(log, "utf8").split("\n");
+    check("a back-seek and a second jump past the end asks the video's end and decodes its last frame once",
+      lines.filter((l) => l.startsWith("ffprobe ")).length === 1 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.000000 ")).length === 1 && first.length === 64 * 64 * 4 && again.equals(first), lines);
+  }
   b.close();
   const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });
   await sk.readAt(0);
@@ -498,6 +518,7 @@ console.log("decode and render failures");
   check("a still render refuses scale 5", (await code(api.render(P, { out: join(tmp, "s5.png"), scale: 5 }))) === "bad_value");
   check("sheet count above the tile cap is refused", (await code(api.sheet(P, { count: 65, tileWidth: 32 }))) === "bad_value");
   check("sheet count 2.5 is refused", (await code(api.sheet(P, { count: 2.5, tileWidth: 32 }))) === "bad_value");
+  check("sheet times below 0 are refused", (await code(api.sheet(P, { times: [0, -1], tileWidth: 32 }))) === "bad_value" && (await code(api.sheet(P, { times: "-0.5", tileWidth: 32 }))) === "bad_value");
   check("sheet times above the tile cap are refused", (await code(api.sheet(P, { times: Array.from({ length: 65 }, () => 0), tileWidth: 32 }))) === "bad_value");
 
   // A-52: a failed tile stops the other renderers; a throwing progress callback is the render's error; dead renders' parts are swept
@@ -515,19 +536,27 @@ console.log("decode and render failures");
   R.Renderer.prototype.frame = orig;
   check("a failed tile reports its own error", sheetErr?.code === "decode_failed", sheetErr?.message);
   check("a failed tile stops the other renderers after their current tile", calls <= 4, calls);
-  const pe = await expectError(() => renderVideo(tl(), p.root, out("pg.mp4"), { workers: 2, end: 1, progress: () => { throw new Error("progress boom"); } }));
+  let progressCalls = 0;
+  const pe = await expectError(() => renderVideo(tl(), p.root, out("pg.mp4"), { workers: 2, end: 1, progress: () => { progressCalls++; throw new Error("progress boom"); } }));
   check("a throwing progress callback fails the render with its own error", pe?.message === "progress boom", pe?.message);
+  check("a progress callback that threw is not called again", progressCalls === 1, progressCalls);
 
   const dir = join(tmp, "sweep"); mkdirSync(dir);
   const dead = spawnSync(process.execPath, ["-e", "0"]).pid;
-  const stale = join(dir, `o.part-${dead}-0123456789ab.mp4`), liveP = join(dir, `o.part-${process.pid}-0123456789ab.mp4`);
-  const otherName = join(dir, `x.part-${dead}-0123456789ab.mp4`), odd = join(dir, `o.part-${dead}-xyz.mp4`), target = join(tmp, "sweep-target.mp4"), link = join(dir, `o.part-${dead}-ba9876543210.mp4`);
-  for (const f of [stale, liveP, otherName, odd, target]) writeFileSync(f, "x");
+  const stale = join(dir, `o.part-${dead}-${HOST_TAG}-0123456789ab.mp4`), liveP = join(dir, `o.part-${process.pid}-${HOST_TAG}-0123456789ab.mp4`);
+  const otherName = join(dir, `x.part-${dead}-${HOST_TAG}-0123456789ab.mp4`), odd = join(dir, `o.part-${dead}-${HOST_TAG}-xyz.mp4`), target = join(tmp, "sweep-target.mp4"), link = join(dir, `o.part-${dead}-${HOST_TAG}-ba9876543210.mp4`);
+  const otherHost = join(dir, `o.part-${dead}-${HOST_TAG === "00000000" ? "11111111" : "00000000"}-0123456789ab.mp4`), untagged = join(dir, `o.part-${dead}-0123456789ab.mp4`);
+  for (const f of [stale, liveP, otherName, odd, target, otherHost, untagged]) writeFileSync(f, "x");
   symlinkSync(target, link);
   await renderVideo(tl(), p.root, join(dir, "o.mp4"), { workers: 1, end: 0.5 });
-  check("a dead render's part file beside the output is swept", !existsSync(stale));
+  check("a dead render's part file of this host beside the output is swept", !existsSync(stale));
+  check("a part file of another host, and one with no host tag, stay although their pid is dead", existsSync(otherHost) && existsSync(untagged), readdirSync(dir));
   check("a live render's part file, another output's part file, an odd name, a link and its target stay",
     [liveP, otherName, odd, target].every((f) => existsSync(f)) && lstatSync(link).isSymbolicLink(), readdirSync(dir));
+
+  const bw = workerFailure('E {"message":"m","code":"c","hint":"h"}', 0), bad = workerFailure("E not json", 3);
+  check("a worker's E line keeps its message, code and hint", bw.message === "m" && bw.code === "c" && bw.hint === "h", bw);
+  check("an unreadable E line is a render_failed error that names the line", bad.code === "render_failed" && bad.message.includes("E not json") && bad.message.includes("worker 3"), bad);
 
   // A-27: a layer that has ended keeps no canvas
   const C = join(tmp, "projc");

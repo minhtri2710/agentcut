@@ -145,6 +145,8 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
     const list = typeof o.times === "string" ? o.times.split(",") : o.times;
     if (list.length > MAX_SHEET_TILES) throw new M.EditError(`times lists ${list.length} frames; a sheet holds at most ${MAX_SHEET_TILES}`, "bad_value", "split it into several sheets");
     ts = list.map((x) => M.parseTime(x));
+    const bad = ts.find((t) => !(Number.isFinite(t) && t >= 0));
+    if (bad !== undefined) throw new M.EditError(`times must be 0 or more, got ${bad}`, "bad_value");
   } else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
   const { contactSheet } = await renderMod();
