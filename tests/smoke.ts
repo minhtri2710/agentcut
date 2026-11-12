@@ -94,7 +94,10 @@ cli(["op", "duplicate_clip", "id=txt1", "at=end-3"], C);
 cli(["op", "add_effect", "id=img2", "type=rgb_split", "amount=10"], C);
 cli(["op", "add_marker", "t=1.5", "label=check"], C);
 const vo = cli(["op", "add_voiceover", "text=Xin chào, đây là AgentCut", "voice=Linh", "captions=tiktok", "at=0.5"], { ok: false, cwd: P });
-console.log(vo.ok ? "  ✓ voiceover (Linh)" : `  - voiceover skipped: ${vo.error.message}`);
+// only a missing voice or engine (the host lacks 'Linh' / a TTS binary) skips; any other error is a failure
+if (vo.ok) console.log("  ✓ voiceover (Linh)");
+else if (["bad_voice", "missing_dependency"].includes(vo.error.code)) console.log(`SKIPPED: voiceover (${vo.error.code}): ${vo.error.message}`);
+else check("voiceover fails only with a missing voice or engine", false, vo.error);
 const info = cli(["info"], C);
 console.log(info.summary.split("\n").map((l: string) => "    " + l).join("\n"));
 check("timeline valid", info.errors === 0, info.issues);

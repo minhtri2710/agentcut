@@ -22,7 +22,7 @@ function ff(...args: string[]) {
 }
 const raw = (file: string, fmt: string[]) => spawnSync("ffmpeg", ["-v", "error", "-i", file, ...fmt, "-"], { maxBuffer: 1 << 28 }).stdout as Buffer;
 const meanDiff = (a: Buffer, b: Buffer) => { if (a.length !== b.length || !a.length) return Infinity; let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
-async function rejects(f: () => Promise<unknown>, code: string) { try { await f(); return false; } catch (e: any) { return e.code === code || e.message; } }
+async function rejects(f: () => Promise<unknown>, code: string) { try { await f(); return false; } catch (e: any) { return e.code === code; } }
 
 const m = join(tmp, "media");
 mkdirSync(m);

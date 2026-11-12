@@ -239,8 +239,13 @@ await apply([
 ]);
 const tb = mix("bus");
 check(`track pan 1 silences the left channel (L ${rms(tb, 0.5, 2.5, 0)}, R ${rms(tb, 0.5, 2.5, 1).toFixed(1)})`, !(rms(tb, 0.5, 2.5, 0) > -80) && rms(tb, 0.5, 2.5, 1) > -40);
-await apply([{ op: "update_track", id: "music", set: { pan: null, eq: null, denoise: true } }]);
-check("track denoise reaches the clip (per-clip key inherited)", rms(mix("trackdn"), 0.5, 2.5) < plain + 1);
+// the pure-tone aud2 has no noise to remove, so measure on a noisy clip (talk.wav, its noise-only tail is 6.5-8 s here)
+await apply([{ op: "update_track", id: "music", set: { pan: null, eq: null } }, { op: "add_clip", track: "music", src: join(m, "talk.wav"), at: 4, duration: 4 }]); // aud3
+const tailPlain = rms(mix("trackdn0"), 6.5, 8);
+await apply([{ op: "update_track", id: "music", set: { denoise: true } }]);
+const tailDn = rms(mix("trackdn"), 6.5, 8);
+check(`track denoise reaches the clip: noise floor drops >= 6 dB (${tailPlain.toFixed(1)} -> ${tailDn.toFixed(1)})`, tailPlain - tailDn >= 6);
+await apply([{ op: "remove_clip", id: "aud3" }]);
 
 console.log("loudness after processing");
 await apply([
