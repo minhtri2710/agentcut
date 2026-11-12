@@ -197,7 +197,7 @@ case "$voice" in ""|en-us|en-us+f3|vi) cp "$d/ok.wav" "$out";; *) echo "Failed t
     copyFileSync(join(eDir, "espeak-ng"), join(plain, "espeak"));
     chmodSync(join(plain, "espeak"), 0o755);
     copyFileSync(join(eDir, "ok.wav"), join(plain, "ok.wav"));
-    process.env.PATH = `${plain}:${pathWas}`;
+    process.env.PATH = [plain, ...pathWas!.split(":").filter((d) => !existsSync(join(d, "espeak-ng")))].join(":"); // a real espeak-ng would be preferred over the stand-in espeak
     const badPlain = await speak("zz-nope");
     check("espeak: the hint names the binary that ran (espeak, not espeak-ng)", badPlain?.code === "bad_voice" && /espeak --voices/.test(badPlain.hint ?? "") && !/espeak-ng/.test(badPlain.hint ?? ""), badPlain && { code: badPlain.code, hint: badPlain.hint });
     process.env.PATH = `${eDir}:${pathWas}`;
