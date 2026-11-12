@@ -222,7 +222,9 @@ export function ttsVoices() {
 /** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
  *  Each sentence is synthesized on its own (rate applies to each), converted to 48 kHz stereo and joined in order, so `sentences` carries
  *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
-export function tts(text: string, outPath: string, voice?: string, rate?: number, base?: string) {
+export function tts(text: string | undefined, outPath: string, voice?: string, rate?: number, base?: string) {
+  if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
+  if (rate !== undefined && !(Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a positive number of words per minute, got ${rate}`, "bad_value", "e.g. 175");
   needFfmpeg();
   const part = tmpSibling(outPath, base);
   const { provider, voice: v } = pickProvider(voice);
