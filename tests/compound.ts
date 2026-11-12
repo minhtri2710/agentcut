@@ -372,6 +372,26 @@ console.log("expand_compound: other storylines and the home storyline keep their
   check("a compound with nothing of its own on its storyline leaves a gap, so the clips after it keep their time", zm[0].type === "gap" && zm[0].duration === 4 && h3.start === 4, zm.map((c: any) => [c.id, c.type, c.start, c.duration]));
 }
 
+console.log("retimed compound: what it drops is reported by validate");
+{
+  const R = join(tmp, "retimed");
+  api.create(R, { preset: "720p" });
+  await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 2, id: "rv" },
+    { op: "add_captions", words: [{ text: "Hello", start: 0, end: 1 }], id: "rc", at: 0 },
+    { op: "make_compound", ids: ["rv", "rc"], id: "RC" }]);
+  const warns = () => (api.validate(R) as any).issues.filter((i: any) => i.level === "warning" && i.path.endsWith(".speed")) as any[];
+  const retime = (set: object) => api.apply(R, [{ op: "update_clip", id: "RC", set }]);
+  check("speed 1: no retime warning", warns().length === 0, warns());
+  await retime({ speed: 2 });
+  const w = warns();
+  check("speed 2: one warning for the dropped nested audio, one for the nested captions", w.length === 2 && w.some((i) => /nested audio is not mixed/.test(i.message) && i.hint) && w.some((i) => /nested captions are not exported/.test(i.message) && i.hint), w);
+  check("  the batch still accepts the edit (warning, not error)", (api.validate(R) as any).valid === true);
+  await retime({ muted: true });
+  check("a muted compound drops no audio: only the captions warning stays", warns().length === 1 && /captions/.test(warns()[0].message), warns());
+  await retime({ muted: false, speed: 1 });
+  check("back to speed 1: no warning", warns().length === 0, warns());
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);
