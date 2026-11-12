@@ -609,7 +609,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const res = AN.analysis(p, { kind: "tts", text: a.text, voice: a.voice, rate: a.rate });
-    let stamp = Date.now(), out = join(p.root, "media", `vo-${stamp}.wav`);
+    let stamp = p.stamp, out = join(p.root, "media", `vo-${stamp}.wav`);
     while (lexists(out)) out = join(p.root, "media", `vo-${++stamp}.wav`); // a voiceover of this batch may already hold the millisecond
     p.stage(out);
     copyFile(res.path, out, p.root);

@@ -487,6 +487,23 @@ fi
         const dur = (c: any) => +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", join(V2, t2.assets[c.asset].path)], { encoding: "utf8" }).stdout;
         check("two add_voiceover ops in one millisecond write two files, each clip keeping its own speech", files.length === 2 && clips.length === 2 && clips[0].asset !== clips[1].asset
           && Math.abs(dur(clips[0]) - 1) < 0.1 && Math.abs(dur(clips[1]) - 2) < 0.1, { files, assets: clips.map((c: any) => c.asset), durs: clips.map(dur) });
+
+        // a later op that analyses the voiceover's file: the file keeps its name from round to round, so the batch settles in 3 rounds and equals the two ops applied one after the other
+        process.env.PATH = `${binV}:${pathNow}`;
+        const ac = new AbortController(), stop = setTimeout(() => ac.abort(), 20_000); // bound: an endless re-run ends here
+        const V3 = join(tmp, "vo-then-silence"), V4 = join(tmp, "vo-then-silence-2"), speak = { op: "add_voiceover", text: "Một hai. Ba bốn.", voice: "piper" }, cut = { op: "remove_silence", id: "aud1" };
+        api.create(V3, { preset: "720p", name: "vo" }); api.create(V4, { preset: "720p", name: "vo" });
+        let b: any, a1: any, a2: any, used = -1, undo3 = 0;
+        try {
+          rounds = 0;
+          b = await api.apply(V3, [speak, cut], { signal: ac.signal }).catch((x) => x);
+          used = rounds; undo3 = api.history(V3).undo.length;
+          a1 = await api.apply(V4, [speak]); a2 = await api.apply(V4, [cut]);
+        } finally { clearTimeout(stop); process.env.PATH = pathNow; }
+        const same = (o: unknown) => JSON.stringify(o).replace(/vo[-_]\d+/g, "vo-N"), tlOf = (P: string) => { const t = api.info(P, "json").timeline; delete t.revision; return t; };
+        check("add_voiceover then remove_silence of its clip in one batch: 3 rounds, saved once, one voiceover file, the results and timeline of the two ops applied separately",
+          b?.ok === true && used === 3 && undo3 === 1 && b.revision === 1 && readdirSync(join(V3, "media")).length === 1 && same(b.results) === same([a1.results[0], a2.results[0]]) && same(tlOf(V3)) === same(tlOf(V4)),
+          b?.ok ? { used, undo3, media: readdirSync(join(V3, "media")) } : { code: b?.code, msg: b?.message, used });
       }
 
       // a writer saves between the batch's last load and its save: the batch is re-applied from the memo (the engine does not start again) even though its analysis took longer than the 10 s deadline
