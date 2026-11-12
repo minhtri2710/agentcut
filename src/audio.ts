@@ -40,8 +40,8 @@ function mapClip(c: Clip, w?: Win): Clip | null {
   if (!v) return null;
   const [a, b] = v;
   const head = a - s, tail = e - b, speed = Number(c.speed ?? 1) || 1, ramp = c.keyframes?.speed;
-  // a ramped clip skips the ramp's integral over the cut head; reversed, its source segment (duration*speed long, as render.ts reads it) shrinks by head + tail and is entered at that integral
-  const skip = !ramp ? (c.reverse ? tail : head) * speed : c.reverse ? (head + tail) * speed - speedIntegral(ramp, head) : speedIntegral(ramp, head);
+  // a ramped clip skips the ramp's integral over the cut head (a reversed ramp sets its in-point below)
+  const skip = !ramp ? (c.reverse ? tail : head) * speed : c.reverse ? 0 : speedIntegral(ramp, head);
   const m: Clip = { ...c, start: w.base + a - w.w0, duration: b - a, in: parseTime(c.in ?? 0) + skip };
   if (ramp && c.reverse) {
     // the picture shows source lo + duration*speed - integral(t), held at the clip's own `in` (lo) once the ramp has used the segment up: the window enters the reversed segment at `end`
