@@ -24,8 +24,12 @@ function room(tl: Timeline, c: Clip, side: Side): number {
   const before = cin(c) / spd(c), after = (srcLen(tl, c) - cin(c) - clipDur(c) * spd(c)) / spd(c);
   return (side === "head") !== !!c.reverse ? before : after; // reversed clips play the source backwards
 }
+/** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp) and caption words; words that end before the clip's head are dropped. */
 export function shiftKfs(c: Clip, e: number) {
-  if (!c.keyframes || !e) return;
+  if (!e) return;
+  if (c.type === "captions" && Array.isArray(c.words))
+    c.words = c.words.filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
+  if (!c.keyframes) return;
   for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
     c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
 }

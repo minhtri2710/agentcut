@@ -186,6 +186,13 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("trim_start shifts the keyframes of the trimmed clip by the trimmed amount", near(at(tk, "im").keyframes.opacity[0][0], 0) && near(at(tk, "im").keyframes.opacity[1][0], 1) && near(at(tk, "vd").keyframes.volume[0][0], 0) && near(at(tk, "vd").in, 3), [at(tk, "im").keyframes, at(tk, "vd")]);
   check("trim_start on a reversed clip trims the end of the content: in stays", near(at(tk, "rv").in, 2) && near(at(tk, "rv").duration, 3), at(tk, "rv"));
   check("trim_start on a freeze clip keeps the frozen frame", near(at(tk, "fz").in, 2) && near(at(tk, "fz").duration, 3), at(tk, "fz"));
+  const cw = run(mk(), [{ op: "add_clip", track: "text", id: "cap", at: 0, words: [{ text: "a", start: 0, end: 0.5 }, { text: "b", start: 1.2, end: 1.6 }, { text: "c", start: 2, end: 2.5 }] }])[0];
+  const [tw] = run(cw, [{ op: "trim_clip", id: "cap", trim_start: 1 }]);
+  check("trim_start on a captions clip shifts its words and drops the ones cut off", JSON.stringify(at(tw, "cap").words.map((w: any) => [w.text, w.start, w.end])) === '[["b",0.2,0.6],["c",1,1.5]]' && near(at(tw, "cap").start, 1) && errs(tw).length === 0, at(tw, "cap"));
+  const dv = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "dv", in: 2, duration: 4, keyframes: { volume: [[1, 0.5], [3, 1]] } }, { op: "detach_audio", id: "dv" }])[0];
+  const [td] = run(dv, [{ op: "trim_clip", id: "dv", trim_start: 1 }]);
+  const dau = td.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "dv");
+  check("trim_start shifts the detached audio's volume keyframes with its picture", near(dau.keyframes.volume[0][0], 0) && near(dau.keyframes.volume[1][0], 2) && near(dau.in, 3), dau);
   const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
   // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)

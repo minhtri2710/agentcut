@@ -411,7 +411,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
     if (la && !c.reverse) {
       const au = la[1], head = a.trim_start ? parseTime(a.trim_start) : 0, tail = d0 - head - clipDur(c);
       const nd = clipDur(au) - head - tail, ni = parseTime(au.in ?? 0) + (parseTime(c.in ?? 0) - in0 + (c.freeze ? head * speed : 0)) * ((Number(au.speed ?? 1) || 1) / speed); // a freeze keeps its frame, its audio still advances
-      if (nd > 0.04 && ni >= 0 && !computedDuration(au)) { au.in = round6(ni); au.duration = round6(nd); out.audio = au.id; }
+      if (nd > 0.04 && ni >= 0 && !computedDuration(au)) { au.in = round6(ni); au.duration = round6(nd); shiftKfs(au, -head); out.audio = au.id; }
       else out.warning = `detached audio '${au.id}' was not trimmed (it would become empty, or its length is computed); trim it yourself`;
     }
     resolve(tl);

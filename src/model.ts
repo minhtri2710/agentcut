@@ -129,7 +129,7 @@ export const COMMON_FIELDS: F = {
   note: [T("string"), "free-form note, ignored by the renderer"],
   group: [T("object"), "{id, name?, track, parent?}: written by expand_compound on every clip and gap it places (parent = the stamp the expanded compound carried); make_compound from=<id> regroups them (split_clip keeps it, duplicate_clip drops it)"],
   preset: [T("string"), "style preset expanded when the clip is added (see capabilities.presets)"],
-  until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark)"],
+  until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark); an explicit length edit ends it"],
   attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
   offset: [T("number", "string"), "seconds after the attach_to clip's start (default 0)"],
   match_duration: [T("boolean", "string"), "true with attach_to: duration = target duration - offset - end_offset; or a clip reference (\"<id>\" or \"track#n\"): duration = that clip's duration - end_offset, the start is untouched (works on magnetic tracks) and follows later changes to that clip"],
