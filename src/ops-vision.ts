@@ -43,9 +43,11 @@ function plainTarget(c: Clip) {
   if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see agentcut info)");
   const busy = ["rotation", "scale_x", "scale_y"].filter((k) => c[k] !== undefined && Number(c[k]) !== (k === "rotation" ? 0 : 1));
   const kf = Object.keys(c.keyframes ?? {}).filter((k) => !["focus_x", "focus_y", "opacity", "volume", "blur"].includes(k));
-  if (c.position || busy.length || kf.length || c.motion || c.reverse || c.fit === "none")
-    throw new EditError(`'${c.id}' is moved/animated (${[c.position && "position", ...busy, ...kf.map((k) => "keyframes." + k), c.motion && "motion", c.reverse && "reverse", c.fit === "none" && "fit none"].filter(Boolean).join(", ")})`,
-      "unsupported", "vision ops map source pixels through a static layout (fit cover/contain/blur, size, x/y, scale, focus); remove the animation, run the op, then re-add it");
+  // a mirrored picture is drawn before the focus crop, so the analysed coordinates would not match it
+  const flips = (c.filters ?? []).map((f: any) => (typeof f === "string" ? f : f?.type)).filter((t: string) => t === "hflip" || t === "vflip").map((t: string) => "filter " + t);
+  if (c.position || busy.length || kf.length || flips.length || c.motion || c.reverse || c.fit === "none")
+    throw new EditError(`'${c.id}' is moved/animated (${[c.position && "position", ...busy, ...kf.map((k) => "keyframes." + k), ...flips, c.motion && "motion", c.reverse && "reverse", c.fit === "none" && "fit none"].filter(Boolean).join(", ")})`,
+      "unsupported", "vision ops map source pixels through a static layout (fit cover/contain/blur, size, x/y, scale, focus); remove the animation or flip, run the op, then re-add it");
 }
 
 /** source fraction (0..1 of the full source frame) -> canvas px, at clip-local time t */
@@ -95,16 +97,19 @@ function subjectTrack(tl: Timeline, c: Clip, d: V.Derived, within?: [number, num
 export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
 let sink: V.Derived[] | null = null;
 /** Run f and collect the analyses that vision ops found missing (each recorded a pending request instead). */
-export function collectMissing<T>(f: () => T): [T, V.Derived[]] {
+export const collectMissing = <T,>(f: () => T) => collect(f, (d) => !V.isReady(d));
+/** Like collectMissing, but also the analyses that are already cached (a pending request may have its file already). */
+export const collectAnalyses = <T,>(f: () => T) => collect(f, () => true);
+function collect<T>(f: () => T, keep: (d: V.Derived) => boolean): [T, V.Derived[]] {
   const prev = sink, got: V.Derived[] = [];
   sink = got;
-  try { return [f(), got]; } finally { sink = prev; }
+  try { return [f(), got.filter(keep)]; } finally { sink = prev; prev?.push(...got); }
 }
 const clearPending = (c: Clip, op: string) => { if (c.pending) { delete c.pending[op]; if (!Object.keys(c.pending).length) delete c.pending; } };
 /** The analysis d is cached: clear the request. Otherwise record it in clip.pending (d null = waiting on another request). */
 function ready(c: Clip, op: string, req: Dict, d: V.Derived | null): d is V.Derived {
-  if (d && V.isReady(d)) { clearPending(c, op); return true; }
   if (d) sink?.push(d);
+  if (d && V.isReady(d)) { clearPending(c, op); return true; }
   (c.pending ??= {})[op] = req;
   return false;
 }
