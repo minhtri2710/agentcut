@@ -57,15 +57,17 @@ check("stale undo -> conflict", und.ok === false && und.error.code === "conflict
 console.log("server");
 const ui = await startUi(dir, { port: 0 });
 const base = ui.url.replace(/\/$/, "");
-const raw = (path: string, o: { method?: string; host?: string; body?: unknown } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
-  const rq = request({ host: "127.0.0.1", port: ui.port, path, method: o.method ?? "GET",
-    headers: { host: o.host ?? `127.0.0.1:${ui.port}`, ...(o.body ? { "content-type": "application/json" } : {}) } }, (res) => {
+// `text` is a raw JSON body (possibly empty or malformed); `port` aims at another ui server
+const raw = (path: string, o: { method?: string; host?: string; body?: unknown; text?: string; port?: number; origin?: string } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
+  const port = o.port ?? ui.port;
+  const rq = request({ host: "127.0.0.1", port, path, method: o.method ?? "GET",
+    headers: { host: o.host ?? `127.0.0.1:${port}`, ...(o.origin ? { origin: o.origin } : {}), ...(o.body || o.text !== undefined ? { "content-type": "application/json" } : {}) } }, (res) => {
     const ch: Buffer[] = [];
     res.on("data", (c) => ch.push(c));
     res.on("end", () => ok({ status: res.statusCode!, body: Buffer.concat(ch), type: String(res.headers["content-type"]), headers: res.headers }));
   });
   rq.on("error", fail);
-  rq.end(o.body ? JSON.stringify(o.body) : undefined);
+  rq.end(o.text ?? (o.body ? JSON.stringify(o.body) : undefined));
 });
 const jget = async (path: string, o?: any) => { const r = await raw(path, o); return { status: r.status, j: JSON.parse(r.body.toString()) }; };
 
@@ -207,6 +209,47 @@ const fj2 = (await jget("/api/prepare", { method: "POST", body: {} })).j;
 renameSync(pfAway, pf);
 check("prepare that throws at once: the job fails with no_project", fj.kind === "prepare" && fdone?.status === "failed" && fdone.error?.code === "no_project", { fj, fdone });
 check("  the slot is free: the next request is a new job", !!fj.id && fj2.kind === "prepare" && fj2.id !== fj.id, { fj, fj2 });
+
+// download consent: only a literal allow_download=true reaches the helper; without it the job fails with the model list and nothing runs
+console.log("prepare consent");
+{
+  const log = join(tmp, "consent-uv.log"), capture = join(tmp, "consent-uv.mjs");
+  writeFileSync(capture, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, process.argv.at(-1) + "\\n");
+process.stderr.write("stopped before any fetch");
+process.exit(1);
+`);
+  chmodSync(capture, 0o755);
+  process.env.AGENTCUT_UV = capture;
+  const dirC = join(tmp, "consent");
+  api.create(dirC, { preset: "square" });
+  await api.apply(dirC, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1 }]);
+  const cid = JSON.parse(readFileSync(join(dirC, "project.json"), "utf8")).tracks.find((t: any) => t.id === "main").clips[0].id;
+  await api.apply(dirC, [{ op: "remove_background", id: cid, model: "u2net_human_seg" }]);
+  const uc = await startUi(dirC, { port: 0 });
+  const prep = async (o: { text?: string; origin?: string }) => {
+    const r = await jget("/api/prepare", { method: "POST", port: uc.port, ...o });
+    if (r.status !== 200) return r;
+    for (let i = 0; i < 300; i++) { const s = (await jget(`/api/jobs/${r.j.id}`, { port: uc.port })).j; if (s.status !== "running") return { status: 200, j: s }; await Bun.sleep(50); }
+    return r;
+  };
+  const runs = () => { try { return readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+  for (const [what, text] of [["no body", ""], ["{}", "{}"], ['"true" (a string)', '{"allow_download":"true"}'], ["1", '{"allow_download":1}'], ["false", '{"allow_download":false}']] as const) {
+    const r = await prep({ text });
+    check(`prepare with allow_download ${what}: model_not_cached with the model list, the helper never runs`,
+      r.j.status === "failed" && r.j.error?.code === "model_not_cached" && r.j.error.models?.[0]?.model === "u2net_human_seg" && r.j.error.models[0].approx_mb === 176 && runs().length === 0, r);
+  }
+  const bad = await prep({ text: '{"allow_download":tru' });
+  check("a malformed body is refused and nothing runs", bad.status === 400 && runs().length === 0, bad);
+  const xo2 = await jget("/api/prepare", { method: "POST", port: uc.port, text: '{"allow_download":true}', origin: "http://evil.example" });
+  check("cross-origin prepare with the flag -> 403, nothing runs", xo2.status === 403 && runs().length === 0, xo2);
+  const yes = await prep({ text: '{"allow_download":true}' });
+  const seen = runs();
+  check("allow_download true reaches the helper once, as allow_download", seen.length === 1 && seen[0].allow_download === true && yes.j.status === "failed" && yes.j.error?.code !== "model_not_cached", { seen, yes });
+  uc.server.closeAllConnections?.();
+  await new Promise((ok) => uc.server.close(ok));
+}
 
 // default port 4810 taken: the message names the port (this listener may fail if something else already holds it, which also blocks startUi)
 {
