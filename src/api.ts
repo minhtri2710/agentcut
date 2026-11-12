@@ -92,6 +92,14 @@ export function validate(project?: string) {
 const stillFmt = (out: string) => (/\.png$/i.test(out) ? "png" : "jpeg");
 const outPath = (p: Project, out: string | undefined, dflt: string) => (out ? (isAbsolute(out) ? out : presolve(out)) : join(p.root, dflt));
 
+/** Output scale: a finite number in (0, 4]; `undefined` takes `dflt`. Frames, sheets, scopes and renders share it. */
+const scaleOf = (v: number | undefined, dflt: number) => {
+  if (v === undefined) return dflt;
+  if (!(typeof v === "number" && v > 0 && v <= MAX_SCALE)) throw new M.EditError(`scale must be a number above 0 and at most ${MAX_SCALE}, got ${JSON.stringify(v)}`, "bad_value", "0.5 is half size, 1 is the timeline size");
+  return v;
+};
+const MAX_SCALE = 4, MAX_SHEET_TILES = 64; // the sheet already stopped `every` at 64 tiles
+
 /** One rendered frame as encoded bytes (no file written). */
 export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg" } = {}) {
   const p = openProject(project);
@@ -99,7 +107,7 @@ export async function frameImage(project: string | undefined, t: number | string
   p.requireValid(tl);
   const tt = M.parseTime(t);
   const { renderFrame } = await renderMod();
-  return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, !!o.guides, o.format ?? "jpeg") };
+  return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), !!o.guides, o.format ?? "jpeg") };
 }
 
 export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
@@ -119,7 +127,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   refuseSource(p.root, tl, out);
-  const png = await renderFrame(drawable(p, tl), p.root, tt, o.scale ?? 0.5, false, "png");
+  const png = await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), false, "png");
   const res = { t: tt, ...frameScopes(png, out, p.root) };
   CACHE.capPreviews(p, out);
   return res;
@@ -131,8 +139,13 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   p.requireValid(tl);
   const T = M.totalDuration(M.resolve(tl));
   let ts: number[];
-  if (o.times) ts = (typeof o.times === "string" ? o.times.split(",") : o.times).map((x) => M.parseTime(x));
-  else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
+  if (o.every !== undefined && !(o.every > 0)) throw new M.EditError(`every must be a number above 0, got ${JSON.stringify(o.every)}`, "bad_value");
+  if (o.count !== undefined && !(Number.isInteger(o.count) && o.count >= 1 && o.count <= MAX_SHEET_TILES)) throw new M.EditError(`count must be a whole number from 1 to ${MAX_SHEET_TILES}, got ${JSON.stringify(o.count)}`, "bad_value");
+  if (o.times) {
+    const list = typeof o.times === "string" ? o.times.split(",") : o.times;
+    if (list.length > MAX_SHEET_TILES) throw new M.EditError(`times lists ${list.length} frames; a sheet holds at most ${MAX_SHEET_TILES}`, "bad_value", "split it into several sheets");
+    ts = list.map((x) => M.parseTime(x));
+  } else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
   const { contactSheet } = await renderMod();
   const out = outPath(p, o.out, `previews/sheet-${Date.now()}.jpg`);
@@ -233,7 +246,7 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   if (o.subtitles) throw new M.EditError(`subtitles don't apply to ${ext}`, "bad_value", "omit subtitles, or render .mp4/.mov/.mkv/.webm");
   const t = M.parseTime(o.start ?? 0), T = M.totalDuration(M.resolve(M.clone(tl)));
   if (!(t >= 0 && t < T)) throw new M.EditError(`start ${t}s is outside the timeline`, "bad_value", `a still renders one frame: use 0 <= start < ${+T.toFixed(3)} (the duration)`);
-  let scale = o.scale ?? 1, quality = o.quality ?? "standard";
+  let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const transparent = M.parseColor(tl.settings.background ?? "#000000")[3] === 0;
   const alpha = o.alpha ?? transparent;
@@ -260,7 +273,7 @@ export async function render(project: string | undefined, o: {
   CACHE.sweepStale(p);
   const tl = p.load();
   p.requireValid(tl);
-  let scale = o.scale ?? 1, quality = o.quality ?? "standard";
+  let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(".mp4", o.draft ? "draft" : "");
   const start = M.parseTime(o.start ?? 0);

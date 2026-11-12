@@ -42,6 +42,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   });
 
   const server = createServer(async (req, res) => {
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("content-security-policy", "frame-ancestors 'none'");
     try { await route(req, res); }
     catch (e: any) {
       const status = e instanceof EditError ? (STATUS[e.code] ?? 422) : 500;
@@ -84,8 +87,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
       const key = `${a.abs}|${t.toFixed(2)}`;
       if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t).catch((e) => { thumbs.delete(key); throw e; })); }
+      const jpg = await thumbs.get(key); // a failure here is an error response, not an empty cached 200
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "max-age=3600" });
-      return res.end(await thumbs.get(key));
+      return res.end(jpg);
     }
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);
     if (req.method === "GET" && path.startsWith("/files/")) return sendFile(req, res, servedFile(path.slice("/files/".length)));
@@ -156,13 +160,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const abs = join(root, rel);
     for (const d of SERVED_DIRS) {
       const dir = join(root, d);
-      if (abs.startsWith(dir + sep) && existsSync(abs) && realpathSync(abs).startsWith(realpathSync(dir) + sep)) return abs;
+      if (abs.startsWith(dir + sep) && (!existsSync(abs) || realpathSync(abs).startsWith(realpathSync(dir) + sep))) return abs; // sendFile answers 404 for a missing path or a directory
     }
     throw new EditError("only files in renders/ and previews/ are served", "forbidden");
   }
 
   await new Promise<void>((ok, fail) => {
-    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${o.port} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
+    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${o.port ?? 4810} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
     server.listen(o.port ?? 4810, "127.0.0.1", ok);
   });
   server.on("close", () => unwatchFile(p.file));
@@ -189,7 +193,7 @@ async function readJson(req: IncomingMessage): Promise<Dict> {
 
 /** Streams a file with HTTP Range support (needed for <video> seeking). */
 function sendFile(req: IncomingMessage, res: ServerResponse, abs: string) {
-  if (!isAbsolute(abs) || !existsSync(abs)) return json(res, 404, { ok: false, error: { code: "not_found", message: "file not found" } });
+  if (!isAbsolute(abs) || !isFile(abs)) return json(res, 404, { ok: false, error: { code: "not_found", message: "file not found" } });
   const size = statSync(abs).size, type = MIME[extname(abs).toLowerCase()] ?? "application/octet-stream";
   const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
   if (m && size) {
@@ -197,10 +201,18 @@ function sendFile(req: IncomingMessage, res: ServerResponse, abs: string) {
     const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
     if (start > end) { res.writeHead(416, { "content-range": `bytes */${size}` }); return res.end(); }
     res.writeHead(206, { "content-type": type, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${size}`, "accept-ranges": "bytes" });
-    return createReadStream(abs, { start, end }).pipe(res);
+    return pipe(createReadStream(abs, { start, end }), res);
   }
   res.writeHead(200, { "content-type": type, "content-length": size, "accept-ranges": "bytes" });
-  createReadStream(abs).pipe(res);
+  pipe(createReadStream(abs), res);
+}
+
+const isFile = (abs: string) => statSync(abs, { throwIfNoEntry: false })?.isFile() === true;
+/** a read error after the headers went out can only end the connection; it must not escape as an unhandled stream error */
+function pipe(rs: ReturnType<typeof createReadStream>, res: ServerResponse) {
+  rs.on("error", () => res.destroy());
+  res.on("close", () => rs.destroy());
+  rs.pipe(res);
 }
 
 function thumbnail(abs: string, t: number): Promise<Buffer> {

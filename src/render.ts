@@ -355,7 +355,7 @@ export class Renderer {
     if (live.length > 1 || live.some((L) => L.type === "compound")) await Promise.all(live.map((L) => L.warm(t - L.start)));
   }
 
-  close() { for (const L of this.layers) L.close(); }
+  close() { for (const L of this.layers) L.close(); this.layerCanvases.clear(); }
 
   private center(c: Clip, lw: number, lh: number): [number, number] {
     const { W0, H0, k, W, H } = this;
@@ -389,7 +389,7 @@ export class Renderer {
     if (this.transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); }
     await this.warm(t); // decode visible media in parallel before compositing in order
     for (const L of this.layers) {
-      if (!(L.start - 1e-9 <= t && t < L.end - 1e-9)) { if (t > L.end + 1) L.close(); continue; }
+      if (!(L.start - 1e-9 <= t && t < L.end - 1e-9)) { if (t > L.end + 1) L.close(); this.layerCanvases.delete(L); continue; } // a finished layer keeps no full-size canvas
       const c = L.c, tl = t - L.start;
       const m = new A.Mods();
       const kf = c.keyframes || {};
@@ -582,20 +582,25 @@ export async function renderTiles(tl: Timeline, root: string, times: number[], t
   const rs = Array.from({ length: R }, () => new Renderer(structuredClone(tl), root, Math.min(1, tileW / tl.settings.width)));
   const tiles: Canvas[] = new Array(times.length);
   try {
-    await Promise.all(rs.map(async (rr, j) => {
-      for (let i = j; i < order.length; i += R) {
-        const t = times[order[i]];
-        const cv = await rr.frame(Math.min(t, Math.max(0, rr.duration - 1 / rr.fps)), guides);
-        const tile = createCanvas(rr.W, rr.H);
-        const tc = tile.getContext("2d");
-        tc.drawImage(cv, 0, 0);
-        const label = `${t.toFixed(2)}s`;
-        tc.font = "600 14px Menlo, Consolas, monospace";
-        tc.fillStyle = "rgba(0,0,0,0.75)"; tc.fillRect(0, 0, tc.measureText(label).width + 12, 22);
-        tc.fillStyle = "#fff"; tc.fillText(label, 6, 16);
-        tiles[order[i]] = tile;
-      }
+    let failed = false; // the first failure stops the other renderers at their next tile; all have stopped before they are closed
+    const done = await Promise.allSettled(rs.map(async (rr, j) => {
+      try {
+        for (let i = j; i < order.length && !failed; i += R) {
+          const t = times[order[i]];
+          const cv = await rr.frame(Math.min(t, Math.max(0, rr.duration - 1 / rr.fps)), guides);
+          const tile = createCanvas(rr.W, rr.H);
+          const tc = tile.getContext("2d");
+          tc.drawImage(cv, 0, 0);
+          const label = `${t.toFixed(2)}s`;
+          tc.font = "600 14px Menlo, Consolas, monospace";
+          tc.fillStyle = "rgba(0,0,0,0.75)"; tc.fillRect(0, 0, tc.measureText(label).width + 12, 22);
+          tc.fillStyle = "#fff"; tc.fillText(label, 6, 16);
+          tiles[order[i]] = tile;
+        }
+      } catch (e) { failed = true; throw e; }
     }));
+    const bad = done.find((r) => r.status === "rejected");
+    if (bad) throw (bad as PromiseRejectedResult).reason;
   } finally { for (const rr of rs) rr.close(); }
   if (!tiles.length) throw new EditError("no frames", "empty");
   return tiles;
