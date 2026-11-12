@@ -768,6 +768,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         else if (t.until_end) bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
         else for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = byId(lengthTarget(x)!)) {
           seen.add(x);
+          const next = byId(lengthTarget(x)!);
+          if (next?.until_end) { bad(`'${t.id}' takes its length from '${next.id}', which has until_end`, "follow a clip with its own duration"); break; }
           if (lengthTarget(x) === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }
         }
       }

@@ -225,9 +225,11 @@ function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
   if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
   const clips = tl.tracks.flatMap((x) => x.clips);
-  for (let x: Clip | undefined = t, seen = new Set<Clip>(); c && x && lengthTarget(x) !== undefined && !seen.has(x); x = clips.find((y) => y.id === lengthTarget(x!))) {
+  for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = clips.find((y) => y.id === lengthTarget(x!))) {
     seen.add(x);
-    if (lengthTarget(x) === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
+    const next = clips.find((y) => y.id === lengthTarget(x!));
+    if (next?.until_end) throw bad(`'${t.id}' takes its length from '${next.id}', which has until_end`, "follow a clip with its own duration");
+    if (c && lengthTarget(x) === c.id) throw bad(`'${t.id}' already follows '${c.id}'`, "break the cycle: give one of the clips its own duration");
   }
   return t.id;
 }

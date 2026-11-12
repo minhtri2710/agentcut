@@ -314,6 +314,8 @@ console.log("match_duration by clip reference");
     ["a cycle inside one batch", [{ op: "update_clip", id: "img2", match_duration: "vo1" }, { op: "update_clip", id: "vo1", match_duration: "img2" }]],
     ["an until_end target", [{ op: "update_clip", id: "img2", match_duration: "ue" }]],
     ["a cycle through an attached length", [{ op: "add_clip", track: "overlay", text: "x", id: "ay", attach_to: "cA", match_duration: true }, { op: "update_clip", id: "cC", match_duration: "ay" }]],
+    ["a chain that reaches an until_end clip", [{ op: "add_clip", track: "overlay", text: "x", id: "uy", attach_to: "ue", match_duration: true }, { op: "update_clip", id: "img2", match_duration: "uy" }]],
+    ["add_clip on a chain that reaches an until_end clip", [{ op: "add_clip", track: "overlay", text: "x", id: "uy", attach_to: "ue", match_duration: true }, { op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "uy" }]],
     ["add_clip, unknown id", [{ op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "nope" }]],
   ] as [string, any[]][]) {
     try { await api.apply(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
@@ -372,13 +374,12 @@ console.log("match_duration by clip reference");
     const once = structuredClone(x), twice = structuredClone(resolve(structuredClone(x)));
     check("  and one resolve settles the chain: attached length, follower, the clip after it", near(at(x, "tag").duration, 3.5) && near(at(x, "img2").duration, 3.5) && near(at(x, "img3").start, 7.5) && JSON.stringify(once) === JSON.stringify(twice), [at(x, "tag"), at(x, "img2"), at(x, "img3")]);
   }
-  { // ... and under an until_end clip: the follower of the attached follower counts at its floor length, so the stretch ends with the rest
+  { // ... but not through to an until_end clip: before it on a magnetic track, its start would move with its own length
     const x = base();
-    const ov = x.tracks.find((tr: any) => tr.id === "voice")!.clips;
-    ov.push({ id: "ue", type: "audio", asset: "s", start: 0, duration: 1, until_end: true });
-    x.tracks.push({ id: "fl", kind: "video", clips: [{ id: "ay", type: "image", asset: "i", start: 0, duration: 1, attach_to: "ue", match_duration: true, end_offset: -0.5 }, { id: "af", type: "image", asset: "i", start: 0, duration: 1, match_duration: "ay", end_offset: -0.5 }] });
-    const a = structuredClone(resolve(x)), b = structuredClone(resolve(structuredClone(a)));
-    check("resolve: a follower of a follower of an until_end clip is a fixed point and the clip ends with the rest", JSON.stringify(a) === JSON.stringify(b) && near(at(a, "ue").duration, 6), [at(a, "ue"), at(a, "ay"), at(a, "af")]);
+    x.tracks.find((tr: any) => tr.id === "main")!.clips.push({ id: "ue", type: "image", asset: "i", start: 0, duration: 1, until_end: true });
+    x.tracks.find((tr: any) => tr.id === "main")!.clips.unshift({ id: "af", type: "image", asset: "i", start: 0, duration: 1, match_duration: "ay" });
+    x.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "ay", type: "image", asset: "i", start: 0, duration: 1, attach_to: "ue", match_duration: true });
+    check("validate: a follower whose length chain reaches an until_end clip is an error", validate(x).some((i: any) => i.level === "error" && i.path.endsWith("<af>.match_duration") && /until_end/.test(i.message)), validate(x));
   }
   { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "vo1").match_duration = true;
     check("validate: match_duration:true without attach_to is a plain length, so a good target", !validate(x).some((i: any) => i.level === "error"), validate(x)); }
