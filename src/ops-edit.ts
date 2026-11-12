@@ -27,8 +27,11 @@ function room(tl: Timeline, c: Clip, side: Side): number {
 /** Move a clip's content e seconds in clip-local time: keyframes (not a speed ramp) and caption words; words that end before the clip's head are dropped. */
 export function shiftKfs(c: Clip, e: number) {
   if (!e) return;
-  if (c.type === "captions" && Array.isArray(c.words))
-    c.words = c.words.filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
+  if (c.type === "captions" && !c.words?.length && c.srt)
+    throw new EditError(`captions '${c.id}' come from srt, whose times cannot be moved by this edit`, "bad_type", "give the clip 'words' (seconds relative to the clip start) instead of srt, or edit the srt times");
+  if (c.type === "captions" && Array.isArray(c.words)) // words may use the s/e aliases (captionWords)
+    c.words = c.words.map((w: any) => ({ ...w, start: Number(w.start ?? w.s ?? 0), end: Number(w.end ?? w.e ?? 0) }))
+      .filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
   if (!c.keyframes) return;
   for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
     c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
