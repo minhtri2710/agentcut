@@ -730,12 +730,12 @@ fi
   // transcribe errors: the media, the range and the engine are checked before anything runs, each error names its cause, and a failed engine
   // reports its own `error:` line, never its usage text. Stand-in engines and a recording ffmpeg on a PATH of their own (no real whisper).
   {
-    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail");
+    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail"), ffTrimFail = join(E, "ffmpeg.trimfail");
     mkdirSync(tools, { recursive: true });
     const realOf = (n: string) => (process.env.PATH ?? "").split(":").map((d) => join(d, n)).find((f) => existsSync(f))!;
     for (const n of ["ffmpeg", "ffprobe"]) symlinkSync(realOf(n), join(tools, n));
     const stubFf = join(E, "ff"); mkdirSync(stubFf);
-    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nif [ -e '${ffTrimFail}' ]; then case "$*" in *copy*) echo "boom: cannot trim" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
     const engine = (dir: string, name: string, body: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), `#!/bin/sh\necho "${name}" >> '${asrLog}'\n${body}`, { mode: 0o755 }); return dir; };
     // whisper.cpp's own output for a language it does not know (exit 0, no json), captured from whisper-cli 1.9.5
     const unknownLanguage = `printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." "  -h,        --help                 [default] show this help message and exit" >&2\n`;
@@ -767,12 +767,23 @@ fi
       withPath(bin, stubFf); // the stand-in that writes whisper.json
       const open = await AN.transcribe(src, "vi", model, [1, undefined]);
       check("transcribe: a start with no end runs to the media's end, word times in media seconds", open.words[0].start === 1.2 && open.words[0].end === 1.5, open.words);
+      writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" b", 6300, 6800), tok(" c", 6900, 7200)] }));
+      const clamped = await AN.transcribe(src, "vi", model, [1, undefined]);
+      check("transcribe: a start with no end clamps like an end at the media's length: a word past it is dropped, one crossing it ends there", clamped.words.map((w: any) => w.text).join() === "a,b" && clamped.words[1].end === len, clamped.words);
 
       // the extraction: ffmpeg's own message, and no engine start
       writeFileSync(ffFail, "");
       e = await err(() => AN.transcribe(src, "vi", model));
       rmSync(ffFail);
       check("transcribe: a failed extraction reports ffmpeg's message and starts no engine", e.code === "decode_failed" && e.message.includes("boom: cannot open the input") && started(asrLog).length === 0, { code: e.code, msg: e.message });
+
+      // the trim of a silent start: the same ffmpeg error, and no engine start
+      const lead = join(E, "lead.wav");
+      ff("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-f", "lavfi", "-i", "sine=frequency=300:duration=2:sample_rate=24000", "-filter_complex", "concat=n=2:v=0:a=1", lead);
+      writeFileSync(ffTrimFail, "");
+      e = await err(() => AN.transcribe(lead, "vi", model));
+      rmSync(ffTrimFail);
+      check("transcribe: a failed trim of a silent start reports ffmpeg's message and starts no engine", e.code === "decode_failed" && e.message.includes("boom: cannot trim") && started(asrLog).length === 0, { code: e.code, msg: e.message });
 
       // a failed engine: its first error line, or its exit status; usage text is not in the message
       const usage = `echo "usage: whisper-cli [options] file0 file1 ..." >&2\necho "  -h, --help   show this help message and exit" >&2\n`;
@@ -792,7 +803,13 @@ fi
       delete process.env.AGENTCUT_WHISPER_MODEL;
       withPath(engine(join(E, "py"), "whisper", `echo "Traceback (most recent call last):" >&2\necho "ValueError: Unsupported language: xx" >&2\nexit 1\n`), stubFf);
       e = await err(() => AN.transcribe(src, "xx", "base"));
-      check("transcribe: python whisper failing on a language is asr_failed with its exit status, and its model name is not checked as a path", e.code === "asr_failed" && e.message.includes("1") && !/Traceback/.test(e.message), { code: e.code, msg: e.message });
+      check("transcribe: python whisper failing on a language is bad_value naming it, and its model name is not checked as a path", e.code === "bad_value" && e.message.includes("xx") && !/Traceback/.test(e.message), { code: e.code, msg: e.message });
+      withPath(engine(join(E, "py-err"), "whisper", `echo "Traceback (most recent call last):" >&2\necho "RuntimeError: ran out of memory" >&2\nexit 1\n`), stubFf);
+      e = await err(() => AN.transcribe(src, "vi", "base"));
+      check("transcribe: another python whisper failure is asr_failed with its last exception line, not the traceback", e.code === "asr_failed" && e.message.includes("ran out of memory") && !/Traceback/.test(e.message), { code: e.code, msg: e.message });
+      withPath(engine(join(E, "py-code"), "whisper", `echo "Traceback (most recent call last):" >&2\nexit 1\n`), stubFf);
+      e = await err(() => AN.transcribe(src, "vi", "base"));
+      check("transcribe: a python whisper failure with no exception line shows its exit status", e.code === "asr_failed" && e.message.includes("1") && !/Traceback/.test(e.message), { code: e.code, msg: e.message });
       withPath(engine(join(E, "py-none"), "whisper", `exit 0\n`), stubFf);
       e = await err(() => AN.transcribe(src, "vi"));
       check("transcribe: python whisper exiting 0 with no output is asr_failed", e.code === "asr_failed", { code: e.code, msg: e.message });
@@ -802,12 +819,12 @@ fi
       withPath(cli, stubFf);
       e = await err(() => AN.transcribe(src, "vi"));
       const cap = (api.capabilities() as any).engines.transcribe;
-      check("whisper-cli without a model: transcribe is missing_dependency and its hint is capabilities' hint, which says to set the model", e.code === "missing_dependency" && cap.available === false && e.hint === cap.hint && cap.hint.includes("AGENTCUT_WHISPER_MODEL") && !cap.hint.includes("brew install"), { code: e.code, hint: e.hint, cap });
+      check("whisper-cli without a model: capabilities names no engine, transcribe is missing_dependency, and its hint starts with capabilities' hint, which says to set the model", e.code === "missing_dependency" && cap.available === false && cap.engine === null && e.hint.startsWith(cap.hint) && /srt/.test(e.hint) && cap.hint.includes("AGENTCUT_WHISPER_MODEL") && !cap.hint.includes("brew install"), { code: e.code, hint: e.hint, cap });
       check("  and no extraction or engine ran before the dependency check", started(ffLog).length === 0 && started(asrLog).length === 0, { ff: started(ffLog), asr: started(asrLog) });
       withPath(stubFf);
       e = await err(() => AN.transcribe(src, "vi"));
       const none = (api.capabilities() as any).engines.transcribe;
-      check("no engine at all: transcribe is missing_dependency and its hint is capabilities' hint, which says to install one", e.code === "missing_dependency" && none.available === false && e.hint === none.hint && none.hint.includes("install") && started(ffLog).length === 0, { code: e.code, hint: e.hint, none });
+      check("no engine at all: transcribe is missing_dependency and its hint starts with capabilities' hint, which says to install one", e.code === "missing_dependency" && none.available === false && e.hint.startsWith(none.hint) && /srt/.test(e.hint) && none.hint.includes("install") && started(ffLog).length === 0, { code: e.code, hint: e.hint, none });
 
       // add_captions reaches the same errors without passing api.transcribe
       process.env.AGENTCUT_WHISPER_MODEL = model;
@@ -854,14 +871,14 @@ fi
       check("engines.vision: AGENTCUT_UV pointing at a missing file is not available", engines().vision.available === false);
       setEnv({ AGENTCUT_WHISPER_MODEL: undefined, AGENTCUT_PIPER_MODEL: join(eng, "missing.onnx") });
       e = engines();
-      check("engines.transcribe: a CLI without a model is not available, with a hint", e.transcribe.available === false && e.transcribe.model === null && /^whisper-cli found: set AGENTCUT_WHISPER_MODEL=/.test(e.transcribe.hint), e.transcribe);
+      check("engines.transcribe: a CLI without a model is not available, with a hint", e.transcribe.available === false && e.transcribe.engine === null && e.transcribe.model === null && /^whisper-cli found: set AGENTCUT_WHISPER_MODEL=/.test(e.transcribe.hint), e.transcribe);
       setEnv({ PATH: `${eng}:${engPy}` });
       check("engines.transcribe: python whisper on PATH without a model is available, with no model",
         engines().transcribe.available === true && engines().transcribe.engine === "whisper" && engines().transcribe.model === null && !engines().transcribe.hint, engines().transcribe);
       setEnv({ PATH: eng });
       check("engines.tts: piper without its model file is not available, with a hint", e.tts.providers.find((p: any) => p.name === "piper")?.available === false && !!e.tts.providers.find((p: any) => p.name === "piper")?.hint, e.tts);
       setEnv({ AGENTCUT_WHISPER_MODEL: join(eng, "missing.bin") });
-      check("engines.transcribe: a model path that does not exist is not available", engines().transcribe.available === false && engines().transcribe.model === null);
+      check("engines.transcribe: a model path that does not exist is not available, its engine is still the selected CLI, and the hint does not name a model argument", engines().transcribe.available === false && engines().transcribe.engine === "whisper-cli" && engines().transcribe.model === null && !/argument/.test(engines().transcribe.hint), engines().transcribe);
       check("capabilities started no engine binary (whisper-cli, piper, uv, the system engine, whisper)", !existsSync(started), existsSync(started) && readFileSync(started, "utf8"));
       // transcribe(), python branch: the one start of `whisper` is the transcription itself
       setEnv({ PATH: `${eng}:${engPy}:${was.PATH}`, AGENTCUT_WHISPER_MODEL: undefined });

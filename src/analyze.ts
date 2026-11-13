@@ -322,7 +322,7 @@ function asrState(model = process.env.AGENTCUT_WHISPER_MODEL): Asr {
 }
 
 /** What to do about a state that cannot transcribe. */
-const asrHint = (a: Asr) => a.kind === "bad_model" ? `whisper model ${a.model} does not exist: point AGENTCUT_WHISPER_MODEL (or the model argument) at a ggml model file`
+const asrHint = (a: Asr) => a.kind === "bad_model" ? `whisper model ${a.model} does not exist: name an existing ggml model file (AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin)`
   : a.kind === "no_model" ? `${a.cli} found: set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin`
   : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`";
 
@@ -330,16 +330,18 @@ const asrHint = (a: Asr) => a.kind === "bad_model" ? `whisper model ${a.model} d
 export function transcribeEngine() {
   const a = asrState(), available = a.kind === "cli" || a.kind === "python";
   return {
-    available, engine: a.kind === "python" ? "whisper" : a.kind === "cli" || a.kind === "bad_model" || a.kind === "no_model" ? a.cli : null, model: a.kind === "cli" ? a.model : null,
+    // engine is named only when one is selected
+    available, engine: a.kind === "python" ? "whisper" : a.kind === "cli" || a.kind === "bad_model" ? a.cli : null, model: a.kind === "cli" ? a.model : null,
     languages: "auto, or a whisper language code such as vi or en",
     ...(available ? {} : { hint: asrHint(a) }),
   };
 }
 
-/** A failed engine run, by the engine's own words: its first `error:` line (or its exit status), never its usage text. A language it does not know is bad_value. */
+/** A failed engine run, by the engine's own words: its first `error:` line, else (python) its last exception line, else its exit status; never its usage text. A language it does not know is bad_value. */
 function asrError(name: string, r: { status: number | null; stderr: string }, language?: string) {
-  const line = r.stderr.split("\n").map((l) => l.trim()).find((l) => l.startsWith("error:"));
-  if (line && /unknown language/i.test(line)) return new EditError(`unknown language '${language ?? "auto"}'`, "bad_value", "a whisper language code such as vi or en, or leave language out to detect it");
+  const lines = r.stderr.split("\n").map((l) => l.trim());
+  const line = lines.find((l) => l.startsWith("error:")) ?? lines.reverse().find((l) => /^\w+(Error|Exception):/.test(l));
+  if (line && /(unknown|unsupported) language/i.test(line)) return new EditError(`unknown language '${language ?? "auto"}'`, "bad_value", "a whisper language code such as vi or en, or leave language out to detect it");
   return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
 
@@ -364,8 +366,8 @@ export async function transcribe(path: string, language?: string, model?: string
     throw new EditError("transcribe range must be [start, end] in seconds with 0 <= start < end", "bad_value", "e.g. [0, 12.5]: the speech only; analyze_silence or the voiceover's length gives it");
   const asr = asrState(model);
   if (asr.kind === "bad_model") throw new EditError(`whisper model not found: ${asr.model}`, "not_found", asrHint(asr));
-  if (asr.kind === "no_model" || asr.kind === "none") throw new EditError(asr.kind === "none" ? "transcription needs whisper" : `${asr.cli} found, but no model is set`, "missing_dependency", asrHint(asr));
-  const [from, to] = range ?? [0, undefined];
+  if (asr.kind === "no_model" || asr.kind === "none") throw new EditError(asr.kind === "none" ? "transcription needs whisper" : `${asr.cli} found, but no model is set`, "missing_dependency", `${asrHint(asr)}; or give add_captions words or srt`);
+  const from = range?.[0] ?? 0, to = range ? (range[1] ?? (length > 0 ? length : undefined)) : undefined; // an open end is the media's end
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
