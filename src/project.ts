@@ -9,7 +9,7 @@ import {
   totalDuration, type Track, validate,
 } from "./model.ts";
 import { own } from "./own.ts";
-import { checkDir, createExclusive, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
+import { checkDir, createExclusive, createFile, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
 const MAX_HISTORY = 100;
@@ -309,12 +309,24 @@ export class Project {
     const errs = this.validate(tl).filter((i) => i.level === "error");
     if (errs.length) throw new EditError(`timeline has ${errs.length} error(s); first: ${errs[0].path}: ${errs[0].message}`, "invalid_timeline", errs[0].hint ?? "run validate for the full list");
   }
+  /** A new file in renders/ no other call has: the name is reserved with an exclusive create (0 bytes), so two calls in the same second
+   *  get two names (`-2`, `-3` ... after the stamp). The caller's output replaces the reserved file; a caller that fails calls `releaseOutput`.
+   *  shortcut: a SIGKILL between reserve and rename leaves a 0-byte file in renders/; sweep it if that ever matters */
   defaultOutput(ext = ".mp4", tag = "") {
     // one file-name component: no separators or control characters, no leading dot (so never ".." or a hidden file)
     const name = String(this.load().name ?? "").replace(/[\\/\x00-\x1f]/g, "_").replace(/^\.+/, "") || "video";
     const d = new Date(), pad = (n: number) => String(n).padStart(2, "0");
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    return join(this.root, "renders", `${name}${tag ? "-" + tag : ""}-${stamp}${ext}`);
+    const dir = ensureDir(this.root, join(this.root, "renders"));
+    for (let n = 1; ; n++) {
+      const file = join(dir, `${name}${tag ? "-" + tag : ""}-${stamp}${n > 1 ? `-${n}` : ""}${ext}`);
+      try { createFile(file, ""); return file; } catch (e: any) { if (e.code !== "EEXIST") throw e; }
+    }
+  }
+  /** Give back a name `defaultOutput` reserved, if nothing was written to it. */
+  releaseOutput(file: string) {
+    const st = lstatSync(file, { throwIfNoEntry: false });
+    if (st?.isFile() && st.size === 0) rmSync(file, { force: true });
   }
 }
 

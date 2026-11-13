@@ -159,7 +159,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   const text = "Xin chào các bạn. Hôm nay chúng ta sẽ học cách dựng video thật nhanh. Đừng quên đăng ký kênh nhé!";
   const r = (await api.apply(P, [{ op: "add_voiceover", text, voice: "Linh", captions: "clean" }])).results[0];
   const vo = join(P, r.path), segs = (await AN.silence(vo, -40, 0.15)).speech;
-  const cap = api.info(P, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
+  const cap = (await api.info(P, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
   const firsts = cap.words.filter((_: any, i: number) => i === 0 || /[.!?]$/.test(cap.words[i - 1].text));
   check(`voiceover ${r.duration.toFixed(2)} s, ${segs.length} speech segments for 3 sentences`, r.duration > 3 && segs.length === 3, segs);
   check("each sentence's caption starts with its speech segment (not inside a pause)",

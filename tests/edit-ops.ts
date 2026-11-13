@@ -40,8 +40,8 @@ async function fails(o: any, code: string, name: string) {
   try { await one(o); check(name, false, "no error"); }
   catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
 }
-const tl = () => api.info(P, "json").timeline;
-const clip = (id: string) => tl().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
+const tl = async () => (await api.info(P, "json")).timeline;
+const clip = async (id: string) => (await tl()).tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply([
   { op: "add_clip", track: "main", src: join(m, "a.mp4"), in: 1, duration: 3 },   // vid1 0..3
@@ -54,10 +54,10 @@ await apply([
 console.log("detach_audio");
 const d = await one({ op: "detach_audio", id: "vid1" });
 check("detach returns ids", d.id === "vid1" && d.audio === "aud1" && d.track === "dialogue", d);
-const a1 = clip("aud1"), dlg = tl().tracks.find((t: any) => t.id === "dialogue");
+const a1 = (await clip("aud1")), dlg = (await tl()).tracks.find((t: any) => t.id === "dialogue");
 check("dialogue track created as an audio track with no role (it ducks nothing)", dlg?.kind === "audio" && dlg.role === undefined, dlg);
-check("audio clip mirrors video", a1.attach_to === "vid1" && a1.offset === 0 && a1.in === 1 && a1.duration === 3 && a1.start === 0 && a1.asset === clip("vid1").asset, a1);
-check("video muted", clip("vid1").muted === true);
+check("audio clip mirrors video", a1.attach_to === "vid1" && a1.offset === 0 && a1.in === 1 && a1.duration === 3 && a1.start === 0 && a1.asset === (await clip("vid1")).asset, a1);
+check("video muted", (await clip("vid1")).muted === true);
 await fails({ op: "detach_audio", id: "vid1" }, "already_detached", "detach twice -> already_detached");
 await fails({ op: "detach_audio", id: "vid4" }, "no_audio", "silent video -> no_audio");
 await one({ op: "set_keyframes", id: "vid3", prop: "speed", keyframes: [[0, 1], [1, 2]] });
@@ -73,10 +73,10 @@ await fails({ op: "detach_audio" }, "missing_arg", "missing id -> missing_arg");
 
 console.log("j_cut");
 const j = await one({ op: "j_cut", id: "main#1", seconds: 0.5, crossfade: 0.2 });
-const a2 = clip("aud2");
-check("auto-detached", j.detached === true && j.audio === "aud2" && clip("vid2").muted === true, j);
+const a2 = (await clip("aud2"));
+check("auto-detached", j.detached === true && j.audio === "aud2" && (await clip("vid2")).muted === true, j);
 check("audio leads by 0.5", near(a2.in, 1.0) && near(a2.offset, -0.5) && near(a2.duration, 3.5) && near(a2.start, 2.5) && a2.fade_in === 0.2, a2);
-check("picture unchanged", near(clip("vid2").start, 3) && near(clip("vid2").duration, 3) && near(clip("vid2").in, 1.5));
+check("picture unchanged", near((await clip("vid2")).start, 3) && near((await clip("vid2")).duration, 3) && near((await clip("vid2")).in, 1.5));
 check("reports previous audio underneath", j.under?.includes("aud1"), j);
 const jc = await one({ op: "j_cut", id: "vid2", seconds: 5 }, true);
 check("lead clamped to source in-point", jc.clamped?.applied === 1 && near(jc.audio_in, 0) && near(jc.audio_start, 1.5) && jc.clamped.reason === "source media", jc);
@@ -86,34 +86,34 @@ await fails({ op: "j_cut", id: "vid2" }, "missing_arg", "missing seconds -> miss
 
 console.log("l_cut");
 const l = await one({ op: "l_cut", id: "vid1", seconds: 1 });
-check("audio tail +1", near(clip("aud1").duration, 4) && near(clip("aud1").in, 1) && near(clip("aud1").start, 0) && near(clip("vid1").duration, 3), clip("aud1"));
+check("audio tail +1", near((await clip("aud1")).duration, 4) && near((await clip("aud1")).in, 1) && near((await clip("aud1")).start, 0) && near((await clip("vid1")).duration, 3), (await clip("aud1")));
 check("l_cut reports overlap", l.under?.includes("aud2"), l);
 const lc = await one({ op: "l_cut", id: "aud1", seconds: 10 }, true);
 check("tail clamped to source end (accepts audio id)", lc.clamped?.applied === 1 && near(lc.audio_duration, 5), lc);
 
 console.log("slip_clip");
 const s = await one({ op: "slip_clip", id: "vid2", by: 0.5 });
-check("video slipped", near(s.in, 2) && near(clip("vid2").start, 3) && near(clip("vid2").duration, 3), s);
-check("detached audio slipped too", near(clip("aud2").in, 1.5) && near(clip("aud2").start, 2.5), clip("aud2"));
+check("video slipped", near(s.in, 2) && near((await clip("vid2")).start, 3) && near((await clip("vid2")).duration, 3), s);
+check("detached audio slipped too", near((await clip("aud2")).in, 1.5) && near((await clip("aud2")).start, 2.5), (await clip("aud2")));
 await fails({ op: "slip_clip", id: "vid2", by: -3 }, "out_of_range", "slip before source start -> out_of_range");
 await fails({ op: "slip_clip", id: "vid2", by: 1.6 }, "out_of_range", "slip past source end -> out_of_range");
 await fails({ op: "slip_clip", id: "img1", by: 0.5 }, "bad_type", "slip image -> bad_type");
 
 console.log("roll_edit (magnetic)");
 const r = await one({ op: "roll_edit", id: "main#1", by: 0.5 });
-check("cut moved later", near(clip("vid2").duration, 3.5) && near(clip("vid3").in, 0.5) && near(clip("vid3").duration, 1.5) && near(clip("vid3").start, 6.5), r);
-check("outgoing detached audio rolled", near(clip("aud2").duration, 4) && near(clip("aud2").in, 1.5), clip("aud2"));
-check("total length unchanged", near(api.info(P).duration, 8));
+check("cut moved later", near((await clip("vid2")).duration, 3.5) && near((await clip("vid3")).in, 0.5) && near((await clip("vid3")).duration, 1.5) && near((await clip("vid3")).start, 6.5), r);
+check("outgoing detached audio rolled", near((await clip("aud2")).duration, 4) && near((await clip("aud2")).in, 1.5), (await clip("aud2")));
+check("total length unchanged", near((await api.info(P)).duration, 8));
 await fails({ op: "roll_edit", id: "main#-1", by: 0.5 }, "no_next", "roll last clip -> no_next");
 await fails({ op: "roll_edit", id: "vid2", by: -4 }, "out_of_range", "roll too far -> out_of_range");
 await fails({ op: "roll_edit", id: "vid2", by: 1.2 }, "out_of_range", "roll past source -> out_of_range");
 
 console.log("slide_clip (magnetic)");
 const sl = await one({ op: "slide_clip", id: "vid2", by: -0.5 });
-check("prev shortened, next extended", near(clip("vid1").duration, 2.5) && near(clip("vid3").in, 0) && near(clip("vid3").duration, 2) && near(clip("vid2").start, 2.5), sl);
-check("prev detached audio follows, slid clip audio follows", near(clip("aud1").duration, 3.5) && near(clip("aud2").start, 2), [clip("aud1"), clip("aud2")]);
-check("content of slid clip unchanged", near(clip("vid2").in, 2) && near(clip("vid2").duration, 3.5));
-check("total length still 8", near(api.info(P).duration, 8));
+check("prev shortened, next extended", near((await clip("vid1")).duration, 2.5) && near((await clip("vid3")).in, 0) && near((await clip("vid3")).duration, 2) && near((await clip("vid2")).start, 2.5), sl);
+check("prev detached audio follows, slid clip audio follows", near((await clip("aud1")).duration, 3.5) && near((await clip("aud2")).start, 2), [(await clip("aud1")), (await clip("aud2"))]);
+check("content of slid clip unchanged", near((await clip("vid2")).in, 2) && near((await clip("vid2")).duration, 3.5));
+check("total length still 8", near((await api.info(P)).duration, 8));
 await fails({ op: "slide_clip", id: "main#0", by: 0.5 }, "no_neighbour", "slide first magnetic clip -> no_neighbour");
 await fails({ op: "slide_clip", id: "vid2", by: -2.5 }, "out_of_range", "slide past prev -> out_of_range");
 
@@ -125,10 +125,10 @@ await apply([
   { op: "add_clip", track: "b", src: join(m, "p.png"), at: 6, duration: 1, id: "n3" },
 ]);
 await one({ op: "roll_edit", id: "n1", by: 0.5 });
-check("roll: n1 longer, n2 starts later with later in", near(clip("n1").duration, 2.5) && near(clip("n2").start, 2.5) && near(clip("n2").in, 2.5) && near(clip("n2").duration, 1.5), [clip("n1"), clip("n2")]);
+check("roll: n1 longer, n2 starts later with later in", near((await clip("n1")).duration, 2.5) && near((await clip("n2")).start, 2.5) && near((await clip("n2")).in, 2.5) && near((await clip("n2")).duration, 1.5), [(await clip("n1")), (await clip("n2"))]);
 await fails({ op: "roll_edit", id: "n2", by: 0.5 }, "not_adjacent", "roll with a gap -> not_adjacent");
 const ns = await one({ op: "slide_clip", id: "n2", by: 0.5 });
-check("slide: touching prev grows, n2 moves", near(clip("n1").duration, 3) && near(clip("n2").start, 3) && near(clip("n2").in, 2.5) && !ns.next && !ns.overlaps, ns);
+check("slide: touching prev grows, n2 moves", near((await clip("n1")).duration, 3) && near((await clip("n2")).start, 3) && near((await clip("n2")).in, 2.5) && !ns.next && !ns.overlaps, ns);
 const ov = await one({ op: "slide_clip", id: "n2", by: 2 }, true);
 check("slide into a non-touching neighbour reports overlap", ov.overlaps?.includes("n3") && near(ov.start, 5), ov);
 await fails({ op: "slide_clip", id: "n1", by: -1 }, "out_of_range", "slide before 0 -> out_of_range");
@@ -293,23 +293,23 @@ console.log("replace_timeline: expected revision, and the saved revision is the 
 {
   const R = join(tmp, "proj-replace");
   api.create(R, { preset: "720p" });
-  const cur = api.info(R, "json").timeline;
-  const rev = () => api.info(R, "json").revision;
+  const cur = (await api.info(R, "json")).timeline;
+  const rev = async () => (await api.info(R, "json")).revision;
   const replace = (input: any, opts: any = {}) => api.apply(R, [{ op: "replace_timeline", timeline: input }], opts).catch((e: any) => e);
   await api.apply(R, [{ op: "set_settings", name: "newer edit" }]); // the project moves past the revision `cur` was read at
-  const now0 = api.info(R, "json");
+  const now0 = (await api.info(R, "json"));
   const stale: any = await replace({ ...structuredClone(cur), name: "stale replace" });
-  check("a timeline read at an older revision is refused as conflict, with a hint, and nothing changes", stale.code === "conflict" && !!stale.hint && rev() === now0.revision && api.info(R, "json").timeline.name === "newer edit", { code: stale.code, message: stale.message, revision: rev() });
+  check("a timeline read at an older revision is refused as conflict, with a hint, and nothing changes", stale.code === "conflict" && !!stale.hint && (await rev()) === now0.revision && (await api.info(R, "json")).timeline.name === "newer edit", { code: stale.code, message: stale.message, revision: (await rev()) });
   const staleDry: any = await replace({ ...structuredClone(cur), name: "stale replace" }, { dryRun: true });
   check("  a dry run refuses it the same way", staleDry.code === "conflict", { code: staleDry.code });
   const t1 = performance.now();
   const fresh: any = await replace({ ...structuredClone(now0.timeline), name: "replaced at the current revision" });
-  check("a timeline at the current revision is applied at once, and the saved revision is the project's next one", fresh.ok === true && fresh.revision === now0.revision + 1 && rev() === fresh.revision && api.info(R, "json").timeline.name === "replaced at the current revision" && performance.now() - t1 < 5000, { code: fresh.code, message: fresh.message, revision: rev() });
-  const bare: any = structuredClone(api.info(R, "json").timeline);
+  check("a timeline at the current revision is applied at once, and the saved revision is the project's next one", fresh.ok === true && fresh.revision === now0.revision + 1 && (await rev()) === fresh.revision && (await api.info(R, "json")).timeline.name === "replaced at the current revision" && performance.now() - t1 < 5000, { code: fresh.code, message: fresh.message, revision: (await rev()) });
+  const bare: any = structuredClone((await api.info(R, "json")).timeline);
   delete bare.revision; bare.name = "replaced without a revision";
-  const before = rev(), res: any = await replace(bare);
-  check("a timeline without revision replaces whatever is there", res.ok === true && res.revision === before + 1 && api.info(R, "json").timeline.name === "replaced without a revision", { code: res.code, message: res.message });
-  const bad: any = await replace({ ...structuredClone(api.info(R, "json").timeline), revision: "x" });
+  const before = (await rev()), res: any = await replace(bare);
+  check("a timeline without revision replaces whatever is there", res.ok === true && res.revision === before + 1 && (await api.info(R, "json")).timeline.name === "replaced without a revision", { code: res.code, message: res.message });
+  const bad: any = await replace({ ...structuredClone((await api.info(R, "json")).timeline), revision: "x" });
   check("a revision that is not an integer is refused as bad_revision", bad.code === "bad_revision", { code: bad.code });
 }
 
@@ -364,8 +364,8 @@ console.log("match_duration by clip reference");
     { op: "add_clip", track: "text", text: "x", id: "att", attach_to: "img1", offset: 0.1, match_duration: true },
     { op: "update_clip", id: "cA", match_duration: "cB" }, { op: "update_clip", id: "cB", match_duration: "cC" },
   ]);
-  const rev = () => api.info(Q, "json").timeline.revision;
-  const r0 = rev();
+  const rev = async () => (await api.info(Q, "json")).timeline.revision;
+  const r0 = (await rev());
   for (const [name, ops] of [
     ["unknown id", [{ op: "update_clip", id: "img2", match_duration: "nope" }]],
     ["unknown ref", [{ op: "update_clip", id: "img2", match_duration: "overlay#99" }]],
@@ -381,12 +381,12 @@ console.log("match_duration by clip reference");
     ["add_clip, unknown id", [{ op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "nope" }]],
   ] as [string, any[]][]) {
     try { await api.apply(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
-    catch (e: any) { check(`${name}: bad_ref, a hint, nothing written`, e.code === "bad_ref" && !!e.hint && rev() === r0, { code: e.code, message: e.message, hint: e.hint }); }
+    catch (e: any) { check(`${name}: bad_ref, a hint, nothing written`, e.code === "bad_ref" && !!e.hint && (await rev()) === r0, { code: e.code, message: e.message, hint: e.hint }); }
   }
   check("the unknown-id hint suggests a name", await api.apply(Q, [{ op: "update_clip", id: "img1", match_duration: "img22" }]).then(() => "", (e: any) => e.hint) === "did you mean 'img2'?");
-  const qi = api.info(Q, "json");
+  const qi = (await api.info(Q, "json"));
   await api.apply(Q, [{ op: "update_clip", id: "img2", match_duration: "vo1" }]);
-  const qi2 = api.info(Q, "json");
+  const qi2 = (await api.info(Q, "json"));
   check("project_info shows the resolved duration", qi.errors === 0 && qi2.errors === 0 && qi2.timeline.tracks[0].clips[1].duration === 3 && near(qi2.duration, 5), qi2.timeline.tracks[0].clips);
 
   // remove_clip of the target
@@ -584,15 +584,15 @@ console.log("match_duration by clip reference");
   {
     await api.apply(Q, [{ op: "add_clip", track: "overlay", src: join(m, "a.mp4"), id: "vs1", at: 0, duration: 2 }, { op: "update_clip", id: "vs1", match_duration: "vo1", end_offset: 0.5 }]);
     const r = (await api.apply(Q, [{ op: "remove_silence", id: "vs1" }])).results[0];
-    const vs = api.info(Q, "json").timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => r.segments.includes(c.id));
+    const vs = (await api.info(Q, "json")).timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => r.segments.includes(c.id));
     check("remove_silence: the segments of a follower are plain clips", vs.length > 0 && vs.every((c: any) => c.match_duration === undefined && c.end_offset === undefined && typeof c.duration === "number"), { r, vs });
   }
   {
-    const text = (id: string) => String(api.info(Q).summary).split("\n").find((l: string) => l.includes(` ${id} `) || l.includes(` ${id}  `)) ?? "";
+    const text = async (id: string) => String((await api.info(Q)).summary).split("\n").find((l: string) => l.includes(` ${id} `) || l.includes(` ${id}  `)) ?? "";
     await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: 0.5 }]);
-    const a1 = text("img2");
+    const a1 = (await text("img2"));
     await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: -0.3 }]);
-    const a2 = text("img2");
+    const a2 = (await text("img2"));
     check("the summary shows end_offset with its sign", a1.includes("length→vo1-0.5") && a2.includes("length→vo1+0.3"), [a1, a2]);
   }
 }
@@ -721,18 +721,18 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   const code = async (ops: any[], o: any = {}) => { try { await api.apply(G, ops, o); return "ok"; } catch (e: any) { return e.code; } };
   await api.apply(G, [{ op: "update_clip", id: "g1", filters: ["nope"] }], { allowInvalid: true }); // a pre-existing error on main[0]
   check("an insert before a clip with an existing error is accepted", await code([{ op: "add_clip", track: "main", src: png, id: "g0", index: 0, duration: 1 }]) === "ok");
-  const withTrack = (f: (t: any) => void) => { const t = structuredClone(api.info(G, "json").timeline); f(t); return t; };
-  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.push({ id: "bed", kind: "audio", clips: [], volume: "loud" })) }], { allowInvalid: true });
+  const withTrack = async (f: (t: any) => void) => { const t = structuredClone((await api.info(G, "json")).timeline); f(t); return t; };
+  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.push({ id: "bed", kind: "audio", clips: [], volume: "loud" }))) }], { allowInvalid: true });
   check("a new video track that moves a track with an existing error is accepted", await code([{ op: "add_clip", track: "overlay2", src: png, id: "o9", at: 0, duration: 1 }]) === "ok");
-  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 })) }], { allowInvalid: true });
-  check("a second clip without an id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 7, duration: 1 })) }]) === "validation_failed");
+  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 }))) }], { allowInvalid: true });
+  check("a second clip without an id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 7, duration: 1 }))) }]) === "validation_failed");
   const copyOfG2 = (t: any, start: number) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ ...t.tracks[0].clips.find((c: any) => c.id === "g2"), start });
-  await api.apply(G, [{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 9)) }], { allowInvalid: true }); // id g2 now twice
-  check("another copy of an already duplicated clip id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: withTrack((t) => copyOfG2(t, 11)) }]) === "validation_failed");
-  const bothG2 = (f: (c: any) => void) => withTrack((t) => { for (const tr of t.tracks) for (const c of tr.clips) if (c.id === "g2") f(c); });
-  await api.apply(G, [{ op: "replace_timeline", timeline: bothG2((c) => { c.filters = ["nope"]; }) }], { allowInvalid: true });
+  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => copyOfG2(t, 9))) }], { allowInvalid: true }); // id g2 now twice
+  check("another copy of an already duplicated clip id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => copyOfG2(t, 11))) }]) === "validation_failed");
+  const bothG2 = async (f: (c: any) => void) => (await withTrack((t) => { for (const tr of t.tracks) for (const c of tr.clips) if (c.id === "g2") f(c); }));
+  await api.apply(G, [{ op: "replace_timeline", timeline: (await bothG2((c) => { c.filters = ["nope"]; })) }], { allowInvalid: true });
   check("a clip that shifts the index of a duplicated id's copy is accepted", await code([{ op: "add_clip", track: "overlay", src: png, id: "o0", at: 7, duration: 1 }]) === "ok");
-  check("removing one copy of a duplicated id keeps the survivor's old errors old", await code([{ op: "replace_timeline", timeline: withTrack((t) => { const o = t.tracks.find((x: any) => x.id === "overlay"); o.clips = o.clips.filter((c: any) => c.id !== "g2"); }) }]) === "ok");
+  check("removing one copy of a duplicated id keeps the survivor's old errors old", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => { const o = t.tracks.find((x: any) => x.id === "overlay"); o.clips = o.clips.filter((c: any) => c.id !== "g2"); })) }]) === "ok");
   // a ripple follows an attach chain of any depth (17 links here)
   const blank = newTimeline(640, 360, 30); blank.assets.i = { path: "/none.png", kind: "image" };
   const [deep] = run(blank, [
@@ -744,10 +744,10 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   const N = join(tmp, "proj-nested");
   api.create(N, { preset: "720p" });
   await api.apply(N, [{ op: "add_clip", track: "main", src: png, id: "n1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "n2", duration: 1 }, { op: "make_compound", ids: ["n1", "n2"], name: "grp" }]);
-  const withFilter = (ids: string[]) => { const t = structuredClone(api.info(N, "json").timeline); for (const c of t.tracks.find((x: any) => x.id === "main").clips[0].tracks[0].clips) if (ids.includes(c.id)) c.filters = ["nope"]; return t; };
-  await api.apply(N, [{ op: "replace_timeline", timeline: withFilter(["n1"]) }], { allowInvalid: true }); // one nested error already there
-  const rejected = await api.apply(N, [{ op: "replace_timeline", timeline: withFilter(["n1", "n2"]) }]).catch((e: any) => e);
-  check("a second nested error with the same message is new, not collapsed onto the compound", rejected.code === "validation_failed" && api.info(N).errors === 1, rejected.code);
+  const withFilter = async (ids: string[]) => { const t = structuredClone((await api.info(N, "json")).timeline); for (const c of t.tracks.find((x: any) => x.id === "main").clips[0].tracks[0].clips) if (ids.includes(c.id)) c.filters = ["nope"]; return t; };
+  await api.apply(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1"])) }], { allowInvalid: true }); // one nested error already there
+  const rejected = await api.apply(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1", "n2"])) }]).catch((e: any) => e);
+  check("a second nested error with the same message is new, not collapsed onto the compound", rejected.code === "validation_failed" && (await api.info(N)).errors === 1, rejected.code);
 }
 
 console.log("pieces of an attached clip keep their place and length");
@@ -966,7 +966,7 @@ console.log("pieces of an attached clip keep their place and length");
   ]);
   await api.apply(S, [{ op: "update_clip", id: "talk", set: { fade_in: 0.2, fade_out: 0.3, enter: "fade", exit: "fade", effects: [{ type: "bw" }, { type: "grain", start: 4, duration: 1 }] } }]);
   const rs = (await api.apply(S, [{ op: "remove_silence", id: "talk" }])).results[0];
-  const si = api.info(S, "json");
+  const si = (await api.info(S, "json"));
   const segs = si.timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => rs.segments.includes(c.id));
   check("remove_silence on an attached clip: one segment per speech part", segs.length === 2, { rs, segs });
   check("  the segments stay attached, each at its own place, with plain durations", segs.length === 2 && segs.every((c: any) => c.attach_to === "bg" && c.match_duration === undefined && c.end_offset === undefined) && near(segs[0].start, 1) && near(segs[1].start, 1 + segs[0].duration) && near(segs[1].offset, 1 + segs[0].duration), segs);
@@ -982,7 +982,7 @@ console.log("pieces of an attached clip keep their place and length");
   api.create(S2, { preset: "720p" });
   await api.apply(S2, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "tk", at: 1, in: 0.5, duration: 5.5 }, { op: "j_cut", id: "tk", seconds: 0.3 }]);
   const rs2 = (await api.apply(S2, [{ op: "remove_silence", id: "tk" }])).results[0];
-  const si2 = api.info(S2, "json");
+  const si2 = (await api.info(S2, "json"));
   const all2 = si2.timeline.tracks.flatMap((tr: any) => tr.clips), segs2 = rs2.segments.map((id: string) => all2.find((c: any) => c.id === id));
   const aud2 = all2.filter((c: any) => c.type === "audio");
   const [ps0, ps1] = segs2.map((sg: any) => aud2.find((a: any) => a.attach_to === sg.id));
@@ -995,7 +995,7 @@ console.log("pieces of an attached clip keep their place and length");
   await api.apply(S3, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "hj", at: 1, in: 2.2, duration: 3.8 }, { op: "j_cut", id: "hj", seconds: 0.3 },
     { op: "add_clip", track: "main", src: join(m, "gap.mp4"), id: "tl", at: 0, in: 0, duration: 2.3 }, { op: "l_cut", id: "tl", seconds: 0.3 }]);
   const rs3 = (await api.apply(S3, [{ op: "remove_silence", id: "hj" }, { op: "remove_silence", id: "tl" }])).results;
-  const all3 = api.info(S3, "json").timeline.tracks.flatMap((tr: any) => tr.clips);
+  const all3 = (await api.info(S3, "json")).timeline.tracks.flatMap((tr: any) => tr.clips);
   const by3 = (id: string) => all3.find((c: any) => c.id === id), on3 = (id: string) => all3.filter((c: any) => c.type === "audio" && c.attach_to === id).sort((x: any, y: any) => x.offset - y.offset);
   const [hs] = rs3[0].segments.map(by3), hp = on3(hs?.id);
   check("remove_silence with head silence and a J-cut: the lead stays 0.3 s of the sound before the picture, and the segment's sound starts with it",
@@ -1009,10 +1009,10 @@ console.log("pieces of an attached clip keep their place and length");
     const S4 = join(tmp, "proj-late-audio");
     api.create(S4, { preset: "720p" });
     await api.apply(S4, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "la", at: 0, in: 0, duration: 6 }, { op: "detach_audio", id: "la" }]);
-    const au4 = api.info(S4, "json").timeline.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio");
+    const au4 = (await api.info(S4, "json")).timeline.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio");
     await api.apply(S4, [{ op: "update_clip", id: au4.id, set: { offset: 2.6 } }]);
     const r4 = (await api.apply(S4, [{ op: "remove_silence", id: "la" }])).results[0];
-    const all4 = api.info(S4, "json").timeline.tracks.flatMap((tr: any) => tr.clips), pc = all4.filter((c: any) => c.type === "audio");
+    const all4 = (await api.info(S4, "json")).timeline.tracks.flatMap((tr: any) => tr.clips), pc = all4.filter((c: any) => c.type === "audio");
     check("remove_silence: an audio piece is named after the segment it attaches to, also when the first segment has none", r4.segments.length === 2 && pc.length > 0 && pc.every((c: any) => c.name === `audio of ${c.attach_to}`) && pc.some((c: any) => c.attach_to === r4.segments[1]) && !pc.some((c: any) => c.attach_to === r4.segments[0]), { r4, pc });
   }
   const rv = (() => {
@@ -1169,26 +1169,26 @@ console.log("untrusted field names and pending requests");
   const protoRows: [string, any][] = [
     ["add_clip with an own __proto__ in the clip", JSON.parse('{"op":"add_clip","track":"overlay","type":"text","text":"x","duration":1,"__proto__":{"evil":1}}')],
     ["set_keyframes with prop __proto__", { op: "set_keyframes", id: "vid1", prop: "__proto__", keyframes: [[0, 1]] }],
-    ["replace_timeline with an own __proto__ at the top", JSON.parse('{"op":"replace_timeline","timeline":' + JSON.stringify({ ...tl(), revision: undefined }).replace(/^\{/, '{"__proto__":{"evil":1},') + "}")],
+    ["replace_timeline with an own __proto__ at the top", JSON.parse('{"op":"replace_timeline","timeline":' + JSON.stringify({ ...(await tl()), revision: undefined }).replace(/^\{/, '{"__proto__":{"evil":1},') + "}")],
   ];
   for (const [name, o] of protoRows) {
-    const before = JSON.stringify(tl());
+    const before = JSON.stringify((await tl()));
     let c = "ok";
     try { await one(o); } catch (e: any) { c = e.code; }
-    check(`${name}: refused as bad_key, project and Object.prototype unchanged`, c === "bad_key" && polluted() && JSON.stringify(tl()) === before, { c });
+    check(`${name}: refused as bad_key, project and Object.prototype unchanged`, c === "bad_key" && polluted() && JSON.stringify((await tl())) === before, { c });
   }
   // an asset id the importer derives or accepts obeys the same rule, so the project's own timeline always goes back through replace_timeline
   for (const f of ["prototype.png", "Constructor.png"]) copyFileSync(join(m, "p.png"), join(m, f));
   const imp = [await one({ op: "import_media", path: join(m, "prototype.png") }), await one({ op: "import_media", path: join(m, "Constructor.png") })];
   check("a media file named prototype.* or Constructor.* gets a different asset id", imp[0].asset === "prototype_2" && imp[1].asset === "constructor_2", imp.map((x) => x.asset));
   let back = "ok";
-  try { await one({ op: "replace_timeline", timeline: tl() }); } catch (e: any) { back = e.code; }
+  try { await one({ op: "replace_timeline", timeline: (await tl()) }); } catch (e: any) { back = e.code; }
   check("the project's own timeline is accepted by replace_timeline", back === "ok", back);
   for (const id of ["__proto__", "prototype", "constructor"]) {
-    const before = JSON.stringify(tl());
+    const before = JSON.stringify((await tl()));
     let c = "ok";
     try { await one({ op: "import_media", path: join(m, "p.png"), id }); } catch (e: any) { c = e.code; }
-    check(`import_media id=${id}: refused as bad_key, project unchanged`, c === "bad_key" && JSON.stringify(tl()) === before, { c });
+    check(`import_media id=${id}: refused as bad_key, project unchanged`, c === "bad_key" && JSON.stringify((await tl())) === before, { c });
   }
   const { setDotted, deepMerge } = await import("../src/model.ts");
   let code2 = "ok";
@@ -1211,7 +1211,7 @@ console.log("untrusted field names and pending requests");
 console.log("inherited names are not registry entries");
 {
   const code = async (o: any) => { try { await one(o); return "ok"; } catch (e: any) { return e.code; } };
-  const before = JSON.stringify(tl());
+  const before = JSON.stringify((await tl()));
   const rows: [string, any, string][] = [
     ["op constructor", { op: "constructor" }, "unknown_op"],
     ["add_clip asset toString", { op: "add_clip", track: "main", asset: "toString" }, "not_found"],
@@ -1222,9 +1222,9 @@ console.log("inherited names are not registry entries");
     ["set_settings preset constructor", { op: "set_settings", preset: "constructor" }, "bad_preset"],
   ];
   for (const [name, o, want] of rows) { const c = await code(o); check(`${name}: ${want}`, c === want, { c }); }
-  check("none of those rows changed the project", JSON.stringify(tl()) === before);
+  check("none of those rows changed the project", JSON.stringify((await tl())) === before);
   // the validator reads field, filter and effect names from the same tables: each name is one issue, not a throw or a pass
-  const named = structuredClone(tl()), c0 = named.tracks.flatMap((t: any) => t.clips)[0];
+  const named = structuredClone((await tl())), c0 = named.tracks.flatMap((t: any) => t.clips)[0];
   c0.constructor = 1; c0.filters = ["toString"]; c0.effects = ["constructor"]; named.settings.effects = ["constructor"];
   let paths: string[] | string;
   try { paths = validate(named).filter((i: any) => i.level === "error").map((i: any) => i.path); } catch (e: any) { paths = `threw ${e.message}`; }
@@ -1237,7 +1237,7 @@ console.log("inherited names are not registry entries");
   const existing = (await one({ op: "import_media", path: join(m, "p.png") })).asset;
   let ex: any = null;
   try { await one({ op: "import_media", path: join(m, "p.png"), id: "other_name" }); } catch (e: any) { ex = e; }
-  check("import_media of an imported path with a different id: exists, naming the existing id", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${existing}'`) && !("other_name" in tl().assets), ex && { code: ex.code, message: ex.message, hint: ex.hint });
+  check("import_media of an imported path with a different id: exists, naming the existing id", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${existing}'`) && !("other_name" in (await tl()).assets), ex && { code: ex.code, message: ex.message, hint: ex.hint });
   const same = await one({ op: "import_media", path: join(m, "p.png"), id: existing });
   check("import_media of an imported path with its own id returns it", same.asset === existing, same);
 }
@@ -1251,7 +1251,7 @@ console.log("templates and beats");
   const code = async (ops: any[]) => { try { await ap(ops); return "ok"; } catch (e: any) { return e.code; } };
   check("the slideshow template documents the argument it reads (title_preset)", "title_preset" in (api.capabilities().templates as any).slideshow.args);
   await ap([{ op: "apply_template", name: "slideshow", media: [png], title: "Hi", title_preset: "neon" }]);
-  const title = api.info(P2, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Hi");
+  const title = (await api.info(P2, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Hi");
   check("slideshow title_preset styles the title", !!title?.glow, title);
   check("quote template without text is refused as missing_arg", await code([{ op: "apply_template", name: "quote" }]) === "missing_arg");
 
@@ -1274,7 +1274,7 @@ console.log("templates and beats");
 }
 
 console.log("validity + render");
-const inf = api.info(P);
+const inf = (await api.info(P));
 check("timeline valid", inf.errors === 0, inf.issues);
 const out = join(P, "renders", "jcut.mp4");
 const rr: any = await api.render(P, { draft: true, sheet: false, out, end: 4 });

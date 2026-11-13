@@ -200,6 +200,7 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   for (const [name, args] of [["preview_frame", { t: 0, scale: 1e6 }], ["preview_frame", { t: 0, scale: 0 }], ["render", { scale: 1e6 }], ["contact_sheet", { count: 1e6 }], ["contact_sheet", { count: 0 }],
     ["contact_sheet", { times: Array.from({ length: 65 }, () => 0) }], ["contact_sheet", { times: [-1] }], ["contact_sheet", { every: 0 }]] as const)
     check(`${name} ${JSON.stringify(args).slice(0, 40)} is refused at the schema`, await rejected(name, args as Record<string, unknown>), args);
+  await call5("apply_ops", { ops: [{ op: "add_clip", track: "main", type: "color", color: "#222222", duration: 2 }] }); // a sheet needs a timeline with a duration
   const cs = await call5("contact_sheet", { count: 4, times: [0, 0.5] });
   check("contact_sheet within the bounds still works", cs.images.length === 1, cs.json ?? cs.r);
   await c5.close();
@@ -252,13 +253,16 @@ if (process.platform !== "win32") {
   writeFileSync(join(bin, speaker), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${speaker === "say" ? "-o" : "-w"}" ] && cp '${join(tmp, "talk.wav")}' "$2"; shift; done\n`, { mode: 0o755 });
   const SP = join(tmp, "stall-proj");
   await call("create_project", { path: SP, preset: "youtube" });
+  const SC = join(tmp, "stall-scopes"); // scopes renders a frame, so the timeline needs a duration
+  await call("create_project", { path: SC, preset: "youtube" });
+  await call("apply_ops", { project: SC, ops: [{ op: "add_clip", track: "main", type: "color", color: "#222222", duration: 2 }] });
   const SM = join(tmp, "stall-music"); // review beats="music" reads the music track's beats
   await call("create_project", { path: SM, preset: "youtube" });
   await call("apply_ops", { project: SM, ops: [{ op: "add_clip", track: "music", src: join(tmp, "talk.wav"), duration: 2 }] });
   const stalls = [["audio_check", { source: join(tmp, "talk.wav") }, "pcm_s16le"], ["analyze_scenes", { path: join(tmp, "a.mp4") }, "scene"], ["measure_loudness", { path: join(tmp, "talk.wav") }, "ebur128"],
     ["transcribe", { path: join(tmp, "talk.wav") }, "-ar 16000"], ["analyze_silence", { path: join(tmp, "talk.wav") }, "silencedetect"], ["tts", { text: "Hello there.", output: join(tmp, "stall-tts.wav") }, "p0.wav"],
     ["apply_ops", { project: SP, ops: [{ op: "add_captions", transcribe: join(tmp, "talk.wav") }] }, "-ar 16000"],
-    ["scopes", { project: SP, t: 0.2 }, "signalstats"], ["analyze_beats", { path: join(tmp, "talk.wav") }, "-f f32le"], ["review", { project: SM, beats: "music" }, "-f f32le"],
+    ["scopes", { project: SC, t: 0.2 }, "signalstats"], ["analyze_beats", { path: join(tmp, "talk.wav") }, "-f f32le"], ["review", { project: SM, beats: "music" }, "-f f32le"],
     ["apply_ops", { project: SP, ops: [{ op: "snap_to_beats", track: "main", beats: join(tmp, "talk.wav") }] }, "-f f32le"]] as const;
   for (const [tool, args, key] of stalls) {
     stall(key);

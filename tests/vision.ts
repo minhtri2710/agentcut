@@ -128,20 +128,20 @@ async function prepFails(proj: string, ops: any[], code: string, name: string, w
   catch (e: any) { check(name, e.code === code && !!e.hint && words.every((w) => `${e.message} ${e.hint}`.includes(w)), { code: e.code, message: e.message, hint: e.hint }); }
   await api.undo(proj);
 }
-const clip = (proj: string, id: string) => api.info(proj, "json").timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
+const clip = async (proj: string, id: string) => (await api.info(proj, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply(P, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }]);
 const t1 = performance.now(), a1: any = await api.apply(P, [{ op: "auto_reframe", id: "vid1" }]);
-check("apply only records the request (no helper run, pending + hint)", a1.results[0].pending === true && a1.prepare_needed && nCalls() === 0 && clip(P, "vid1").pending?.auto_reframe && !clip(P, "vid1").keyframes, a1);
+check("apply only records the request (no helper run, pending + hint)", a1.results[0].pending === true && a1.prepare_needed && nCalls() === 0 && (await clip(P, "vid1")).pending?.auto_reframe && !(await clip(P, "vid1")).keyframes, a1);
 check("apply stays fast", performance.now() - t1 < 1000, performance.now() - t1);
 const nf: any = await api.frame(P, 0.05, { scale: 0.25 }).catch((e) => e);
 check("preview before prepare -> not_prepared with prepare hint", nf.code === "not_prepared" && /prepare/.test(nf.hint) && nf.details?.pending?.[0] === "auto_reframe vid1", nf);
 check("prepare status lists the missing analysis", (api.prepareStatus(P) as any).missing[0]?.kind === "subject", api.prepareStatus(P));
 const prog: number[] = [], pr1: any = await api.prepare(P, { progress: (d, n) => prog.push(d / n) });
 const r1 = pr1.applied[0];
-check("prepare computes, applies and clears pending (progress reaches 1)", pr1.computed.length === 1 && pr1.computed[0].cached === false && !clip(P, "vid1").pending && prog.at(-1) === 1, { pr1, prog });
-const fx = clip(P, "vid1").keyframes?.focus_x;
-check("writes focus_x keyframes (9:16 pans horizontally only)", Array.isArray(fx) && fx.length >= 2 && !clip(P, "vid1").keyframes.focus_y, clip(P, "vid1"));
+check("prepare computes, applies and clears pending (progress reaches 1)", pr1.computed.length === 1 && pr1.computed[0].cached === false && !(await clip(P, "vid1")).pending && prog.at(-1) === 1, { pr1, prog });
+const fx = (await clip(P, "vid1")).keyframes?.focus_x;
+check("writes focus_x keyframes (9:16 pans horizontally only)", Array.isArray(fx) && fx.length >= 2 && !(await clip(P, "vid1")).keyframes.focus_y, (await clip(P, "vid1")));
 // 640x360 into 1080x1920: the cover picture is 3413 px wide, seen through a 1080 px view. The view can centre a point from 540 to 2873 px: focus 0.1582..0.8418
 const lo = 540 / 3413, hi = 1 - lo;
 check("focus stays in the reachable range and moves right", fx && fx.every((k: any) => k[1] >= lo - 1e-3 && k[1] <= hi + 1e-3) && fx.at(-1)[1] > fx[0][1] + 0.5, fx);
@@ -231,7 +231,7 @@ check("render follows: end shows the right (blue) side", isColor(px(f1.image, 13
 
 const ri = (await applyPrep(P, [{ op: "add_clip", track: "main", src: join(m, "still.png"), duration: 1 }, { op: "auto_reframe", id: "img1" }]))[1];
 // subject at 0.8 of the 3413 px picture, inside the reachable range [0.1582, 0.8418]: focus = 0.8
-check("image: one sample -> static focus, no keyframes", ri.samples === 1 && near(clip(P, "img1").focus[0], 0.8, 2e-3) && !clip(P, "img1").keyframes, { ri, c: clip(P, "img1") });
+check("image: one sample -> static focus, no keyframes", ri.samples === 1 && near((await clip(P, "img1")).focus[0], 0.8, 2e-3) && !(await clip(P, "img1")).keyframes, { ri, c: (await clip(P, "img1")) });
 await apply(P, [{ op: "remove_clip", id: "img1" }]);
 await prepFails(P, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 1 }, { op: "auto_reframe", id: "vid2" }], "vision_failed", "no decoded frames -> vision_failed at prepare");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { fit: "contain" } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "fit contain -> unsupported");
@@ -251,7 +251,7 @@ await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["stabilize"] }
 console.log("track_to");
 await apply(Y, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 1, duration: 2 }]);
 const tr = (await applyPrep(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5, fps: 10 }]))[0];
-const sh = clip(Y, "shp1");
+const sh = (await clip(Y, "shp1"));
 await fails(Y, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "hflip" }] } }, { op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1.5 }], "unsupported", "track_to on a target with an hflip filter -> unsupported");
 check("attached to the target at the same start", sh.attach_to === "vid1" && near(sh.offset, 1) && tr.lost === 1, { sh, tr });
 // fake track: centre x 0.25 -> 0.75 of the source over the follower's 2 s; 1920 px canvas shows the whole frame
@@ -272,9 +272,9 @@ const both: any = await api.apply(P, [{ op: "update_clip", id: "vid1", set: { mo
 check("track_to on a pending reframe waits for it", both.results[3].waiting_for === "auto_reframe vid1", both.results[3]);
 process.env.FAKE_JOB_LOG = join(tmp, "track-jobs.jsonl");
 const pb: any = await api.prepare(P).finally(() => { delete process.env.FAKE_JOB_LOG; });
-check("prepare resolves the chain (reframe, then track)", pb.applied.map((x: any) => x.op).join() === "auto_reframe,track_to" && !clip(P, "shp1").pending, pb);
+check("prepare resolves the chain (reframe, then track)", pb.applied.map((x: any) => x.op).join() === "auto_reframe,track_to" && !(await clip(P, "shp1")).pending, pb);
 {
-  const v = clip(P, "vid1"), s = clip(P, "shp1");
+  const v = (await clip(P, "vid1")), s = (await clip(P, "shp1"));
   // the view's offset in the 3413 px cover picture for a focus f: clamp(f * 3413 - 540, 0, 2333); the follower's x is the tracked point (u * 3413) minus that offset
   const full = Math.round(640 * (1920 / 360)), off = (T: number) => Math.min(full - 1080, Math.max(0, A.kfValue(v.keyframes.focus_x, T) * full - 1080 / 2));
   for (const T of [1, 3]) {
@@ -298,7 +298,7 @@ await apply(B, [
 const before = await api.frame(B, 1, { scale: 0.5, out: join(tmp, "rb-before.png") });
 check("without matte the overlay covers the background", isColor(px(before.image, 40, 180), [255, 0, 0]));
 const rb = (await apply(B, [{ op: "remove_background", id: "vid2" }]))[0];
-check("remove_background only sets the field (pending, no helper run)", rb.pending === true && clip(B, "vid2").remove_background === true && nCalls("matte") === 0, rb);
+check("remove_background only sets the field (pending, no helper run)", rb.pending === true && (await clip(B, "vid2")).remove_background === true && nCalls("matte") === 0, rb);
 const nr: any = await api.render(B, { out: join(tmp, "bg0.mp4"), quality: "draft" }).catch((e) => e);
 check("render before prepare -> not_prepared", nr.code === "not_prepared" && nr.details?.mattes?.[0] === "vid2" && !existsSync(join(tmp, "bg0.mp4")), nr);
 const nrs: any = await api.render(B, { out: join(tmp, "bg0.png") }).catch((e) => e);
@@ -335,7 +335,7 @@ check("prepare rebuilds a deleted matte", nCalls("matte") === mc + 1 && readdirS
 }
 await fails(B, [{ op: "remove_background", id: "vid2", model: "bogus" }], "bad_value", "unknown model -> bad_value");
 const off = (await apply(B, [{ op: "remove_background", id: "vid2", off: true }]))[0];
-check("off=true removes the field", off.remove_background === false && clip(B, "vid2").remove_background === undefined);
+check("off=true removes the field", off.remove_background === false && (await clip(B, "vid2")).remove_background === undefined);
 { // `_matte` has one owner: a hand-set one on a clip without remove_background is not drawn, at any nesting depth
   const mfile = join(B, ".agentcut", "cache", readdirSync(join(B, ".agentcut", "cache")).find((f) => f.startsWith("matte-"))!);
   await apply(B, [{ op: "update_clip", id: "vid2", set: { _matte: { path: mfile, w: 640, h: 360 } } }]);
@@ -343,7 +343,7 @@ check("off=true removes the field", off.remove_background === false && clip(B, "
   check("a hand-set _matte on a clip without remove_background is not drawn", isColor(px(hand.image, 40, 180), [255, 0, 0]), px(hand.image, 40, 180));
   const { attachPrepared } = await import("../src/ops-vision.ts");
   const stray = { path: mfile, w: 1, h: 1 };
-  const tl: any = structuredClone(api.info(B, "json").timeline);
+  const tl: any = structuredClone((await api.info(B, "json")).timeline);
   tl.tracks[0].clips[0].tracks = [{ id: "n", clips: [{ id: "nested", type: "video", asset: tl.tracks[0].clips[0].asset, _matte: stray }] }];
   tl.tracks[0].clips[0].type = "compound";
   tl.tracks[0].clips[0]._matte = stray;
@@ -362,7 +362,7 @@ const AO = join(tmp, "audio-only");
 api.create(AO, { preset: "reels" });
 await apply(AO, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "add_clip", track: "music", src: join(m, "tone.wav"), duration: 2 }]);
 await apply(AO, [{ op: "auto_reframe", id: "vid1" }]);
-check("audio-only: pending reframe recorded", !!clip(AO, "vid1").pending?.auto_reframe);
+check("audio-only: pending reframe recorded", !!(await clip(AO, "vid1")).pending?.auto_reframe);
 const wavP: any = await api.render(AO, { out: join(tmp, "pend.wav") }).catch((e: any) => e);
 check("audio-only: render -o .wav with a pending reframe succeeds", wavP.audio_only === true && existsSync(join(tmp, "pend.wav")) && wavP.size_bytes > 0, wavP);
 const vidP: any = await api.render(AO, { out: join(tmp, "pend.mp4"), quality: "draft" }).catch((e: any) => e);
@@ -380,7 +380,7 @@ api.create(EP, { preset: "reels" });
 await apply(EP, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 },
   { op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 0, duration: 4 }]);
 await apply(EP, [{ op: "auto_reframe", id: "vid1" }, { op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], at: 1 }]);
-check("export-pending: both clips carry pending requests", !!clip(EP, "vid1").pending?.auto_reframe && !!clip(EP, "shp1").pending?.track_to, [clip(EP, "vid1").pending, clip(EP, "shp1").pending]);
+check("export-pending: both clips carry pending requests", !!(await clip(EP, "vid1")).pending?.auto_reframe && !!(await clip(EP, "shp1")).pending?.track_to, [(await clip(EP, "vid1")).pending, (await clip(EP, "shp1")).pending]);
 for (const ext of ["fcpxml", "otio"]) {
   const e: any = await api.exportTimeline(EP, { out: join(tmp, `pending.${ext}`) }).catch((x: any) => x);
   const mine = (id: string) => (e.skipped ?? []).filter((s: any) => s.id === id && s.type === "pending");
@@ -626,21 +626,21 @@ console.log("asset record");
   api.create(W, { preset: "720p" });
   await apply(W, [{ op: "add_clip", track: "main", src: join(m, "green.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
   const file = join(W, "project.json"), good = readFileSync(file, "utf8"), tlj = JSON.parse(good), aid = Object.keys(tlj.assets)[0];
-  const rev0 = api.info(W, "json").revision;
+  const rev0 = (await api.info(W, "json")).revision;
   // 1. validate types the asset record; apply and replace_timeline reject the batch and change nothing
   const badFps = { ...tlj, assets: { [aid]: { ...tlj.assets[aid], fps: "30,more" } } };
   const rejected = await api.apply(W, [{ op: "replace_timeline", timeline: badFps }]).catch((e) => e);
-  check("a non-numeric asset fps is rejected by replace_timeline and nothing changes", rejected.code === "validation_failed" && rejected.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.fps`) && api.info(W, "json").revision === rev0, rejected.details ?? rejected);
+  check("a non-numeric asset fps is rejected by replace_timeline and nothing changes", rejected.code === "validation_failed" && rejected.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.fps`) && (await api.info(W, "json")).revision === rev0, rejected.details ?? rejected);
   for (const [what, patch, key] of [["a zero fps", { fps: 0 }, "fps"], ["a fractional width", { width: 320.5 }, "width"], ["a negative duration", { duration: -1 }, "duration"],
     ["an unknown kind", { kind: "movie" }, "kind"], ["a string sample rate", { sample_rate: "48000" }, "sample_rate"], ["an unknown asset field", { zoom: 2 }, "zoom"]] as const) {
     const r = await api.apply(W, [{ op: "replace_timeline", timeline: { ...tlj, assets: { [aid]: { ...tlj.assets[aid], ...patch } } } }]).catch((e) => e);
     check(`${what} in the asset record is rejected`, r.code === "validation_failed" && r.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.${key}`), r.details ?? r);
   }
-  check("a valid asset record has no asset issues", api.validate(W).valid === true);
+  check("a valid asset record has no asset issues", (await api.validate(W)).valid === true);
   // 2. a project.json edited by hand: validate reports it, prepare refuses before any job is built
   const calls0 = nCalls();
   writeFileSync(file, JSON.stringify({ ...tlj, assets: { [aid]: { ...tlj.assets[aid], fps: "30,more" } } }));
-  check("validate reports a non-numeric asset fps in project.json", api.validate(W).valid === false);
+  check("validate reports a non-numeric asset fps in project.json", (await api.validate(W)).valid === false);
   const pe: any = await api.prepare(W).catch((e) => e);
   check("prepare refuses an invalid asset record before any job is built", pe.code === "invalid_timeline" && nCalls() === calls0, { code: pe.code, calls: nCalls() - calls0 });
   const ps: any = (() => { try { return api.prepareStatus(W); } catch (e) { return e; } })();
@@ -1074,15 +1074,15 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
   // the YuNet branch: the helper loads the face model from <cache>/models/<name>/<name>.onnx (the layout the downloader writes and src/vision.ts documents),
   // and the picture holds no face, so every sample falls back to saliency
   ["real: face detector loaded from the models dir; no face in the picture -> saliency, followed left -> right", async () => {
-    const res = (await applyPrep(real.R, [{ op: "auto_reframe", id: "vid1" }], true))[0], kx = clip(real.R, "vid1").keyframes.focus_x;
+    const res = (await applyPrep(real.R, [{ op: "auto_reframe", id: "vid1" }], true))[0], kx = (await clip(real.R, "vid1")).keyframes.focus_x;
     return [res.samples === 18 && res.face_samples === 0 && res.subject === "saliency" && kx[0][1] < 0.2 && kx.at(-1)[1] > 0.7 && existsSync(V.modelFile(V.FACE_MODEL.name)), { res, kx }];
   }],
   ["real: CSRT follows the box (within 25 px)", async () => {
-    const tk = (await applyPrep(real.Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0], end = clip(real.Q, "shp1").keyframes.x.at(-1);
+    const tk = (await applyPrep(real.Q, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0 }]))[0], end = (await clip(real.Q, "shp1")).keyframes.x.at(-1);
     return [tk.lost === 0 && near(end[1], (40 + end[0] * 130 + 40) * 3, 25), { tk, end }];
   }],
   ["real: KCF follows the box (within 40 px)", async () => {
-    const tk = (await applyPrep(real.K, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0, tracker: "kcf" }]))[0], end = clip(real.K, "shp1").keyframes.x.at(-1);
+    const tk = (await applyPrep(real.K, [{ op: "track_to", id: "shp1", target: "vid1", box: [120, 420, 240, 240], at: 0, tracker: "kcf" }]))[0], end = (await clip(real.K, "shp1")).keyframes.x.at(-1);
     return [near(end[1], (40 + end[0] * 130 + 40) * 3, 40), { tk, end }];
   }],
   ["real: video matte produced under the models dir layout and cached", async () => {
@@ -1174,7 +1174,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
   const R = join(tmp, "pending-keep");
   api.create(R, { preset: "reels" });
   await apply(R, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }, { op: "auto_reframe", id: "vid1" }]);
-  check("pending-keep: the request is recorded", !!clip(R, "vid1").pending?.auto_reframe);
+  check("pending-keep: the request is recorded", !!(await clip(R, "vid1")).pending?.auto_reframe);
   const an = await api.analyze.subject(join(m, "rb.mp4"), 6, false, R);
   const cdir = join(R, ".agentcut", "cache"), subjFiles = () => readdirSync(cdir).filter((f) => f.startsWith("subject-"));
   check("pending-keep: the analysis exists in the project cache", an.cached === false && subjFiles().length === 1, subjFiles());
@@ -1183,7 +1183,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
   api.cache.prune(R);
   check("prune keeps the computed analysis of a pending request", subjFiles().length === 1, subjFiles());
   const pr: any = await api.prepare(R);
-  check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !clip(R, "vid1").pending, pr);
+  check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !(await clip(R, "vid1")).pending, pr);
 }
 
 console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

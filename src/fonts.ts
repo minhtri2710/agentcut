@@ -13,6 +13,10 @@ const WEIGHTS: Record<string, number> = {
   medium: 500, semibold: 600, demibold: 600, bold: 700, extrabold: 800, ultrabold: 800, heavy: 800, black: 900, ultra: 900,
 };
 const SANS = ["Arial", "Helvetica Neue", "Helvetica", "Segoe UI", "Noto Sans", "DejaVu Sans", "Liberation Sans", "Roboto"];
+// Han text with no font of its own takes the Simplified Chinese forms (SC first: it also has kana), then Japanese, then Korean (Hangul).
+// shortcut: no per-language glyph forms by default; give `font` the regional family (e.g. Hiragino Sans, Apple SD Gothic Neo) to get them
+const CJK = ["Hiragino Sans GB", "Heiti SC", "Heiti TC", "Noto Sans CJK SC", "Microsoft YaHei", "Hiragino Sans", "Noto Sans CJK JP", "Yu Gothic",
+  "Apple SD Gothic Neo", "Noto Sans CJK KR", "Malgun Gothic"];
 const EMOJI = ["Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla"];
 const DEFAULTS = ["Arial", "Helvetica Neue", "Segoe UI", "Noto Sans", "DejaVu Sans", "Liberation Sans"];
 
@@ -89,7 +93,8 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
     }
   }
   if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : own(WEIGHTS, String(weight).toLowerCase()) ?? (Number(weight) || 400);
-  const stack = [family!, ...SANS.filter((s) => fam.has(s.toLowerCase()) && s !== family), ...EMOJI.filter((s) => fam.has(s.toLowerCase()))];
+  const have = (names: string[]) => names.filter((s) => fam.has(s.toLowerCase()) && s !== family);
+  const stack = [family!, ...have(SANS), ...have(CJK), ...EMOJI.filter((s) => fam.has(s.toLowerCase()))];
   const out = { family: family!, weight: w, italic: it, stack };
   if (!unregistered) cache.set(key, out); // an alias not yet registered with Skia must be resolved again once it is
   return out;
@@ -99,27 +104,32 @@ export function cssFont(f: FontSpec, size: number): string {
   return `${f.italic ? "italic " : ""}${f.weight} ${Math.max(1, size).toFixed(2)}px ${f.stack.map((s) => `"${s}"`).join(", ")}`;
 }
 
-// Glyph coverage: if `family` has the glyph, its width is identical whichever fallback follows.
+// Glyph coverage: drawn in `family` alone, a glyph the family lacks looks exactly like U+FFFF (a noncharacter no font maps): its .notdef
+// box, or nothing. Widths cannot tell them apart (a CJK font's .notdef is as wide as its ideographs).
+const PROBE = 64;
 let probeCtx: any = null;
-const covCache = new Map<string, boolean>();
+const covCache = new Map<string, boolean>(), notdefInk = new Map<string, Buffer>();
+const SKIP_GLYPH = /^[\s\p{Cc}\p{Default_Ignorable_Code_Point}]$/u;
+/** Whether `ch` (one code point) is drawn to see if the font has it; missingChars and api.ts's decision to load Skia share this. */
+export const needsProbe = (ch: string) => !(/^[\x20-\x7e]$/.test(ch) || SKIP_GLYPH.test(ch));
+const ink = (family: string, ch: string) => {
+  probeCtx ??= C().createCanvas(PROBE, PROBE).getContext("2d");
+  probeCtx.clearRect(0, 0, PROBE, PROBE);
+  probeCtx.font = `400 40px "${family}"`;
+  probeCtx.fillText(ch, 4, 48);
+  return Buffer.from(probeCtx.getImageData(0, 0, PROBE, PROBE).data.buffer);
+};
 export function missingChars(family: string, text: string): string {
-  const fam = families();
-  const pair = [["Courier New", "Arial"], ["DejaVu Sans Mono", "DejaVu Sans"], ["Menlo", "Helvetica"], ["Consolas", "Segoe UI"]]
-    .find(([a, b]) => fam.has(a.toLowerCase()) && fam.has(b.toLowerCase()));
-  if (!pair) return "";
   if (!canvasLoaded()) return "";
-  probeCtx ??= C().createCanvas(8, 8).getContext("2d");
   let miss = "";
   for (const ch of new Set([...text])) {
-    if (ch.trim() === "" || ch.charCodeAt(0) < 128 && /[\x20-\x7e]/.test(ch)) continue;
+    if (!needsProbe(ch)) continue;
     const k = `${family}|${ch}`;
     let ok = covCache.get(k);
     if (ok === undefined) {
-      probeCtx.font = `400 40px "${family}", "${pair[0]}"`;
-      const a = probeCtx.measureText(ch).width;
-      probeCtx.font = `400 40px "${family}", "${pair[1]}"`;
-      const b = probeCtx.measureText(ch).width;
-      ok = Math.abs(a - b) < 0.01;
+      let none = notdefInk.get(family);
+      if (!none) notdefInk.set(family, (none = ink(family, "\uffff")));
+      ok = !ink(family, ch).equals(none);
       covCache.set(k, ok);
     }
     if (!ok) miss += ch;
@@ -127,8 +137,10 @@ export function missingChars(family: string, text: string): string {
   return miss;
 }
 
-/** Validation helper: error if the font is unknown; info naming the fallback if glyphs are missing. */
-const checkMemo = new Map<string, { error?: string; hint?: string; fallback?: string }>();
+/** Validation helper: error if the font is unknown; `fallback` names the stack fonts that draw glyphs the font lacks, `uncovered` the
+ *  characters no font of the stack has (they draw as empty boxes). */
+type FontCheck = { error?: string; hint?: string; fallback?: string; uncovered?: string };
+const checkMemo = new Map<string, FontCheck>();
 /** Memoized: validation runs before and after every batch with mostly the same texts. */
 export function fontCheck(font: string | undefined, text: string) {
   if (!fontsKnown()) return {};
@@ -137,13 +149,15 @@ export function fontCheck(font: string | undefined, text: string) {
   if (!r) { r = fontCheckRaw(font, text); if (checkMemo.size > 5000) checkMemo.clear(); checkMemo.set(key, r); }
   return r;
 }
-function fontCheckRaw(font: string | undefined, text: string): { error?: string; hint?: string; fallback?: string } {
+function fontCheckRaw(font: string | undefined, text: string): FontCheck {
   try {
     const f = resolveFont(font);
-    const miss = missingChars(f.family, text.replace(/\p{Extended_Pictographic}/gu, ""));
+    const miss = missingChars(f.family, text.replace(/\p{Extended_Pictographic}|\p{Regional_Indicator}|\p{Emoji_Modifier}|\u20e3/gu, ""));
     if (!miss) return {};
-    const fb = f.stack.slice(1).find((s) => !missingChars(s, miss));
-    return { fallback: fb ?? "system fallback" };
+    const fallbacks = new Set<string>();
+    let uncovered = "";
+    for (const ch of miss) { const fb = f.stack.slice(1).find((s) => !missingChars(s, ch)); if (fb) fallbacks.add(fb); else uncovered += ch; }
+    return { ...(fallbacks.size ? { fallback: [...fallbacks].join(", ") } : {}), ...(uncovered ? { uncovered } : {}) };
   } catch (e: any) {
     return { error: e.message, hint: e.hint };
   }

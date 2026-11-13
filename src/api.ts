@@ -4,7 +4,7 @@ import * as AN from "./analyze.ts";
 import * as AFX from "./audiofx.ts";
 import { loadCanvas } from "./canvas.ts";
 import * as FB from "./feedback.ts";
-import { listFonts } from "./fonts.ts";
+import { fontsKnown, listFonts, needsProbe } from "./fonts.ts";
 import { LOOKS } from "./color.ts";
 import { needFfmpeg, probe as probeMedia } from "./media.ts";
 import { scopes as frameScopes } from "./scopes.ts";
@@ -23,6 +23,16 @@ const renderMod = async () => { await loadCanvas(); return import("./render.ts")
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
 
 export const openProject = (p?: string) => new Project(findProject(p));
+/** The font checks of validate need Skia in two cases, and only then is it loaded (the edit path otherwise never draws): a text or captions clip holds a
+ *  character the glyph probe draws (fonts.ts needsProbe), or the family list is not known without Skia (no cache that matches the font folders),
+ *  so an unknown font name could not be reported. Loading rewrites the cache, so the next call needs no load. A timeline that cannot be walked loads it. */
+const loadForText = async (tl: M.Timeline) => {
+  try {
+    const texts = [...M.allClips(tl.tracks)].map(M.fontSample).filter((s): s is string => s !== null);
+    if (!texts.length || (fontsKnown() && !texts.some((s) => [...s].some(needsProbe)))) return;
+  } catch { /* fall through: validate reports what is wrong, and a font check may still run */ }
+  await loadCanvas();
+};
 /** timeline ready to draw: absolute paths + prepared background mattes (EditError not_prepared if prepare is needed) */
 const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
@@ -44,9 +54,10 @@ export function create(path: string, o: { preset?: string; width?: number; heigh
     next: "apply_ops [{op:'add_clip', track:'main', src:'/abs/clip.mp4'}] or [{op:'apply_template', name:'promo', ...}], then contact_sheet, then render" };
 }
 
-export function info(project?: string, fmt: "summary" | "json" | "both" = "summary") {
+export async function info(project?: string, fmt: "summary" | "json" | "both" = "summary") {
   const p = openProject(project);
-  const tl = p.load();
+  await loadForText(p.load());
+  const tl = p.load(); // read after the wait, so what is reported is what is on disk now
   const out: M.Dict = { project: p.root, revision: tl.revision, duration: M.totalDuration(M.resolve(tl)), ...brief(p.validate(tl)) };
   if (fmt !== "json") out.summary = summarize(tl);
   if (fmt !== "summary") out.timeline = tl;
@@ -96,6 +107,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
   let until = 0; // set by the first conflict: the analyses a batch waits for do not count against it
   for (;;) {
     const tl = p.load();
+    await loadForText(tl);
     if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
@@ -120,8 +132,9 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
   }
 }
 
-export function validate(project?: string) {
+export async function validate(project?: string) {
   const p = openProject(project);
+  await loadForText(p.load());
   const issues = p.validate();
   return { valid: !issues.some((i) => i.level === "error"), ...brief(issues, 100) };
 }
@@ -137,12 +150,23 @@ const scaleOf = (v: number | undefined, dflt: number) => {
 };
 const MAX_SCALE = 4, MAX_SHEET_TILES = 64; // the sheet already stopped `every` at 64 tiles
 
+/** A time outside the timeline, as the error every frame request gives: the hint names the last frame that exists. */
+const outsideTimeline = (tl: M.Timeline, T: number, message: string, name: string) => new M.EditError(message, "bad_value",
+  `a frame is one point in time: use 0 <= ${name} < ${+T.toFixed(3)} (the duration)${T > 0 ? `; the last frame starts at ${+Math.max(0, T - 1 / tl.settings.fps).toFixed(3)}` : ""}`);
+
+/** The time of a single frame (a preview, scopes or a still): 0 <= t < duration. `name` is the argument the caller gave it as. */
+function frameTime(tl: M.Timeline, t: number | string, name: string) {
+  const tt = M.parseTime(t), T = M.totalDuration(M.resolve(M.clone(tl)));
+  if (!(tt >= 0 && tt < T)) throw outsideTimeline(tl, T, `${name} ${tt}s is outside the timeline`, name);
+  return tt;
+}
+
 /** One rendered frame as encoded bytes (no file written). */
 export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg" } = {}) {
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
-  const tt = M.parseTime(t);
+  const tt = frameTime(tl, t, "t");
   const { renderFrame } = await renderMod();
   return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), !!o.guides, o.format ?? "jpeg") };
 }
@@ -160,7 +184,7 @@ export async function scopes(project: string | undefined, t: number | string, o:
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
-  const tt = M.parseTime(t);
+  const tt = frameTime(tl, t, "t");
   const { renderFrame } = await renderMod();
   const out = outPath(p, o.out, `previews/scopes-${tt.toFixed(2).padStart(7, "0")}s.jpg`);
   refuseSource(p.root, tl, out);
@@ -175,6 +199,7 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   const tl = p.load();
   p.requireValid(tl);
   const T = M.totalDuration(M.resolve(tl));
+  if (!(T > 0)) throw new M.EditError("the timeline is empty: a sheet has no frames to show", "empty", "add clips first");
   let ts: number[];
   if (o.every !== undefined && !(o.every > 0)) throw new M.EditError(`every must be a number above 0, got ${JSON.stringify(o.every)}`, "bad_value");
   if (o.count !== undefined && !(Number.isInteger(o.count) && o.count >= 1 && o.count <= MAX_SHEET_TILES)) throw new M.EditError(`count must be a whole number from 1 to ${MAX_SHEET_TILES}, got ${JSON.stringify(o.count)}`, "bad_value");
@@ -182,8 +207,8 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
     const list = typeof o.times === "string" ? o.times.split(",") : o.times;
     if (list.length > MAX_SHEET_TILES) throw new M.EditError(`times lists ${list.length} frames; a sheet holds at most ${MAX_SHEET_TILES}`, "bad_value", "split it into several sheets");
     ts = list.map((x) => M.parseTime(x));
-    const bad = ts.find((t) => !(Number.isFinite(t) && t >= 0));
-    if (bad !== undefined) throw new M.EditError(`times must be 0 or more, got ${bad}`, "bad_value");
+    const bad = ts.filter((t) => !(t >= 0 && t < T));
+    if (bad.length) throw outsideTimeline(tl, T, `times ${bad.join(", ")} ${bad.length > 1 ? "are" : "is"} outside the timeline (the duration is ${+T.toFixed(3)}s)`, "each time");
   } else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
   const { contactSheet } = await renderMod();
@@ -235,6 +260,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
 export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal } = {}) {
   const p = openProject(project);
   const tl = p.load();
+  await loadForText(tl);
   const issues = p.validate(tl);
   p.requireValid(tl);
   const { review: rv } = await inspectMod();
@@ -253,8 +279,10 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
   const format = (o.format ?? INTERCHANGE[ext] ?? "fcpxml").toLowerCase();
   if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(`.${format}`);
-  const { exportTimeline: ex } = await import("./export.ts");
-  return ex(p.absolutized(M.resolve(tl)), format, out, p.root);
+  try {
+    const { exportTimeline: ex } = await import("./export.ts");
+    return ex(p.absolutized(M.resolve(tl)), format, out, p.root);
+  } finally { if (!o.out) p.releaseOutput(out); }
 }
 
 /** Write the captions clips (timeline times, the pages the renderer shows) as .srt or .vtt. ids limits it to some clips. */
@@ -263,13 +291,16 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
   const tl = p.load();
   p.requireValid(tl);
   const ext = o.out ? extname(o.out).toLowerCase() : "";
-  const format = (o.format ?? SUB.SUB_FORMATS[ext] ?? "srt").toLowerCase();
-  if (format !== "srt" && format !== "vtt") throw new M.EditError(`unknown subtitle format '${o.format ?? ext}'`, "bad_format", "use .srt or .vtt");
+  // an explicit format is the caller's word and names the content whatever the file is called; the extension alone must be one we know
+  const format = (o.format ?? (o.out ? SUB.SUB_FORMATS[ext] : "srt") ?? "").toLowerCase();
+  if (format !== "srt" && format !== "vtt") throw new M.EditError(`unknown subtitle format '${o.format ?? (ext || o.out)}'`, "bad_format", "use .srt or .vtt, or pass format srt|vtt with the output");
   const cues = SUB.captionCues(p.absolutized(M.resolve(tl)), o.ids);
   if (!cues.length) throw new M.EditError(o.ids ? `no caption cues in ${o.ids.join(", ")}` : "the timeline has no captions clips", "empty", "add captions first: add_captions words=[...] | srt=... | transcribe=...");
   const out = o.out ? presolve(o.out) : p.defaultOutput(`.${format}`);
-  refuseSource(p.root, tl, out);
-  writeFile(out, SUB.formatCues(cues, format), p.root);
+  try {
+    refuseSource(p.root, tl, out);
+    writeFile(out, SUB.formatCues(cues, format), p.root);
+  } finally { if (!o.out) p.releaseOutput(out); }
   return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
 }
 
@@ -283,8 +314,7 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   if (o.codec && o.codec.toLowerCase() !== "auto") throw new M.EditError(`codec '${o.codec}' doesn't apply to ${ext}`, "bad_codec", "omit codec for a still image, or render a video");
   if (o.end !== undefined) throw new M.EditError(`end doesn't apply to ${ext}: a still renders one frame at start`, "bad_value", "omit end, or render a video");
   if (o.subtitles) throw new M.EditError(`subtitles don't apply to ${ext}`, "bad_value", "omit subtitles, or render .mp4/.mov/.mkv/.webm");
-  const t = M.parseTime(o.start ?? 0), T = M.totalDuration(M.resolve(M.clone(tl)));
-  if (!(t >= 0 && t < T)) throw new M.EditError(`start ${t}s is outside the timeline`, "bad_value", `a still renders one frame: use 0 <= start < ${+T.toFixed(3)} (the duration)`);
+  const t = frameTime(tl, o.start ?? 0, "start");
   let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const transparent = M.parseColor(tl.settings.background ?? "#000000")[3] === 0;
@@ -315,45 +345,47 @@ export async function render(project: string | undefined, o: {
   let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(".mp4", o.draft ? "draft" : "");
-  const start = M.parseTime(o.start ?? 0);
-  let cues: SUB.Cue[] = [];
-  if (o.subtitles) { // checked before rendering: wrong container or no captions fails fast
-    SUB.embedCodec(out);
-    cues = SUB.captionCues(p.absolutized(M.resolve(M.clone(tl))));
-    if (!cues.length) throw new M.EditError("subtitles=true but the timeline has no captions clips", "empty", "add captions first, or drop subtitles");
-  }
-  const { contactSheet } = await renderMod();
-  const { renderVideo, AUDIO_FORMATS } = await import("./encode.ts");
-  // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
-  const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
-    start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
-    hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
-  });
-  o.signal?.throwIfAborted();
-  if (res.audio_only) return res;
-  if (o.subtitles) {
-    const [t0, t1] = res.range as [number, number];
-    const inRange = SUB.cuesInRange(cues, t0, t1);
-    await SUB.embedSubtitles(out, inRange, p.root, o.signal);
-    res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
-  }
-  FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
-    encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
-    effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
-  if (o.sheet !== false && !out.endsWith(".gif")) {
-    const loud = res.has_audio ? AN.loudness(out, o.signal) : undefined;
-    loud?.catch(() => {}); // an abort rejects it while the contact sheet is still being drawn; the await below reports it
-    try {
-      const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
-      const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
-      const sp = join(p.root, "previews", `render-${basename(out, extname(out))}-${Date.now()}.sheet.jpg`);
-      writeFile(sp, png, p.root); // capped below together with the output, so neither evicts the other
-      res.contact_sheet = sp;
-    } catch (e: any) { res.contact_sheet_error = e.message; }
-    if (loud) res.loudness = await loud;
-  }
-  CACHE.capPreviews(p, out, ...(res.contact_sheet ? [res.contact_sheet as string] : [])); // UI play drafts are rendered into previews/
-  return res;
+  try {
+    const start = M.parseTime(o.start ?? 0);
+    let cues: SUB.Cue[] = [];
+    if (o.subtitles) { // checked before rendering: wrong container or no captions fails fast
+      SUB.embedCodec(out);
+      cues = SUB.captionCues(p.absolutized(M.resolve(M.clone(tl))));
+      if (!cues.length) throw new M.EditError("subtitles=true but the timeline has no captions clips", "empty", "add captions first, or drop subtitles");
+    }
+    const { contactSheet } = await renderMod();
+    const { renderVideo, AUDIO_FORMATS } = await import("./encode.ts");
+    // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
+    const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
+      start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
+      hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
+    });
+    o.signal?.throwIfAborted();
+    if (res.audio_only) return res;
+    if (o.subtitles) {
+      const [t0, t1] = res.range as [number, number];
+      const inRange = SUB.cuesInRange(cues, t0, t1);
+      await SUB.embedSubtitles(out, inRange, p.root, o.signal);
+      res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
+    }
+    FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
+      encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
+      effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
+    if (o.sheet !== false && !out.endsWith(".gif")) {
+      const loud = res.has_audio ? AN.loudness(out, o.signal) : undefined;
+      loud?.catch(() => {}); // an abort rejects it while the contact sheet is still being drawn; the await below reports it
+      try {
+        const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
+        const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
+        const sp = join(p.root, "previews", `render-${basename(out, extname(out))}-${Date.now()}.sheet.jpg`);
+        writeFile(sp, png, p.root); // capped below together with the output, so neither evicts the other
+        res.contact_sheet = sp;
+      } catch (e: any) { res.contact_sheet_error = e.message; }
+      if (loud) res.loudness = await loud;
+    }
+    CACHE.capPreviews(p, out, ...(res.contact_sheet ? [res.contact_sheet as string] : [])); // UI play drafts are rendered into previews/
+    return res;
+  } finally { if (!o.out) p.releaseOutput(out); }
 }
 
 export const undo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.undo(steps, revision); return { undone: r.labels, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };

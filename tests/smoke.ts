@@ -1,7 +1,7 @@
 // End-to-end smoke test: generates synthetic media, exercises every op + template + export format through the CLI.
 // Run: bun tests/smoke.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
@@ -109,6 +109,38 @@ cli(["redo"], C); cli(["undo"], C);
 console.log("look");
 check("frame jpg", existsSync(cli(["frame", "1.5", "--guides"], C).image));
 check("contact sheet", existsSync(cli(["sheet", "--every", "1"], C).image));
+
+console.log("frame time and caption file format");
+{
+  const dur = cli(["info"], C).duration;
+  const code = (args: (string | number)[]) => cli(args, { ok: false, cwd: P }).error?.code;
+  check("frame and scopes at the duration or before 0 are bad_value; 0 works", code(["frame", dur]) === "bad_value" && code(["frame", "-0.1"]) === "bad_value" && code(["scopes", dur]) === "bad_value" && existsSync(cli(["frame", 0], C).image));
+  const sh = cli(["sheet", "--times", `0,${dur}`, "--count", 2], { ok: false, cwd: P }).error;
+  check("a sheet with a time at the duration is bad_value, naming the time and the duration, and the hint names the last frame", sh?.code === "bad_value" && sh.message.includes(`${dur}`) && /duration is/.test(sh.message) && /last frame starts at/.test(sh.hint), sh);
+  check("a sheet at the last frame works", existsSync(cli(["sheet", "--times", `0,${(dur - 1 / 30).toFixed(3)}`], C).image));
+  const E = join(tmp, "empty-sheet");
+  cli(["init", E, "--preset", "square"]);
+  check("a sheet of an empty timeline is a clean refusal whichever way the times are chosen", [["--every", "1"], ["--count", "3"], ["--times", "0"], []].every((a) => cli(["sheet", ...a], { ok: false, cwd: E }).error?.code === "empty"));
+  check("captions to an unknown extension is bad_format and writes nothing; an explicit format names the content", code(["captions", "-o", "subs.txt"]) === "bad_format" && !existsSync(join(P, "subs.txt"))
+    && cli(["captions", "-o", "subs.txt", "--format", "vtt"], C).format === "vtt" && readFileSync(join(P, "subs.txt"), "utf8").startsWith("WEBVTT"));
+}
+
+console.log("moved media: the three ops of the hint repair the project");
+{
+  const D = join(tmp, "moved"), old = join(m, "old-place.mp4"), moved = join(m, "new-place.mp4");
+  cli(["init", D, "--preset", "square"]);
+  copyFileSync(join(m, "green.mp4"), old);
+  const clip = cli(["op", "add_clip", "track=main", `src=${old}`], { cwd: D }).results[0].id;
+  const aid = Object.keys(cli(["info", "--json"], { cwd: D }).timeline.assets)[0];
+  renameSync(old, moved);
+  const v = cli(["validate"], { ok: false, cwd: D });
+  const hint: string = v.issues[0]?.hint ?? "";
+  check("the hint names the asset id and the three ops in order", hint.indexOf("import_media") >= 0 && hint.indexOf("import_media") < hint.indexOf("update_clip") && hint.indexOf("update_clip") < hint.indexOf("remove_asset") && hint.includes(`remove_asset id=${aid}`) && hint.includes(`'${aid}'`), hint);
+  const imp = cli(["op", "import_media", `path=${moved}`], { cwd: D }).results[0].asset;
+  cli(["apply", "--ops", JSON.stringify([{ op: "update_clip", id: clip, set: { asset: imp } }, { op: "remove_asset", id: aid }])], { cwd: D });
+  const after = cli(["validate"], { cwd: D });
+  check("after the hinted ops the project validates and renders a frame", after.valid === true && existsSync(cli(["frame", 0], { cwd: D }).image), after);
+}
 
 console.log("render");
 const out = cli(["render", "-o", "renders/full.mp4", "--quiet"], C);

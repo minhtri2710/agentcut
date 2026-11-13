@@ -181,6 +181,28 @@ console.log("a timeline name with separators or dots: default outputs stay one f
   }
 }
 
+// ------------------------------------------------------------------ default output names
+console.log("default output names: each call gets its own file, and a failed call gives its name back");
+{
+  const p = await project("names");
+  const proj = api.openProject(p);
+  const dir = join(p, "renders");
+  const names = Array.from({ length: 6 }, () => proj.defaultOutput(".mp4", "draft"));
+  check("calls in a row give different paths, each reserved as an empty file", new Set(names).size === names.length && names.every((f) => lstatSync(f).size === 0), names);
+  for (const f of names) rmSync(f, { force: true });
+  const a: any = api.exportCaptions(p, {}), b: any = api.exportCaptions(p, {});
+  check("two default-named caption exports in a row are two files with content", a.output !== b.output && lstatSync(a.output).size > 0 && lstatSync(b.output).size > 0, [a.output, b.output]);
+  for (const f of [a.output, b.output]) rmSync(f, { force: true });
+  let seen = -1;
+  const stop = { throwIfAborted() { seen = readdirSync(dir).length; throw new Error("stop"); } } as unknown as AbortSignal;
+  const err = await api.render(p, { draft: true, sheet: false, signal: stop }).catch((e: any) => e);
+  check("a render that fails after its name was reserved leaves no file behind", err?.message === "stop" && seen === 1 && readdirSync(dir).length === 0, { seen, left: readdirSync(dir), err: err?.message });
+  const explicit = join(dir, "mine.srt");
+  writeFileSync(explicit, "old");
+  api.exportCaptions(p, { out: explicit });
+  check("an explicit output still replaces the file at that name", readFileSync(explicit, "utf8") !== "old");
+}
+
 // ------------------------------------------------------------------ a directory at the output's name
 console.log("an output path that is a directory: refused with unsafe_path, no temp file is left");
 {

@@ -266,12 +266,12 @@ console.log("prepare vs concurrent edits");
   const P3 = join(tmp, "proj-stuck"), cache3 = join(P3, ".agentcut", "cache");
   api.create(P3, { preset: "720p" });
   await api.apply(P3, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "remove_background", id: "vid1" }]);
-  const rev = (api.info(P3) as any).revision;
+  const rev = ((await api.info(P3)) as any).revision;
   const r: any = await api.prepare(P3, { progress: (d, n) => {
     // runs after vision.ts renamed the matte into place: delete it so the next round finds it missing again
     if (d === n) for (const f of readdirSync(cache3)) if (f.startsWith("matte-") && !f.includes(".part-")) rmSync(join(cache3, f), { force: true });
   } }).catch((e) => e);
-  check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && (api.info(P3) as any).revision === rev, { code: r.code, rev, now: (api.info(P3) as any).revision });
+  check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && ((await api.info(P3)) as any).revision === rev, { code: r.code, rev, now: ((await api.info(P3)) as any).revision });
 }
 
 // ---------------------------------------------------------------- the server as a raw child (stdin EOF, signals, exit code)
@@ -355,7 +355,7 @@ console.log("history: damaged project.json, failed saves, clock steps");
     const d = await mk("hist-a");
     wf(join(d, "project.json"), damage());
     let r: any; try { r = api.undo(d); } catch (e: any) { r = { error: e.code ?? e.message }; }
-    check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0] === "e2" && markers(d) === 1 && Number.isInteger(api.info(d).revision), r);
+    check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0] === "e2" && markers(d) === 1 && Number.isInteger((await api.info(d)).revision), r);
     rmSync(d, { recursive: true, force: true });
   }
   // A-35: a failed save keeps redo and adds no undo entry; a failed undo keeps its snapshot; a damaged snapshot is a named error

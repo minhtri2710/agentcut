@@ -40,10 +40,10 @@ await api.apply(dir, [
 
 // ---------------------------------------------------------------- concurrency across processes
 console.log("concurrency");
-const r0 = api.info(dir).revision as number;
+const r0 = (await api.info(dir)).revision as number;
 const stale = await cliAsync(["-p", dir, "op", "add_marker", "t=1", `--revision`, r0 - 1]);
 check("stale --revision from another process -> conflict", stale.ok === false && stale.error.code === "conflict" && stale.error.revision === r0, stale);
-check("conflict changed nothing", api.info(dir).revision === r0);
+check("conflict changed nothing", (await api.info(dir)).revision === r0);
 const N = 6;
 const par = await Promise.all(Array.from({ length: N }, (_, i) => cliAsync(["-p", dir, "op", "add_marker", `t=${i + 1}`, `label=m${i}`])));
 const tl = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
@@ -80,6 +80,8 @@ check("state has timeline + revision + history", st.j.ok && st.j.revision === r0
 const vid = st.j.timeline.tracks.find((t: any) => t.id === "main").clips[0];
 const fr = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame is a JPEG", fr.status === 200 && fr.type === "image/jpeg" && fr.body[0] === 0xff && fr.body[1] === 0xd8);
+const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
+check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
 const th = await raw(`/api/thumb/${vid.asset}?t=0.5`);
 check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] === 0xd8);
@@ -286,11 +288,11 @@ if (process.platform !== "win32") {
   writeFileSync(join(binA, "piper"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && cp '${join(tmp, "tone.wav")}' "$2"; shift; done\ncat > /dev/null\n`, { mode: 0o755 });
   process.env.PATH = `${binA}:${was.PATH}`;
   process.env.AGENTCUT_PIPER_MODEL = join(media, "p.jpg");
-  const rev0 = api.info(dirA).revision as number;
+  const rev0 = (await api.info(dirA)).revision as number;
   let done: { status: number; j: any } | undefined;
   try { done = await jget("/api/ops", { method: "POST", port: ua.port, body: { ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }] } }); }
   finally { for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-  check("a UI apply whose client stays connected completes and saves a revision", done?.status === 200 && api.info(dirA).revision === rev0 + 1 && done.j.results?.[0]?.clip?.id, { status: done?.status, j: done?.j, rev0 });
+  check("a UI apply whose client stays connected completes and saves a revision", done?.status === 200 && (await api.info(dirA)).revision === rev0 + 1 && done.j.results?.[0]?.clip?.id, { status: done?.status, j: done?.j, rev0 });
   ua.server.closeAllConnections?.();
   await new Promise((ok) => ua.server.close(ok));
 }

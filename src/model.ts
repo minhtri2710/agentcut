@@ -608,7 +608,7 @@ function checkName(v: unknown, opts: string[], path: string, issues: Issue[], wh
   }
 }
 
-export interface ValidateOpts { exists?: (p: string) => boolean; fontCheck?: (font: string | undefined, text: string) => { error?: string; hint?: string; fallback?: string } }
+export interface ValidateOpts { exists?: (p: string) => boolean; fontCheck?: (font: string | undefined, text: string) => { error?: string; hint?: string; fallback?: string; uncovered?: string } }
 
 export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   const issues: Issue[] = [];
@@ -639,12 +639,19 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
       if (typeof a[k] === "number" && !(Number.isFinite(a[k]) && ok(a[k]))) issues.push({ level: "error", path: `${ap}.${k}`, message: `${k} must be ${what}` });
-    if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: "re-import the file or fix the path" });
+    if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: `restore the file, or move the clips to the new path: import_media path=<new path> (it returns the new asset id), then update_clip set {"asset":"<new id>"} on each clip that uses '${aid}', then remove_asset id=${aid}` });
   }
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$", ROOT);
   if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
   return issues;
+}
+
+/** The text a font check looks at: a text clip's text, a captions clip's words (upper-cased when the clip is); null for any other clip. */
+export function fontSample(c: Clip): string | null {
+  if (c.type !== "text" && c.type !== "captions") return null;
+  const s = String(c.text ?? (c.words || []).map((w: any) => w.text ?? "").join(" "));
+  return c.uppercase ? s.toUpperCase() : s;
 }
 
 /** A compound at a speed other than 1: its nested audio is not mixed (audio.ts) and its nested captions are not cues (subtitles.ts). */
@@ -814,11 +821,14 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {
-        let sample = c.text ?? (c.words || []).map((w: any) => w.text ?? "").join(" ");
-        if (c.uppercase) sample = String(sample).toUpperCase();
-        const r = o.fontCheck(c.font, String(sample));
+        const r = o.fontCheck(c.font, fontSample(c)!);
         if (r.error) issues.push({ level: "error", path: `${p}.font`, message: r.error, hint: r.hint });
-        else if (r.fallback) issues.push({ level: "info", path: `${p}.font`, message: `font '${c.font}' lacks some characters; '${r.fallback}' is used for them` });
+        else {
+          const named = c.font ? `font '${c.font}'` : "the default font";
+          if (r.fallback) issues.push({ level: "info", path: `${p}.font`, message: `${named} lacks some characters; '${r.fallback}' is used for them` });
+          if (r.uncovered) issues.push({ level: "warning", path: `${p}.font`, message: `no installed font has ${[...r.uncovered].map((x) => `'${x}'`).join(" ")}: ${named} draws them as empty boxes`,
+            hint: "remove or replace them, or pass a font file (.ttf/.otf) that has them as `font`" });
+        }
       }
       if (c.attach_to) {
         const t = byId(c.attach_to), at = `${p}.attach_to`;

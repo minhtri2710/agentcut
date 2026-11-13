@@ -28,8 +28,8 @@ ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4", "-f", "lavfi
 ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
 const P = join(tmp, "proj");
 api.create(P, { preset: "reels" });
-const tl = () => api.info(P, "json").timeline as any;
-const clip = (id: string) => tl().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
+const tl = async () => (await api.info(P, "json")).timeline as any;
+const clip = async (id: string) => (await tl()).tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 console.log("tts: script text never reaches argv");
 {
@@ -76,14 +76,14 @@ const vid = add.results[0].id as string;
 
 console.log("remove_background.model is validated with the timeline");
 check("unknown model in update_clip -> validation_failed", await code(() => api.apply(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "bogus" } } }])) === "validation_failed");
-check("known model passes validation", api.validate(P).valid && (await code(() => api.apply(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "u2netp" } } }], { dryRun: true }))) === "ok");
+check("known model passes validation", (await api.validate(P)).valid && (await code(() => api.apply(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "u2netp" } } }], { dryRun: true }))) === "ok");
 
 console.log("detach_audio carries the audio processing");
 {
   await api.apply(P, [{ op: "update_clip", id: vid, set: { eq: "voice_clarity", pan: -0.5, normalize: true } }]);
   const r = await api.apply(P, [{ op: "detach_audio", id: vid }]);
-  const aud = clip(r.results[0].audio ?? r.results[0].id);
-  const v = clip(vid);
+  const aud = (await clip(r.results[0].audio ?? r.results[0].id));
+  const v = (await clip(vid));
   check("eq/pan/normalize moved to the audio clip", aud?.eq === "voice_clarity" && aud.pan === -0.5 && aud.normalize === true, aud);
   check("muted video keeps no audio fields", v.muted && v.eq === undefined && v.pan === undefined && v.normalize === undefined, v);
 }
@@ -95,13 +95,13 @@ console.log("split keeps keyframes on the right half");
     { op: "set_keyframes", id: vid, prop: "speed", keyframes: [[0, 1], [4, 1]] },
   ], { allowInvalid: true });
   await api.apply(P, [{ op: "set_keyframes", id: vid, prop: "speed", keyframes: null }]);
-  const audId = tl().tracks.flatMap((t: any) => t.clips).find((c: any) => c.attach_to === vid).id;
+  const audId = (await tl()).tracks.flatMap((t: any) => t.clips).find((c: any) => c.attach_to === vid).id;
   await api.apply(P, [{ op: "set_keyframes", id: audId, prop: "volume", keyframes: [[0, 1], [4, 0]] }]);
   const s = await api.apply(P, [{ op: "split_clip", id: vid, at: 1 }]);
-  const right = clip(s.results[0].right), left = clip(vid);
+  const right = (await clip(s.results[0].right)), left = (await clip(vid));
   check("left half keeps its curve", kfValue(left.keyframes.opacity, 0.5) === 0.125, left.keyframes);
   check("right half continues the curve (was reset to static)", Math.abs(kfValue(right.keyframes.opacity, 0) - 0.25) < 1e-9 && Math.abs(kfValue(right.keyframes.opacity, 3) - 1) < 1e-9, right.keyframes);
-  const ar = tl().tracks.flatMap((t: any) => t.clips).find((c: any) => c.attach_to === right.id);
+  const ar = (await tl()).tracks.flatMap((t: any) => t.clips).find((c: any) => c.attach_to === right.id);
   check("detached audio's right half continues its volume curve", ar && Math.abs(kfValue(ar.keyframes.volume, 0) - 0.75) < 1e-9, ar?.keyframes);
 }
 
@@ -121,7 +121,7 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
 {
   const { SCHEMA_VERSION } = await import("../src/model.ts");
   check("SCHEMA_VERSION is 1", SCHEMA_VERSION === 1, SCHEMA_VERSION);
-  check("a new project and timeline_schema report SCHEMA_VERSION", tl().version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [tl().version, (api.schema() as any).timeline.version]);
+  check("a new project and timeline_schema report SCHEMA_VERSION", (await tl()).version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [(await tl()).version, (api.schema() as any).timeline.version]);
   const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
   /** every entry under dir with its content (a symlink with its target) and every directory's mtime, dir itself included: names and
    *  contents alone would miss a file created and removed again behind a link */
@@ -336,7 +336,7 @@ console.log("replace_timeline rejects a wrong or missing version itself (dry run
   }
   check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before);
   const good = JSON.parse(before); good.name = "replaced";
-  check("replace_timeline with the supported version is applied", (await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: good }]))) === null && api.info(d, "json").timeline.name === "replaced");
+  check("replace_timeline with the supported version is applied", (await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: good }]))) === null && (await api.info(d, "json")).timeline.name === "replaced");
 }
 
 console.log("ui: concurrent play renders share one job, the cache never sees a partial file");
@@ -344,9 +344,9 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
   const ui = await startUi(P, { port: 0 });
   try {
     const post = (body: unknown) => fetch(`${ui.url}api/render`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json() as any);
-    const T = Math.min(4, api.info(P).duration as number); // a long range keeps the draft alive while it is polled and pruned
+    const T = Math.min(4, (await api.info(P)).duration as number); // a long range keeps the draft alive while it is polled and pruned
     const [a, b] = await Promise.all([post({ play: true, start: 0, end: T }), post({ play: true, start: 0, end: T })]);
-    const rev = api.info(P).revision;
+    const rev = (await api.info(P)).revision;
     const final = join(P, "previews", "ui", `play-r${rev}-0.00-${T.toFixed(2)}.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));

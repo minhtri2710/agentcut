@@ -64,8 +64,8 @@ const mix = (tag: string, loud: number | null = null) => {
   tl.settings.loudness = loud; // off: compare raw levels between variants
   return buildAudio(tl, w);
 };
-const tracks = () => api.info(P, "json").timeline.tracks;
-const clip = (id: string) => tracks().flatMap((t: any) => t.clips).find((c: any) => c.id === id);
+const tracks = async () => (await api.info(P, "json")).timeline.tracks;
+const clip = async (id: string) => (await tracks()).flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply([{ op: "add_clip", track: "voice", src: join(m, "talk.wav"), at: 0, duration: 4 }]); // aud1
 const base = await mix("base");
@@ -535,11 +535,11 @@ console.log("beats: the DSP hands the event loop back and stops on an abort");
 }
 
 console.log("enhance_voice");
-const v = tracks().find((t: any) => t.id === "voice");
+const v = (await tracks()).find((t: any) => t.id === "voice");
 check("track carries the voice chain", v.denoise === 0.5 && v.compressor === "voice" && v.normalize === true && v.eq.includes("voice_clarity"), v);
 await apply([{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 4 }, { op: "detach_audio", id: "vid1" }]);
 const ev = (await apply([{ op: "enhance_voice", id: "vid1", strength: 0.8 }]))[0];
-check("video with detached audio -> enhances the audio clip", ev.clips.length === 1 && ev.clips[0] !== "vid1" && clip(ev.clips[0]).denoise === 0.8 && clip(ev.clips[0]).attach_to === "vid1" && clip("vid1").denoise === undefined, ev);
+check("video with detached audio -> enhances the audio clip", ev.clips.length === 1 && ev.clips[0] !== "vid1" && (await clip(ev.clips[0])).denoise === 0.8 && (await clip(ev.clips[0])).attach_to === "vid1" && (await clip("vid1")).denoise === undefined, ev);
 check("needs id or track", await rejects(() => apply([{ op: "enhance_voice" }]), "missing_arg"));
 check("bad strength", await rejects(() => apply([{ op: "enhance_voice", track: "voice", strength: 3 }]), "bad_arg"));
 

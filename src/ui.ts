@@ -29,7 +29,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const thumbs = new Map<string, Promise<Buffer>>();
   const cacheDir = join(root, "previews", "ui");
 
-  const state = (): Dict => ({ ...api.info(root, "json"), history: api.history(root) });
+  const state = async (): Promise<Dict> => ({ ...(await api.info(root, "json")), history: api.history(root) });
   const send = (res: ServerResponse, event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const broadcast = (event: string, data: unknown) => { for (const c of clients) send(c, event, data); };
   const fileUrl = (abs: string) => "/files/" + relative(root, abs).split(sep).map(encodeURIComponent).join("/");
@@ -58,13 +58,16 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     }
 
     if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE); }
-    if (req.method === "GET" && path === "/api/state") return json(res, 200, { ok: true, ...state() });
+    if (req.method === "GET" && path === "/api/state") return json(res, 200, { ok: true, ...(await state()) });
     if (req.method === "GET" && path === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-      clients.add(res);
-      send(res, "state", state());
-      const ping = setInterval(() => res.write(": ping\n\n"), 20_000);
+      let ping: ReturnType<typeof setInterval> | undefined;
       req.on("close", () => { clearInterval(ping); clients.delete(res); });
+      const s = await state(); // added to the clients only once the state is in hand, so no newer broadcast is followed by this older one
+      if (res.destroyed) return;
+      clients.add(res);
+      send(res, "state", s);
+      ping = setInterval(() => res.write(": ping\n\n"), 20_000);
       return;
     }
     if (req.method === "GET" && path === "/api/frame") {
@@ -166,9 +169,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   });
   // live sync: stat-poll survives the atomic rename used by Project.save (fs.watch on the file does not). Started only once the port is held, so a failed listen leaves nothing running.
   let lastRev = -1;
+  // one push at a time, in the order the changes were seen: state() waits for Skia on the first text project, and two quick saves must not end with the older state sent last
+  let pushing: Promise<void> = Promise.resolve();
   watchFile(p.file, { interval: 150 }, () => {
-    try { const s = state(); if (s.revision !== lastRev) { lastRev = s.revision; broadcast("state", s); } }
-    catch (e: any) { broadcast("error", errJson(e)); }
+    pushing = pushing.then(async () => {
+      try { const s = await state(); if (s.revision !== lastRev) { lastRev = s.revision; broadcast("state", s); } }
+      catch (e: any) { broadcast("error", errJson(e)); }
+    });
   });
   server.on("close", () => unwatchFile(p.file));
   const port = (server.address() as any).port;

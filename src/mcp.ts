@@ -96,7 +96,7 @@ export function buildServer() {
     inputSchema: { path: z.string(), preset: z.string().default("reels"), width: z.number().int().optional(), height: z.number().int().optional(), fps: z.number().default(30), name: z.string().optional() },
   }, wrap((a) => { const r = api.create(a.path, { preset: a.width || a.height ? undefined : a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
   s.registerTool("open_project", { description: "Select an existing project folder and return its summary.", inputSchema: { path: z.string() } },
-    wrap((a) => { const r = api.info(a.path); state.project = r.project; return r; })); // a failed open keeps the remembered project
+    wrap(async (a) => { const r = await api.info(a.path); state.project = r.project; return r; })); // a failed open keeps the remembered project
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {

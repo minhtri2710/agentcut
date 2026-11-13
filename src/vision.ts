@@ -85,7 +85,7 @@ const hashes = new Map<string, string>();
 /** sha256 of the file content (memoized per path + size + mtime). */
 export function fileHash(path: string): string {
   const st = statSync(path, { throwIfNoEntry: false });
-  if (!st) throw new EditError(`media file not found: ${path}`, "not_found", "restore the file (or relink the asset) before prepare, cache info or cache prune");
+  if (!st) throw new EditError(`media file not found: ${path}`, "not_found", "restore the file, or move its clips to the new path (validate lists the steps), before prepare, cache info or cache prune");
   const memo = `${path}|${st.size}|${st.mtimeMs}`;
   let h = hashes.get(memo);
   if (!h) {

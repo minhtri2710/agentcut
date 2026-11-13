@@ -463,6 +463,57 @@ writeFileSync(process.argv[3], r.data);\n`);
   }
 }
 
+console.log("CJK text: an installed CJK font fills in, and glyphs no font has are reported");
+{
+  const { loadCanvas, C } = await import("../src/canvas.ts");
+  await loadCanvas();
+  const NONE = "\u{10FFFD}"; // a private-use code point in plane 16: no font maps it
+  const cjkFont = (C().GlobalFonts.families as { family: string }[]).find((f) => /^(Hiragino Sans|Heiti|Noto Sans CJK|Microsoft YaHei|Yu Gothic|Apple SD Gothic Neo|Malgun Gothic)/.test(f.family));
+  const D = join(tmp, "cjk");
+  api.create(D, { width: 320, height: 120, fps: 24 });
+  await api.apply(D, [{ op: "add_clip", track: "text", id: "t", text: NONE, at: 0, duration: 1, font_size: 60 }]);
+  const draw = async (text: string) => { await api.apply(D, [{ op: "update_clip", id: "t", set: { text } }]); return Buffer.from((await api.frameImage(D, 0, { scale: 1, format: "png" })).data); };
+  if (!cjkFont) console.log("  - skipped: no CJK font installed");
+  else {
+    const none = await draw(NONE);
+    const T1 = "你好，世界！今天我们一起做视频。日本語のテキストも、한국어 텍스트도";
+    const boxes: string[] = [];
+    for (const ch of new Set([...T1])) if (ch.trim() && !/[\x20-\x7e]/.test(ch) && (await draw(ch)).equals(none)) boxes.push(ch);
+    check("every Chinese, Japanese and Korean character of the sample draws a glyph with the default font (none looks like a missing glyph)", boxes.length === 0, boxes);
+  }
+  await api.apply(D, [{ op: "update_clip", id: "t", set: { text: `Hello ${NONE} there` } }, { op: "add_clip", track: "text", id: "e", text: "👨‍👩‍👧 family 🇻🇳 flag 1️⃣ keycap 👍🏽 tone ❤️ heart", at: 1, duration: 1 }]);
+  const v = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "validate", "-p", D], { encoding: "utf8" }); // a fresh process: Skia is not loaded when it starts
+  const vj = JSON.parse(v.stdout);
+  check("validate in a fresh process warns, naming the character no font has", vj.warnings === 1 && vj.issues[0].level === "warning" && vj.issues[0].message.includes(NONE) && vj.issues[0].path.includes("<t>"), vj);
+  const ij = JSON.parse(spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "info", "-p", D], { encoding: "utf8" }).stdout);
+  check("info in a fresh process counts the same warnings as validate", ij.warnings === vj.warnings && ij.errors === vj.errors, { info: [ij.errors, ij.warnings], validate: [vj.errors, vj.warnings] });
+  check("an emoji sequence, a flag, a keycap, a skin tone and a heart give no warning", !vj.issues.some((i: any) => i.path.includes("<e>")), vj);
+
+  // when Skia is loaded for the font checks: a child process validates and reads info, and says whether it loaded Skia (no test-only export: canvasLoaded is the module's own)
+  const gateJs = join(tmp, "gate-child.ts");
+  writeFileSync(gateJs, `const api = await import(${JSON.stringify(join(import.meta.dir, "../src/api.ts"))});
+const { canvasLoaded } = await import(${JSON.stringify(join(import.meta.dir, "../src/canvas.ts"))});
+const v = await api.validate(process.argv[2]), i = await api.info(process.argv[2]);
+console.log(JSON.stringify({ valid: v.valid, errors: v.errors, warnings: v.warnings, issues: v.issues, infoErrors: i.errors, infoWarnings: i.warnings, loaded: canvasLoaded() }));\n`);
+  const gate = (proj: string, cache: string) => JSON.parse(spawnSync(process.execPath, ["--no-install", gateJs, proj], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } }).stdout);
+  const U = join(tmp, "gate-unknown-font");
+  api.create(U, { width: 320, height: 120, fps: 24 });
+  await api.apply(U, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: "NoSuchFontXyz" }], { allowInvalid: true });
+  const cold = gate(U, join(tmp, "gate-cache")), warm = gate(U, join(tmp, "gate-cache"));
+  check("empty cache, ASCII text, unknown font: validate and info both report it (Skia is loaded to learn the families)", cold.valid === false && cold.errors === 1 && cold.infoErrors === 1 && /not found/.test(cold.issues[0].message) && cold.loaded === true, cold);
+  check("warm cache: the same answer, and Skia is not loaded", warm.valid === false && warm.errors === 1 && warm.infoErrors === 1 && warm.issues[0].message === cold.issues[0].message && warm.loaded === false, warm);
+  const FILE = "/System/Library/Fonts/Supplemental/Andale Mono.ttf";
+  if (!existsSync(FILE)) console.log("  - skipped: no system .ttf for the font-file row");
+  else {
+    const F = join(tmp, "gate-font-file");
+    api.create(F, { width: 320, height: 120, fps: 24 });
+    await api.apply(F, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: FILE }]);
+    gate(F, join(tmp, "gate-cache-file")); // the family cache is kept per project (its fonts folder is part of the key): the first run writes it
+    const without = gate(F, join(tmp, "gate-cache-file")), withSkia = await api.validate(F);
+    check("ASCII text in a font file: validate gives the same issues without Skia as with it", without.loaded === false && without.valid === true && JSON.stringify(without.issues) === JSON.stringify(withSkia.issues) && without.errors === withSkia.errors && without.warnings === withSkia.warnings, { without, withSkia });
+  }
+}
+
 console.log("decode and render failures");
 {
   const { FrameSource } = await import("../src/media.ts");

@@ -113,7 +113,7 @@ export async function main(argv = process.argv.slice(2)) {
     switch (cmd) {
       case "init": res = api.create(pos[0] ?? ".", { preset: f.preset, width: num(f.width), height: num(f.height), fps: num(f.fps), name: f.name, empty: f.empty }); break;
       case "info": case "show": case "status":
-        res = api.info(P, f.json ? "both" : "summary");
+        res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
       case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision) }); break;
@@ -121,7 +121,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision) }); break;
       case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision) }); break;
       case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision) }); break;
-      case "validate": { const v = api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
+      case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale), guides: f.guides }); break;
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale) }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;

@@ -130,6 +130,10 @@ try {
   await click(`[data-id="txt1"]`);
   check("txt1 selected again", await until("reselect", `$("selinfo").textContent.indexOf("txt1") === 0 && $("kfadd") && !$("kfadd").disabled && S.revision === ${load().revision}`), await js(`$("selinfo").textContent`));
 
+  console.log("viewer at the end of the timeline");
+  await js(`$("vstat").textContent = ""; seek(total())`);
+  check("the playhead at the duration shows the last frame, not an out-of-timeline error", await until("end frame", `$("vstat").textContent.indexOf("ms/frame") > 0`), await js(`$("vstat").textContent`));
+
   console.log("keyframes");
   await js(`seek(1)`);
   await js(`(function(){var s=$("kfprop"); s.value="opacity"; s.dispatchEvent(new Event("change"));})()`);

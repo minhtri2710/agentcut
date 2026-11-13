@@ -298,7 +298,8 @@ function pump() {
   if (busy || want === null || !S) return;
   var st = S.timeline.settings, box = $("viewer").getBoundingClientRect();
   var scale = Math.max(0.25, Math.min(1, Math.ceil(4 * Math.min(box.width / st.width, box.height / st.height) * (window.devicePixelRatio || 1)) / 4));
-  var url = "/api/frame?t=" + want.toFixed(3) + "&scale=" + scale + "&rev=" + S.revision; want = null; busy = true;
+  var at = Math.min(want, Math.max(0, total() - 1 / st.fps)); // the server refuses t at or past the duration: the playhead at the end shows the last frame
+  var url = "/api/frame?t=" + at.toFixed(3) + "&scale=" + scale + "&rev=" + S.revision; want = null; busy = true;
   var t0 = performance.now();
   fetch(url).then(function (r) { if (!r.ok) return r.json().then(function (j) { throw j.error; }); return r.blob(); }).then(function (b) {
     var old = $("frame").src; $("frame").src = URL.createObjectURL(b); if (old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
