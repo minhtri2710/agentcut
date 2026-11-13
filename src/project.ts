@@ -75,7 +75,7 @@ export function refuseSource(root: string, tl: Pick<Timeline, "assets" | "tracks
   const what = inside(hist) ? "the project's history folder"
     : inside(fonts) ? "the project's fonts folder"
     : same(join(root, PROJECT_FILE)) ? "project.json"
-    : Object.values(tl?.assets ?? {}).some((a) => a?.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses"
+    : Object.values(tl?.assets ?? {}).some((a) => typeof a?.path === "string" && a.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses"
     : fontFiles.some(same) ? "a font file the timeline uses" : null;
   if (what) throw new EditError(`${out} is ${what}; writing there would replace it`, "output_is_source", "choose another output path, for example renders/<name>.mp4");
 }

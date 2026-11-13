@@ -435,14 +435,22 @@ console.log("output paths through another spelling of the root, font files, and 
     const c = await code(() => api.analyze.tts("hi", out, undefined, undefined, p)); // tts checks the output before any validation
     check("an asset below a looping directory: the output is refused with unsafe_path, nothing is written", c === "unsafe_path" && !S.lexists(out), c);
   }
-  // a damaged project.json: the font scan skips what cannot name a font file, and tts (which does not validate) gets the usual refusal
-  for (const [name, tracks] of [["a null track", [null]], ["a null clip", [{ id: "t", clips: [null] }]], ["tracks that is not a list", {}], ["a clip with a non-string font", [{ id: "t", clips: [{ id: "c", font: 5 }] }]]] as const) {
+  // a damaged project.json: the scans skip what cannot name a file, and tts (which does not validate) gets the usual refusal
+  const damage: [string, (tl: any) => void, (tl: any, p: string) => string][] = [
+    ["a null track", (tl) => { tl.tracks = [null]; }, (_, p) => join(p, "project.json")],
+    ["a null clip", (tl) => { tl.tracks = [{ id: "t", clips: [null] }]; }, (_, p) => join(p, "project.json")],
+    ["tracks that is not a list", (tl) => { tl.tracks = {}; }, (_, p) => join(p, "project.json")],
+    // listed first, so the scan meets it before the asset the output names (project.json would be matched before any asset is read)
+    ["an asset whose path is not a string", (tl) => { tl.assets = { x: { kind: "video", path: 5 }, ...tl.assets }; }, (tl) => Object.values<any>(tl.assets).find((a) => typeof a.path === "string").path],
+  ];
+  for (const [name, f, target] of damage) {
     const p = await project(`damaged-${name.replace(/\W+/g, "-")}`);
     const tl = JSON.parse(readFileSync(join(p, "project.json"), "utf8"));
-    tl.tracks = tracks;
+    f(tl);
     writeFileSync(join(p, "project.json"), JSON.stringify(tl, null, 2));
-    const c = await code(() => api.analyze.tts("hi", join(p, "project.json"), undefined, undefined, p));
-    check(`tts with project.json holding ${name}: output_is_source, not a raw error`, c === "output_is_source", c);
+    const out = target(tl, p), before = readFileSync(out);
+    const c = await code(() => api.analyze.tts("hi", out, undefined, undefined, p));
+    check(`tts with project.json holding ${name}: output_is_source, not a raw error`, c === "output_is_source" && readFileSync(out).equals(before), c);
   }
 }
 
