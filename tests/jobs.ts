@@ -720,22 +720,32 @@ while :; do sleep 0.05; done
     await until(() => two.exit, 20_000);
     check("a second signal ends the process at once, by that signal, and prints nothing", two.exit?.signal === "SIGINT" && two.exit.code === null && two.out === "", { out: two.out, exit: two.exit });
   }
-  // a second signal while the result is still being written: the object is not cut (the reader is slow, and takes the rest within the grace time)
+  // a second signal while the result is still being written: the object is not cut (the reader is slow, and takes the rest within the grace time);
+  // a reader that never resumes does not hold the process longer than the bound
   {
     const P = join(tmp, "cancel-cli-big");
     api.create(P, { preset: "720p" });
     await api.apply(P, [{ op: "add_clip", track: "text", text: "x".repeat(8_000_000), at: 0, duration: 1 }]); // the result is far more than a pipe holds
-    const r = cli(P, ["info", "--json"]);
-    let first = false;
-    r.child.stdout.once("data", () => { r.child.stdout.pause(); first = true; }); // the first chunk shows the write is in flight; the rest waits in the pipe
-    await until(() => first, 60_000);
-    process.kill(r.pid, "SIGTERM");
-    await sleep(300);
-    try { process.kill(r.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
-    r.child.stdout.resume();
-    await until(() => r.exit, 20_000);
-    const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
-    check("a second signal while a large result is being written: stdout is still one JSON object", first && j !== null && r.out.length > 65_536, { first, bytes: r.out.length, tail: r.out.slice(-80), exit: r.exit });
+    const bigWrite = async (resumes: boolean) => {
+      const r = cli(P, ["info", "--json"]);
+      let first = false;
+      r.child.stdout.once("data", () => { r.child.stdout.pause(); first = true; }); // the first chunk shows the write is in flight; the rest waits in the pipe
+      await until(() => first, 60_000);
+      process.kill(r.pid, "SIGTERM");
+      await sleep(300);
+      const t = performance.now();
+      try { process.kill(r.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
+      if (resumes) r.child.stdout.resume();
+      await until(() => r.exit, resumes ? 20_000 : 3_000);
+      const ms = performance.now() - t, exit = r.exit;
+      if (!exit) try { process.kill(r.pid, "SIGKILL"); } catch { /* gone */ }
+      return { r, first, ms, exit };
+    };
+    const slow = await bigWrite(true);
+    const j = (() => { try { return JSON.parse(slow.r.out); } catch { return null; } })();
+    check("a second signal while a large result is being written: stdout is still one JSON object", slow.first && j !== null && slow.r.out.length > 65_536, { first: slow.first, bytes: slow.r.out.length, tail: slow.r.out.slice(-80), exit: slow.exit });
+    const stuck = await bigWrite(false);
+    check("a second signal while a large result is being written to a reader that never resumes: the process ends by that signal within the bound", stuck.first && stuck.exit?.signal === "SIGINT" && stuck.ms < 2_000, { first: stuck.first, ms: Math.round(stuck.ms), exit: stuck.exit });
   }
 }
 

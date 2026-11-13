@@ -44,14 +44,14 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
   return name;
 }
 
-const probeCache = new Map<string, { mtime: number; info: any }>();
+const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
 export function probe(path: string): any {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
-  const mtime = statSync(path).mtimeMs;
+  const st = statSync(path), mtime = st.mtimeMs, size = st.size;
   const hit = probeCache.get(path);
-  if (hit && hit.mtime === mtime) return { ...hit.info };
+  if (hit && hit.mtime === mtime && hit.size === size) return { ...hit.info };
   const ext = extname(path).toLowerCase();
   let info: any;
   if (ext === ".json" || ext === ".lottie") {
@@ -87,7 +87,7 @@ export function probe(path: string): any {
       Object.assign(info, { kind: "audio", duration: +dur.toFixed(3), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
   }
-  probeCache.set(path, { mtime, info });
+  probeCache.set(path, { mtime, size, info });
   return { ...info };
 }
 
@@ -319,8 +319,8 @@ export class FrameSource {
 
   /** A source that ends well inside its probed length (at `at` source seconds) is damaged or was replaced, and holding its last frame would hide that.
    *  The container length counts the longest stream: a clip may run past the video stream's own end (audio longer than video). */
-  private endedEarly(at: number) {
-    const o = this.o, inside = (d?: number) => !o.reverse && !o.loop && !!d && at < d - 0.5 - 1 / o.rate;
+  private endedEarly(at: number, absolute = false) { // absolute: `at` is a source time (a freeze), also for a loop or reverse clip
+    const o = this.o, inside = (d?: number) => (absolute || (!o.reverse && !o.loop)) && !!d && at < d - 0.5 - 1 / o.rate;
     return inside(o.srcDuration) && inside(this.videoEnd() ?? o.srcDuration);
   }
 
@@ -328,13 +328,15 @@ export class FrameSource {
     return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "re-run prepare or re-import the media; the file may be truncated or have changed");
   }
 
-  /** The frame a freeze holds: the one at the in-point; at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
+  /** The frame a freeze holds: the one at the in-point (wrapped into the source for a loop clip); at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
   private async frozenFrame(): Promise<Buffer> {
-    const at = this.o.srcIn ?? 0;
+    const o = this.o;
+    let at = o.srcIn ?? 0;
+    if (o.loop && o.srcDuration) at %= o.srcDuration;
     const f = await this.decodeStill(at, true);
     if (f) return f;
-    if (this.endedEarly(at)) throw this.gone("the source ended before the frozen frame", at);
-    const last = this.o.reverse || this.o.loop ? null : await this.tailFrame();
+    if (this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
+    const last = await this.tailFrame();
     if (!last) throw this.gone("the source has no frame", at);
     return last;
   }

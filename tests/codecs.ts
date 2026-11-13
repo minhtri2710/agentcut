@@ -1,7 +1,7 @@
 // Output codec / alpha / audio-only export tests: calls renderVideo directly on a tiny synthetic project.
 // Run: bun tests/codecs.ts [--keep]          (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -313,6 +313,15 @@ console.log("alpha in vp8/vp9 webm sources");
     check(`probe: alpha ${codec} webm is alpha`, i.codec === codec && i.alpha === true, i);
   }
   check("probe: opaque vp9 webm is not alpha", api.probe(join(m, "opaque9.webm")).alpha === false);
+  { // a file replaced by one of another size whose mtime was set back to the old value is probed again
+    const f = join(m, "swap.mp4");
+    ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=1", "-pix_fmt", "yuv420p", f);
+    const was = statSync(f), old = api.probe(f);
+    ff("-f", "lavfi", "-i", "testsrc2=size=96x96:rate=30:duration=2", "-pix_fmt", "yuv420p", f);
+    utimesSync(f, was.atimeMs / 1000, was.mtimeMs / 1000);
+    const now = statSync(f), fresh = api.probe(f);
+    check("probe: a replacement of another size with the old mtime is probed again", now.mtimeMs === was.mtimeMs && now.size !== was.size && old.width === 64 && fresh.width === 96, { old: old.width, fresh: fresh.width });
+  }
   const over = async (src: string, name: string) => {
     const dir = join(tmp, name);
     api.create(dir, { width: W, height: H, fps: 24 });
@@ -553,7 +562,7 @@ console.log("decode and render failures");
   fresh.close();
   // a freeze at or past the video's end holds its last frame, as a playing clip does (the seek of a still lands past the last frame's interval)
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "endclip.mp4"));
-  const frz = (srcIn: number, srcDuration = 2) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn });
+  const frz = (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, ...mode });
   const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2 });
   const tailRef = await lastPlayed.readAt(5);
   const inside = frz(1.0), insideFrame = await inside.readAt(0);
@@ -564,8 +573,20 @@ console.log("decode and render failures");
     check(`a freeze with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
     fz.close();
   }
-  const cut = new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3, freeze: true, srcIn: 2 });
+  for (const [name, mode, at] of [["loop", { loop: true }, 1.99], ["reverse", { reverse: true }, 2], ["reverse", { reverse: true }, 6]] as const) {
+    const fz = frz(at, 2, mode);
+    const got = await fz.readAt(0).catch((e) => e?.code);
+    check(`a frozen ${name} clip with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
+    fz.close();
+  }
+  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3, freeze: true, srcIn: 2, ...mode });
+  const cut = cutOf({});
   check("a freeze in a source that ends well inside its probed length is decode_failed, not a held frame", (await code(cut.readAt(0))) === "decode_failed");
+  for (const mode of [{ loop: true }, { reverse: true }]) {
+    const c = cutOf(mode);
+    check(`a frozen ${Object.keys(mode)[0]} clip in a source that ends well inside its probed length is decode_failed`, (await code(c.readAt(0))) === "decode_failed");
+    c.close();
+  }
   for (const x of [inside, lastPlayed, cut]) x.close();
   {
     const F = join(tmp, "freeze-end");

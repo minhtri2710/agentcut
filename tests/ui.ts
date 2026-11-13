@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -100,6 +100,17 @@ check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] 
   const second = await raw(`/api/thumb/${vid.asset}?t=0.5`);
   rmSync(srcAbs); renameSync(keep, srcAbs);
   check("a thumbnail follows the file: replaced in place -> a new picture, header no-cache", second.status === 200 && !second.body.equals(first.body) && second.headers["cache-control"] === "no-cache" && first.headers["cache-control"] === "no-cache", [first.status, second.status, first.headers["cache-control"], second.headers["cache-control"]]);
+}
+{ // a replacement whose mtime was set back to the old value is still a new picture: the key also holds the size
+  const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), keep = srcAbs + ".keep", was = statSync(srcAbs);
+  const first = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  renameSync(srcAbs, keep);
+  ff("-f", "lavfi", "-i", "color=c=blue:size=320x180:rate=30:duration=1", "-pix_fmt", "yuv420p", srcAbs);
+  utimesSync(srcAbs, was.atimeMs / 1000, was.mtimeMs / 1000);
+  const sameMtime = statSync(srcAbs).mtimeMs === was.mtimeMs && statSync(srcAbs).size !== was.size;
+  const second = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  rmSync(srcAbs); renameSync(keep, srcAbs);
+  check("a thumbnail follows the file: a replacement of another size with the old mtime -> a new picture", sameMtime && second.status === 200 && !second.body.equals(first.body), [sameMtime, first.status, second.status]);
 }
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);

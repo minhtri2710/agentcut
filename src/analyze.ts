@@ -303,7 +303,7 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
     if (r.status !== 0 && voice) { // diagnose only after a failure, so a good synthesis pays no extra call
       const known = await espeakVoices(exe, signal);
       if (known && !known.has(voice.split("+")[0].toLowerCase())) // "en+f3" is the voice en with the f3 variant
-        throw new EditError(`voice '${voice}' not installed (${exe}: ${r.stderr.trim().slice(0, 300)})`, "bad_voice", `list the voices with list_voices, or run \`${exe} --voices\``);
+        throw new EditError(`voice '${voice}' not installed (${exe}: ${r.stderr.trim().slice(0, 300)})`, "bad_voice", `list the installed voices, or run \`${exe} --voices\``);
     }
   }
   if (r.status !== 0) throw new EditError(`tts failed: ${r.stderr.slice(0, 300)}`, "tts_failed");

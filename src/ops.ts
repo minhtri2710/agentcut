@@ -44,30 +44,30 @@ function parseAt(tl: Timeline, v: unknown): number {
 
 // ---------------------------------------------------------------- media
 /** The existing file `path` names: absolute, or relative to the current directory or the project. */
-function mediaSource(p: Project | null, path: string): string {
+function mediaSource(p: Project, path: string): string {
   let src = absPath(path);
-  if (!existsSync(src) && p && existsSync(join(p.root, path))) src = join(p.root, path);
+  if (!existsSync(src) && existsSync(join(p.root, path))) src = join(p.root, path);
   if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
   return src;
 }
 
 /** The asset record of the media file `src`, probed first so that a file that is not media leaves nothing in media/; copy puts it into media/ (staged, dropped with a batch that is not saved). */
-function mediaRecord(p: Project | null, src: string, copy: boolean): Asset {
+function mediaRecord(p: Project, src: string, copy: boolean): Asset {
   const info = probe(src);
-  if (copy && p) {
+  if (copy) {
     let dst = join(p.root, "media", basename(src));
     for (let i = 1; lexists(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
     if (presolve(dst) !== src) { copyFile(src, dst, p.root); p.stage(dst); }
     src = dst;
   }
-  info.path = p ? p.rel(src) : src;
+  info.path = p.rel(src);
   return info;
 }
 
-export function importAsset(p: Project | null, tl: Timeline, path: string, id?: string, copy = false): string {
+export function importAsset(p: Project, tl: Timeline, path: string, id?: string, copy = false): string {
   if (id) plainKey(id);
   const src = mediaSource(p, path);
-  for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) {
+  for (const [k, a] of Object.entries(tl.assets)) if (presolve(p.abs(a.path)) === src) {
     if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
     return k;
   }
@@ -680,7 +680,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
   { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", transcribe_range: "[start, end] seconds of the media to transcribe: only the speech; whisper may invent text over a long music-only stretch and times words early after a music lead-in", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
   addCaptions);
 
-op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
+op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see the installed voices list), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
   { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
     const res = AN.analysis(p, { kind: "tts", text: a.text, voice: a.voice, rate: a.rate });
     let stamp = p.stamp, out = join(p.root, "media", `vo-${stamp}.wav`);
