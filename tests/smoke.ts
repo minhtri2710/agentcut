@@ -184,6 +184,19 @@ const fs = cli(["feedback", "summary"]);
 check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
 check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "by"], ["split_clip argument", "by"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => fs.naming_misses.some((m: any) => m.kind === k && m.guess === g)), fs.naming_misses);
 check("render speed logged", fs.render?.renders >= 1, fs.render);
+check("a failed validate is not an error event: no error row for validate and no row without a code", !fs.errors.some((e: any) => e.cmds.includes("validate") || typeof e.code !== "string"), fs.errors);
+{
+  // planted render events in the isolated store: a one-frame render at 0.05x is start-up cost, a 5 s render at 0.3x is slow
+  const FB = await import("../src/feedback.ts");
+  const base = FB.summary().render!;
+  FB.recordEvent({ type: "render", speed_x: 0.05, frames: 1, width: 1080, height: 1080, seconds: 0.1 });
+  const one = FB.summary().render!;
+  FB.recordEvent({ type: "render", speed_x: 0.3, frames: 150, width: 1080, height: 1080, seconds: 5 });
+  const slow = FB.summary().render!;
+  check("a one-frame render at 0.05x is not slow; a longer render at 0.3x is, and the evidence line shows it",
+    one.slow_renders === base.slow_renders && one.speed_x_min === base.speed_x_min && one.slowest.every((r: any) => r.frames !== 1) &&
+    slow.slow_renders === base.slow_renders + 1 && slow.slowest[0].speed_x === 0.3 && slow.speed_x_min! <= 0.3, { base, one, slow });
+}
 check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
 check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
 {

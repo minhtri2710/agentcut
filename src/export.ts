@@ -1,7 +1,8 @@
 // Interchange export: FCPXML (Final Cut Pro) and OpenTimelineIO (.otio: DaVinci Resolve, Premiere via plugin, Avid...).
 // Pure functions over an already resolved + absolutized timeline (no Skia, node: APIs only). The agent builds the edit,
 // a human finishes it in an NLE. Only the editorial skeleton travels: cuts, source ranges, transitions, constant speed,
-// volume, titles; looks/effects/keyframes/masks/generators are reported in `skipped` instead of being approximated badly.
+// volume, titles. The result reports two lists of {id, type, reason}: `skipped` names what is not exported (a clip, or named
+// fields of an exported clip: looks, effects, keyframes, masks, generators) and `approximated` names what is exported in another form.
 //
 // Transitions: AgentCut overlaps clip B onto clip A by d. NLEs keep clips contiguous and let the transition borrow media
 // handles, so the cut goes to the overlap midpoint: A loses ceil(d/2) at its end, B starts floor(d/2) later in its
@@ -15,7 +16,7 @@ import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim
 import { refuseSource } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
-export interface Skipped { id: string; type: string; reason: string }
+export interface Skipped { id: string; type: string; reason: string } // one entry of `skipped` or `approximated`
 export type InterchangeFormat = "fcpxml" | "otio";
 
 // ------------------------------------------------------------------ time
@@ -57,7 +58,7 @@ interface Plan {
   rate: Rate; total: number; main: Track | null; spine: Spine;
   above: Lane[]; below: Lane[];       // FCPXML lanes (+1.. above the storyline, -1.. below / audio)
   videoLanes: Lane[]; audioLanes: Lane[]; // OTIO tracks (bottom -> top), main included
-  skipped: Skipped[]; exported: Set<string>;
+  skipped: Skipped[]; approximated: Skipped[]; exported: Set<string>;
 }
 
 const LAYOUT = ["x", "y", "position", "size", "scale", "scale_x", "scale_y", "rotation", "crop", "focus", "margin"];
@@ -71,7 +72,7 @@ const DROPPED: Record<string, string> = {
 function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   const rate = rateOf(tl.settings?.fps);
   const F = (sec: number) => Math.round(sec * rate.fps + 1e-9);
-  const skipped: Skipped[] = [];
+  const skipped: Skipped[] = [], approximated: Skipped[] = [];
   const exported = new Set<string>();
   const assets = tl.assets || {};
   const tracks = tl.tracks || [];
@@ -88,12 +89,12 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     }
     if (LAYOUT.some((k) => c[k] !== undefined && c[k] !== null) && kind !== "gap") lost.push("layout (position/size/scale/rotation/crop)");
     if (c.blend && c.blend !== "normal") lost.push(`blend '${c.blend}'`);
-    if (c.fit === "blur") lost.push("fit 'blur' (exported as fit)");
-    if (c.fit === "fill") lost.push("fit 'fill' (stretch; exported as fill)");
+    // FCPXML conform types are fit / fill / none: blur gets the conform of contain, and fill (stretch) the conform of cover. OTIO has no conform, so the NLE's default applies
+    const fitTo = fmt === "fcpxml" ? own({ blur: "fit 'contain'", fill: "fit 'cover'" }, c.fit) : c.fit && c.fit !== "cover" ? "the NLE's default fit" : undefined;
+    if (fitTo) approximated.push({ id: c.id, type: "fit", reason: `fit '${c.fit}' exported as ${fitTo}${c.fit === "blur" ? " (the blurred background is not carried)" : ""}` });
     if (fmt === "otio") {
       if (c.opacity !== undefined && c.opacity !== 1) lost.push("opacity");
       if (c.fade_in || c.fade_out) lost.push("audio fades");
-      if (c.fit && c.fit !== "cover") lost.push(`fit '${c.fit}'`);
     }
     if (lost.length) skipped.push({ id: c.id, type: "fields", reason: `not exported: ${[...new Set(lost)].join(", ")}` });
   };
@@ -107,7 +108,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     if (audioTrack && c.type !== "audio" && c.type !== "video") { skipped.push({ id: c.id, type: c.type, reason: "visual clip on an audio track (not drawn)" }); return null; }
     if (c.type === "text") {
       if (!String(c.text ?? "").trim()) { skipped.push({ id: c.id, type: c.type, reason: "empty text" }); return null; }
-      if (fmt === "otio") skipped.push({ id: c.id, type: "text", reason: "OTIO has no titles: kept as a named Gap with metadata.agentcut (text, font, colour)" });
+      if (fmt === "otio") approximated.push({ id: c.id, type: "text", reason: "OTIO has no titles: exported as a named Gap with metadata.agentcut (text, font, colour)" });
       notes(c, "title");
       return { ...base, kind: "title", video: true };
     }
@@ -121,7 +122,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
         return { ...base, kind: "still", video: true, volume: 1 };
       }
       const speed = Number(c.speed ?? 1) || 1;
-      if (c.keyframes?.speed) skipped.push({ id: c.id, type: "speed_ramp", reason: `speed keyframes not exported; constant speed ${speed} used` });
+      if (c.keyframes?.speed) approximated.push({ id: c.id, type: "speed_ramp", reason: `speed keyframes exported as constant speed ${speed}` });
       const hasAudio = a.kind === "audio" || !!a.has_audio;
       const wantVideo = a.kind === "video" && c.type === "video" && !audioTrack;
       const wantAudio = hasAudio && !c.muted && !(tr.muted && !audioTrack) && (c.volume ?? 1) > 0;
@@ -160,7 +161,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
       if (cutEnd[i] <= cutStart[i]) { skipped.push({ id: c.id, type: c.type, reason: "too short after transition trims" }); return; }
       const head = cutStart[i] - S[i];
       let p = place(c, main, cutStart[i], cutEnd[i], head);
-      if (p && p.kind === "media" && !p.video) skipped.push({ id: c.id, type: c.type, reason: "audio-only clip on the primary storyline exported as a gap" });
+      if (p && p.kind === "media" && !p.video) approximated.push({ id: c.id, type: c.type, reason: "audio-only clip on the primary storyline exported as a gap" });
       if (!p || p.kind === "gap" || (p.kind === "media" && !p.video)) {
         p = gapEntry(main, cutStart[i], cutEnd[i]);
         p.c = { id: c.id, type: "gap", duration: 0, name: c.type === "gap" ? c.name : `${c.name ?? c.id} (${c.type})` };
@@ -170,7 +171,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
       if (ov[i] > 0 && spine.entries.length) {
         const name = spec?.type ?? "crossfade";
         tr = { cut: cutStart[i], left: Math.floor(ov[i] / 2), right: ov[i] - Math.floor(ov[i] / 2), name, id: c.id };
-        if (name !== "crossfade") skipped.push({ id: c.id, type: "transition", reason: `'${name}' exported as a cross dissolve` });
+        if (name !== "crossfade") approximated.push({ id: c.id, type: "transition", reason: `'${name}' exported as a cross dissolve` });
       }
       spine.entries.push(p);
       spine.trans.push(tr);
@@ -184,7 +185,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
       const prev = spine.entries[i - 1], cur = spine.entries[i];
       const prevUsed = spine.trans[i - 1]?.right ?? 0;
       const left = Math.max(0, Math.min(tr.left, prev.dur - prevUsed)), right = Math.max(0, Math.min(tr.right, cur.dur));
-      if (left !== tr.left || right !== tr.right) skipped.push({ id: tr.id, type: "transition", reason: `shortened to ${left + right} frames so it fits its clips` });
+      if (left !== tr.left || right !== tr.right) approximated.push({ id: tr.id, type: "transition", reason: `exported shortened to ${left + right} frames so it fits its clips` });
       tr.left = left; tr.right = right;
       if (left + right === 0) spine.trans[i] = null;
     }
@@ -246,7 +247,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     const fx = AUDIO_FX_KEYS.filter((k) => tr[k] !== undefined && tr[k] !== null && tr[k] !== false);
     if (fx.length) skipped.push({ id: tr.id, type: "audio_fx", reason: `track audio processing not exported: ${fx.join(", ")}` });
   }
-  return { rate, total, main, spine, above, below, videoLanes, audioLanes, skipped, exported };
+  return { rate, total, main, spine, above, below, videoLanes, audioLanes, skipped, approximated, exported };
 
   function gapEntry(tr: Track | null, s: number, e: number): Placed {
     return { c: { id: "gap", type: "gap", duration: 0 }, tr: tr ?? tracks[0], kind: "gap", start: s, dur: e - s, srcIn: 0, speed: 1, video: false, audio: false, volume: 1, enabled: true };
@@ -284,9 +285,9 @@ const col = (v: unknown, d: [number, number, number, number]) => parseColor(v, d
 const ROLE: Record<string, string> = { voice: "dialogue", dialogue: "dialogue", music: "music", sfx: "effects" };
 
 // ------------------------------------------------------------------ FCPXML 1.10
-export function exportFcpxml(tl: Timeline, o: { name?: string } = {}): { xml: string; skipped: Skipped[]; clips: number } {
+export function exportFcpxml(tl: Timeline, o: { name?: string } = {}): { xml: string; skipped: Skipped[]; approximated: Skipped[]; clips: number } {
   const plan = buildPlan(tl, "fcpxml");
-  const { rate, skipped } = plan;
+  const { rate, skipped, approximated } = plan;
   // FCP convention: keep the timebase denominator (e.g. 6700/3000s), whole seconds as "Ns"
   const T = (frames: number) => { const u = Math.round(frames) * rate.num; return !u ? "0s" : u % rate.den === 0 ? `${u / rate.den}s` : `${u}/${rate.den}s`; };
   const FD = (r: Rate) => `${r.num}/${r.den}s`;
@@ -424,13 +425,13 @@ export function exportFcpxml(tl: Timeline, o: { name?: string } = {}): { xml: st
   // resources must be declared before use; element() appended lazily, so re-sort: formats, effects, assets
   const rank = (e: XEl) => (e.tag === "format" ? 0 : e.tag === "effect" ? 1 : 2);
   (doc.kids[0] as XEl).kids.sort((a, b) => rank(a as XEl) - rank(b as XEl));
-  return { xml: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n${ser(doc)}\n`, skipped, clips };
+  return { xml: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n${ser(doc)}\n`, skipped, approximated, clips };
 }
 
 // ------------------------------------------------------------------ OpenTimelineIO (JSON)
-export function exportOtio(tl: Timeline, o: { name?: string } = {}): { json: string; skipped: Skipped[]; clips: number } {
+export function exportOtio(tl: Timeline, o: { name?: string } = {}): { json: string; skipped: Skipped[]; approximated: Skipped[]; clips: number } {
   const plan = buildPlan(tl, "otio");
-  const { rate, skipped } = plan;
+  const { rate, skipped, approximated } = plan;
   const R = rate.fps;
   const RT = (v: number) => ({ OTIO_SCHEMA: "RationalTime.1", rate: R, value: v });
   const TR = (s: number, d: number) => ({ OTIO_SCHEMA: "TimeRange.1", duration: RT(d), start_time: RT(s) });
@@ -500,21 +501,21 @@ export function exportOtio(tl: Timeline, o: { name?: string } = {}): { json: str
     global_start_time: RT(0),
     tracks: { OTIO_SCHEMA: "Stack.1", metadata: {}, name: "tracks", source_range: null, effects: [], markers, enabled: true, color: null, children: [...video, ...audio] },
   };
-  return { json: JSON.stringify(doc, null, 2) + "\n", skipped, clips };
+  return { json: JSON.stringify(doc, null, 2) + "\n", skipped, approximated, clips };
 }
 
 // ------------------------------------------------------------------ file output
 /** Write `tl` (resolved + absolutized) as FCPXML or OTIO to `out`; `base` is the project folder when `out` is inside it. */
 export function exportTimeline(tl: Timeline, format: InterchangeFormat | string, out: string, base?: string) {
   const f = String(format).toLowerCase();
-  let body: string, skipped: Skipped[], clips: number;
-  if (f === "fcpxml") ({ xml: body, skipped, clips } = exportFcpxml(tl));
-  else if (f === "otio") ({ json: body, skipped, clips } = exportOtio(tl));
+  let body: string, skipped: Skipped[], approximated: Skipped[], clips: number;
+  if (f === "fcpxml") ({ xml: body, skipped, approximated, clips } = exportFcpxml(tl));
+  else if (f === "otio") ({ json: body, skipped, approximated, clips } = exportOtio(tl));
   else throw new EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
   if (base) refuseSource(base, tl, out);
   writeFile(out, body, base);
   return {
-    output: out, format: f, clips, skipped,
+    output: out, format: f, clips, skipped, approximated,
     next: f === "fcpxml" ? "open in Final Cut Pro (File > Import > XML); media is linked by absolute file:// paths"
       : "import in DaVinci Resolve (File > Import > Timeline) or Premiere (OTIO plugin); media is linked by absolute file:// paths",
   };

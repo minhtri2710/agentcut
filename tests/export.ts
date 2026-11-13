@@ -86,6 +86,8 @@ check("volume 0.5 -> -6.02dB with fade-in", /<adjust-volume amount="-6.02dB">\s*
 check("fit contain -> adjust-conform fit", /<clip [^>]*name="img1"[^>]*>\s*<adjust-conform type="fit"\/>/.test(xml));
 check("marker on the covering clip", /<marker start="2300\/3000s" duration="100\/3000s" value="check this"\/>/.test(xml));
 const sk = (id: string, type?: string) => fx.skipped.some((s) => s.id === id && (!type || s.type === type));
+const ap = (r: { approximated?: { id: string; type: string }[] }, id: string, type: string) => (r.approximated ?? []).some((s) => s.id === id && s.type === type);
+const unique = (r: { skipped: object[]; approximated?: object[] }) => [r.skipped, r.approximated ?? []].every((l) => new Set(l.map((e) => JSON.stringify(e))).size === l.length);
 // a track setting is reported only where it changes the render: on a track that feeds the mix, and duck only under a voice clip, never on a voice track
 const musicTr = tl.tracks.find((t) => t.id === "music")!;
 const quiet = musicTr.clips.map((c) => ({ ...c, muted: true }));
@@ -96,8 +98,8 @@ const withEmpty = { ...tl, tracks: [...tl.tracks.map((t) => (t === musicTr ? { .
   { id: "vo", kind: "audio", role: "voice", duck: -20, clips: musicTr.clips }] } as typeof tl;
 const fxE = exportFcpxml(withEmpty).skipped;
 const skE = (id: string, type?: string) => fxE.some((s) => s.id === id && (!type || s.type === type));
-check("skipped: shape, effects, dip_black approximated, no duck without a voice clip, duck + eq on the music track under a voice, nothing for an empty, muted or silent track or a ducked voice",
-  sk(shp1, "shape") && sk(vid3, "fields") && sk(vid2, "transition") && !sk("music", "duck") && skE("music", "duck") && skE("music", "audio_fx") &&
+check("skipped: shape, effects, dip_black not skipped, no duck without a voice clip, duck + eq on the music track under a voice, nothing for an empty, muted or silent track or a ducked voice",
+  sk(shp1, "shape") && sk(vid3, "fields") && !sk(vid2, "transition") && ap(fx, vid2, "transition") && !sk("music", "duck") && skE("music", "duck") && skE("music", "audio_fx") &&
   !skE("bed") && !skE("off") && !skE("quiet") && !skE("vo"), { skipped: fx.skipped, withEmpty: fxE });
 const inherited = exportFcpxml({ ...tl, tracks: tl.tracks.map((t) => (t === musicTr ? { ...t, role: "toString" } : t)) }).xml;
 check("a track role that only the prototype chain holds gives no audio role", !inherited.includes("native code") && !/<asset-clip[^>]*name="mus1"[^>]*audioRole/.test(inherited), inherited.match(/audioRole="[^"]*"/g));
@@ -136,7 +138,26 @@ check("text -> named Gap with metadata", txt?.OTIO_SCHEMA === "Gap.1" && txt.met
 const music = tracks[5].children[0];
 check("music clip with volume metadata", music.OTIO_SCHEMA === "Clip.2" && music.source_range.duration.value === 213 && music.metadata.agentcut.volume === 0.5);
 check("stack marker", doc.tracks.markers[0]?.name === "check this" && doc.tracks.markers[0].marked_range.start_time.value === 90);
-check("otio skipped text + shape", ot.skipped.some((s) => s.id === txt1) && ot.skipped.some((s) => s.id === shp1));
+check("otio: text is approximated (a named Gap), the shape is skipped", ap(ot, txt1, "text") && !ot.skipped.some((s) => s.id === txt1) && ot.skipped.some((s) => s.id === shp1));
+check("no two entries of a result are identical", unique(fx) && unique(ot), { fcpxml: fx, otio: { skipped: ot.skipped, approximated: ot.approximated } });
+// each approximation lands in `approximated` and not in `skipped`
+const mut = (f: (t: typeof tl) => void) => { const t = structuredClone(tl); f(t); return { f: exportFcpxml(t), o: exportOtio(t) }; };
+const clipOf = (t: typeof tl, id: string) => t.tracks.flatMap((x) => x.clips).find((c) => c.id === id)!;
+const blur = mut((t) => { Object.assign(clipOf(t, vid1), { fit: "blur", effects: [{ type: "grain" }] }); });
+const fitsOf = (r: { approximated?: { id: string; type: string; reason: string }[] }) => (r.approximated ?? []).filter((e) => e.id === vid1 && e.type === "fit");
+check("fit blur: one approximated entry per format that names the fit it was exported as, none in skipped",
+  fitsOf(blur.f).length === 1 && /fit 'blur' exported as fit 'contain'/.test(fitsOf(blur.f)[0].reason) && fitsOf(blur.o).length === 1 && /fit 'blur' exported as the NLE's default fit/.test(fitsOf(blur.o)[0].reason) &&
+  !blur.f.skipped.some((e) => /fit/.test(e.reason)) && !blur.o.skipped.some((e) => /fit/.test(e.reason)) && unique(blur.f) && unique(blur.o), { f: blur.f.approximated, o: blur.o.approximated, fs: blur.f.skipped, os: blur.o.skipped });
+check("a clip with an approximation and a dropped field gets one entry in each list",
+  blur.f.skipped.filter((e) => e.id === vid1 && e.type === "fields").length === 1 && blur.o.skipped.filter((e) => e.id === vid1 && e.type === "fields").length === 1);
+const stretch = mut((t) => { Object.assign(clipOf(t, vid1), { fit: "fill" }); });
+check("fit fill (stretch) in FCPXML is exported as fit 'cover'", /fit 'fill' exported as fit 'cover'/.test(fitsOf(stretch.f)[0]?.reason ?? "") && !stretch.f.skipped.some((e) => /fit/.test(e.reason)));
+const ramp = mut((t) => { Object.assign(clipOf(t, vid1), { keyframes: { speed: [{ t: 0, v: 1 }, { t: 1, v: 2 }] } }); });
+check("speed ramp: approximated as constant speed in both formats", ap(ramp.f, vid1, "speed_ramp") && ap(ramp.o, vid1, "speed_ramp") && !ramp.f.skipped.some((e) => e.type === "speed_ramp") && !ramp.o.skipped.some((e) => e.type === "speed_ramp"));
+const audioOnly = mut((t) => { t.tracks[0].clips.push({ ...structuredClone(clipOf(t, mus1)), id: "aud1", start: 8, duration: 1 }); });
+check("an audio-only clip on the primary storyline is approximated as a gap", ap(audioOnly.f, "aud1", "audio") && ap(audioOnly.o, "aud1", "audio") && !audioOnly.f.skipped.some((e) => e.id === "aud1"), { f: audioOnly.f, o: audioOnly.o.approximated });
+const squeezed = mut((t) => { clipOf(t, vid2).start = 70 / 30; });
+check("a transition shortened to fit its clips is approximated", ap(squeezed.f, vid2, "transition") && (squeezed.f.approximated ?? []).some((e) => /shortened/.test(e.reason)) && !squeezed.f.skipped.some((e) => /shortened/.test(e.reason)), squeezed.f.approximated);
 const otioOut = join(tmp, "out", "edit.otio");
 if (typeof (api as any).exportTimeline === "function") { // wired through api.ts (CLI `export` / `render -o x.fcpxml`)
   const viaApi = await (api as any).exportTimeline(dir, { out: join(tmp, "out", "api.otio") });

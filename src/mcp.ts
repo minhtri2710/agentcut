@@ -72,7 +72,7 @@ export function buildServer() {
       const t0 = performance.now();
       let r;
       try { r = await handler(a, { ...extra, signal: ctl.signal }); } finally { for (const [sig, fn] of relays) sig.removeEventListener("abort", fn); }
-      let res: any = { ok: !r?.isError };
+      let res: any = r?.isError ? { ok: false, error: { code: "internal", message: "the tool replied with an error that is not JSON" } } : { ok: true };
       try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
       recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
       return r;
@@ -190,7 +190,7 @@ export function buildServer() {
     inputSchema: { project: P, action: z.enum(["info", "prune"]).default("info"), max_mb: z.number().optional(), older_than: z.string().optional() },
   }, wrap((a) => (a.action === "prune" ? api.cache.prune(proj(a.project), { maxMb: a.max_mb, olderThan: a.older_than }) : api.cache.info(proj(a.project)))));
   s.registerTool("export_timeline", {
-    description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Lists what could not be represented (skipped).",
+    description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Two lists of {id, type, reason}: skipped (not exported) and approximated (exported in another form).",
     inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).default("fcpxml"), output: z.string().optional() },
   }, wrap((a) => api.exportTimeline(proj(a.project), { format: a.format, out: a.output })));
   s.registerTool("export_captions", {

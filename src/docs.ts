@@ -52,8 +52,10 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.
    Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio):
    cuts, in-points, crossfades,
-   constant speed, volume, titles and connected clips carry over (media linked by absolute path); effects, looks, keyframes,
-   masks, captions, shapes, and vision requests not yet prepared (type "pending") are listed in result.skipped - tell the human
+   constant speed, volume, titles and connected clips carry over (media linked by absolute path). The result has two lists of
+   {id, type, reason}: skipped = not exported (effects, looks, keyframes, masks, captions, shapes, vision requests not yet prepared
+   (type "pending"), or named fields of an exported clip); approximated = exported in another form (a speed ramp as constant speed,
+   a transition as a cross dissolve, fit 'blur' as fit 'contain' in FCPXML, a title as a named Gap in OTIO). Tell the human
    what is left to finish.
 6. Fix with update_clip / trim_clip / undo.
 

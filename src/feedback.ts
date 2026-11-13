@@ -17,6 +17,9 @@ export const KINDS = ["bug", "missing_feature", "friction", "performance", "docs
 export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
 const SEV_W: Record<string, number> = { low: 1, medium: 2, high: 4, critical: 8 };
 const MAX_EVENTS_BYTES = 5 * 1024 * 1024;
+// a render judged by speed_x must have run at least this long (wall seconds): a one-frame render took 0.08-0.10 s on a 2024 Apple-silicon Mac
+// (bun scripts/ac render --start 0 --end 0.034, 640x360 source, square preset, three runs), and fixed startup cost makes its speed_x meaningless; the floor is about 10x that
+const RENDER_FLOOR_S = 1;
 // a command slower than this (ms) is flagged; render is judged by speed_x instead
 const SLOW_MS: Record<string, number> = { apply: 1500, apply_ops: 1500, op: 1500, add: 1500, set: 1500, info: 500, project_info: 500,
   validate: 500, frame: 1500, preview_frame: 1500, sheet: 5000, contact_sheet: 5000, undo: 500, redo: 500, probe: 1500, probe_media: 1500 };
@@ -66,8 +69,8 @@ export function recordEvent(ev: Record<string, unknown>) {
 /** Record one CLI/MCP call from its JSON response. */
 export function recordCall(src: "cli" | "mcp", cmd: string, ms: number, res: any, extra: Record<string, unknown> = {}) {
   if (!cmd || cmd.startsWith("feedback") || cmd === "report_feedback") return;
-  const ev: Record<string, unknown> = { type: "call", src, cmd, ms: Math.round(ms), ok: res?.ok !== false, ...extra };
-  if (res?.ok === false && res.error) {
+  const ev: Record<string, unknown> = { type: "call", src, cmd, ms: Math.round(ms), ok: !res?.error, ...extra };
+  if (res?.error) {
     ev.code = res.error.code;
     ev.msg = scrub(res.error.message);
     const misses = extractMisses(res.error);
@@ -191,10 +194,11 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const latency = [...byCmd].map(([cmd, xs]) => ({ cmd, calls: xs.length, p50_ms: pct(xs, 0.5), p95_ms: pct(xs, 0.95), max_ms: Math.max(...xs), slow: calls.filter((e) => e.cmd === cmd && e.slow).length }))
     .sort((a, b) => b.calls - a.calls);
   const sx = renders.map((r) => Number(r.speed_x)).filter((x) => x > 0);
+  const judged = renders.filter((r) => r.speed_x > 0 && r.seconds >= RENDER_FLOOR_S);
   const renderPerf = renders.length ? {
-    renders: renders.length, speed_x_p50: +pct(sx, 0.5).toFixed(2), speed_x_min: +Math.min(...sx).toFixed(2),
-    slow_renders: renders.filter((r) => r.speed_x < 0.5).length,
-    slowest: [...renders].sort((a, b) => a.speed_x - b.speed_x).slice(0, 3).map((r) => ({ speed_x: r.speed_x, frames: r.frames, size: `${r.width}x${r.height}`, workers: r.workers, encoder: r.encoder, layers: r.layers })),
+    renders: renders.length, speed_x_p50: +pct(sx, 0.5).toFixed(2), speed_x_min: judged.length ? +Math.min(...judged.map((r) => r.speed_x)).toFixed(2) : null,
+    slow_renders: judged.filter((r) => r.speed_x < 0.5).length,
+    slowest: [...judged].sort((a, b) => a.speed_x - b.speed_x).slice(0, 3).map((r) => ({ speed_x: r.speed_x, frames: r.frames, size: `${r.width}x${r.height}`, workers: r.workers, encoder: r.encoder, layers: r.layers })),
   } : null;
   const usage: Record<string, number> = {};
   for (const e of calls) for (const op of e.ops ?? []) usage[op] = (usage[op] ?? 0) + 1;
@@ -226,7 +230,7 @@ export function summaryMarkdown(s: ReturnType<typeof summary>): string {
   if (s.naming_misses.length) { L.push("", "## Names agents guessed", "| kind | guessed | meant | count |", "|---|---|---|---|"); for (const m of s.naming_misses) L.push(`| ${m.kind} | \`${m.guess}\` | ${m.suggestion ? `\`${m.suggestion}\`` : "?"} | ${m.count} |`); }
   if (s.errors.length) { L.push("", "## Errors by code", "| code | count | commands | example |", "|---|---|---|---|"); for (const e of s.errors) L.push(`| ${e.code} | ${e.count} | ${e.cmds.join(", ")} | ${e.example?.replace(/\|/g, "\\|")} |`); }
   if (s.latency.length) { L.push("", "## Latency", "| command | calls | p50 ms | p95 ms | max ms | slow |", "|---|---|---|---|---|---|"); for (const l of s.latency) L.push(`| ${l.cmd} | ${l.calls} | ${l.p50_ms} | ${l.p95_ms} | ${l.max_ms} | ${l.slow} |`); }
-  if (s.render) L.push("", "## Render", `${s.render.renders} renders, speed p50 ${s.render.speed_x_p50}x realtime, min ${s.render.speed_x_min}x, ${s.render.slow_renders} under 0.5x.`);
+  if (s.render) L.push("", "## Render", `${s.render.renders} renders, speed p50 ${s.render.speed_x_p50}x realtime, min ${s.render.speed_x_min ?? "-"}x, ${s.render.slow_renders} under 0.5x.`);
   return L.join("\n") + "\n";
 }
 
