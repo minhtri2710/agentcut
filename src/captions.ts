@@ -35,9 +35,11 @@ export function parseSrt(path: string): CWord[] {
   return out;
 }
 
-/** The one word rule for caption and text content: whitespace separates words, except the no-break spaces (U+00A0, U+2007, U+202F), which join one. */
-const WORD_SPACE = String.raw`[^\S\u00a0\u2007\u202f]+`;
-export const splitWords = (text: string): string[] => text.split(new RegExp(WORD_SPACE)).filter(Boolean);
+/** The one word rule for caption and text content: ASCII whitespace (space, tab, LF, CR, FF, VT) separates words. Every other space,
+ * the no-break spaces and the Unicode spaces (U+00A0, U+2000-U+200A, U+202F, U+3000 ...), stays inside a word and keeps its own width. */
+const WORD_SPACE = String.raw`[ \t\n\r\f\v]+`;
+const WORD_SPLIT = new RegExp(WORD_SPACE);
+export const splitWords = (text: string): string[] => text.split(WORD_SPLIT).filter(Boolean);
 
 export function phrasesToWords(phrases: CWord[]): CWord[] {
   const words: CWord[] = [];
@@ -72,8 +74,14 @@ export function scriptToWords(text: string, speech: number[][]): CWord[] {
 
 export function captionWords(c: Dict): CWord[] {
   if (c.words?.length)
-    return c.words.map((w: any) => ({ text: String(w.text ?? w.word ?? w.w ?? "").trim(), start: parseTime(w.start ?? w.s ?? 0, "caption word start"), end: parseTime(w.end ?? w.e ?? 0, "caption word end") }))
-      .filter((w: CWord) => w.text);
+    return c.words.flatMap((w: any) => {
+      const start = parseTime(w.start ?? w.s ?? 0, "caption word start"), end = parseTime(w.end ?? w.e ?? 0, "caption word end");
+      const toks = splitWords(String(w.text ?? w.word ?? w.w ?? "").trim());
+      if (toks.length <= 1) return toks.map((text) => ({ text, start, end })); // an entry with several words is shared out below: layout would split it anyway
+      const total = toks.reduce((a, t) => a + t.length, 0);
+      let at = 0;
+      return toks.map((text, i) => { const from = start + ((end - start) * at) / total; at += text.length; return { text, start: from, end: i === toks.length - 1 ? end : start + ((end - start) * at) / total }; });
+    });
   if (c.srt) return phrasesToWords(parseSrt(c.srt));
   return [];
 }

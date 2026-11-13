@@ -237,6 +237,11 @@ console.log("caption sources and subtitle export");
   const { scriptToWords, splitSentences } = await import("../src/captions.ts");
   check("a no-break space joins one word in sentence and clause paging too", splitSentences("Wait.\u00a010\u00a0km now.").length === 1
     && JSON.stringify(scriptToWords("Wait,\u00a010\u00a0km now.", [[0, 1], [1, 2]]).map((w) => w.text)) === JSON.stringify(["Wait,\u00a010\u00a0km", "now."]), scriptToWords("Wait,\u00a010\u00a0km now.", [[0, 1], [1, 2]]));
+  const named = captionWords({ words: [{ text: "New York", start: 1, end: 2.2 }, { text: "is", start: 2.2, end: 3 }, { text: "big", start: 3, end: 4 }] });
+  check("a caption entry holding several words becomes one entry per word, its time shared by length, contiguous", named.map((w) => w.text).join("|") === "New|York|is|big" && named[0].start === 1 && named[1].end === 2.2 && named[0].end === named[1].start
+    && Math.abs(named[0].end - (1 + 1.2 * 3 / 7)) < 1e-9, named);
+  const { layout, TextStyle } = await import("../src/text.ts");
+  check("the words of a caption page and the layout words of its text agree, so the active word is the one meant", layout(named.map((w) => w.text).join(" "), new TextStyle({ font_size: 40, color: "#fff" }, 1, 360), 1e5).count === named.length);
   const nb = join(tmp, "nbsp-reveal");
   api.create(nb, { preset: "square", empty: true });
   await api.apply(nb, [{ op: "add_clip", track: "text", type: "text", text: "10\u00a0km now", duration: 3, enter: { type: "words", duration: 1 } }]);

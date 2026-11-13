@@ -263,6 +263,11 @@ console.log("text wrap: a word wider than the line breaks into pieces");
     check(`CJK text fills the line it starts on: ${t.slice(0, 5)}…`, w1.length === 1 && w1[0].more === true && M.lines.every((l) => l.w <= MAX + 1e-6)
       && M.lines.flatMap((l) => l.words).filter((w) => w.i === 1).map((w) => w.text).join("") === cjk && M.count === 2, M.lines.map((l) => l.words.map((w) => w.text)));
   }
+  // only ASCII whitespace separates words: a Unicode space stays in its word and keeps its width, yet a CJK run may still break there
+  const ideo = layout("第一章　はじめに", st, 100000), indent = layout("　はじめに", st, 100000), narrow = layout("第一章　はじめに", st, 200);
+  check("an ideographic space stays inside its word (a leading one is kept) and keeps its own width", ideo.count === 1 && ideo.lines[0].words[0].text === "第一章　はじめに" && indent.lines[0].words[0].text === "　はじめに"
+    && Math.abs(ideo.lines[0].w - layout("第一章", st, 1e5).lines[0].w - layout("はじめに", st, 1e5).lines[0].w - layout("　", st, 1e5).lines[0].w) < 1e-6, { ideo: ideo.lines[0].words, indent: indent.lines[0].words });
+  check("a CJK run still breaks at the ideographic space when it does not fit", narrow.lines.length > 1 && narrow.lines.flatMap((l) => l.words).map((w) => w.text).join("") === "第一章　はじめに" && narrow.lines.every((l) => l.w <= 200 + 1e-6), narrow.lines.map((l) => l.words.map((w) => w.text)));
   const closing = "、。，．・：；？！）」』】〕〉》", opening = "（「『【〔〈《";
   const marked = "今日は天気がとても良いので、公園へ散歩に行きましょう。「楽しい」と彼は言った。（本当に）";
   const bad: unknown[] = [];
