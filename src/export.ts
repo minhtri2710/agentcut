@@ -85,6 +85,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     for (const [k, label] of Object.entries(DROPPED)) {
       const v = c[k];
       if (v === undefined || v === null || v === false || v === "none" || (Array.isArray(v) && !v.length)) continue;
+      if (k === "keyframes" && kind === "media" && !Object.keys(v).some((x) => x !== "speed")) continue; // a speed ramp is listed as approximated
       lost.push(label);
     }
     if (LAYOUT.some((k) => c[k] !== undefined && c[k] !== null) && kind !== "gap") lost.push("layout (position/size/scale/rotation/crop)");

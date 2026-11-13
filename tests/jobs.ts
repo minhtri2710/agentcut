@@ -543,6 +543,8 @@ console.log("cancel a render or prepare job");
     const reserved = stray(R).some((f) => !f.includes(".part-") && statSync(join(R, f)).size === 0);
     const c = await tc("cancel_job", { job_id: job.job_id });
     check("cancel_job on a running render: status cancelled with code aborted; renders/ is empty and no render temp is left when it replies", sawPart && reserved && c.ok === true && c.status === "cancelled" && c.error?.code === "aborted" && !stray(R).length && !renderTmpLeft(P).length, { sawPart, reserved, c, left: stray(R), tmp: renderTmpLeft(P) });
+    const fb = await tc("feedback_summary", {});
+    check("a cancel_job of a running render is not counted as an error in the feedback summary", c.ok === true && fb.ok === true && !fb.errors.some((e: any) => e.cmds.includes("cancel_job")) && fb.error_rate < 1, { errors: fb.errors, rate: fb.error_rate });
     const st = await tc("render_status", { job_id: job.job_id, wait_seconds: 0 });
     const again = await tc("cancel_job", { job_id: job.job_id });
     check("a cancelled job stays listed as cancelled, and cancelling it again changes nothing", st.status === "cancelled" && again.status === "cancelled" && again.error?.code === "aborted", { st, again });

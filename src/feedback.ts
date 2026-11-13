@@ -69,8 +69,9 @@ export function recordEvent(ev: Record<string, unknown>) {
 /** Record one CLI/MCP call from its JSON response. */
 export function recordCall(src: "cli" | "mcp", cmd: string, ms: number, res: any, extra: Record<string, unknown> = {}) {
   if (!cmd || cmd.startsWith("feedback") || cmd === "report_feedback") return;
-  const ev: Record<string, unknown> = { type: "call", src, cmd, ms: Math.round(ms), ok: !res?.error, ...extra };
-  if (res?.error) {
+  const failed = !!res?.error && res.ok !== true; // ok:true with an error is a requested outcome (cancel_job of a running job); ok:false with no error is a result (validate finding issues)
+  const ev: Record<string, unknown> = { type: "call", src, cmd, ms: Math.round(ms), ok: !failed, ...extra };
+  if (failed) {
     ev.code = res.error.code;
     ev.msg = scrub(res.error.message);
     const misses = extractMisses(res.error);
@@ -193,10 +194,9 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   for (const e of calls) { const a = byCmd.get(e.cmd) ?? []; a.push(e.ms); byCmd.set(e.cmd, a); }
   const latency = [...byCmd].map(([cmd, xs]) => ({ cmd, calls: xs.length, p50_ms: pct(xs, 0.5), p95_ms: pct(xs, 0.95), max_ms: Math.max(...xs), slow: calls.filter((e) => e.cmd === cmd && e.slow).length }))
     .sort((a, b) => b.calls - a.calls);
-  const sx = renders.map((r) => Number(r.speed_x)).filter((x) => x > 0);
   const judged = renders.filter((r) => r.speed_x > 0 && r.seconds >= RENDER_FLOOR_S);
   const renderPerf = renders.length ? {
-    renders: renders.length, speed_x_p50: +pct(sx, 0.5).toFixed(2), speed_x_min: judged.length ? +Math.min(...judged.map((r) => r.speed_x)).toFixed(2) : null,
+    renders: renders.length, speed_x_p50: judged.length ? +pct(judged.map((r) => r.speed_x), 0.5).toFixed(2) : null, speed_x_min: judged.length ? +Math.min(...judged.map((r) => r.speed_x)).toFixed(2) : null,
     slow_renders: judged.filter((r) => r.speed_x < 0.5).length,
     slowest: [...judged].sort((a, b) => a.speed_x - b.speed_x).slice(0, 3).map((r) => ({ speed_x: r.speed_x, frames: r.frames, size: `${r.width}x${r.height}`, workers: r.workers, encoder: r.encoder, layers: r.layers })),
   } : null;
@@ -230,7 +230,7 @@ export function summaryMarkdown(s: ReturnType<typeof summary>): string {
   if (s.naming_misses.length) { L.push("", "## Names agents guessed", "| kind | guessed | meant | count |", "|---|---|---|---|"); for (const m of s.naming_misses) L.push(`| ${m.kind} | \`${m.guess}\` | ${m.suggestion ? `\`${m.suggestion}\`` : "?"} | ${m.count} |`); }
   if (s.errors.length) { L.push("", "## Errors by code", "| code | count | commands | example |", "|---|---|---|---|"); for (const e of s.errors) L.push(`| ${e.code} | ${e.count} | ${e.cmds.join(", ")} | ${e.example?.replace(/\|/g, "\\|")} |`); }
   if (s.latency.length) { L.push("", "## Latency", "| command | calls | p50 ms | p95 ms | max ms | slow |", "|---|---|---|---|---|---|"); for (const l of s.latency) L.push(`| ${l.cmd} | ${l.calls} | ${l.p50_ms} | ${l.p95_ms} | ${l.max_ms} | ${l.slow} |`); }
-  if (s.render) L.push("", "## Render", `${s.render.renders} renders, speed p50 ${s.render.speed_x_p50}x realtime, min ${s.render.speed_x_min ?? "-"}x, ${s.render.slow_renders} under 0.5x.`);
+  if (s.render) L.push("", "## Render", `${s.render.renders} renders, speed p50 ${s.render.speed_x_p50 ?? "-"}x realtime, min ${s.render.speed_x_min ?? "-"}x, ${s.render.slow_renders} under 0.5x.`);
   return L.join("\n") + "\n";
 }
 

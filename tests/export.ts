@@ -154,6 +154,10 @@ const stretch = mut((t) => { Object.assign(clipOf(t, vid1), { fit: "fill" }); })
 check("fit fill (stretch) in FCPXML is exported as fit 'cover'", /fit 'fill' exported as fit 'cover'/.test(fitsOf(stretch.f)[0]?.reason ?? "") && !stretch.f.skipped.some((e) => /fit/.test(e.reason)));
 const ramp = mut((t) => { Object.assign(clipOf(t, vid1), { keyframes: { speed: [{ t: 0, v: 1 }, { t: 1, v: 2 }] } }); });
 check("speed ramp: approximated as constant speed in both formats", ap(ramp.f, vid1, "speed_ramp") && ap(ramp.o, vid1, "speed_ramp") && !ramp.f.skipped.some((e) => e.type === "speed_ramp") && !ramp.o.skipped.some((e) => e.type === "speed_ramp"));
+const kfOf = (r: { skipped: { id: string; reason: string }[] }) => r.skipped.filter((e) => e.id === vid1 && /keyframes/.test(e.reason));
+const mixed = mut((t) => { Object.assign(clipOf(t, vid1), { keyframes: { speed: [{ t: 0, v: 1 }, { t: 1, v: 2 }], opacity: [{ t: 0, v: 1 }, { t: 1, v: 0 }] } }); });
+check("a speed-only ramp is listed only in approximated; with another keyframed property 'keyframes' stays in skipped too",
+  !kfOf(ramp.f).length && !kfOf(ramp.o).length && ap(ramp.f, vid1, "speed_ramp") && kfOf(mixed.f).length === 1 && kfOf(mixed.o).length === 1 && ap(mixed.f, vid1, "speed_ramp"), { ramp: ramp.f.skipped, mixed: mixed.f.skipped });
 const audioOnly = mut((t) => { t.tracks[0].clips.push({ ...structuredClone(clipOf(t, mus1)), id: "aud1", start: 8, duration: 1 }); });
 check("an audio-only clip on the primary storyline is approximated as a gap", ap(audioOnly.f, "aud1", "audio") && ap(audioOnly.o, "aud1", "audio") && !audioOnly.f.skipped.some((e) => e.id === "aud1"), { f: audioOnly.f, o: audioOnly.o.approximated });
 const squeezed = mut((t) => { clipOf(t, vid2).start = 70 / 30; });
