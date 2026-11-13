@@ -83,9 +83,9 @@ const click = async (sel: string, o: { dx?: number; shift?: boolean; count?: num
   }
 };
 /** one real key press (key events through the browser's input pipeline, so focus-visible and native activation behave as for a person) */
-const press = async (key: string, code: string, vk: number, text?: string) => {
-  await page("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, ...(text ? { text } : {}) });
-  await page("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk });
+const press = async (key: string, code: string, vk: number, text?: string, modifiers = 0) => {
+  await page("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, modifiers, ...(text ? { text } : {}) });
+  await page("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers });
 };
 const SPACE = () => press(" ", "Space", 32, " "), ENTER = () => press("Enter", "Enter", 13, "\r");
 /** Tab until the focused element satisfies the page expression (a bounded number of presses) */
@@ -357,17 +357,46 @@ try {
   await press("ArrowRight", "ArrowRight", 39);
   await ENTER();
   check("Enter selects the focused clip and the inspector shows it", await until("keyboard selection", `sel === ${JSON.stringify(order[1])} && $("selinfo").textContent.indexOf(${JSON.stringify(order[1])}) === 0 && JSON.parse($("insp").value).id === ${JSON.stringify(order[1])}`), await js(`[sel, $("selinfo").textContent]`));
-  await js(`window.oldClip = document.activeElement`);
+  await press("ArrowLeft", "ArrowLeft", 37);
+  await SPACE();
+  check("Space on a keyboard-focused clip selects it, as Enter does", await until("space selection", `sel === ${JSON.stringify(order[0])}`), await js(`[sel, document.activeElement.dataset.id]`));
+  await press("ArrowRight", "ArrowRight", 39);
+  await js(`window.oldClip = document.activeElement; $("scroll").scrollLeft = 0`);
   await api.apply(dir, [{ op: "add_marker", t: 0.7 }]);
   check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `S.revision === ${load().revision} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
+  await press("ArrowRight", "ArrowRight", 39);
+  check("  and it is still keyboard focus: Right walks on to the next clip", await js(`document.activeElement.dataset.id`) === order[2], await js(`document.activeElement.dataset.id`));
+  // a nested clip takes focus from a mouse click (its mousedown does not cancel the default): the page's keys keep working there
+  await click(`[data-id="cs2"]`, { count: 2 });
+  await until("nested view", `V.nested && !!document.querySelector('[data-id="rb"]')`);
+  await click(`[data-id="rb"]`);
+  const tm = await js(`t`);
+  await press("ArrowRight", "ArrowRight", 39);
+  check("after a mouse click on a clip that took focus, Right steps the playhead instead of walking the clips", Math.abs(await js(`t`) - (tm + 1 / 30)) < 1e-6 && await js(`document.activeElement.dataset.id`) === "rb", await js(`[t, document.activeElement.dataset.id, ${tm}]`));
+  await js(`document.querySelector("#crumbs a").click()`);
+  await until("top view", `!V.nested`);
   await js(`document.activeElement.blur()`);
   await js(`seek(1)`);
   await press("ArrowRight", "ArrowRight", 39);
   check("with no clip focused, Right still steps the playhead by a frame", Math.abs(await js(`t`) - (1 + 1 / 30)) < 1e-6, await js(`t`));
+  const revZ = load().revision;
+  check("Tab reaches Contact sheet", await tabTo(`e.id === "sheet"`), await js(`document.activeElement.id`));
+  await press("z", "KeyZ", 90, undefined, 2);
+  check("Ctrl+Z on a keyboard-focused button still undoes", await untilFile((tl) => tl.revision > revZ), { rev: load().revision, revZ });
 
   console.log("page width");
   await api.apply(dir, [{ op: "add_clip", track: "wide", type: "color", color: "gray", id: "wide1", at: 0, duration: 120 }]);
   await until("wide timeline", `!!document.querySelector('[data-id="wide1"]') && S.revision === ${load().revision}`);
+  await js(`(function(){var n = document.querySelector('[data-id="cw"]'); n.tabIndex = 0; n.focus(); $("scroll").scrollLeft = 600; window.scrolled = $("scroll").scrollLeft;})()`);
+  await api.apply(dir, [{ op: "add_marker", t: 0.9 }]);
+  check("a rebuild with a clip focused leaves the timeline where it was scrolled", await until("rebuilt at scroll", `S.revision === ${load().revision} && document.activeElement.dataset.id === "cw"`) && await js(`window.scrolled > 0 && $("scroll").scrollLeft === window.scrolled`), await js(`[window.scrolled, $("scroll").scrollLeft]`));
+  const errs0 = consoleErrors.length, weird = 'q"a\\b';
+  await api.apply(dir, [{ op: "add_clip", track: "idt", type: "color", color: "red", id: weird, at: 0, duration: 1 }]);
+  await until("odd id drawn", `!!clipNodes.get(${JSON.stringify(weird)})`);
+  await js(`document.activeElement.blur(); select(${JSON.stringify(weird)})`);
+  await api.apply(dir, [{ op: "add_marker", t: 0.95 }]);
+  check("a clip id with a quote and a backslash is drawn, is the tab stop when selected, and breaks no redraw", await until("odd id redrawn", `S.revision === ${load().revision} && clipNodes.get(${JSON.stringify(weird)}).tabIndex === 0`)
+    && await js(`document.querySelectorAll(".clip").length`) === await js(`clipNodes.size`) && consoleErrors.length === errs0, { errors: consoleErrors.slice(errs0) });
   for (const w of [1000, 1440]) {
     await viewport(w); await sleep(200);
     const f = await js(`(function(){var r=function(id){return $(id).getBoundingClientRect().right}; return {w: innerWidth, scrollW: document.documentElement.scrollWidth, render: r("render"), side: r("side"), inner: $("scroll").scrollWidth, shown: $("scroll").clientWidth}})()`);
@@ -390,7 +419,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb1" }, { op: "remove_background", id: "rb1" }]);
   check("viewer shows not_prepared with its hint and a Prepare action", await until("not_prepared", `$("vstat").textContent.indexOf("not prepared") >= 0 && $("vstat").textContent.indexOf("render_status") > 0 && $("prepare").style.display === ""`),
     await js(`[$("vstat").textContent, $("prepare") && $("prepare").style.display]`));
-  await viewport(1000); await js(`window.beforeReload = 1; location.reload()`);
+  await viewport(700); await js(`window.beforeReload = 1; location.reload()`);
   await until("not prepared after a reload", `window.beforeReload === undefined && $("vstat").textContent.indexOf("not prepared") >= 0 && $("prepare").style.display === ""`);
   const np = await js(`(function(){
     var shown = [].filter.call(document.querySelectorAll("#viewer img"), function (i) { return i.offsetWidth > 0; }), tm = $("time").getBoundingClientRect(), st = $("vstat").getBoundingClientRect(), v = $("viewer").getBoundingClientRect();

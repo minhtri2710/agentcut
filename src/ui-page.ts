@@ -177,6 +177,7 @@ es.addEventListener("error", function (e) { if (e.data) fail(JSON.parse(e.data))
 // ------------------------------------------------------------ timeline
 function drawTimeline() {
   var tl = S.timeline, W = Math.max(total() + 5, 10) * pps, lanes = $("lanes");
+  clipNodes = new Map();
   var ae = document.activeElement, keep = ae && ae.classList && ae.classList.contains("clip") ? ae.dataset.id : null; // the rebuild below drops the focused clip
   $("inner").style.width = (W + LABEL) + "px";
   var r = $("ruler"); r.innerHTML = ""; r.style.width = W + "px";
@@ -209,8 +210,10 @@ function drawTimeline() {
   }); });
   $("ph").style.height = (H + 20) + "px"; movePlayhead(); drawRegroup();
   var order = clipOrder(), stop = order.filter(function (c) { return c.id === (keep || sel); })[0] || order[0]; // one clip is in the tab order
-  if (stop) { var n = lanes.querySelector('[data-id="' + stop.id + '"]'); n.tabIndex = 0; if (keep) n.focus(); }
+  if (stop) { var n = clipNodes.get(stop.id); n.tabIndex = 0; if (keep) n.focus({ preventScroll: true }); } // focus() would scroll the timeline back to the clip
 }
+/** clip id -> its node in the shown timeline: ids are free text, so no CSS selector is built from one */
+var clipNodes = new Map();
 /** every clip of the shown tracks in time order (ties: lane order), the order Left and Right walk */
 function clipOrder() {
   var r = []; V.tracks.slice().reverse().forEach(function (tr) { tr.clips.forEach(function (c) { r.push(c); }); });
@@ -224,7 +227,7 @@ function resolveRef(ref) {
 }
 function clipEl(tr, c, i) {
   var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (picked.indexOf(c.id) >= 0 ? " pick" : "");
-  e.dataset.id = c.id; e.tabIndex = -1; e.setAttribute("role", "button");
+  clipNodes.set(c.id, e); e.dataset.id = c.id; e.tabIndex = -1; e.setAttribute("role", "button");
   e.setAttribute("aria-label", c.id + ", " + c.type + ", starts at " + start(c).toFixed(2) + " s");
   var x0 = V.off + V.k * start(c), x1 = x0 + V.k * dur(c);
   if (c.enabled === false || x1 <= V.lo + 1e-6 || x0 >= V.hi - 1e-6) e.classList.add("off"); // disabled, or outside the opened compound's window
@@ -245,6 +248,7 @@ function clipEl(tr, c, i) {
     e.appendChild(k);
   });
   e.addEventListener("mousedown", function (ev) {
+    if (document.activeElement.classList.contains("clip")) { document.activeElement.blur(); mouseFocus = true; } // a mouse selection ends keyboard focus on a clip, so the page's keys work again
     if (ev.shiftKey) { ev.preventDefault(); if (!picked.length && sel && sel !== c.id) picked.push(sel); var i = picked.indexOf(c.id); if (i >= 0) picked.splice(i, 1); else picked.push(c.id); select(sel); return; }
     if (ev.target.dataset.t !== undefined) return kfDrag(ev, c, +ev.target.dataset.t);
     if (ev.detail === 2 && c.type === "compound") { ev.preventDefault(); openPath(path.concat([c.id])); return; } // the first click redraws, so no dblclick
@@ -256,7 +260,7 @@ function clipEl(tr, c, i) {
 /** drag a clip: move (other lane = other track; magnetic = new index) or trim an edge; one op on release */
 function drag(ev, tr, c, mode) {
   ev.preventDefault(); select(c.id);
-  var el = $("lanes").querySelector('[data-id="' + c.id + '"]'), x0 = ev.clientX, s0 = start(c), d0 = dur(c), moved = false;
+  var el = clipNodes.get(c.id), x0 = ev.clientX, s0 = start(c), d0 = dur(c), moved = false;
   function mm(e) {
     var dt = (e.clientX - x0) / pps; if (Math.abs(e.clientX - x0) > 3) moved = true;
     if (mode === "move") el.style.transform = "translate(" + (e.clientX - x0) + "px," + 0 + "px)";
@@ -481,9 +485,10 @@ function hist(kind) { api("/api/" + kind, { revision: S.revision }).then(functio
 $("undo").addEventListener("click", function () { hist("undo"); });
 $("redo").addEventListener("click", function () { hist("redo"); });
 /** the control holds focus from the keyboard: :focus-visible, and no mouse press since the last Tab (a key press after a click makes the clicked control :focus-visible too) */
-var mouseFocus = false;
-document.addEventListener("mousedown", function () { mouseFocus = true; }, true);
-document.addEventListener("keydown", function (e) { if (e.key === "Tab") mouseFocus = false; }, true);
+var mouseFocus = false, pressing = false;
+document.addEventListener("mousedown", function () { pressing = true; setTimeout(function () { pressing = false; }); }, true);
+document.addEventListener("focusin", function () { if (pressing) mouseFocus = true; }); // the press moved the focus
+document.addEventListener("keydown", function (e) { if (e.key === "Tab") mouseFocus = pressing = false; }, true);
 function kbFocus(n) { return !mouseFocus && n.matches(":focus-visible"); }
 /** Left / Right walk the clips in time order, Enter or Space selects the focused one (a click does the same) */
 function clipKey(e, n) {
@@ -491,13 +496,13 @@ function clipKey(e, n) {
   var order = clipOrder(), i = order.map(function (c) { return c.id; }).indexOf(n.dataset.id), next = order[i + (e.key === "ArrowLeft" ? -1 : 1)];
   e.preventDefault();
   if (!next) return;
-  n.tabIndex = -1; var m = $("lanes").querySelector('[data-id="' + next.id + '"]'); m.tabIndex = 0; m.focus();
+  n.tabIndex = -1; var m = clipNodes.get(next.id); m.tabIndex = 0; m.focus();
 }
 document.addEventListener("keydown", function (e) {
   var g = e.target;
   if ($("consent").open || g.tagName === "TEXTAREA" || g.tagName === "INPUT") return; // the dialog owns the keys while open
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); return; }
-  if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || (e.key === " " && kbFocus(g)))) return clipKey(e, g);
+  if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === " ") && kbFocus(g)) return clipKey(e, g);
   // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays
   if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button" || g.isContentEditable) && kbFocus(g)) return;
   if (e.key === " ") { e.preventDefault(); $("play").click(); }

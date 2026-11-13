@@ -66,11 +66,11 @@ export function recordEvent(ev: Record<string, unknown>) {
   } catch { /* feedback must never break the tool */ }
 }
 
-/** Record one CLI/MCP call from its JSON response. */
-export function recordCall(src: "cli" | "mcp", cmd: string, ms: number, res: any, extra: Record<string, unknown> = {}) {
+/** Record one CLI/MCP call from its JSON response; type "job" is a background job's own outcome (listed with the errors, not counted as a call). */
+export function recordCall(src: "cli" | "mcp", cmd: string, ms: number, res: any, extra: Record<string, unknown> = {}, type: "call" | "job" = "call") {
   if (!cmd || cmd.startsWith("feedback") || cmd === "report_feedback") return;
   const failed = !!res?.error && res.ok !== true; // ok:true with an error is a requested outcome (cancel_job of a running job); ok:false with no error is a result (validate finding issues)
-  const ev: Record<string, unknown> = { type: "call", src, cmd, ms: Math.round(ms), ok: !failed, ...extra };
+  const ev: Record<string, unknown> = { type, src, cmd, ms: Math.round(ms), ok: !failed, ...extra };
   if (failed) {
     ev.code = res.error.code;
     ev.msg = scrub(res.error.message);
@@ -178,7 +178,7 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const misses = [...missMap.values()].sort((a, b) => b.count - a.count).slice(0, limit);
   // errors by code
   const errMap = new Map<string, { code: string; count: number; example: string; cmds: Set<string> }>();
-  for (const e of calls.filter((x) => !x.ok)) {
+  for (const e of ev.filter((x) => (x.type === "call" || x.type === "job") && !x.ok)) {
     const cur = errMap.get(e.code) ?? { code: e.code, count: 0, example: e.msg, cmds: new Set<string>() };
     cur.count++; cur.cmds.add(e.cmd);
     errMap.set(e.code, cur);
