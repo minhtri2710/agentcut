@@ -890,8 +890,9 @@ export function schemaDoc() {
 }
 
 /** Keys that would reach the prototype chain are refused wherever a patch or a dotted key walks into an object, and where an op argument is used as a key. */
+export const isProtoKey = (k: string) => k === "__proto__" || k === "constructor" || k === "prototype";
 export function plainKey(k: string) {
-  if (k === "__proto__" || k === "constructor" || k === "prototype") throw new EditError(`field name '${k}' is not allowed`, "bad_key", "use a different field name");
+  if (isProtoKey(k)) throw new EditError(`field name '${k}' is not allowed`, "bad_key", "use a different field name");
   return k;
 }
 

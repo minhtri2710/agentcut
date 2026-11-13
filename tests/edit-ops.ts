@@ -1,7 +1,7 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip (numbers, errors, audio render).
 // Run: bun tests/edit-ops.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1176,6 +1176,19 @@ console.log("untrusted field names and pending requests");
     let c = "ok";
     try { await one(o); } catch (e: any) { c = e.code; }
     check(`${name}: refused as bad_key, project and Object.prototype unchanged`, c === "bad_key" && polluted() && JSON.stringify(tl()) === before, { c });
+  }
+  // an asset id the importer derives or accepts obeys the same rule, so the project's own timeline always goes back through replace_timeline
+  for (const f of ["prototype.png", "Constructor.png"]) copyFileSync(join(m, "p.png"), join(m, f));
+  const imp = [await one({ op: "import_media", path: join(m, "prototype.png") }), await one({ op: "import_media", path: join(m, "Constructor.png") })];
+  check("a media file named prototype.* or Constructor.* gets a different asset id", imp[0].asset === "prototype_2" && imp[1].asset === "constructor_2", imp.map((x) => x.asset));
+  let back = "ok";
+  try { await one({ op: "replace_timeline", timeline: tl() }); } catch (e: any) { back = e.code; }
+  check("the project's own timeline is accepted by replace_timeline", back === "ok", back);
+  for (const id of ["__proto__", "prototype", "constructor"]) {
+    const before = JSON.stringify(tl());
+    let c = "ok";
+    try { await one({ op: "import_media", path: join(m, "p.png"), id }); } catch (e: any) { c = e.code; }
+    check(`import_media id=${id}: refused as bad_key, project unchanged`, c === "bad_key" && JSON.stringify(tl()) === before, { c });
   }
   const { setDotted, deepMerge } = await import("../src/model.ts");
   let code2 = "ok";

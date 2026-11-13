@@ -316,8 +316,15 @@ const e: any = await startUi(process.argv[2], { port: (hold.address() as any).po
 console.log(e?.code ?? "started");
 hold.close();
 `);
-  const r = spawnSync(process.execPath, [script, dir], { encoding: "utf8", timeout: 20000, killSignal: "SIGKILL" });
-  check("a listen that fails rejects with port_in_use and leaves no watcher behind (the process ends by itself)", r.status === 0 && r.stdout.trim() === "port_in_use", { status: r.status, signal: r.signal, out: r.stdout, err: r.stderr.slice(0, 200) });
+  const r = await new Promise<{ status: number | null; signal: string | null; out: string; err: string }>((ok) => { // async: the suite's own server keeps answering while the child lives
+    const ch = spawn(process.execPath, [script, dir]);
+    let out = "", err = "";
+    ch.stdout.on("data", (c) => (out += c));
+    ch.stderr.on("data", (c) => (err += c));
+    const kill = setTimeout(() => ch.kill("SIGKILL"), 20000);
+    ch.on("close", (status, signal) => { clearTimeout(kill); ok({ status, signal, out, err }); });
+  });
+  check("a listen that fails rejects with port_in_use and leaves no watcher behind (the process ends by itself)", r.status === 0 && r.out.trim() === "port_in_use", { status: r.status, signal: r.signal, out: r.out, err: r.err.slice(0, 200) });
 }
 
 // a client that goes away mid-stream: the server keeps serving and the file descriptor of the read stream is released

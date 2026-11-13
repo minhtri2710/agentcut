@@ -6,7 +6,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, plainKey, refuseProtoKeys, EFFECTS, findClip, findTrack, linkedAudio, newId,
+  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, EFFECTS, findClip, findTrack, linkedAudio, newId,
   normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
@@ -36,6 +36,7 @@ function parseAt(tl: Timeline, v: unknown): number {
 
 // ---------------------------------------------------------------- media
 export function importAsset(p: Project | null, tl: Timeline, path: string, id?: string, copy = false): string {
+  if (id) plainKey(id);
   let src = absPath(path);
   if (!existsSync(src) && p && existsSync(join(p.root, path))) src = join(p.root, path);
   if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
@@ -50,8 +51,8 @@ export function importAsset(p: Project | null, tl: Timeline, path: string, id?: 
   if (!id) {
     const base = basename(src, extname(src)).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "asset";
     id = base;
-    for (let n = 2; tl.assets[id]; n++) id = `${base}_${n}`;
-  } else if (tl.assets[id]) throw new EditError(`asset id '${id}' already exists`, "exists");
+    for (let n = 2; isProtoKey(id) || Object.hasOwn(tl.assets, id); n++) id = `${base}_${n}`; // a file named prototype.* must not give a key a timeline refuses
+  } else if (Object.hasOwn(tl.assets, id)) throw new EditError(`asset id '${id}' already exists`, "exists");
   info.path = p ? p.rel(src) : src;
   tl.assets[id] = info;
   return id;
