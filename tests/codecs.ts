@@ -677,6 +677,12 @@ console.log("decode and render failures");
   check("closing the renderer releases every layer canvas", (rend as any).layerCanvases.size === 0);
 }
 
+console.log("inherited names are no quality level");
+{
+  const { videoArgs } = await import("../src/encode.ts");
+  check("a quality name that only the prototype chain holds encodes as standard", JSON.stringify(videoArgs("h264", "constructor", false)) === JSON.stringify(videoArgs("h264", "standard", false)), videoArgs("h264", "constructor", false));
+}
+
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

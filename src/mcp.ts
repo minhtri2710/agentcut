@@ -9,6 +9,7 @@ import * as api from "./api.ts";
 import { GUIDE } from "./docs.ts";
 import { FEEDBACK_GUIDE, KINDS, recordCall, SEVERITIES } from "./feedback.ts";
 import { EditError } from "./model.ts";
+import { own } from "./own.ts";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `AgentCut: JSON-timeline video editor with CapCut/Final Cut features. Read \`guide\` once. Loop:
@@ -41,11 +42,11 @@ function proj(p?: string) {
 // the signal is the call's own (see registerTool in buildServer); `extra` is typed optional only because the SDK calls a tool without an inputSchema with one argument
 const wrap = <A>(f: (a: A, signal: AbortSignal) => any) => async (a: A, extra?: { signal: AbortSignal }) => { try { return ok(await f(a, extra!.signal)); } catch (e) { return fail(e); } };
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
-const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: MIME[path.split(".").pop()!.toLowerCase()] ?? "image/png" });
+const image = (path: string): Content => ({ type: "image", data: readFileSync(path).toString("base64"), mimeType: own(MIME, path.split(".").pop()!.toLowerCase()) ?? "image/png" });
 /** view_image serves picture files only, not any readable file */
 function viewable(path: string) {
   const ext = path.split(".").pop()!.toLowerCase();
-  if (!(ext in MIME)) throw new EditError(`not an image file: ${path}`, "bad_request", `view_image shows ${Object.keys(MIME).join(", ")} files`);
+  if (!own(MIME, ext)) throw new EditError(`not an image file: ${path}`, "bad_request", `view_image shows ${Object.keys(MIME).join(", ")} files`);
   if (!existsSync(path) || !statSync(path).isFile()) throw new EditError(`no image file at ${path}`, "not_found", "pass the path of a file that exists, e.g. a render's contact_sheet");
   return path;
 }
@@ -95,7 +96,7 @@ export function buildServer() {
     inputSchema: { path: z.string(), preset: z.string().default("reels"), width: z.number().int().optional(), height: z.number().int().optional(), fps: z.number().default(30), name: z.string().optional() },
   }, wrap((a) => { const r = api.create(a.path, { preset: a.width || a.height ? undefined : a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
   s.registerTool("open_project", { description: "Select an existing project folder and return its summary.", inputSchema: { path: z.string() } },
-    wrap((a) => { const r = api.info(a.path); state.project = a.path; return r; })); // a failed open keeps the remembered project
+    wrap((a) => { const r = api.info(a.path); state.project = r.project; return r; })); // a failed open keeps the remembered project
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {

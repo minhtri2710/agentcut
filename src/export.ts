@@ -10,6 +10,7 @@ import { audioSources, voiceSpans } from "./audio.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { own } from "./own.ts";
 import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
 import { refuseSource } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
@@ -137,7 +138,7 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
       shape: "shape generators are not exported", color: "colour/gradient generators are not exported",
       lottie: "Lottie animations have no NLE equivalent", compound: "compound clips are not exported yet (expand_compound first)",
     };
-    skipped.push({ id: c.id, type: String(c.type), reason: why[c.type] ?? `unknown clip type '${c.type}'` });
+    skipped.push({ id: c.id, type: String(c.type), reason: own(why, c.type) ?? `unknown clip type '${c.type}'` });
     return null;
   };
 
@@ -379,7 +380,7 @@ export function exportFcpxml(tl: Timeline, o: { name?: string } = {}): { xml: st
     }
     const a = tl.assets[c.asset];
     const srcEnable = p.video && p.audio ? undefined : p.video ? (a.has_audio ? "video" : undefined) : a.kind === "audio" ? undefined : "audio";
-    const role = !p.video && p.audio ? ROLE[String(p.tr.role ?? "")] : undefined;
+    const role = !p.video && p.audio ? own(ROLE, String(p.tr.role ?? "")) : undefined;
     return X("asset-clip", { ref, ...common, start: T(ls), duration: T(p.dur), enabled, srcEnable, audioRole: role },
       timeMap, p.video ? X("adjust-conform", { type: conform }) : null, p.video ? blend : null, p.audio ? vol() : null, ...anchored, ...markers);
   };

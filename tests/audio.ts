@@ -654,6 +654,13 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   check("compressor refuses a non-numeric value", throws(() => compressorFilter({ ratio: "4,more" })) && throws(() => compressorFilter({ type: "voice", threshold: Number.NaN })));
 }
 
+console.log("inherited names are no eq or compressor presets");
+{
+  const { audioFxIssues } = await import("../src/audiofx.ts");
+  const paths = audioFxIssues({ eq: "constructor", compressor: "toString" }, "$").map((x) => x.path);
+  check("eq and compressor preset names that only the prototype chain holds are refused", paths.includes("$.eq") && paths.includes("$.compressor"), paths);
+}
+
 const el = ((performance.now() - t0) / 1000).toFixed(1);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.log(`\n${failures} check(s) FAILED in ${el}s`); process.exit(1); }

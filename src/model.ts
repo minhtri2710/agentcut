@@ -3,6 +3,7 @@
 import { ease, parseKfs } from "./anim.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
+import { own } from "./own.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -82,7 +83,7 @@ const filterTable = (type: string): Record<string, [string[], string]> => ({
 /** A filter parameter as the only form that enters an FFmpeg graph: a finite number within its range, or a colour as 0xRRGGBB.
  *  `v` null/undefined gives the default. Throws bad_filter. */
 export function filterParam(type: string, key: string, v: unknown): number | string {
-  const x = FILTER_SPECS[type]?.fields[key];
+  const spec = own(FILTER_SPECS, type), x = spec && own(spec.fields, key);
   if (!x || x.kind === "path") throw new EditError(`'${type}.${key}' is not a value parameter`, "bad_filter");
   if (x.kind === "number") {
     const n = Number(v ?? x.def);
@@ -342,7 +343,7 @@ export function parseColor(v: unknown, dflt: [number, number, number, number] = 
   if (v === undefined || v === null) return dflt;
   if (Array.isArray(v)) return [v[0] | 0, v[1] | 0, v[2] | 0, v.length > 3 ? v[3] | 0 : 255];
   let s = String(v).trim().toLowerCase();
-  if (NAMED[s]) s = NAMED[s];
+  s = own(NAMED, s) ?? s;
   let m = /^#([0-9a-f]{3,8})$/.exec(s);
   if (m) {
     let h = m[1];
@@ -574,7 +575,7 @@ const jtype = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" 
 function checkFields(obj: Dict, fields: F, path: string, issues: Issue[], what: string) {
   for (const [k, v] of Object.entries(obj)) {
     if (k.startsWith("_")) continue; // private/comment keys
-    const spec = fields[k];
+    const spec = own(fields, k);
     if (!spec) {
       const s = suggest(k, Object.keys(fields));
       issues.push({ level: "error", path: `${path}.${k}`, message: `unknown ${what} field '${k}'`, hint: s ? `did you mean '${s}'?` : `allowed: ${Object.keys(fields).join(", ")}` });
@@ -619,7 +620,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   if (st.effects != null && !Array.isArray(st.effects)) issues.push({ level: "error", path: "$.settings.effects", message: "effects must be a list", hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
   else (st.effects || []).forEach((f: any, fi: number) => {
     const ft = typeof f === "string" ? f : f?.type;
-    if (!(ft in EFFECTS)) issues.push({ level: "error", path: `$.settings.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
+    if (!own(EFFECTS, ft)) issues.push({ level: "error", path: `$.settings.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
   });
   for (const k of ["width", "height"]) {
     const v = st[k];
@@ -650,7 +651,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
 export const isRetimed = (c: Clip) => Math.abs((Number(c.speed ?? 1) || 1) - 1) > 1e-6;
 /** A clip whose own sound is mixed (before track/compound gains): audio.ts audioSources and the retimed-compound warning share it. */
 export const hasSound = (c: Clip, assets: Timeline["assets"]) => (c.type === "audio" || c.type === "video") && !c.muted && !c.freeze
-  && !!assets[c.asset] && !!(assets[c.asset].has_audio || assets[c.asset].kind === "audio");
+  && !!own(assets, c.asset) && !!(assets[c.asset].has_audio || assets[c.asset].kind === "audio");
 
 /** The part of [s, e] inside the window [w0, w1], or null when under 1 ms is left. audio.ts mapClip, subtitles.ts captionCues and the retimed-compound warning trim a nested clip to its compound's visible window with it. */
 export const visibleSpan = (s: number, e: number, w0: number, w1: number): [number, number] | null => {
@@ -735,7 +736,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       if (MEDIA_TYPES.has(c.type)) {
         const aid = c.asset;
         if (!aid) issues.push({ level: "error", path: `${p}.asset`, message: "media clip needs 'asset' (or 'src' when adding)" });
-        else if (!assets[aid]) {
+        else if (!own(assets, aid)) {
           const s = suggest(aid, Object.keys(assets));
           issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
         } else {
@@ -764,7 +765,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       if (c.mask) checkName(typeof c.mask === "string" ? c.mask : c.mask.shape, MASKS, `${p}.mask`, issues, "mask shape");
       (Array.isArray(c.filters) ? c.filters : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
-        if (!(ft in FILTERS)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
+        if (!own(FILTERS, ft)) { const s = suggest(ft, Object.keys(FILTERS)); issues.push({ level: "error", path: `${p}.filters[${fi}]`, message: `unknown filter '${ft}'`, hint: s ? `did you mean '${s}'?` : `filters: ${Object.keys(FILTERS).join(", ")}` }); }
         else {
           if (typeof f === "object") {
             const tbl = filterTable(ft), fp = `${p}.filters[${fi}]`;
@@ -786,7 +787,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       (Array.isArray(c.effects) ? c.effects : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
-        if (!(ft in EFFECTS)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
+        if (!own(EFFECTS, ft)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
       });
       for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
         const n0 = issues.length;

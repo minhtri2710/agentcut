@@ -1,6 +1,7 @@
 // Audio processing fields (clip + track): denoise, eq, compressor, pan, pitch, normalize.
 // Validation and FFmpeg filter strings are pure; noiseFloor/loudness run FFmpeg once per processed clip.
 // No model.ts import: model.ts imports this file for its field table and validation.
+import { own } from "./own.ts";
 import { inp } from "./ffinput.ts";
 import { run } from "./proc.ts";
 
@@ -61,24 +62,24 @@ export function audioFxIssues(o: Record<string, any>, path: string): FxIssue[] {
   if (o.eq != null) (Array.isArray(o.eq) ? o.eq : [o.eq]).forEach((b: any, i: number) => {
     const p = `${path}.eq${Array.isArray(o.eq) ? `[${i}]` : ""}`;
     if (typeof b === "string") {
-      if (!EQ_PRESETS[b]) out.push({ path: p, message: `unknown eq preset '${b}'`, hint: `presets: ${Object.keys(EQ_PRESETS).join(", ")}; or a band {type: ${Object.keys(EQ_BANDS).join("|")}, ...}` });
-    } else if (!b || typeof b !== "object" || !EQ_BANDS[b.type]) {
+      if (!own(EQ_PRESETS, b)) out.push({ path: p, message: `unknown eq preset '${b}'`, hint: `presets: ${Object.keys(EQ_PRESETS).join(", ")}; or a band {type: ${Object.keys(EQ_BANDS).join("|")}, ...}` });
+    } else if (!b || typeof b !== "object" || !own(EQ_BANDS, b.type)) {
       out.push({ path: p, message: `unknown eq band ${JSON.stringify(b?.type ?? b)}`, hint: `bands: ${Object.entries(EQ_BANDS).map(([k, v]) => `${k} ${v.doc}`).join("; ")}` });
     } else for (const [k, v] of Object.entries(b)) {
       if (k === "type") continue;
       if (!EQ_BANDS[b.type].keys.includes(k)) out.push({ path: `${p}.${k}`, message: `'${k}' is not a ${b.type} parameter`, hint: `${b.type}: ${EQ_BANDS[b.type].doc}` });
       else if (!isNum(v)) out.push({ path: `${p}.${k}`, message: `${k} must be a number` });
-      else range(k, v, BAND_RANGE[k], `${p}.${k}`);
+      else range(k, v, own(BAND_RANGE, k)!, `${p}.${k}`);
     }
   });
   const c = o.compressor;
-  if (typeof c === "string" && !COMPRESSORS[c]) out.push({ path: `${path}.compressor`, message: `unknown compressor preset '${c}'`, hint: `presets: ${Object.keys(COMPRESSORS).join(", ")}` });
+  if (typeof c === "string" && !own(COMPRESSORS, c)) out.push({ path: `${path}.compressor`, message: `unknown compressor preset '${c}'`, hint: `presets: ${Object.keys(COMPRESSORS).join(", ")}` });
   if (c && typeof c === "object") for (const [k, v] of Object.entries(c)) {
     const p = `${path}.compressor.${k}`;
-    if (k === "type") { if (!COMPRESSORS[v as string]) out.push({ path: p, message: `unknown compressor preset '${v}'`, hint: `presets: ${Object.keys(COMPRESSORS).join(", ")}` }); }
-    else if (!(k in COMP_RANGE)) out.push({ path: p, message: `unknown compressor parameter '${k}'`, hint: `parameters: type, ${Object.keys(COMP_RANGE).join(", ")}` });
+    if (k === "type") { if (!own(COMPRESSORS, v)) out.push({ path: p, message: `unknown compressor preset '${v}'`, hint: `presets: ${Object.keys(COMPRESSORS).join(", ")}` }); }
+    else if (!own(COMP_RANGE, k)) out.push({ path: p, message: `unknown compressor parameter '${k}'`, hint: `parameters: type, ${Object.keys(COMP_RANGE).join(", ")}` });
     else if (!isNum(v)) out.push({ path: p, message: `${k} must be a number` });
-    else range(k, v, COMP_RANGE[k as keyof Comp], p);
+    else range(k, v, own(COMP_RANGE, k)!, p);
   }
   return out;
 }
@@ -93,7 +94,7 @@ function fin(v: unknown, dflt: number | undefined, what: string): number {
 }
 export function eqFilters(eq: unknown): string[] {
   if (eq == null || eq === false) return [];
-  const bands = (Array.isArray(eq) ? eq : [eq]).flatMap((b: any) => (typeof b === "string" ? EQ_PRESETS[b] : [b]));
+  const bands = (Array.isArray(eq) ? eq : [eq]).flatMap((b: any) => (typeof b === "string" ? own(EQ_PRESETS, b)! : [b]));
   return bands.map((b: Band) => {
     const n = (k: "f" | "q" | "gain" | "intensity", d: number) => fin(b[k], d, `eq ${b.type} ${k}`);
     switch (b.type) {
@@ -110,7 +111,7 @@ export function eqFilters(eq: unknown): string[] {
 
 export function compressorFilter(c: unknown): string[] {
   if (!c) return [];
-  const p: Comp = typeof c === "string" ? COMPRESSORS[c] : { ...COMPRESSORS[(c as any).type ?? "gentle"], ...(c as object) };
+  const p: Comp = typeof c === "string" ? own(COMPRESSORS, c)! : { ...own(COMPRESSORS, (c as any).type ?? "gentle"), ...(c as object) } as Comp;
   const n = (k: keyof Comp) => fin(p[k], undefined, `compressor ${k}`);
   const lin = (db: number) => (10 ** (db / 20)).toFixed(6);
   return [`acompressor=threshold=${lin(n("threshold"))}:ratio=${n("ratio")}:attack=${n("attack")}:release=${n("release")}:makeup=${lin(n("makeup"))}:knee=${n("knee")}`];

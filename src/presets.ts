@@ -2,6 +2,7 @@
 // result is a normal timeline the agent can keep editing.
 import { firstCovering } from "./fonts.ts";
 import { type Dict, EditError, suggest } from "./model.ts";
+import { own } from "./own.ts";
 
 const heavy = (text = "AÁÀẢÃẠ") => firstCovering(["Arial Black", "Helvetica Neue Condensed Black", "Avenir Next Heavy", "Arial Bold", "Helvetica Neue Bold", "DejaVu Sans Bold"], text);
 const bold = (text = "AÁ") => firstCovering(["Arial Bold", "Helvetica Neue Bold", "Segoe UI Bold", "Noto Sans Bold", "DejaVu Sans Bold"], text);
@@ -30,7 +31,7 @@ export const CAPTION_PRESETS: Record<string, { doc: string; make: (text: string)
 
 export function expandPreset(kind: "text" | "captions", name: string, text: string, given: Dict): Dict {
   const table = kind === "captions" ? CAPTION_PRESETS : TEXT_PRESETS;
-  const p = table[name];
+  const p = own(table, name);
   if (!p) {
     const s = suggest(name, Object.keys(table));
     throw new EditError(`unknown ${kind} preset '${name}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(table).join(", ")}`);

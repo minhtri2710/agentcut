@@ -8,6 +8,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { EditError, similarity } from "./model.ts";
+import { own } from "./own.ts";
 import { withLock } from "./project.ts";
 import { appendFile, ensureDir, writeFile } from "./safe-write.ts";
 import { VERSION } from "./version.ts";
@@ -73,7 +74,7 @@ export function recordCall(src: "cli" | "mcp", cmd: string, ms: number, res: any
     if (misses.length) ev.misses = misses;
     if (res.error.code === "validation_failed") ev.issues = (res.error.issues ?? []).slice(0, 5).map((i: any) => scrub(`${i.path.replace(/\[\d+\]/g, "[]")}: ${i.message}`, 160));
   }
-  const thr = SLOW_MS[cmd];
+  const thr = own(SLOW_MS, cmd);
   if (thr && ms > thr) ev.slow = true;
   recordEvent(ev);
 }
@@ -204,7 +205,7 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   for (const n of notes) rec.push({ priority: score(n) * 5, text: `[${n.kind}/${n.severity}] ${n.title}${n.suggestion ? ` - suggested: ${n.suggestion}` : ""}`, evidence: `${n.id}, reported ${n.count}x` });
   for (const m of misses) if (m.count >= 2) rec.push({ priority: 10 * m.count, text: `Agents guess ${m.kind} '${m.guess}'${m.suggestion ? ` (meant '${m.suggestion}')` : ""}: add it as an alias or rename`, evidence: `${m.count} failed calls` });
   for (const r of rejections) if (r.count >= 3) rec.push({ priority: 4 * r.count, text: `Frequent rejected batch: ${r.issue} - clarify docs/defaults or accept this input`, evidence: `${r.count}x` });
-  for (const l of latency) if (l.slow >= 2 || (SLOW_MS[l.cmd] && l.p95_ms > SLOW_MS[l.cmd])) rec.push({ priority: 6 * l.slow + 5, text: `Speed up '${l.cmd}': p95 ${l.p95_ms} ms`, evidence: `${l.slow}/${l.calls} calls over ${SLOW_MS[l.cmd] ?? "?"} ms` });
+  for (const l of latency) if (l.slow >= 2 || (own(SLOW_MS, l.cmd) && l.p95_ms > SLOW_MS[l.cmd])) rec.push({ priority: 6 * l.slow + 5, text: `Speed up '${l.cmd}': p95 ${l.p95_ms} ms`, evidence: `${l.slow}/${l.calls} calls over ${own(SLOW_MS, l.cmd) ?? "?"} ms` });
   if (renderPerf?.slow_renders) rec.push({ priority: 8 * renderPerf.slow_renders, text: `Render slower than 0.5x realtime in ${renderPerf.slow_renders} job(s)`, evidence: JSON.stringify(renderPerf.slowest[0]) });
   rec.sort((a, b) => b.priority - a.priority);
   return {

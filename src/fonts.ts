@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { C, canvasLoaded, queueFontDir } from "./canvas.ts";
 import { EditError, suggest } from "./model.ts";
+import { own } from "./own.ts";
 import { writeFile } from "./safe-write.ts";
 
 const WEIGHTS: Record<string, number> = {
@@ -77,9 +78,9 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
       const f = fam.get(words.slice(0, n).join(" ").toLowerCase());
       if (!f) continue;
       const rest = words.slice(n).map((x) => x.toLowerCase().replace(/[-_]/g, ""));
-      if (rest.every((r) => r in WEIGHTS || r === "italic" || r === "oblique")) {
+      if (rest.every((r) => own(WEIGHTS, r) !== undefined || r === "italic" || r === "oblique")) {
         family = f;
-        for (const r of rest) if (r in WEIGHTS) w = WEIGHTS[r]; else it = true;
+        for (const r of rest) { const rw = own(WEIGHTS, r); if (rw !== undefined) w = rw; else it = true; }
       }
     }
     if (!family) {
@@ -87,7 +88,7 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
       throw new EditError(`font '${spec}' not found`, "font_not_found", `${s ? `did you mean '${s}'? ` : ""}list fonts with \`agentcut fonts <query>\` or pass a .ttf path`);
     }
   }
-  if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : WEIGHTS[String(weight).toLowerCase()] ?? (Number(weight) || 400);
+  if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : own(WEIGHTS, String(weight).toLowerCase()) ?? (Number(weight) || 400);
   const stack = [family!, ...SANS.filter((s) => fam.has(s.toLowerCase()) && s !== family), ...EMOJI.filter((s) => fam.has(s.toLowerCase()))];
   const out = { family: family!, weight: w, italic: it, stack };
   if (!unregistered) cache.set(key, out); // an alias not yet registered with Skia must be resolved again once it is

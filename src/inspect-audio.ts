@@ -9,6 +9,7 @@ import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
 import { run } from "./proc.ts";
+import { own } from "./own.ts";
 import { type Clip, clipEnd, clipStart, type Dict, EditError, resolve, type Timeline, totalDuration } from "./model.ts";
 
 const WIN = 0.02; // analysis window (s)
@@ -220,7 +221,7 @@ async function draw(a: { lanes: Lane[]; mix: Win; findings: Dict[]; markers: Dic
   }
   const rows: { label: string; y: number; h: number; color: string; w: { rms: Float64Array; peak: Float64Array }; clips?: Clip[]; id?: string }[] = [];
   let y = RH;
-  for (const L of a.lanes) { rows.push({ label: L.role ? `${L.id} (${L.role})` : L.id, y, h: LH, color: COL[L.role ?? ""] ?? "#81c784", w: L, clips: L.clips, id: L.id }); y += LH + 4; }
+  for (const L of a.lanes) { rows.push({ label: L.role ? `${L.id} (${L.role})` : L.id, y, h: LH, color: own(COL, L.role ?? "") ?? "#81c784", w: L, clips: L.clips, id: L.id }); y += LH + 4; }
   rows.push({ label: a.source ? "file" : "mix (rendered)", y, h: MH, color: "#e0e0e0", w: a.mix, id: "mix" }); y += MH + 4;
 
   for (const r of rows) {

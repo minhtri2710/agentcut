@@ -1,5 +1,6 @@
 // Easing, keyframes and animation presets (enter/exit, transitions, motion).
 import { type Clip, normAnim, parseTime } from "./model.ts";
+import { own } from "./own.ts";
 
 const backOut = (t: number, s = 1.70158) => { t -= 1; return t * t * ((s + 1) * t + s) + 1; };
 function bounceOut(t: number) {
@@ -19,7 +20,7 @@ export const EASE: Record<string, (t: number) => number> = {
   back_out: backOut, bounce_out: bounceOut, elastic_out: elasticOut,
   hold: (t) => (t < 1 ? 0 : 1),
 };
-export const ease = (name: string | undefined, t: number) => (EASE[name || "linear"] ?? EASE.linear)(Math.min(1, Math.max(0, t)));
+export const ease = (name: string | undefined, t: number) => (own(EASE, name || "linear") ?? EASE.linear)(Math.min(1, Math.max(0, t)));
 
 type KF = [number, number, string | undefined];
 const kfCache = new WeakMap<object, KF[]>();
@@ -100,7 +101,7 @@ export function enterExit(c: Clip, tl: number, D: number, m: Mods, W: number, H:
     let d = spec.duration;
     if ((kind === "typewriter" || kind === "words") && !(typeof c[key] === "object" && "duration" in c[key])) d = Math.min(1.5, D * 0.6);
     d = Math.max(1e-3, Math.min(d, D));
-    const e = spec.ease || DEFAULT_EASE[kind] || "ease_out";
+    const e = spec.ease || own(DEFAULT_EASE, kind) || "ease_out";
     if (key === "enter" && tl < d) applyAnim(kind, ease(e, tl / d), m, W, H);
     else if (key === "exit" && tl > D - d) applyAnim(kind, ease(["back_out", "bounce_out", "elastic_out"].includes(e) ? "ease_in_out" : e, (D - tl) / d), m, W, H);
   }

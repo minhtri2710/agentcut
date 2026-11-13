@@ -1,4 +1,5 @@
-// Colour grading: clip `color` field -> FFmpeg decode-time filters. No imports: model.ts uses it for validation.
+// Colour grading: clip `color` field -> FFmpeg decode-time filters. Imports only own.ts: model.ts uses it for validation.
+import { own } from "./own.ts";
 
 export type Grade = Record<string, any>;
 type Rgb = [number, number, number];
@@ -59,7 +60,7 @@ export function gradeIssues(g: Grade): [string, string][] {
     else if (!isPts(pts)) out.push([`curves.${ch}`, "curve must be >= 2 [x, y] points in 0..1 with increasing x"]);
   }
   if (g.hsl && typeof g.hsl === "object") for (const [range, adj] of Object.entries<any>(g.hsl)) {
-    if (!(range in HSL_RANGES)) { out.push([`hsl.${range}`, `unknown colour range '${range}' (${Object.keys(HSL_RANGES).join(", ")})`]); continue; }
+    if (!own(HSL_RANGES, range)) { out.push([`hsl.${range}`, `unknown colour range '${range}' (${Object.keys(HSL_RANGES).join(", ")})`]); continue; }
     if (!adj || typeof adj !== "object") { out.push([`hsl.${range}`, "expected {hue, saturation, lightness}"]); continue; }
     for (const [k, v] of Object.entries(adj)) {
       const lim = k === "hue" ? 180 : 1;
@@ -77,7 +78,7 @@ const nz = (v: Rgb | undefined) => !!v && v.some((x) => x !== 0);
 /** Grade -> FFmpeg filters, in grading order: exposure, white balance, lift/gamma/gain, curves, contrast/saturation, hsl, vibrance. */
 export function gradeChain(color: Grade | undefined): string[] {
   if (!color || typeof color !== "object") return [];
-  const g: Grade = { ...(color.look ? LOOKS[color.look] : {}), ...color };
+  const g: Grade = { ...(own(LOOKS, color.look) ?? {}), ...color };
   const out: string[] = [];
   if (g.exposure) out.push(`exposure=exposure=${f3(g.exposure)}`);
   // ponytail: temperature is a fixed Kelvin mapping (+1 ~ 3500 K, -1 ~ 12000 K) via colortemperature with lightness kept
@@ -97,7 +98,7 @@ export function gradeChain(color: Grade | undefined): string[] {
   const eq = [["contrast", g.contrast], ["saturation", g.saturation]].filter(([, v]) => v !== undefined && v !== 1);
   if (eq.length) out.push("eq=" + eq.map(([k, v]) => `${k}=${f3(v)}`).join(":"));
   for (const [range, adj] of Object.entries<any>(g.hsl ?? {})) {
-    const p = [`colors=${HSL_RANGES[range]}`];
+    const p = [`colors=${own(HSL_RANGES, range)}`];
     if (adj.hue) p.push(`hue=${f3(adj.hue)}`);
     if (adj.saturation) p.push(`saturation=${f3(adj.saturation)}`);
     if (adj.lightness) p.push(`intensity=${f3(adj.lightness)}`);

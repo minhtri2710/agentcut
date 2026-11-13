@@ -10,7 +10,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY", "AGENTCUT_TTS_MODEL", "AGENTCUT_TTS_VOICE", "AGENTCUT_PIPER_MODEL"]) delete process.env[k];
 const api = await import("../src/api.ts");
-const { gradeChain, LOOKS } = await import("../src/color.ts");
+const { gradeChain, gradeIssues, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");
 const { filterChain } = await import("../src/media.ts");
@@ -649,6 +649,11 @@ fi
   }
 } finally { srv.kill(); }
 
+{
+  const { ease } = await import("../src/anim.ts");
+  check("an hsl range that only the prototype chain holds is refused", gradeIssues({ hsl: { toString: { hue: 10 } } }).some(([k]) => k === "hsl.toString"));
+  check("an easing name that only the prototype chain holds eases linearly", ease("constructor", 0.3) === 0.3, ease("constructor", 0.3));
+}
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall color/tts checks passed");
 process.exit(failures ? 1 : 0);

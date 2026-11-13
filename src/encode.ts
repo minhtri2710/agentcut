@@ -10,6 +10,7 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
+import { own } from "./own.ts";
 import { hasCodec, needFfmpeg } from "./media.ts";
 import { run, stopOnAbort } from "./proc.ts";
 import { EditError, parseColor, resolve, type Timeline, totalDuration } from "./model.ts";
@@ -59,7 +60,7 @@ function needEncoder(name: string, what: string) {
 
 /** Encoder args for a video codec. `mux` are output-container args that must go on the final file (not on segments). */
 export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean, alpha = false, ext = ""): { v: string[]; mux: string[] } {
-  const q = QUALITY[quality] ?? QUALITY.standard;
+  const q = own(QUALITY, quality) ?? QUALITY.standard;
   const apple = ext === ".mp4" || ext === ".m4v" || ext === ".mov";
   switch (codec) {
     case "h264":
@@ -96,8 +97,8 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
   const gif = ext === ".gif";
   const req = (o.codec ?? "auto").toLowerCase().replace(/[-\s]/g, "_") as Codec;
   const alias: Record<string, Codec> = { h265: "hevc", x265: "hevc", x264: "h264", avc: "h264", prores4444: "prores_4444", "4444": "prores_4444", vp09: "vp9" };
-  const want = (alias[req] ?? req) as Codec;
-  if (want !== "auto" && !(want in CODECS))
+  const want = (own(alias, req) ?? req) as Codec;
+  if (want !== "auto" && !own(CODECS, want))
     throw new EditError(`unknown codec '${o.codec}'`, "bad_codec", `use one of: auto, ${Object.keys(CODECS).join(", ")}`);
   if (gif && want !== "auto") throw new EditError(`codec '${want}' does not apply to .gif`, "bad_codec", "omit codec for .gif, or export .mp4/.mov/.webm");
   const transparent = parseColor(tl.settings.background ?? "#000000")[3] === 0;

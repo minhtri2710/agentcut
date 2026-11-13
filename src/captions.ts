@@ -38,7 +38,7 @@ export function parseSrt(path: string): CWord[] {
 export function phrasesToWords(phrases: CWord[]): CWord[] {
   const words: CWord[] = [];
   for (const ph of phrases) {
-    const toks = ph.text.split(/\s+/).filter(Boolean);
+    const toks = ph.text.split(/[^\S\u00a0\u2007\u202f]+/).filter(Boolean); // the no-break spaces (U+00A0, U+2007, U+202F) join a word
     const total = toks.reduce((a, t) => a + t.length + 1, 0);
     let t = ph.start;
     for (const tok of toks) {

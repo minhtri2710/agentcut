@@ -8,6 +8,7 @@ import {
   clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
+import { own } from "./own.ts";
 import { checkDir, createExclusive, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
@@ -148,8 +149,9 @@ export class Project {
     if (lexists(join(root, PROJECT_FILE))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
     let w = o.width ?? 1920, h = o.height ?? 1080;
     if (o.preset) {
-      if (!PRESETS[o.preset]) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
-      [w, h] = PRESETS[o.preset];
+      const dims = own(PRESETS, o.preset);
+      if (!dims) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
+      [w, h] = dims;
     }
     const dirs = ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"].map((d) => join(root, d));
     for (const d of dirs) checkDir(root, d); // every chain is checked before anything is made: a refused one leaves nothing behind

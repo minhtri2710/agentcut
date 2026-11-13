@@ -99,6 +99,8 @@ const skE = (id: string, type?: string) => fxE.some((s) => s.id === id && (!type
 check("skipped: shape, effects, dip_black approximated, no duck without a voice clip, duck + eq on the music track under a voice, nothing for an empty, muted or silent track or a ducked voice",
   sk(shp1, "shape") && sk(vid3, "fields") && sk(vid2, "transition") && !sk("music", "duck") && skE("music", "duck") && skE("music", "audio_fx") &&
   !skE("bed") && !skE("off") && !skE("quiet") && !skE("vo"), { skipped: fx.skipped, withEmpty: fxE });
+const inherited = exportFcpxml({ ...tl, tracks: tl.tracks.map((t) => (t === musicTr ? { ...t, role: "toString" } : t)) }).xml;
+check("a track role that only the prototype chain holds gives no audio role", !inherited.includes("native code") && !/<asset-clip[^>]*name="mus1"[^>]*audioRole/.test(inherited), inherited.match(/audioRole="[^"]*"/g));
 check("clip count", fx.clips === 8, fx.clips);
 const fcpOut = join(tmp, "out", "edit.fcpxml");
 const res = exportTimeline(tl, "fcpxml", fcpOut);
@@ -203,7 +205,7 @@ print(json.dumps({"otio": desc(o), "fcpx": desc(tl), "reserialized": same}))
 
 console.log("caption sources and subtitle export");
 {
-  const { captionWords, parseSrt } = await import("../src/captions.ts");
+  const { captionWords, parseSrt, phrasesToWords } = await import("../src/captions.ts");
   const { formatCues } = await import("../src/subtitles.ts");
   const code = (f: () => unknown) => { try { f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
   const ws: any[] = captionWords({ words: [{ text: "a", start: "1.5s", end: "00:02.5" }, { text: "b", s: "500ms", e: 3 }] });
@@ -229,6 +231,8 @@ console.log("caption sources and subtitle export");
   check("vtt: NOTE, STYLE and REGION blocks are not cues", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["real"]), parseSrt(vttPath));
   writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:01.000\n&Lt; &NBSP; &lt; &nbsp; &#X41;\n");
   check("vtt: character reference names are case-sensitive (&Lt; and &NBSP; stay as written, &lt; and &nbsp; decode)", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["&Lt; &NBSP; < \u00a0 A"]), parseSrt(vttPath));
+  writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:01.000\n10&nbsp;km now\n");
+  check("vtt: a decoded no-break space does not split a caption word", JSON.stringify(phrasesToWords(parseSrt(vttPath)).map((w) => w.text)) === JSON.stringify(["10\u00a0km", "now"]), phrasesToWords(parseSrt(vttPath)));
   const bomSrt = join(tmp, "bom.srt"); // the WEBVTT header marks WebVTT, not the .vtt extension
   writeFileSync(bomSrt, "\ufeffWEBVTT\n\n00:00.000 --> 00:01.000\na &lt;b&gt;\n");
   check("a body with a BOM and a WEBVTT header at a .srt path reads as WebVTT (decoded)", JSON.stringify(parseSrt(bomSrt).map((w) => w.text)) === JSON.stringify(["a <b>"]), parseSrt(bomSrt));

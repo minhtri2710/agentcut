@@ -13,6 +13,7 @@ import { expandPreset, TEMPLATES } from "./presets.ts";
 import { checkRevision, type Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
+import { own } from "./own.ts";
 import { normWord, registerEditOps, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
@@ -40,7 +41,10 @@ export function importAsset(p: Project | null, tl: Timeline, path: string, id?: 
   let src = absPath(path);
   if (!existsSync(src) && p && existsSync(join(p.root, path))) src = join(p.root, path);
   if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
-  for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) return k;
+  for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) {
+    if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
+    return k;
+  }
   const info = probe(src); // before the copy: a file that is not media leaves nothing in media/
   if (copy && p) {
     let dst = join(p.root, "media", basename(src));
@@ -63,7 +67,7 @@ op("import_media", "Import a media file (video/image/audio/Lottie .json) as an a
   (p, tl, a) => { const id = importAsset(p, tl, a.path, a.id, !!a.copy); const { path, ...rest } = tl.assets[id]; return { asset: id, ...rest }; });
 
 op("remove_asset", "Remove an asset (force=true also removes clips using it).", { id: "asset id", force: "bool" }, (p, tl, a) => {
-  if (!tl.assets[a.id]) throw new EditError(`asset '${a.id}' not found`, "not_found");
+  if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");
   const users = [...allClips(tl.tracks)].filter((c) => c.asset === a.id).map((c) => c.id); // incl. clips inside compounds
   if (users.length && !a.force) throw new EditError(`asset '${a.id}' is used by ${users.join(", ")}`, "in_use", "remove those clips or pass force=true");
   const unlinked: string[] = [];
@@ -84,8 +88,9 @@ op("set_settings", "Change canvas/output settings. effects: whole-frame effects 
   (p, tl, a) => {
     const st = tl.settings;
     if (a.preset) {
-      if (!PRESETS[a.preset]) { const s = suggest(a.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${a.preset}'`, "bad_preset", s ? `did you mean '${s}'?` : Object.keys(PRESETS).join(", ")); }
-      [st.width, st.height] = PRESETS[a.preset];
+      const dims = own(PRESETS, a.preset);
+      if (!dims) { const s = suggest(a.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${a.preset}'`, "bad_preset", s ? `did you mean '${s}'?` : Object.keys(PRESETS).join(", ")); }
+      [st.width, st.height] = dims;
     }
     for (const k of ["width", "height", "fps", "background", "duration", "loudness", "sample_rate", "effects"]) if (k in a) st[k] = a[k];
     if (a.name) tl.name = a.name;
@@ -161,7 +166,7 @@ export const trackEnd = (tr: Track) => Math.max(0, ...tr.clips.map(clipEnd));
 function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
   a = { ...a };
   if (a.src) a.asset = importAsset(p, tl, a.src);
-  if (a.asset && !tl.assets[a.asset]) { const s = suggest(a.asset, Object.keys(tl.assets)); throw new EditError(`asset '${a.asset}' not found`, "not_found", `${s ? `did you mean '${s}'? ` : ""}import it first or pass src`); }
+  if (a.asset && !own(tl.assets, a.asset)) { const s = suggest(a.asset, Object.keys(tl.assets)); throw new EditError(`asset '${a.asset}' not found`, "not_found", `${s ? `did you mean '${s}'? ` : ""}import it first or pass src`); }
   if (a.srt) a.srt = absPath(a.srt);
   for (const f of a.filters ?? []) if (f && typeof f === "object" && f.type === "lut" && f.path) f.path = absPath(f.path);
   const type = inferType(tl, a);
@@ -565,7 +570,7 @@ op("add_transition", "Set the transition into a clip from the previous clip on i
 op("add_effect", "Add a CapCut-style effect to a clip (or to the whole video with id omitted).",
   { id: "clip id (omit = whole frame)", type: Object.keys(EFFECTS).join("|"), start: "s (relative to clip)", duration: "s", "...": "effect params (intensity, amount, ratio...)" }, (p, tl, a) => {
     const { op: _o, id, ...fx } = a;
-    if (!(fx.type in EFFECTS)) { const s = suggest(fx.type, Object.keys(EFFECTS)); throw new EditError(`unknown effect '${fx.type}'`, "bad_effect", s ? `did you mean '${s}'?` : Object.keys(EFFECTS).join(", ")); }
+    if (!own(EFFECTS, fx.type)) { const s = suggest(fx.type, Object.keys(EFFECTS)); throw new EditError(`unknown effect '${fx.type}'`, "bad_effect", s ? `did you mean '${s}'?` : Object.keys(EFFECTS).join(", ")); }
     if (!id) { (tl.settings.effects ??= []).push(fx); return { scope: "global", effects: tl.settings.effects.length }; }
     const [, , c] = findClip(tl, id);
     (c.effects ??= []).push(fx);
@@ -589,7 +594,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict) {
   if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
   if (a.transcribe) {
     const s = a.transcribe;
-    const path = tl.assets[s] ? p.abs(tl.assets[s].path) : absPath(s);
+    const path = own(tl.assets, s) ? p.abs(tl.assets[s].path) : absPath(s);
     a.words = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range }).words;
     delete a.transcribe; delete a.language; delete a.transcribe_range;
   }
@@ -635,7 +640,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
 function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   if (Array.isArray(b)) return b.map(Number);
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
-  const path = tl.assets[b] ? p.abs(tl.assets[b].path) : absPath(b);
+  const path = own(tl.assets, b) ? p.abs(tl.assets[b].path) : absPath(b);
   if (path.endsWith(".json")) return JSON.parse(readFileSync(path, "utf8")).beats;
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   return AN.analysis(p, { kind: "beats", path }).beats;
@@ -730,7 +735,7 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
 
 op("apply_template", "Build a whole video from a template (expands into ordinary ops you can edit afterwards). Templates: " + Object.keys(TEMPLATES).join(", ") + ".",
   { name: Object.keys(TEMPLATES).join("|"), "...": "template args (see capabilities.templates)" }, (p, tl, a) => {
-    const t = TEMPLATES[a.name];
+    const t = own(TEMPLATES, a.name);
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
     if (["slideshow", "promo", "beat_montage"].includes(a.name) && !a.media?.length) throw new EditError(`template '${a.name}' needs media: [paths]`, "missing_arg");
     const ops = t.build(a);
@@ -773,7 +778,7 @@ export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict
   const results: Dict[] = [];
   ops.forEach((o, i) => {
     if (!o || typeof o !== "object" || !o.op) throw new EditError(`ops[${i}] must be an object with an 'op' field`, "bad_op", undefined, `ops[${i}]`);
-    const def = OPS[o.op];
+    const def = own(OPS, o.op);
     if (!def) { const s = suggest(o.op, Object.keys(OPS)); throw new EditError(`ops[${i}]: unknown op '${o.op}'`, "unknown_op", `${s ? `did you mean '${s}'? ` : ""}ops: ${Object.keys(OPS).join(", ")}`, `ops[${i}]`); }
     try {
       const { op: _n, ...args } = o;

@@ -1208,6 +1208,35 @@ console.log("untrusted field names and pending requests");
   check("a stored request cannot change its op or clip id", msg.startsWith("pending auto_reframe on 'vid1'"), { msg, removed: !t.tracks.flatMap((x: any) => x.clips).some((x: any) => x.id === "vid2") });
 }
 
+console.log("inherited names are not registry entries");
+{
+  const code = async (o: any) => { try { await one(o); return "ok"; } catch (e: any) { return e.code; } };
+  const before = JSON.stringify(tl());
+  const rows: [string, any, string][] = [
+    ["op constructor", { op: "constructor" }, "unknown_op"],
+    ["op toString", { op: "toString" }, "unknown_op"],
+    ["add_clip asset toString", { op: "add_clip", track: "main", asset: "toString" }, "not_found"],
+    ["add_clip asset constructor", { op: "add_clip", track: "main", asset: "constructor" }, "not_found"],
+    ["remove_asset id toString", { op: "remove_asset", id: "toString" }, "not_found"],
+    ["apply_template name constructor", { op: "apply_template", name: "constructor" }, "bad_template"],
+    ["add_clip text preset constructor", { op: "add_clip", track: "overlay", type: "text", text: "x", duration: 1, preset: "constructor" }, "bad_preset"],
+    ["add_clip captions preset toString", { op: "add_clip", track: "captions", type: "captions", words: [{ text: "a", start: 0, end: 1 }], preset: "toString" }, "bad_preset"],
+    ["set_settings preset constructor", { op: "set_settings", preset: "constructor" }, "bad_preset"],
+  ];
+  for (const [name, o, want] of rows) { const c = await code(o); check(`${name}: ${want}`, c === want, { c }); }
+  check("none of those rows changed the project", JSON.stringify(tl()) === before);
+  let pc = "ok";
+  try { api.create(join(tmp, "proj-constructor"), { preset: "constructor" }); } catch (e: any) { pc = e.code; }
+  check("create with preset constructor: bad_preset", pc === "bad_preset", { pc });
+  // an explicit import id is honoured or refused when the path is already imported
+  const existing = (await one({ op: "import_media", path: join(m, "p.png") })).asset;
+  let ex: any = null;
+  try { await one({ op: "import_media", path: join(m, "p.png"), id: "other_name" }); } catch (e: any) { ex = e; }
+  check("import_media of an imported path with a different id: exists, naming the existing id", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${existing}'`) && !("other_name" in tl().assets), ex && { code: ex.code, message: ex.message, hint: ex.hint });
+  const same = await one({ op: "import_media", path: join(m, "p.png"), id: existing });
+  check("import_media of an imported path with its own id returns it", same.asset === existing, same);
+}
+
 console.log("templates and beats");
 {
   const P2 = join(tmp, "proj2");
