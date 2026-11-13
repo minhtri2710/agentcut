@@ -806,6 +806,15 @@ console.log("decode and render failures");
   check("closing the renderer releases every layer canvas", (rend as any).layerCanvases.size === 0);
 }
 
+console.log("the JPEG side limit render.ts refuses at");
+{
+  const { loadCanvas, C } = await import("../src/canvas.ts");
+  await loadCanvas();
+  const { encodeStill, JPEG_MAX_SIDE } = await import("../src/render.ts");
+  const enc = (w: number, h: number) => { try { return encodeStill(C().createCanvas(w, h), "jpeg").length > 0; } catch { return false; } };
+  check("a blank canvas encodes as JPEG at the limit on either side and fails one pixel past it", enc(JPEG_MAX_SIDE, 1) && enc(1, JPEG_MAX_SIDE) && !enc(JPEG_MAX_SIDE + 1, 1) && !enc(1, JPEG_MAX_SIDE + 1), { limit: JPEG_MAX_SIDE });
+}
+
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

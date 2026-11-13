@@ -315,6 +315,12 @@ function gradient(ctx: SKRSContext2D, g: Dict, w: number, h: number) {
 }
 
 // ------------------------------------------------------------------ compositor
+/** The size a Renderer draws at (even sides). One function, so a layout worked out before drawing is the one drawn. */
+export const frameSize = (st: Timeline["settings"], scale: number) => ({ W: even(st.width * scale), H: even(st.height * scale) });
+/** A sheet or strip tile: `tileW` wide, never wider than the timeline. */
+const tileScale = (tl: Timeline, tileW: number) => Math.min(1, tileW / tl.settings.width);
+export const tileSize = (tl: Timeline, tileW: number) => frameSize(tl.settings, tileScale(tl, tileW));
+
 export class Renderer {
   W0: number; H0: number; W: number; H: number; k: number; fps: number; duration: number;
   layers: Layer[] = [];
@@ -324,7 +330,7 @@ export class Renderer {
     resolve(tl);
     const st = tl.settings;
     this.W0 = st.width; this.H0 = st.height;
-    this.W = even(this.W0 * scale); this.H = even(this.H0 * scale);
+    ({ W: this.W, H: this.H } = frameSize(st, scale));
     this.k = this.W / this.W0;
     this.fps = Number(st.fps);
     this.bg = css(st.background ?? "#000000");
@@ -559,6 +565,18 @@ export class Renderer {
 }
 
 /** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. webp keeps alpha: lossy at 90, or lossless (quality 100 makes the encoder write VP8L). */
+/** JPEG's limit on either side as Skia's encoder reports it: 65500 px encodes, 65501 fails ("Get jpeg data from surface failed"); pinned in tests/codecs.ts. PNG has no limit that can be reached. */
+export const JPEG_MAX_SIDE = 65500;
+
+/** Refuse, before anything is drawn, a JPEG whose side the encoder cannot write. `size(tileW)` is the image's [width, height] at that tile width; the hint names the largest tile_width that fits. */
+export function refuseJpegSize(what: string, tileW: number, size: (tileW: number) => [number, number], hint: string) {
+  const [w, h] = size(tileW);
+  if (w <= JPEG_MAX_SIDE && h <= JPEG_MAX_SIDE) return;
+  let fit = tileW - 1;
+  while (fit >= 1 && size(fit).some((x) => x > JPEG_MAX_SIDE)) fit--;
+  throw new EditError(`${what} would be ${w}x${h} px; a JPEG holds at most ${JPEG_MAX_SIDE} on a side`, "bad_value", `${hint}${fit >= 1 ? ` (or a tile_width of ${fit} or below)` : ""}`);
+}
+
 export const encodeStill = (cv: Canvas, fmt: string) =>
   fmt === "png" ? cv.encodeSync("png") : fmt === "webp" ? cv.encodeSync("webp", 90) : fmt === "webp_lossless" ? cv.encodeSync("webp", 100) : cv.encodeSync("jpeg", 88);
 
@@ -579,7 +597,7 @@ export async function renderTiles(tl: Timeline, root: string, times: number[], t
   // FFmpeg decodes overlap while Skia composites
   const order = times.map((_, i) => i).sort((a, b) => times[a] - times[b]);
   const R = Math.max(1, Math.min(4, Math.ceil(order.length / 2)));
-  const rs = Array.from({ length: R }, () => new Renderer(structuredClone(tl), root, Math.min(1, tileW / tl.settings.width)));
+  const rs = Array.from({ length: R }, () => new Renderer(structuredClone(tl), root, tileScale(tl, tileW)));
   const tiles: Canvas[] = new Array(times.length);
   try {
     let failed = false; // the first failure stops the other renderers at their next tile; all have stopped before they are closed
@@ -607,10 +625,12 @@ export async function renderTiles(tl: Timeline, root: string, times: number[], t
 }
 
 export async function contactSheet(tl: Timeline, root: string, times: number[], cols = 4, tileW = 360, guides = false, fmt = "jpeg"): Promise<Buffer> {
+  const gap = 4, n = times.length;
+  cols = Math.max(1, Math.min(cols, n));
+  const rows = Math.ceil(n / cols);
+  if (fmt === "jpeg") refuseJpegSize("the sheet", tileW, (w) => { const t = tileSize(tl, w); return [cols * t.W + (cols - 1) * gap, rows * t.H + (rows - 1) * gap]; }, "use fewer cols or frames, or a .png output");
   const tiles = await renderTiles(tl, root, [...times].sort((a, b) => a - b), tileW, guides);
   const { width: tw, height: th } = tiles[0];
-  cols = Math.max(1, Math.min(cols, tiles.length));
-  const rows = Math.ceil(tiles.length / cols), gap = 4;
   const sheet = createCanvas(cols * tw + (cols - 1) * gap, rows * th + (rows - 1) * gap);
   const sc = sheet.getContext("2d");
   sc.fillStyle = "#1e1e1e"; sc.fillRect(0, 0, sheet.width, sheet.height);

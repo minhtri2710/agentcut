@@ -4,7 +4,7 @@ import * as AN from "./analyze.ts";
 import {
   type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, type Timeline, totalDuration,
 } from "./model.ts";
-import { type Layer, Renderer, renderTiles, safeZones } from "./render.ts";
+import { type Layer, refuseJpegSize, Renderer, renderTiles, safeZones, tileSize } from "./render.ts";
 
 const r3 = (x: number) => +x.toFixed(3);
 const visual = (tl: Timeline) => tl.tracks.filter((t) => !t.hidden && (t.kind ?? "video") !== "audio");
@@ -32,9 +32,10 @@ export async function motionStrips(tl: Timeline, root: string, windows: Window[]
   const ws = windows.map((w) => ({ ...w, start: Math.max(0, w.start), end: Math.min(T, w.end) })).filter((w) => w.end > w.start);
   if (!ws.length) throw new EditError("no time window to inspect", "empty", "the timeline has no transitions: pass start/end (or times) to inspect a range");
   const times = ws.map((w) => Array.from({ length: n }, (_, i) => +Math.min(w.start + ((w.end - w.start) * i) / (n - 1), T - 1 / fps).toFixed(3)));
-  const tileW = o.tileWidth ?? Math.max(80, Math.min(320, Math.floor(1800 / n)));
+  const tileW = o.tileWidth ?? Math.max(80, Math.min(320, Math.floor(1800 / n))), gap = 3, head = 20, per = Math.max(1, o.perImage ?? 6), rowsMax = Math.min(per, ws.length);
+  refuseJpegSize("a motion image", tileW, (w) => { const t = tileSize(tl, w); return [n * t.W + (n - 1) * gap, rowsMax * (head + t.H + gap)]; }, "use fewer frames");
   const tiles = await renderTiles(tl, root, times.flat(), tileW);
-  const tw = tiles[0].width, th = tiles[0].height, gap = 3, head = 20, per = Math.max(1, o.perImage ?? 6);
+  const tw = tiles[0].width, th = tiles[0].height;
   const images: Buffer[] = [];
   for (let p = 0; p < ws.length; p += per) {
     const rows = ws.slice(p, p + per);

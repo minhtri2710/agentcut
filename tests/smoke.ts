@@ -140,10 +140,19 @@ console.log("frame time and caption file format");
     const e = cli([...args], { ok: false, cwd: P }).error;
     check(`${args.join(" ")}: bad_value naming ${field}`, e?.code === "bad_value" && e.message.startsWith(`${field} `), e);
   }
-  // the size of one output image is bounded as a whole: every argument is in range here, but the product is not
-  for (const [what, args] of [["sheet", ["sheet", "--count", 64, "--cols", 64, "--tile-width", 4096]], ["motion", ["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 4096]]] as const) {
-    const e = cli([...args], { ok: false, cwd: P }).error;
-    check(`${what} whose image would be too large is bad_value naming its size, nothing rendered`, e?.code === "bad_value" && /megapixels/.test(e.message) && /tile_width/.test(e.hint), e);
+  // a JPEG sheet or strip whose side the encoder cannot write is refused before anything is drawn, from the tiles that are drawn (never wider than the timeline)
+  {
+    const e = cli(["sheet", "--count", 64, "--cols", 64, "--tile-width", 4096], { ok: false, cwd: P }).error;
+    const fit = Number(/tile_width of (\d+) or below/.exec(e?.hint ?? "")?.[1]);
+    check("a sheet 64 tiles wide on a 1080 timeline is bad_value naming its size, with a .png and a tile_width that fits", e?.code === "bad_value" && e.message.includes(`${64 * 1080 + 63 * 4}x1080`) && e.hint.includes(".png") && fit > 0 && 64 * fit + 63 * 4 <= 65500, e);
+    check("a sheet with a tile_width above the timeline width draws timeline-width tiles and is accepted", cli(["probe", cli(["sheet", "--tile-width", 2200], C).image]).width === 4 * 1080 + 12);
+    const W = join(tmp, "wide-short");
+    cli(["init", W, "--width", 2800, "--height", 16]);
+    cli(["op", "add_clip", "track=main", `src=${join(m, "p.png")}`, "duration=1"], { cwd: W });
+    const mo = cli(["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 2800], { ok: false, cwd: W }).error;
+    check("a motion image 24 frames of a wide timeline across is bad_value naming its size", mo?.code === "bad_value" && mo.message.includes(`${24 * 2800 + 23 * 3}x`) && /fewer frames/.test(mo.hint), mo);
+    const png = cli(["sheet", "--count", 64, "--cols", 64, "--tile-width", 1100, "-o", "wide.png"], { cwd: W });
+    check("the same 64-tile width as a .png is accepted: PNG has no side limit", existsSync(png.image) && cli(["probe", png.image]).width === 64 * 1100 + 63 * 4, png);
   }
   check("the ends of the ranges work: motion frames 2 and 24", cli(["motion", "--start", 0, "--end", 1, "--frames", 2, "--tile-width", 40], C).images.length === 1 && cli(["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 40], C).strips[0].times.length === 24);
 }
