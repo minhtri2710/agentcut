@@ -92,6 +92,15 @@ check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] 
   renameSync(away, srcAbs);
   check("failed thumbnail -> error status, no long cache", bt.status >= 400 && !String(bt.headers["cache-control"]).includes("max-age"), [bt.status, bt.headers["cache-control"], bt.body.length]);
 }
+{ // the file behind an asset changes (replaced in place): the next thumbnail is the new picture, and none is cached by the browser
+  const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), keep = srcAbs + ".keep";
+  const first = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  renameSync(srcAbs, keep);
+  ff("-f", "lavfi", "-i", "color=c=red:size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", srcAbs);
+  const second = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  rmSync(srcAbs); renameSync(keep, srcAbs);
+  check("a thumbnail follows the file: replaced in place -> a new picture, header no-cache", second.status === 200 && !second.body.equals(first.body) && second.headers["cache-control"] === "no-cache" && first.headers["cache-control"] === "no-cache", [first.status, second.status, first.headers["cache-control"], second.headers["cache-control"]]);
+}
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);
 

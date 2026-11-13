@@ -1,7 +1,7 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip (numbers, errors, audio render).
 // Run: bun tests/edit-ops.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1404,6 +1404,99 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     const b: any = await api.render(D, { out: join(tmp, `${name}-draft.mp4`), draft: true });
     check(`${name} ${W}x${H} canvas renders ${full} at scale 1 and ${draft} as a draft`, dims(join(tmp, `${name}-full.mp4`)) === full && dims(join(tmp, `${name}-draft.mp4`)) === draft, { a: dims(join(tmp, `${name}-full.mp4`)), b: dims(join(tmp, `${name}-draft.mp4`)) });
   }
+}
+
+console.log("relink_asset");
+{
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "short.mp4"));
+  ff("-f", "lavfi", "-i", "sine=frequency=330:duration=2", join(m, "tone.wav"));
+  writeFileSync(join(m, "note.txt"), "not media");
+  const R = join(tmp, "relink");
+  api.create(R, { preset: "720p" });
+  const ra = async (ops: any[]) => (await api.apply(R, ops)).results;
+  const code = async (ops: any[]) => { try { await api.apply(R, ops); return "none"; } catch (e: any) { return e; } };
+  const rtl = async () => (await api.info(R, "json")).timeline;
+  await ra([
+    { op: "import_media", path: join(m, "a.mp4"), id: "av" },
+    { op: "import_media", path: join(m, "b.mp4"), id: "other" },
+    { op: "import_media", path: join(m, "tone.wav"), id: "snd" },
+    { op: "add_clip", track: "main", asset: "av", in: 0, duration: 3 },
+  ]);
+  const clipsBefore = JSON.stringify((await rtl()).tracks), timelineBefore = JSON.stringify(await rtl());
+
+  console.log("  refusals");
+  const e1 = await code([{ op: "relink_asset", id: "nope", path: join(m, "short.mp4") }]);
+  check("unknown asset id -> not_found", e1.code === "not_found", e1.code);
+  const e2 = await code([{ op: "relink_asset", id: "av", path: join(m, "missing.mp4") }]);
+  check("file not found -> not_found", e2.code === "not_found", e2.code);
+  const e3 = await code([{ op: "relink_asset", id: "av", path: join(m, "note.txt") }]);
+  check("a file that is not media -> bad_media", e3.code === "bad_media", e3.code);
+  const e4 = await code([{ op: "relink_asset", id: "av", path: join(m, "p.png") }]);
+  check("video -> image -> bad_type with a hint", e4.code === "bad_type" && !!e4.hint, e4.code);
+  const e5 = await code([{ op: "relink_asset", id: "snd", path: join(m, "silent.mp4") }]);
+  check("audio -> video -> bad_type", e5.code === "bad_type", e5.code);
+  const e6 = await code([{ op: "relink_asset", id: "av", path: join(m, "b.mp4") }]);
+  check("a path already imported as another asset -> exists, naming it", e6.code === "exists" && /'other'/.test(e6.message), e6.code);
+  const e7 = await code([{ op: "relink_asset", id: "av", path: join(m, "..", "media", "b.mp4") }]);
+  check("the same path spelled differently -> exists", e7.code === "exists" && /'other'/.test(e7.message), e7.code);
+  check("refused relinks change nothing", JSON.stringify(await rtl()) === timelineBefore);
+
+  console.log("  accept: shorter video without audio");
+  const before = (await rtl()).assets.av;
+  const r = await api.apply(R, [{ op: "relink_asset", id: "av", path: join(m, "short.mp4") }]);
+  const res = r.results[0], after = (await rtl()).assets.av;
+  check("record replaced by the new probe", after.path === join(m, "short.mp4") && near(after.duration, 1, 0.1) && after.has_audio === false && after.width === 320, after);
+  check("result carries the record without path, asset id and changed old/new", res.asset === "av" && res.path === undefined && res.width === 320 && res.changed.width.old === 640 && res.changed.width.new === 320 && res.changed.has_audio.old === true && res.changed.has_audio.new === false && res.changed.path.old === before.path && res.changed.path.new === after.path && res.changed.kind === undefined, res);
+  check("clips unchanged", JSON.stringify((await rtl()).tracks) === clipsBefore);
+  check("validate reports the clip past its media", r.issues.some((i: any) => i.level === "warning" && /\.duration$/.test(i.path)), r.issues);
+
+  console.log("  undo");
+  api.undo(R);
+  check("undo restores the old record and the old file is still there", JSON.stringify((await rtl()).assets.av) === JSON.stringify(before) && existsSync(join(m, "a.mp4")));
+
+  console.log("  in place");
+  copyFileSync(join(m, "a.mp4"), join(m, "inplace.mp4"));
+  await ra([{ op: "import_media", path: join(m, "inplace.mp4"), id: "ip" }]);
+  const ipOld = (await rtl()).assets.ip;
+  ff("-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2", "-pix_fmt", "yuv420p", join(m, "inplace.mp4"));
+  const ip = (await ra([{ op: "relink_asset", id: "ip", path: join(m, "inplace.mp4") }]))[0], ipNew = (await rtl()).assets.ip;
+  check("relink to the asset's own path re-probes the changed file", ipNew.path === ipOld.path && ipNew.width === 160 && near(ipNew.duration, 2, 0.1) && ip.changed.width.old === 640 && ip.changed.path === undefined, { ipNew, changed: ip.changed });
+
+  console.log("  copy");
+  const mediaDir = join(R, "media"), listing = () => readdirSync(mediaDir).sort();
+  const none = listing();
+  const cp = (await ra([{ op: "relink_asset", id: "ip", path: join(m, "silent.mp4"), copy: true }]));
+  check("copy=true copies into media/ and points the asset at the copy", listing().length === none.length + 1 && (await rtl()).assets.ip.path.startsWith("media/") && existsSync(join(R, (await rtl()).assets.ip.path)), { files: listing(), path: (await rtl()).assets.ip.path });
+  const kept = listing();
+  const rej = await code([{ op: "relink_asset", id: "snd", path: join(m, "short.mp4"), copy: true }]);
+  check("a refused batch leaves no copy in media/", rej.code === "bad_type" && JSON.stringify(listing()) === JSON.stringify(kept), { code: rej.code, files: listing() });
+  const rej2 = await code([{ op: "relink_asset", id: "ip", path: join(m, "short.mp4"), copy: true }, { op: "remove_clip", id: "nope" }]);
+  check("a batch that fails later leaves no copy in media/", rej2 !== "none" && JSON.stringify(listing()) === JSON.stringify(kept), { code: rej2.code, files: listing() });
+
+  console.log("  missing file");
+  copyFileSync(join(m, "a.mp4"), join(m, "gone.mp4"));
+  await ra([{ op: "import_media", path: join(m, "gone.mp4"), id: "gone" }]);
+  rmSync(join(m, "gone.mp4"));
+  const miss = (await api.validate(R)).issues.find((i: any) => i.path === "$.assets.gone.path");
+  check("the missing-file issue names relink_asset with the asset id", !!miss && miss.level === "error" && miss.hint?.includes("relink_asset id=gone path="), miss);
+  await ra([{ op: "remove_asset", id: "gone" }]);
+
+  console.log("  recheck list");
+  await ra([
+    { op: "add_clip", track: "main", asset: "av", duration: 1, id: "reframed" },
+    { op: "add_clip", track: "text", text: "tag", duration: 1, attach_to: "reframed", id: "follower" },
+    { op: "add_clip", track: "text", text: "plain", duration: 1, id: "plaintext" },
+    { op: "add_clip", track: "text", text: "tag2", duration: 1, attach_to: "main#0", id: "follower2" },
+    { op: "add_clip", track: "text", text: "quiet", duration: 1, attach_to: "main#0", id: "quiet" },
+    { op: "update_clip", id: "reframed", set: { keyframes: { focus_x: [[0, 0.3], [1, 0.6]] } } },
+    { op: "update_clip", id: "follower", set: { keyframes: { x: [[0, 10], [1, 50]], y: [[0, 10], [1, 50]] } } },
+    { op: "update_clip", id: "follower2", set: { keyframes: { y: [[0, 10], [1, 50]] } } },
+  ]);
+  const rc = (await ra([{ op: "relink_asset", id: "av", path: join(m, "short.mp4") }]))[0];
+  const ids = rc.recheck.map((x: any) => x.id).sort();
+  check("a reframed clip and every keyframed follower of the asset's clips (reframed or plain) are listed; clips without such keyframes are not", JSON.stringify(ids) === JSON.stringify(["follower", "follower2", "reframed"]) && rc.recheck.every((x: any) => typeof x.reason === "string" && x.reason), rc.recheck);
+  const kept2 = (await rtl()).tracks.flatMap((t: any) => t.clips);
+  check("the keyframes are kept", !!kept2.find((c: any) => c.id === "reframed").keyframes.focus_x && !!kept2.find((c: any) => c.id === "follower").keyframes.x);
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);

@@ -82,10 +82,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const a = asset(path.slice("/api/thumb/".length));
       if (a.kind === "image") return sendFile(req, res, a.abs);
       const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
-      const key = `${a.abs}|${t.toFixed(2)}`;
+      const key = `${a.abs}|${statSync(a.abs, { throwIfNoEntry: false })?.mtimeMs}|${t.toFixed(2)}`; // the file changing (relinked, or replaced in place) is a new picture
       if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t).catch((e) => { thumbs.delete(key); throw e; })); }
       const jpg = await thumbs.get(key); // a failure here is an error response, not an empty cached 200
-      res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "max-age=3600" });
+      res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-cache" });
       return res.end(jpg);
     }
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);

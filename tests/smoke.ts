@@ -127,21 +127,20 @@ console.log("frame time and caption file format");
     && cli(["captions", "-o", "subs.txt", "--format", "vtt"], C).format === "vtt" && readFileSync(join(P, "subs.txt"), "utf8").startsWith("WEBVTT"));
 }
 
-console.log("moved media: the three ops of the hint repair the project");
+console.log("moved media: the hinted relink_asset repairs the project");
 {
   const D = join(tmp, "moved"), old = join(m, "old-place.mp4"), moved = join(m, "new-place.mp4");
   cli(["init", D, "--preset", "square"]);
   copyFileSync(join(m, "green.mp4"), old);
-  const clip = cli(["op", "add_clip", "track=main", `src=${old}`], { cwd: D }).results[0].id;
+  cli(["op", "add_clip", "track=main", `src=${old}`], { cwd: D });
   const aid = Object.keys(cli(["info", "--json"], { cwd: D }).timeline.assets)[0];
   renameSync(old, moved);
   const v = cli(["validate"], { ok: false, cwd: D });
   const hint: string = v.issues[0]?.hint ?? "";
-  check("the hint names the asset id and the three ops in order", hint.indexOf("import_media") >= 0 && hint.indexOf("import_media") < hint.indexOf("update_clip") && hint.indexOf("update_clip") < hint.indexOf("remove_asset") && hint.includes(`remove_asset id=${aid}`) && hint.includes(`'${aid}'`), hint);
-  const imp = cli(["op", "import_media", `path=${moved}`], { cwd: D }).results[0].asset;
-  cli(["apply", "--ops", JSON.stringify([{ op: "update_clip", id: clip, set: { asset: imp } }, { op: "remove_asset", id: aid }])], { cwd: D });
+  check("the hint names relink_asset with the asset id", hint.includes(`relink_asset id=${aid} path=`), hint);
+  cli(["op", "relink_asset", `id=${aid}`, `path=${moved}`], { cwd: D });
   const after = cli(["validate"], { cwd: D });
-  check("after the hinted ops the project validates and renders a frame", after.valid === true && existsSync(cli(["frame", 0], { cwd: D }).image), after);
+  check("after the hinted op the project validates and renders a frame", after.valid === true && existsSync(cli(["frame", 0], { cwd: D }).image), after);
 }
 
 console.log("render");

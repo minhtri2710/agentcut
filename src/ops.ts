@@ -6,7 +6,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
+  allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
   normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
@@ -43,28 +43,40 @@ function parseAt(tl: Timeline, v: unknown): number {
 }
 
 // ---------------------------------------------------------------- media
-export function importAsset(p: Project | null, tl: Timeline, path: string, id?: string, copy = false): string {
-  if (id) plainKey(id);
+/** The existing file `path` names: absolute, or relative to the current directory or the project. */
+function mediaSource(p: Project | null, path: string): string {
   let src = absPath(path);
   if (!existsSync(src) && p && existsSync(join(p.root, path))) src = join(p.root, path);
   if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
-  for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) {
-    if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
-    return k;
-  }
-  const info = probe(src); // before the copy: a file that is not media leaves nothing in media/
+  return src;
+}
+
+/** The asset record of the media file `src`, probed first so that a file that is not media leaves nothing in media/; copy puts it into media/ (staged, dropped with a batch that is not saved). */
+function mediaRecord(p: Project | null, src: string, copy: boolean): Asset {
+  const info = probe(src);
   if (copy && p) {
     let dst = join(p.root, "media", basename(src));
     for (let i = 1; lexists(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
     if (presolve(dst) !== src) { copyFile(src, dst, p.root); p.stage(dst); }
     src = dst;
   }
+  info.path = p ? p.rel(src) : src;
+  return info;
+}
+
+export function importAsset(p: Project | null, tl: Timeline, path: string, id?: string, copy = false): string {
+  if (id) plainKey(id);
+  const src = mediaSource(p, path);
+  for (const [k, a] of Object.entries(tl.assets)) if (p && presolve(p.abs(a.path)) === src) {
+    if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
+    return k;
+  }
+  const info = mediaRecord(p, src, copy);
   if (!id) {
     const base = basename(src, extname(src)).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "asset";
     id = base;
     for (let n = 2; isProtoKey(id) || Object.hasOwn(tl.assets, id); n++) id = `${base}_${n}`; // a file named prototype.* must not give a key a timeline refuses
   } else if (Object.hasOwn(tl.assets, id)) throw new EditError(`asset id '${id}' already exists`, "exists");
-  info.path = p ? p.rel(src) : src;
   tl.assets[id] = info;
   return id;
 }
@@ -72,6 +84,28 @@ export function importAsset(p: Project | null, tl: Timeline, path: string, id?: 
 op("import_media", "Import a media file (video/image/audio/Lottie .json) as an asset. Returns id + probe info.",
   { path: "file path (required)", id: "asset id", copy: "copy into project media/ (false)" },
   (p, tl, a) => { const id = importAsset(p, tl, a.path, a.id, !!a.copy); const { path, ...rest } = tl.assets[id]; return { asset: id, ...rest }; });
+
+op("relink_asset", "Point an asset at another file (it moved, or was replaced) and probe it again; clip ids and clip fields are kept as they are. The new file must be the same kind (video, image, audio, lottie), else bad_type: import_media it and update_clip each clip. Returns the new probe and `changed` ({field: {old, new}}), and `recheck`: clips whose auto_reframe / track_to keyframes were made from the old picture (run those ops again; nothing is changed or deleted). The old file is never removed, so undo restores the old record. The clips are kept as they are; captions made from a transcript of the old file keep their timings.",
+  { id: "asset id (required)", path: "the new file (required)", copy: "copy into project media/ (false)" },
+  (p, tl, a) => {
+    if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");
+    const src = mediaSource(p, a.path);
+    for (const [k, x] of Object.entries(tl.assets)) if (k !== a.id && presolve(p.abs(x.path)) === src) throw new EditError(`${a.path} is already imported as asset '${k}'`, "exists", `use id '${k}' on the clips, or remove_asset id=${k} first`);
+    const old = tl.assets[a.id], info = mediaRecord(p, src, !!a.copy);
+    if (info.kind !== old.kind) throw new EditError(`asset '${a.id}' is ${old.kind}, the new file is ${info.kind}`, "bad_type", "import_media the new file, then update_clip each clip");
+    tl.assets[a.id] = info;
+    const changed: Dict = {};
+    for (const k of new Set([...Object.keys(old), ...Object.keys(info)])) if (JSON.stringify(old[k]) !== JSON.stringify(info[k])) changed[k] = { old: old[k], new: info[k] };
+    const clips = [...allClips(tl.tracks)], mine = new Set(clips.filter((c) => c.asset === a.id).map((c) => c.id)), why = new Map<string, string[]>();
+    const flag = (c: Clip, reason: string) => why.set(c.id, [...(why.get(c.id) ?? []), reason]);
+    for (const c of clips) {
+      if (mine.has(c.id) && (c.keyframes?.focus_x || c.keyframes?.focus_y)) flag(c, "focus keyframes (auto_reframe) were made from the old picture");
+      if (mine.has(c.attach_to) && (c.keyframes?.x || c.keyframes?.y)) flag(c, "x/y keyframes (track_to) follow the old picture");
+    }
+    const recheck = [...why].map(([id, r]) => ({ id, reason: r.join("; ") }));
+    const { path, ...rest } = info;
+    return { asset: a.id, ...rest, changed, recheck };
+  });
 
 op("remove_asset", "Remove an asset (force=true also removes clips using it).", { id: "asset id", force: "bool" }, (p, tl, a) => {
   if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");

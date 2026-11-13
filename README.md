@@ -99,7 +99,7 @@ Template sinh ra các clip bình thường, nên agent sửa tiếp được: đ
 | Tự động | 5 template (promo, slideshow, beat_montage, quote, listicle), `snap_to_beats`, `remove_silence`, `add_voiceover` kèm phụ đề, `until_end` |
 | Phân tích | beat/tempo/bar (FFT viết bằng TS), cắt cảnh, khoảng lặng, loudness, transcript |
 | Xuất file | mp4 H.264 / **HEVC**, mov ProRes 422 / **ProRes 4444 có alpha**, webm VP9 (có alpha), mkv, gif, **chỉ audio** (wav/mp3/m4a/aac/flac) · render một đoạn |
-| Chuyển cho người dựng | **FCPXML 1.10** (Final Cut Pro, khớp DTD chính thức) và **OpenTimelineIO** (DaVinci Resolve, Premiere, Avid): cắt, in-point, crossfade, speed, volume, title, connected clip; phần không chuyển được liệt kê trong `skipped` |
+| Chuyển cho người dựng | **FCPXML 1.10** (Final Cut Pro, khớp DTD chính thức) và **OpenTimelineIO** (DaVinci Resolve, Premiere, Avid): cắt, in-point, crossfade, speed, volume, title, connected clip; phần không chuyển được liệt kê trong `skipped` (không xuất) và `approximated` (xuất dưới dạng khác) |
 
 Chưa có (cần model AI): xoá phông, tự bám theo khuôn mặt khi reframe.
 

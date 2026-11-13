@@ -692,7 +692,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
       if (typeof a[k] === "number" && !(Number.isFinite(a[k]) && ok(a[k]))) issues.push({ level: "error", path: `${ap}.${k}`, message: `${k} must be ${what}` });
-    if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: `restore the file, or move the clips to the new path: import_media path=<new path> (it returns the new asset id), then update_clip set {"asset":"<new id>"} on each clip that uses '${aid}', then remove_asset id=${aid}` });
+    if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: `restore the file, or relink_asset id=${aid} path=<new path>` });
   }
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$", ROOT);
