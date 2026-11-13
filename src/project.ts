@@ -18,7 +18,7 @@ const SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 /** The one version gate: every timeline read from disk (project.json, history snapshots) and every one written goes through it.
  *  `source` names where the timeline came from (op input is checked by replace_timeline itself). */
-function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: create a new project (agentcut init <new dir>) and re-import its media"): Timeline {
+function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: create a new project and re-import its media"): Timeline {
   if (tl?.version !== SCHEMA_VERSION) {
     const found = JSON.stringify(tl?.version) ?? "missing";
     throw new EditError(`${source} has schema version ${found}; this build reads only version ${SCHEMA_VERSION}`, "bad_version", `found ${found}, supported ${SCHEMA_VERSION}; ${fix}`);
@@ -31,7 +31,7 @@ function parse(text: string, snapshot?: string): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
-  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : "fix the file or run `agentcut undo` to restore the last good version"); }
+  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : "fix the file or undo to restore the last good version"); }
   return checkVersion(tl, source, snapshot ? `there is no upgrade; project.json itself is fine: delete .agentcut/history/${snapshot}` : undefined);
 }
 
@@ -132,7 +132,7 @@ export function findProject(start?: string): string {
     if (existsSync(join(cur, PROJECT_FILE))) return cur;
     if (dirname(cur) === cur) break;
   }
-  throw new EditError(`no ${PROJECT_FILE} found in ${p} or its parents`, "no_project", "create one with `agentcut init <dir> --preset reels` (or pass -p <dir>)");
+  throw new EditError(`no ${PROJECT_FILE} found in ${p} or its parents`, "no_project", "create a project first (preset reels, say), or pass the project folder");
 }
 
 export class Project {
@@ -140,7 +140,7 @@ export class Project {
   constructor(root: string) {
     this.root = presolve(root);
     this.file = join(this.root, PROJECT_FILE);
-    if (!existsSync(this.file)) throw new EditError(`${this.file} does not exist`, "no_project", "run `agentcut init` first");
+    if (!existsSync(this.file)) throw new EditError(`${this.file} does not exist`, "no_project", "create the project first");
     registerFontDir(join(this.root, "fonts"));
   }
 
@@ -156,7 +156,7 @@ export class Project {
     const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
     if (o.empty) tl.tracks = [];
     const bad = validate(tl).filter((i) => i.level === "error"); // the project is built and checked in memory: bad settings leave no folder behind
-    if (bad.length) throw new EditError(`${bad[0].path}: ${bad[0].message}`, "bad_value", bad[0].hint ?? "e.g. --width 1920 --height 1080 --fps 30, or --preset reels");
+    if (bad.length) throw new EditError(`${bad[0].path}: ${bad[0].message}`, "bad_value", bad[0].hint ?? "e.g. width 1920, height 1080, fps 30, or a preset such as reels");
     const dirs = ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"].map((d) => join(root, d));
     for (const d of dirs) checkDir(root, d); // every chain is checked before anything is made: a refused one leaves nothing behind
     ensureRoot(root); // also proves the volume has hard links; on a volume without, nothing is left behind

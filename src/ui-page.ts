@@ -485,14 +485,14 @@ function onJob(j) {
   if (j.id === prepJob) {
     if (j.status === "running") { $("prepare").textContent = "Preparing " + Math.round(j.progress * 100) + "%"; return; }
     prepJob = null; $("prepare").disabled = false; $("prepare").textContent = "Prepare";
-    if (j.status === "failed") { if (j.error.code === "model_not_cached" && j.error.models) askDownload(j.error); else fail(j.error); } else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
+    if (j.status === "failed" || j.status === "cancelled") { if (j.error.code === "model_not_cached" && j.error.models) askDownload(j.error); else fail(j.error); } else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
   } else if (j.id === playJob) {
     if (j.status === "running") $("play").textContent = "Preparing " + Math.round(j.progress * 100) + "%";
-    else if (j.status === "failed") { playJob = null; $("play").textContent = "Play"; fail(j.error); }
+    else if (j.status === "failed" || j.status === "cancelled") { playJob = null; $("play").textContent = "Play"; fail(j.error); }
     else { playJob = null; var v = $("video"); v.src = j.url; v.style.display = ""; $("frame").style.display = "none"; $("play").textContent = "Stop"; v.play(); }
   } else if (j.id === renderJob) {
     var p = $("prog"); if (p) p.value = j.progress;
-    if (j.status === "failed") { renderJob = null; $("render").disabled = false; $("out").innerHTML = ""; fail(j.error); }
+    if (j.status === "failed" || j.status === "cancelled") { renderJob = null; $("render").disabled = false; $("out").innerHTML = ""; fail(j.error); }
     if (j.status === "done") {
       renderJob = null; $("render").disabled = false; var o = $("out"); o.innerHTML = "";
       var a = document.createElement("a"); a.href = j.url; a.target = "_blank"; a.textContent = "output: " + j.result.output.split("/").pop(); o.appendChild(a);

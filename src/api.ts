@@ -98,9 +98,11 @@ function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
  *  An op that needs a transcription, speech, a silence scan or beats throws AN.NeedsAnalysis; the analysis runs here (async, stopped by `signal`),
  *  is kept for the call, and the batch is re-run from a fresh load: one round per analysis the batch asks for, plus the last. */
 export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal } = {}) {
-  if (TEXTY.test(JSON.stringify(ops))) await loadCanvas(); // glyph coverage checks for fonts/presets
+  const list = Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops.ops ?? [ops] : undefined;
+  if (!Array.isArray(list)) throw new M.EditError("ops must be an array of op objects, or one op object", "bad_request", "each op is {op: name, ...args}");
+  if (TEXTY.test(JSON.stringify(list))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
-  try { return await applyRounds(p, Array.isArray(ops) ? ops : ops.ops ?? [ops], o); } finally { AN.release(p); }
+  try { return await applyRounds(p, list, o); } finally { AN.release(p); }
 }
 
 async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal }) {

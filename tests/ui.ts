@@ -130,6 +130,15 @@ check("stale page edit -> 409 conflict with hint", cf.status === 409 && cf.j.err
 const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }] } });
 check("invalid batch rejected with issues", bad.status === 422 && bad.j.error.code === "validation_failed" && bad.j.error.issues?.length, bad.j);
 
+for (const [what, text] of [["{}", "{}"], ["[]", "[]"], ["an ops value that is not a list", '{"ops":"add_marker"}']] as const) {
+  const r = await jget("/api/ops", { method: "POST", text });
+  check(`/api/ops with ${what}: 400`, r.status === 400 && r.j.ok === false && ["bad_request", "bad_json"].includes(r.j.error.code), r);
+}
+for (const [path, body] of [["/api/ops", { ops: [{ op: "add_marker", t: 1 }], revision: "abc" }], ["/api/undo", { revision: "abc" }], ["/api/ops", { ops: [{ op: "add_marker", t: 1 }], revision: String(r0) }]] as const) {
+  const r = await jget(path, { method: "POST", body });
+  check(`${path} with revision ${JSON.stringify(body.revision)}: bad_revision that echoes the value as sent`, r.status === 400 && r.j.error.code === "bad_revision" && r.j.error.message.includes(`got ${JSON.stringify(body.revision)}`), r);
+}
+
 const ext = await cliAsync(["-p", dir, "op", "add_marker", "t=2.5", "label=agent"]);
 check("SSE pushed an edit made by another process", ext.ok && await waitRev(ext.revision), ext);
 const pushed = events.findLast((e) => e.event === "state").data;
@@ -254,6 +263,50 @@ process.exit(1);
   check("allow_download true reaches the helper once, as allow_download", seen.length === 1 && seen[0].allow_download === true && yes.j.status === "failed" && yes.j.error?.code !== "model_not_cached", { seen, yes });
   uc.server.closeAllConnections?.();
   await new Promise((ok) => uc.server.close(ok));
+}
+
+// ---------------------------------------------------------------- cancel a job
+console.log("cancel");
+{
+  const big = join(media, "big.mp4");
+  ff("-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=30:duration=6", "-pix_fmt", "yuv420p", big);
+  const dirK = join(tmp, "cancel");
+  api.create(dirK, { preset: "4k" });
+  await api.apply(dirK, [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }]);
+  const uk = await startUi(dirK, { port: 0 });
+  const R = join(dirK, "renders"), left = () => (existsSync(R) ? readdirSync(R) : []);
+  const events: any[] = [];
+  const sse = request({ host: "127.0.0.1", port: uk.port, path: "/api/events", headers: { host: `127.0.0.1:${uk.port}` } }, (res) => {
+    let buf = "";
+    res.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\n\n")) >= 0) { const m = /^event: (\w+)\ndata: (.*)$/s.exec(buf.slice(0, i)); buf = buf.slice(i + 2); if (m) events.push({ event: m[1], data: JSON.parse(m[2]) }); } });
+  });
+  sse.end();
+  const poll = async (cond: () => unknown) => { for (let i = 0; i < 600 && !cond(); i++) await Bun.sleep(50); return !!cond(); };
+  const j = (await jget("/api/render", { method: "POST", port: uk.port, body: {} })).j;
+  const working = await poll(() => left().some((f) => f.includes(".part-")));
+  const xo = await jget(`/api/jobs/${j.id}/cancel`, { method: "POST", port: uk.port, body: {}, origin: "http://evil.example" });
+  const still = (await jget(`/api/jobs/${j.id}`, { port: uk.port })).j;
+  check("cancel from another origin: 403, and the job keeps running", working && xo.status === 403 && still.status === "running", { working, xo, still });
+  const c = await jget(`/api/jobs/${j.id}/cancel`, { method: "POST", port: uk.port, body: {} });
+  const after = (await jget(`/api/jobs/${j.id}`, { port: uk.port })).j;
+  check("POST /api/jobs/<id>/cancel stops the render: status cancelled with code aborted, and renders/ is empty when it replies", c.status === 200 && c.j.status === "cancelled" && c.j.error?.code === "aborted" && after.status === "cancelled" && !left().length, { c, after, left: left() });
+  check("  the new status was pushed over SSE", await poll(() => events.some((e) => e.event === "job" && e.data.id === j.id && e.data.status === "cancelled")), events.filter((e) => e.event === "job").map((e) => e.data.status));
+  const none = await jget("/api/jobs/nope/cancel", { method: "POST", port: uk.port, body: {} });
+  const twice = await jget(`/api/jobs/${j.id}/cancel`, { method: "POST", port: uk.port, body: {} });
+  check("cancel of an unknown job: 404; of a cancelled job: unchanged", none.status === 404 && twice.status === 200 && twice.j.status === "cancelled", { none, twice });
+  // a play job asked for twice is one job: cancelling it stops it for both requests
+  const p1 = (await jget("/api/render", { method: "POST", port: uk.port, body: { play: true, start: 0, end: 5 } })).j;
+  const p2 = (await jget("/api/render", { method: "POST", port: uk.port, body: { play: true, start: 0, end: 5 } })).j;
+  const PV = join(dirK, "previews", "ui"), played = () => (existsSync(PV) ? readdirSync(PV) : []);
+  await poll(() => played().some((f) => f.includes(".part-")));
+  const pc = await jget(`/api/jobs/${p1.id}/cancel`, { method: "POST", port: uk.port, body: {} });
+  const shared = (await jget(`/api/jobs/${p2.id}`, { port: uk.port })).j;
+  check("a play job shared by two requests is cancelled for both", p1.id === p2.id && pc.j.status === "cancelled" && shared.status === "cancelled" && !played().length, { p1: p1.id, p2: p2.id, pc, shared });
+  const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } }); // what an empty list does today; whether it may save a revision is decided elsewhere
+  check("/api/ops with an empty list is accepted and applies no op", emptyOps.status === 200 && emptyOps.j.ok === true && emptyOps.j.results.length === 0, emptyOps);
+  sse.destroy();
+  uk.server.closeAllConnections?.();
+  await new Promise((ok) => uk.server.close(ok));
 }
 
 // an apply stops with its request: when the browser closes the connection during an analysis, the tool it runs is stopped and nothing is saved

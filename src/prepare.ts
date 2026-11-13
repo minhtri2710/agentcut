@@ -56,7 +56,7 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
       if (ops.length) {
         const [next, results] = applyOps(p, tl, ops);
         if ([...allClips(next.tracks)].some((c) => c.pending))
-          throw new EditError("prepare could not resolve every pending vision request", "vision_failed", "inspect clip.pending with info --json; remove a stale request with update_clip set={pending:null}");
+          throw new EditError("prepare could not resolve every pending vision request", "vision_failed", "inspect clip.pending in the full project info; remove a stale request with update_clip set={pending:null}");
         try { revision = p.save(next, "prepare"); }
         catch (e) { if (e instanceof EditError && e.code === "conflict" && round < 5) continue; throw e; }
         applied = results;

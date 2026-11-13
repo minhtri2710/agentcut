@@ -133,15 +133,27 @@ export function buildServer() {
     inputSchema: { project: P, beats: z.union([z.literal("music"), z.array(z.number())]).optional(), min_shot: z.number().default(0.4), max_shot: z.number().optional(), cps: z.number().default(15), black_frames: z.boolean().default(true) },
   }, wrap((a, signal) => api.review(proj(a.project), { beats: a.beats, minShot: a.min_shot, maxShot: a.max_shot, cps: a.cps, black: a.black_frames, signal })));
 
-  const waitJob = async (id: string, secs: number) => {
-    const j = jobs.get(id);
-    if (!j) return { content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true };
-    const until = Date.now() + secs * 1000;
-    while (j.status === "running" && Date.now() < until) await Promise.race([j.promise, new Promise((r) => setTimeout(r, 300))]); // wakes when the job settles
+  const noJob = (id: string) => ({ content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true });
+  /** a job's state as the tool reply; `ok` is false for a job that failed or was cancelled unless the caller asked for the cancel */
+  const jobReply = (j: any, ok = j.status === "done" || j.status === "running") => {
     const { promise, ctl, ...pub } = j;
-    return { content: [text({ ok: j.status !== "failed", ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${id}')` } : {}) })], ...(j.status === "failed" ? { isError: true } : {}) };
+    return { content: [text({ ok, ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${j.job_id}') or cancel_job` } : {}) })], ...(ok ? {} : { isError: true }) };
   };
-  /** background job (render, prepare): progress 0..1, polled with render_status; `ctl` aborts it (shutdown) */
+  const cancelled = new WeakSet<object>(); // jobs stopped on purpose (cancel_job, the starting call); a shutdown abort is a failure with code aborted
+  const cancel = (j: any, why: string) => { if (j.status === "running") { cancelled.add(j); j.ctl.abort(new EditError(why, "aborted")); } };
+  /** `callSignal`: the call that started the job; it stops the job only while this call waits, and a job that is still running when the wait ends runs on without it */
+  const waitJob = async (id: string, secs: number, callSignal?: AbortSignal) => {
+    const j = jobs.get(id);
+    if (!j) return noJob(id);
+    const stop = () => { if (!stopCalls.signal.aborted) cancel(j, "the call that started the job was cancelled"); }; // a shutdown aborts the calls too, but it fails the job (shutdown())
+    if (callSignal?.aborted) stop(); else callSignal?.addEventListener("abort", stop, { once: true });
+    try {
+      const until = Date.now() + secs * 1000;
+      while (j.status === "running" && Date.now() < until) await Promise.race([j.promise, new Promise((r) => setTimeout(r, 300))]); // wakes when the job settles
+    } finally { callSignal?.removeEventListener("abort", stop); }
+    return jobReply(j);
+  };
+  /** background job (render, prepare): progress 0..1, polled with render_status; `ctl` aborts it (cancel_job, shutdown) */
   const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void, signal: AbortSignal) => Promise<unknown>) => {
     const id = Math.random().toString(36).slice(2, 10);
     const ctl = new AbortController();
@@ -149,26 +161,29 @@ export function buildServer() {
     jobs.set(id, job);
     if (stopping) ctl.abort(new EditError("the server is shutting down", "aborted")); // requested inside the shutdown window: nothing may start
     job.promise = (async () => run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal))() // a synchronous throw in `run` becomes a failed job, never a `running` one with no promise
-      .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => { job.status = "failed"; job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) }; })
+      .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => {
+        job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) };
+        job.status = cancelled.has(job) && job.error.code === "aborted" ? "cancelled" : "failed";
+      })
       .finally(() => { job.finished = Date.now(); });
     return id;
   };
   s.registerTool("render", {
-    description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac), or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes has_audio, contact_sheet (a file in previews/) + loudness - check them. A timeline with no audible clip gets no audio track: has_audio false, a warning, no loudness. For a Final Cut / Resolve project file use export_timeline.",
+    description: "Export by extension: .mp4 (H.264, codec=hevc for H.265), .mov (ProRes; codec=prores_4444 keeps alpha with a transparent background), .webm (VP9, alpha ok), .mkv, .gif, or audio only (.wav/.mp3/.m4a/.flac), or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). draft=true: half size + hardware encode (fast check). start/end render a section. Waits up to wait_seconds, else returns job_id for render_status. Result includes has_audio, contact_sheet (a file in previews/) + loudness - check them. A timeline with no audible clip gets no audio track: has_audio false, a warning, no loudness. For a Final Cut / Resolve project file use export_timeline. Keep wait_seconds below your client's request timeout: cancelling the call while it waits stops the render; once job_id is returned the render runs on, and cancel_job stops it.",
     inputSchema: { project: P, output: z.string().optional(), start: z.number().default(0), end: z.number().optional(), draft: z.boolean().default(false), quality: z.enum(["draft", "standard", "high"]).default("standard"), scale: SCALE.default(1), fast: z.boolean().default(false), codec: z.enum(["auto", "h264", "hevc", "prores", "prores_4444", "vp9"]).default("auto"), alpha: z.boolean().optional().describe("keep transparency (default: on when background is transparent and the codec supports it)"), subtitles: z.boolean().default(false).describe("also embed the captions clips as a soft subtitle track (.mp4/.mov mov_text, .mkv srt, .webm webvtt)"), wait_seconds: z.number().default(55) },
-  }, async (a) => {
+  }, async (a, { signal }) => {
     let project: string;
     try { project = proj(a.project); } catch (e) { return fail(e); }
     const id = startJob("render", project, (progress, signal) => api.render(project, { out: a.output, start: a.start, end: a.end, draft: a.draft, quality: a.quality, scale: a.scale, fast: a.fast, codec: a.codec, alpha: a.alpha, subtitles: a.subtitles, progress, signal }));
-    return waitJob(id, a.wait_seconds);
+    return waitJob(id, a.wait_seconds, signal);
   });
   s.registerTool("prepare", {
-    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview and video render fail with code not_prepared until prepare is done (audio-only renders skip it). Waits up to wait_seconds, else returns job_id for render_status. status_only=true lists what is missing without computing (models_to_download: matte models and the face model, 0.23 MB, not cached yet). A model (sizes in capabilities.matte_models and engines.vision.face_model; some are unknown offline) is downloaded only with allow_download=true; without it an uncached model fails with code model_not_cached.",
+    description: "Compute what remove_background / auto_reframe / track_to need (alpha mattes, subject and object tracks; slow, seconds per clip) as a background job, then apply the pending vision requests. Those ops only record the request; preview and video render fail with code not_prepared until prepare is done (audio-only renders skip it). Waits up to wait_seconds (keep it below your client's request timeout: cancelling the call while it waits stops the job; once job_id is returned the job runs on, and cancel_job stops it), else returns job_id for render_status. status_only=true lists what is missing without computing (models_to_download: matte models and the face model, 0.23 MB, not cached yet). A model (sizes in capabilities.matte_models and engines.vision.face_model; some are unknown offline) is downloaded only with allow_download=true; without it an uncached model fails with code model_not_cached.",
     inputSchema: { project: P, status_only: z.boolean().default(false), allow_download: z.boolean().default(false), wait_seconds: z.number().default(30) },
-  }, async (a) => {
+  }, async (a, { signal }) => {
     let project: string;
     try { project = proj(a.project); if (a.status_only) return ok(api.prepareStatus(project)); } catch (e) { return fail(e); }
-    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download })), a.wait_seconds);
+    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download })), a.wait_seconds, signal);
   });
   s.registerTool("cache", {
     description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes; action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'). previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",
@@ -182,7 +197,17 @@ export function buildServer() {
     description: "Write the captions clips as a subtitle file (.srt or .vtt) in timeline time, same pages as the burned-in captions. For a soft subtitle track inside the video use render subtitles=true.",
     inputSchema: { project: P, output: z.string().optional().describe(".srt or .vtt path"), format: z.enum(["srt", "vtt"]).optional(), ids: z.array(z.string()).optional().describe("only these captions clips") },
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
-  s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds).", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
+  s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds; cancelling this call leaves the job running). status is running, done, failed or cancelled.", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
+  s.registerTool("cancel_job", {
+    description: "Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged; an unknown job_id is not_found.",
+    inputSchema: { job_id: z.string() },
+  }, async (a) => {
+    const j = jobs.get(a.job_id);
+    if (!j) return noJob(a.job_id);
+    cancel(j, "the job was cancelled");
+    await j.promise;
+    return jobReply(j, j.status !== "failed");
+  });
   s.registerTool("view_image", { description: "Return a local PNG/JPG (e.g. a render's contact_sheet) as an image.", inputSchema: { path: z.string() } },
     async (a) => { try { return { content: [image(viewable(a.path))] }; } catch (e) { return fail(e); } });
 

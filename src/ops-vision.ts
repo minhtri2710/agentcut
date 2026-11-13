@@ -40,7 +40,7 @@ const focusAt = (c: Clip, t: number): [number, number] => {
 };
 
 function plainTarget(c: Clip) {
-  if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see agentcut info)");
+  if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see the project info)");
   const busy = ["rotation", "scale_x", "scale_y"].filter((k) => c[k] !== undefined && Number(c[k]) !== (k === "rotation" ? 0 : 1));
   const kf = Object.keys(c.keyframes ?? {}).filter((k) => !["focus_x", "focus_y", "opacity", "volume", "blur"].includes(k));
   // a mirrored or deshaken picture is drawn before the focus crop, so the analysed coordinates (of the unshifted source) would not match it;
@@ -95,7 +95,7 @@ function subjectTrack(tl: Timeline, c: Clip, d: V.Derived, within?: [number, num
   return { pts, face_samples: samples.filter((s) => s.kind === "face").length, n: samples.length, ...V.subjectSummary(samples) };
 }
 
-export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
+export const PREPARE_HINT = "run prepare to compute it; preview and render need it";
 let sink: V.Derived[] | null = null;
 /** Run f and collect the analyses that vision ops found missing (each recorded a pending request instead). */
 export const collectMissing = <T,>(f: () => T) => collect(f, (d) => !V.isReady(d));
@@ -173,7 +173,7 @@ export function registerVisionOps(h: OpHelpers) {
     { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
-      if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see agentcut info)");
+      if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see the project info)");
       if (a.off) { delete c.remove_background; return { id: c.id, remove_background: false }; }
       c.remove_background = a.model ? { model: a.model } : true;
       const m = matteFor(p?.root, tl, c, absPath(p, tl.assets[c.asset].path));

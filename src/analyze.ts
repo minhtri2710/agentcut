@@ -217,7 +217,7 @@ export function ttsVoices() {
  *  Each sentence is synthesized on its own (rate applies to each), converted to 48 kHz stereo and joined in order, so `sentences` carries
  *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
 export async function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string, signal?: AbortSignal) {
-  if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "e.g. agentcut tts \"Hello\" -o out.wav");
+  if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "pass the text to speak, e.g. \"Hello\"");
   if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${typeof rate === "string" ? JSON.stringify(rate) : String(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
   needFfmpeg();
   const part = tmpSibling(outPath, base);
@@ -276,7 +276,7 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
       const vs = systemVoices();
       if (!vs.some((v) => v.name === voice || v.full_name === voice)) {
         const s = suggest(voice, vs.map((v) => v.name));
-        throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list voices with \`agentcut voices\` (Vietnamese: 'Linh')`);
+        throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list the installed voices (Vietnamese: 'Linh')`);
       }
       args.push("-v", voice);
     }

@@ -140,7 +140,7 @@ export function resolveNote(id: string, status: "resolved" | "wontfix" | "open" 
   return locked(() => {
     const notes = loadNotes();
     const n = notes.find((x) => x.id === id);
-    if (!n) throw new EditError(`feedback note '${id}' not found`, "not_found", "list notes with `agentcut feedback list`");
+    if (!n) throw new EditError(`feedback note '${id}' not found`, "not_found", "check the id in the list of notes");
     n.status = status;
     if (resolution) n.resolution = resolution;
     saveNotes(notes);

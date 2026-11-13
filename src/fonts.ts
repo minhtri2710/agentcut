@@ -89,7 +89,7 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
     }
     if (!family) {
       const s = suggest(spec, [...fam.values()]);
-      throw new EditError(`font '${spec}' not found`, "font_not_found", `${s ? `did you mean '${s}'? ` : ""}list fonts with \`agentcut fonts <query>\` or pass a .ttf path`);
+      throw new EditError(`font '${spec}' not found`, "font_not_found", `${s ? `did you mean '${s}'? ` : ""}list the installed fonts to find the name, or pass a .ttf path`);
     }
   }
   if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : own(WEIGHTS, String(weight).toLowerCase()) ?? (Number(weight) || 400);

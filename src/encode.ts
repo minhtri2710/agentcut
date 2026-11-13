@@ -215,7 +215,7 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   needEncoder(fmt.args[1], ext);
   const T = totalDuration(resolve(structuredClone(tl)));
   const start = o.start ?? 0, end = Math.min(o.end ?? T, T);
-  if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix --start/--end");
+  if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix start/end");
   const warnings: string[] = [];
   if (!audioSources(tl).length) warnings.push("timeline has no audible clips: the export is silence");
   const began = performance.now();
@@ -257,7 +257,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const T = probe.duration, fps = probe.fps, W = probe.W, H = probe.H;
   probe.close();
   const start = o.start ?? 0, end = Math.min(o.end ?? T, T);
-  if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix --start/--end");
+  if (end - start <= 0) throw new EditError("nothing to render (duration is 0 or range empty)", "empty", "add clips or fix start/end");
   const n = Math.round((end - start) * fps);
   if (o.workers !== undefined && !(Number.isInteger(o.workers) && o.workers >= 1)) throw new EditError(`workers must be a whole number >= 1, got ${JSON.stringify(o.workers)}`, "bad_value");
   const workers = o.workers ?? defaultWorkers(n, fps);

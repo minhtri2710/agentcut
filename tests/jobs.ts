@@ -288,9 +288,11 @@ function mcpProc(env: Record<string, string>) {
   const waiting = new Map<number, (m: any) => void>();
   child.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { const m = JSON.parse(l); waiting.get(m.id)?.(m); waiting.delete(m.id); } } });
   child.on("exit", (code, signal) => { exit = { code, signal, at: performance.now() }; });
-  const rpc = (method: string, params: unknown) => new Promise<any>((res) => { const i = ++id; waiting.set(i, res); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method, params }) + "\n"); });
+  /** a request whose id the caller keeps, to cancel it later */
+  const start = (method: string, params: unknown) => { const i = ++id; const p = new Promise<any>((res) => { waiting.set(i, res); }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method, params }) + "\n"); return { id: i, p }; };
+  const rpc = (method: string, params: unknown) => start(method, params).p;
   return {
-    child, pid: child.pid!, rpc, get exit() { return exit; },
+    child, pid: child.pid!, rpc, start, notify: (method: string, params: unknown) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n"), get exit() { return exit; },
     init: async () => { await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "jobs-test", version: "1" } }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n"); },
     call: async (name: string, args: Record<string, unknown> = {}) => JSON.parse((await rpc("tools/call", { name, arguments: args })).result.content.find((c: any) => c.type === "text").text),
   };
@@ -519,6 +521,113 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   if (!diedEarly) process.kill(srv.pid, "SIGTERM");
   await until(() => srv.exit, 10_000);
   check("DM-02: stdout closed by the reader (EPIPE on a reply), then SIGTERM: the server stays up until the stop and exits 143", !diedEarly && (srv.exit as typeof srv.exit)?.code === 143, { diedEarly, exit: srv.exit });
+}
+
+// cancel_job and the client's own cancel: a job stops on request, its part file, temp files and reserved output name are gone when cancel_job replies,
+// and a render call cancelled while it waits stops its job (once it has returned a job_id the job is detached; a cancelled render_status leaves it alone)
+console.log("cancel a render or prepare job");
+{
+  const bigSrc = join(m, "big.mp4"), cmd = join(import.meta.dir, "../src/cli.ts");
+  const mk = async (name: string, src = bigSrc, duration = 5.9) => { const P = join(tmp, name); api.create(P, { preset: "4k" }); await api.apply(P, [{ op: "add_clip", track: "main", src, at: 0, duration }]); return P; };
+  rmSync(uvLog, { force: true });
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "silent", FAKE_UV_LOG: uvLog });
+  await srv.init();
+  const tc = (name: string, args: Record<string, unknown>) => srv.call(name, args).catch((e) => ({ ok: false, error: { code: "call_failed", message: String(e) } })) as Promise<any>;
+  const stray = (d: string) => (existsSync(d) ? readdirSync(d) : []);
+
+  // a default-named render holds a 0-byte file under its final name while it runs
+  {
+    const P = await mk("cancel-default"), R = join(P, "renders");
+    const job = await tc("render", { project: P, wait_seconds: 0 });
+    const sawPart = await until(() => partsIn(R).length > 0, 30_000);
+    const reserved = stray(R).some((f) => !f.includes(".part-") && statSync(join(R, f)).size === 0);
+    const c = await tc("cancel_job", { job_id: job.job_id });
+    check("cancel_job on a running render: status cancelled with code aborted; renders/ is empty and no render temp is left when it replies", sawPart && reserved && c.ok === true && c.status === "cancelled" && c.error?.code === "aborted" && !stray(R).length && !renderTmpLeft(P).length, { sawPart, reserved, c, left: stray(R), tmp: renderTmpLeft(P) });
+    const st = await tc("render_status", { job_id: job.job_id, wait_seconds: 0 });
+    const again = await tc("cancel_job", { job_id: job.job_id });
+    check("a cancelled job stays listed as cancelled, and cancelling it again changes nothing", st.status === "cancelled" && again.status === "cancelled" && again.error?.code === "aborted", { st, again });
+  }
+  // the client cancels the render call while it waits: the job stops with it
+  {
+    const P = await mk("cancel-call"), out = join(tmp, "cancel-call-out", "out.mp4"), D = join(tmp, "cancel-call-out");
+    const call = srv.start("tools/call", { name: "render", arguments: { project: P, output: out, wait_seconds: 50 } });
+    const sawPart = await until(() => partsIn(D).length > 0, 30_000);
+    srv.notify("notifications/cancelled", { requestId: call.id, reason: "test" });
+    const stopped = await until(() => !partsIn(D).length && !renderTmpLeft(P).length, 90_000); // a render that went on would finish and leave its output instead
+    check("a render call cancelled by the client while it waits stops the render: no output appears, no part file, no render temp", sawPart && stopped && !existsSync(out), { sawPart, stopped, out: stray(D), tmp: renderTmpLeft(P) });
+  }
+  // a cancelled render_status call does not stop the job it asks about
+  {
+    const P = await mk("cancel-status"), out = join(tmp, "cancel-status-out", "out.mp4");
+    const job = await tc("render", { project: P, output: out, wait_seconds: 0 });
+    const wait = srv.start("tools/call", { name: "render_status", arguments: { job_id: job.job_id, wait_seconds: 50 } });
+    srv.notify("notifications/cancelled", { requestId: wait.id, reason: "test" });
+    const fin = await tc("render_status", { job_id: job.job_id, wait_seconds: 120 });
+    check("a cancelled render_status leaves the job running: it ends done with its output", job.status === "running" && fin.status === "done" && existsSync(out), { job, fin });
+  }
+  // a job that finished first is returned as it is; an unknown id is not_found
+  {
+    const P = await mk("cancel-done", join(m, "src.mp4"), 2), out = join(tmp, "cancel-done-out", "out.mp4");
+    const r = await tc("render", { project: P, output: out, draft: true, wait_seconds: 120 });
+    const c = await tc("cancel_job", { job_id: r.job_id });
+    const nope = await tc("cancel_job", { job_id: "nope" });
+    check("cancel_job of a done job returns done with its result unchanged, and the output stays", r.status === "done" && c.status === "done" && c.ok === true && JSON.stringify(c.result) === JSON.stringify(r.result) && existsSync(out), { r, c });
+    check("cancel_job of an unknown id: not_found", nope.ok === false && nope.error?.code === "not_found", nope);
+  }
+  // prepare: the helper and its ffmpeg children stop, the part file in the cache is gone
+  {
+    const P = join(tmp, "cancel-prepare"), cacheD = join(P, ".agentcut", "cache");
+    api.create(P, { preset: "720p" });
+    await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
+    rmSync(uvLog, { force: true });
+    const job = await tc("prepare", { project: P, wait_seconds: 0 });
+    const working = await until(() => existsSync(uvLog) && partsIn(cacheD).length > 0, 30_000);
+    const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
+    const c = await tc("cancel_job", { job_id: job.job_id });
+    const gone = await until(() => procs.every((p) => !isAlive(p)), 3000);
+    for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
+    check("cancel_job on a running prepare: cancelled with code aborted, the helper and its children are dead, no part file", working && procs.length >= 3 && c.status === "cancelled" && c.error?.code === "aborted" && gone && !partsIn(cacheD).length, { working, procs, c, parts: partsIn(cacheD) });
+  }
+  process.kill(srv.pid, "SIGTERM");
+  await until(() => srv.exit, 10_000);
+
+  // a CLI render stopped by SIGTERM: one JSON object (code aborted), exit 143, and nothing left in renders/ or the render temp
+  const cli = (P: string, args: string[], env: Record<string, string> = {}) => {
+    const child = spawn(process.execPath, [cmd, "-p", P, ...args], { env: { ...(process.env as Record<string, string>), TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+    let out = "", exit: { code: number | null; signal: string | null } | null = null;
+    child.stdout.on("data", (d) => (out += d));
+    child.on("close", (code, signal) => { exit = { code, signal }; });
+    return { child, pid: child.pid!, get out() { return out; }, get exit() { return exit; } };
+  };
+  {
+    const P = await mk("cancel-cli"), R = join(P, "renders");
+    const r = cli(P, ["render", "--no-sheet", "--quiet"]);
+    const sawPart = await until(() => partsIn(R).length > 0, 30_000);
+    const procs = tree(r.pid);
+    process.kill(r.pid, "SIGTERM");
+    await until(() => r.exit, 20_000);
+    const lines = r.out.trim().split("\n"), j = (() => { try { return lines.length === 1 ? JSON.parse(lines[0]) : null; } catch { return null; } })();
+    check("SIGTERM to a CLI render: one JSON object with code aborted, exit 143, renders/ is empty and no render temp is left", sawPart && j?.ok === false && j.error.code === "aborted" && r.exit?.code === 143 && !stray(R).length && !renderTmpLeft(P).length, { sawPart, out: r.out, exit: r.exit, left: stray(R), tmp: renderTmpLeft(P) });
+    check("  and its render workers are gone", procs.length > 0 && procs.every((p) => !isAlive(p)), procs.filter(isAlive));
+    for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
+  }
+  // a command that does not end after the first signal is reported after a bound; a second signal exits at once with nothing printed
+  {
+    const P = await mk("cancel-cli-stuck");
+    const one = cli(P, ["apply", "-"]); // waits for ops on stdin that never come; nothing shows that the signal handlers are installed, so the process gets time to start
+    await sleep(2000);
+    process.kill(one.pid, "SIGTERM");
+    await until(() => one.exit, 20_000);
+    const j = (() => { try { return JSON.parse(one.out); } catch { return null; } })();
+    check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, exit 143", j?.ok === false && j.error.code === "aborted" && one.exit?.code === 143, { out: one.out, exit: one.exit });
+    const two = cli(P, ["apply", "-"]);
+    await sleep(2000);
+    process.kill(two.pid, "SIGTERM");
+    await sleep(300);
+    try { process.kill(two.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
+    await until(() => two.exit, 20_000);
+    check("a second signal exits at once (128 + its number) and prints nothing", two.exit?.code === 130 && two.out === "", { out: two.out, exit: two.exit });
+  }
 }
 
 // DL-01: the embedded helper script, run by the real python3 (no uv, no packages): a normal exit must stay normal, the stdin stop must work,

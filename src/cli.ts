@@ -70,12 +70,19 @@ function kv(pairs: string[]) {
 
 let pretty = false;
 const call = { cmd: "", t0: performance.now(), ops: undefined as string[] | undefined };
-// exits from the write callback: a pipe may take the bytes after write() returns, and process.exit() would cut them; callers `return emit(...)`
+let printed = false;
+// exits from the write callback: a pipe may take the bytes after write() returns, and process.exit() would cut them; callers `return emit(...)`.
+// One object per run: the first emit wins (a signal's report and the command's own result can race).
 function emit(obj: unknown, code = 0) {
+  if (printed) return;
+  printed = true;
   recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {});
   process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n", () => process.exit(code));
 }
+/** exit status of the signal that stopped the run (128 + n), once one arrived */
+let signalled: number | undefined;
 function fail(e: any) {
+  if (e instanceof EditError && e.code === "aborted" && signalled) return emit({ ok: false, error: e.toJSON() }, signalled);
   if (e instanceof EditError) return emit({ ok: false, error: e.toJSON() }, e.code === "usage" ? 2 : 1);
   if (e instanceof SyntaxError) return emit({ ok: false, error: { code: "bad_json", message: e.message, hint: "ops must be valid JSON" } }, 2);
   return emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
@@ -90,6 +97,23 @@ async function readOps(file: string | undefined, inline: string | undefined) {
     data = JSON.parse(readFileSync(file, "utf8"));
   }
   return Array.isArray(data) ? data : data.ops ?? [data];
+}
+
+const SIGNAL_GRACE_MS = 4000; // render workers stop their children within 1.5 s (proc.ts); the run does not wait for more than this
+/** The first SIGINT/SIGTERM/SIGHUP aborts `stop`, which the long api calls take, so they stop their children and remove their temp files and reserved
+ *  output; the command's own `aborted` error is the one JSON object, exit 128 + n. A command that has not ended after the grace time is reported the same
+ *  way. A second signal exits at once. */
+function onSignals() {
+  const stop = new AbortController();
+  for (const [sig, n] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]] as const) process.on(sig, () => {
+    if (signalled) process.exit(128 + n);
+    signalled = 128 + n;
+    const reason = new EditError(`interrupted by ${sig}`, "aborted", "the command was stopped; its temporary files were removed");
+    stop.abort(reason);
+    setTimeout(() => fail(reason), SIGNAL_GRACE_MS);
+  });
+  process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code !== "EPIPE" && e.code !== "ERR_STREAM_DESTROYED") throw e; });
+  return stop.signal;
 }
 
 /** A numeric flag or argument: a value that is not a number is a usage error (never NaN, which JSON writes as null). */
@@ -114,6 +138,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
   const api = await import("./api.ts");
   const P = f.project;
+  const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
   let res: any;
   try {
     switch (cmd) {
@@ -122,18 +147,18 @@ export async function main(argv = process.argv.slice(2)) {
         res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision") }); break;
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision") }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision") }); break;
-      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision") }); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision") }); break;
+      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), signal }); break;
+      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision"), signal }); break;
+      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision"), signal }); break;
+      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision"), signal }); break;
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision"), signal }); break;
       case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), guides: f.guides }); break;
-      case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale") }); break;
+      case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), signal }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every, "--every"), count: num(f.count, "--count"), cols: num(f.cols, "--cols"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width"), guides: f.guides }); break;
       case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
-      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"], "--min-shot"), maxShot: num(f["max-shot"], "--max-shot"), cps: num(f.cps, "--cps"), black: !f["no-black"] }); break;
-      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width, "--width"), minSilence: num(f["min-silence"], "--min-silence"), out: f.output }); break;
+      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"], "--min-shot"), maxShot: num(f["max-shot"], "--max-shot"), cps: num(f.cps, "--cps"), black: !f["no-black"], signal }); break;
+      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width, "--width"), minSilence: num(f["min-silence"], "--min-silence"), out: f.output, signal }); break;
       case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames, "--frames"), pad: num(f.pad, "--pad"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width") }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
@@ -142,7 +167,7 @@ export async function main(argv = process.argv.slice(2)) {
         let last = 0;
         res = await api.render(P, {
           out: f.output, start: f.start, end: f.end, scale: num(f.scale, "--scale"), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
-          workers: num(f.workers, "--workers"), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles,
+          workers: num(f.workers, "--workers"), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles, signal,
           progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } },
         });
         break;
@@ -158,15 +183,15 @@ export async function main(argv = process.argv.slice(2)) {
       case "history": res = api.history(P); break;
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {
-        res = await api.analyze.beats(pos[0]);
+        res = await api.analyze.beats(pos[0], signal);
         if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` }))); res.markers_added = res.beats.length; }
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }
-      case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold, "--threshold")); break;
-      case "silence": res = await api.analyze.silence(pos[0], num(f["noise-db"], "--noise-db"), num(f["min-silence"], "--min-silence")); break;
-      case "loudness": res = await api.analyze.loudness(pos[0]); break;
-      case "transcribe": res = await api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
+      case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold, "--threshold"), signal); break;
+      case "silence": res = await api.analyze.silence(pos[0], num(f["noise-db"], "--noise-db"), num(f["min-silence"], "--min-silence"), signal); break;
+      case "loudness": res = await api.analyze.loudness(pos[0], signal); break;
+      case "transcribe": res = await api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end, signal); break;
       case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
         let root: string | undefined;
         try { root = api.openProject(P).root; } catch (e: any) { if (e.code !== "no_project" || P || process.env.AGENTCUT_PROJECT) throw e; }
@@ -175,7 +200,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
         let last = 0;
-        res = await api.prepare(P, { allowDownload: f["allow-download"], progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } } });
+        res = await api.prepare(P, { allowDownload: f["allow-download"], signal, progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } } });
         break;
       }
       case "cache": {
@@ -185,7 +210,7 @@ export async function main(argv = process.argv.slice(2)) {
         else return emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
         break;
       }
-      case "tts": res = await api.analyze.tts(pos[0], f.output, f.voice, num(f.rate, "--rate"), f.project); break;
+      case "tts": res = await api.analyze.tts(pos[0], f.output, f.voice, num(f.rate, "--rate"), f.project, signal); break;
       case "voices": res = api.voices(f.lang); break;
       case "fonts": res = await api.fonts(pos[0] ?? ""); break;
       case "schema": res = api.schema(); break;

@@ -44,6 +44,8 @@ const sh = await call("contact_sheet", { count: 6 });
 check("contact_sheet returns image", sh.images.length === 1);
 const rd = await call("render", { draft: true, wait_seconds: 60 });
 check("render draft", rd.json.ok && rd.json.status === "done" && rd.json.result.frames > 0, rd.json);
+const emptyRange = await call("render", { draft: true, start: 3, end: 1, wait_seconds: 60 });
+check("render with start after end: code empty and a hint that names no command-line flag", emptyRange.json.status === "failed" && emptyRange.json.error.code === "empty" && /start/.test(emptyRange.json.error.hint) && !/--/.test(emptyRange.json.error.hint), emptyRange.json);
 const ex = await call("export_timeline", { format: "otio", output: join(tmp, "edit.otio") });
 check("export_timeline otio", ex.json.ok && ex.json.format === "otio" && JSON.parse(readFileSync(join(tmp, "edit.otio"), "utf8")).OTIO_SCHEMA === "Timeline.1", ex.json);
 await call("apply_ops", { ops: [{ op: "add_captions", words: [{ text: "Hi", start: 0.2, end: 0.8 }] }] });

@@ -26,6 +26,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const jobs = new Map<string, Dict>();
   const playing = new Map<string, Dict>(); // play output path -> running job
   let preparing: Dict | null = null; // the running prepare job: a second request joins it
+  const running = new Map<string, { ctl: AbortController; settled: Promise<unknown> }>(); // job id -> its abort and its end, while it runs
   const thumbs = new Map<string, Promise<Buffer>>();
   const cacheDir = join(root, "previews", "ui");
 
@@ -98,13 +99,20 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const gone = new AbortController(); // the response closes once it is sent or the client goes away; only the second finds work still waiting
       res.on("close", () => gone.abort());
       const body = await readJson(req);
-      const rev = body.revision === undefined ? undefined : Number(body.revision);
+      const rev = body.revision; // as sent: checkRevision refuses anything but a whole number >= 0 and echoes it
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, signal: gone.signal }));
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev) });
       if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev) });
       if (path === "/api/sheet") {
         const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
+      }
+      const cancel = /^\/api\/jobs\/([^/]+)\/cancel$/.exec(path);
+      if (cancel) { // a play job shared by several requests is one job: cancelling it stops it for all of them
+        const j = jobs.get(cancel[1]), r = running.get(cancel[1]);
+        if (!j) throw new EditError("no such job", "not_found");
+        if (r) { r.ctl.abort(new EditError("the job was cancelled", "aborted")); await r.settled; }
+        return json(res, 200, { ok: true, ...j });
       }
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
       if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare(body.allow_download === true) });
@@ -125,12 +133,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
     if (out) playing.set(out, job);
     let last = 0;
-    api.render(root, {
-      out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined,
+    const ctl = new AbortController();
+    running.set(id, { ctl, settled: api.render(root, {
+      out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined, signal: ctl.signal,
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
-      .catch((e) => { Object.assign(job, { status: "failed", error: errJson(e) }); broadcast("job", job); })
-      .finally(() => { if (out) playing.delete(out); });
+      .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
+      .finally(() => { if (out) playing.delete(out); running.delete(id); }) });
     return job;
   }
 
@@ -141,10 +150,11 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     jobs.set(job.id, job);
     preparing = job;
     let last = 0;
-    Promise.resolve().then(() => api.prepare(root, { allowDownload, progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
+    const ctl = new AbortController();
+    running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, signal: ctl.signal, progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
-      .catch((e) => Object.assign(job, { status: "failed", error: errJson(e) }))
-      .finally(() => { preparing = null; broadcast("job", job); });
+      .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
+      .finally(() => { preparing = null; running.delete(job.id); broadcast("job", job); }) });
     return job;
   }
 
@@ -187,6 +197,9 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+/** the status of a job that ended in an error: cancelled when its own abort caused it */
+const endedAs = (ctl: AbortController, e: any) => (ctl.signal.aborted && e instanceof EditError && e.code === "aborted" ? "cancelled" : "failed");
+
 function errJson(e: any) {
   if (e instanceof EditError) return e.toJSON();
   return { code: "internal", message: String(e?.message ?? e) };
@@ -195,7 +208,7 @@ function errJson(e: any) {
 async function readJson(req: IncomingMessage): Promise<Dict> {
   const b: Buffer[] = []; let n = 0;
   for await (const c of req) { b.push(c); n += c.length; if (n > 5e6) throw new EditError("request body too large", "bad_request"); }
-  try { const v = JSON.parse(Buffer.concat(b).toString("utf8") || "{}"); if (v && typeof v === "object") return v; } catch { /* below */ }
+  try { const v = JSON.parse(Buffer.concat(b).toString("utf8") || "{}"); if (v && typeof v === "object" && !Array.isArray(v)) return v; } catch { /* below */ }
   throw new EditError("request body must be a JSON object", "bad_json");
 }
 

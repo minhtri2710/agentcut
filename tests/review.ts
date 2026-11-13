@@ -169,7 +169,7 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
     }
     const e = await caught(() => api.info(d));
     check(`${label}: the hint names the value found, the one supported, and that there is no upgrade`,
-      e?.hint?.includes(String(SCHEMA_VERSION)) && (v === undefined ? /missing/.test(e.hint) : e.hint.includes(String(v))) && e.hint.includes("agentcut init <new dir>") && /no upgrade/.test(e.hint) && e.message.startsWith("project.json "), e);
+      e?.hint?.includes(String(SCHEMA_VERSION)) && (v === undefined ? /missing/.test(e.hint) : e.hint.includes(String(v))) && /create a new project/.test(e.hint) && /no upgrade/.test(e.hint) && e.message.startsWith("project.json "), e);
     check(`${label}: project.json is byte-identical, history untouched`, readFileSync(join(d, "project.json"), "utf8") === before && hist() === h0);
   }
   for (const stack of ["undo", "redo"] as const) {
