@@ -134,11 +134,20 @@ try {
   await js(`$("vstat").textContent = ""; seek(total())`);
   check("the playhead at the duration shows the last frame, not an out-of-timeline error", await until("end frame", `$("vstat").textContent.indexOf("ms/frame") > 0`), await js(`$("vstat").textContent`));
 
-  // a timeline with no duration has no frame: the viewer asks for none and shows no error (the page state is swapped for the check and put back)
-  await js(`window.__S = S; S = Object.assign({}, S, { duration: 0 }); $("vstat").textContent = ""; seek(0)`);
-  await sleep(600);
-  check("an empty timeline: the viewer requests no frame and shows no error", (await js(`$("vstat").textContent`)) === "", await js(`$("vstat").textContent`));
-  await js(`S = window.__S`);
+  // a timeline with no duration has no frame: the viewer asks the server for none. One synchronous evaluation, so no page event runs in between: fetch and the page state
+  // are swapped, pump() is called directly (no debounce) and both are put back; it runs only while the viewer is idle (an earlier request in flight would make pump return early)
+  let none: any = null;
+  for (let i = 0; i < 50 && !none?.ran; i++) {
+    none = await js(`(function(){
+      if (busy || want !== null) return { ran: false };
+      var f = window.fetch, n = 0, s = S;
+      window.fetch = function(){ n++; return f.apply(this, arguments); };
+      try { S = Object.assign({}, S, { duration: 0 }); want = 0; pump(); return { ran: true, fetches: n, busy: busy, want: want }; }
+      finally { window.fetch = f; S = s; }
+    })()`);
+    if (!none.ran) await sleep(80);
+  }
+  check("an empty timeline: the viewer sends no frame request", none?.ran === true && none.fetches === 0 && none.busy === false && none.want === null, none);
 
   console.log("keyframes");
   await js(`seek(1)`);
