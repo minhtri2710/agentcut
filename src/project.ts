@@ -3,9 +3,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve, sep } from "node:path";
-import { fontCheck, registerFontDir } from "./fonts.ts";
+import { FONT_FILE, fontCheck, registerFontDir } from "./fonts.ts";
 import {
-  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
+  allClips, clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
 import { checkDir, createExclusive, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
@@ -46,19 +46,34 @@ export function checkRevision(base: number, current: number) {
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
 }
 
-/** A render, export, caption or preview output must not replace the project's own files: project.json, anything under .agentcut/, or a file an asset
- *  points to. Compared by path (the existing parent resolved) and, for an existing output, by file identity (a case-insensitive volume). */
-export function refuseSource(root: string, tl: Pick<Timeline, "assets"> | null, out: string) {
-  const canon = (f: string) => { const a = presolve(f); let d = dirname(a); try { d = realpathSync.native(d); } catch { /* parent not made yet */ } return join(d, basename(a)); };
-  const o = canon(out), st = lstatSync(out, { throwIfNoEntry: false }), hist = canon(join(root, ".agentcut"));
+/** A render, export, caption or preview output must not replace the project's own files: project.json, anything under .agentcut/ or fonts/, a file an
+ *  asset points to, or a font file a text or captions clip names. Compared by path (the deepest existing ancestor resolved, so a path whose parent is not
+ *  made yet is compared in the same space as the protected folders) and, for an existing output, by file identity (a case-insensitive volume). A path
+ *  that cannot be inspected (a link loop, no permission) is refused: unsafe_path. */
+export function refuseSource(root: string, tl: Pick<Timeline, "assets" | "tracks"> | null, out: string) {
+  const unreadable = (f: string, e: any) => new EditError(`cannot inspect ${f}: ${e.code ?? e.message}`, "unsafe_path", "fix the link or the permissions on that path, or choose another output path");
+  const absent = (e: any) => e.code === "ENOENT" || e.code === "ENOTDIR";
+  const stat = (f: string, follow: boolean) => { try { return (follow ? statSync : lstatSync)(f); } catch (e: any) { if (absent(e)) return undefined; throw unreadable(f, e); } };
+  const canon = (f: string) => {
+    const a = presolve(f), rest = [basename(a)];
+    for (let d = dirname(a); ; d = dirname(d)) {
+      try { return join(realpathSync.native(d), ...rest); }
+      catch (e: any) { if (!absent(e)) throw unreadable(d, e); if (dirname(d) === d) return a; rest.unshift(basename(d)); }
+    }
+  };
+  const o = canon(out), st = stat(out, false), hist = canon(join(root, ".agentcut")), fonts = canon(join(root, "fonts"));
+  const inside = (dir: string) => o === dir || o.startsWith(dir + sep);
   const same = (f: string) => {
     if (canon(f) === o) return true;
-    const s = st?.isFile() ? statSync(f, { throwIfNoEntry: false }) : undefined; // follows a symlinked asset to the file it reads
+    const s = st?.isFile() ? stat(f, true) : undefined; // follows a symlinked asset to the file it reads
     return !!s && s.isFile() && s.ino === st!.ino && s.dev === st!.dev;
   };
-  const what = o === hist || o.startsWith(hist + sep) ? "the project's history folder"
+  const fontFiles = [...allClips(tl?.tracks ?? [])].map((c) => c.font).filter((f): f is string => typeof f === "string" && FONT_FILE.test(f)); // resolveFont opens these as given
+  const what = inside(hist) ? "the project's history folder"
+    : inside(fonts) ? "the project's fonts folder"
     : same(join(root, PROJECT_FILE)) ? "project.json"
-    : Object.values(tl?.assets ?? {}).some((a) => a.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses" : null;
+    : Object.values(tl?.assets ?? {}).some((a) => a.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses"
+    : fontFiles.some(same) ? "a font file the timeline uses" : null;
   if (what) throw new EditError(`${out} is ${what}; writing there would replace it`, "output_is_source", "choose another output path, for example renders/<name>.mp4");
 }
 
@@ -186,6 +201,7 @@ export class Project {
         throw e;
       }
       if (aside) try { rmSync(aside, { recursive: true, force: true }); } catch { /* inert: no stack reads this name */ }
+      if (pushed) this.prune("undo");
       return tl.revision;
     });
   }
@@ -219,9 +235,12 @@ export class Project {
     const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
     const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);
     writeFile(file, JSON.stringify({ label, time: Date.now(), timeline: content }), this.root);
-    const e = this.entries(name);
-    for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old);
     return file;
+  }
+  /** Drop the oldest entries above the cap. Called only after the project write has succeeded: a call that fails must leave the history as it was,
+   *  so nothing is pruned before the commit point. A failure here is not a failure of the call (it is already done); the extra entry is harmless and the next call prunes it. */
+  private prune(name: string) {
+    try { const e = this.entries(name); for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old); } catch { /* committed already */ }
   }
   /** A history entry (label + timeline text); an entry that is not valid JSON is a named error, never a raw SyntaxError. */
   private static readEntry(file: string, stack: string): { label: string; timeline: string } {
@@ -253,6 +272,7 @@ export class Project {
         sn.tl.revision = ++rev;
         try { this.write(sn.tl); } catch (err) { rmSync(pushed, { force: true }); throw err; } // the snapshot stays where it was until the project file is written
         unlinkSync(sn.file);
+        this.prune(to);
         cur = readFileSync(this.file, "utf8");
       }
       return { labels: snaps.map((sn) => sn.label), revision: rev };

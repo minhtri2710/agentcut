@@ -257,6 +257,39 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     check("a save whose write fails keeps the history (undo and redo) as it was", c !== "ok" && JSON.stringify(api.history(p)) === JSON.stringify(before) && texts(p) === "", { c, before, after: api.history(p) });
     check("  and redo still replays the undone edit", (await code(() => api.redo(p))) === "ok" && texts(p) === "a", texts(p));
   }
+  // a stack at its cap of 100 entries: a call that fails keeps every entry (the prune comes after the commit point)
+  {
+    const stackText = (p: string, name: string) => { const d = join(p, ".agentcut", "history", name); return readdirSync(d).sort().map((e) => `${e}:${readFileSync(join(d, e), "utf8")}`).join("\n"); };
+    const fill = (p: string, name: string, k: number) => { // copy the newest entry to higher names until the stack holds k
+      const d = join(p, ".agentcut", "history", name), e = readdirSync(d).sort(), last = e[e.length - 1];
+      for (let i = e.length; i < k; i++) copyFileSync(join(d, last), join(d, `${String(9000 + i).padStart(19, "0")}.json`));
+    };
+    const failing = async (p: string, mode: "write" | "rename", f: () => unknown) => {
+      const dir = mode === "write" ? p : join(p, ".agentcut", "history"); // no file can be created in the project dir / redo cannot be renamed
+      chmodSync(dir, 0o500);
+      try { return await code(f); } finally { chmodSync(dir, 0o700); for (const e of readdirSync(join(p, ".agentcut", "history"))) if (e.startsWith(".redo-")) chmodSync(join(p, ".agentcut", "history", e), 0o700); }
+    };
+    for (const mode of ["write", "rename"] as const) {
+      const p = await undone(`cap-save-${mode}`);
+      fill(p, "undo", 100);
+      const before = stackText(p, "undo"), red = stackText(p, "redo");
+      const c = await failing(p, mode, () => api.apply(p, text("b")));
+      check(`a save that fails at the ${mode} at 100 undo entries keeps all 100, unchanged`, c !== "ok" && stackText(p, "undo") === before && stackText(p, "redo") === red && readdirSync(join(p, ".agentcut", "history", "undo")).length === 100, { c, n: readdirSync(join(p, ".agentcut", "history", "undo")).length });
+    }
+    {
+      const p = await undone("cap-save-ok");
+      fill(p, "undo", 100);
+      const c = await code(() => api.apply(p, text("b")));
+      check("a save that succeeds at 100 undo entries prunes back to 100", c === "ok" && readdirSync(join(p, ".agentcut", "history", "undo")).length === 100, c);
+    }
+    {
+      const p = await undone("cap-undo");
+      fill(p, "redo", 100);
+      const before = stackText(p, "redo"), undo = stackText(p, "undo");
+      const c = await failing(p, "write", () => api.undo(p, 1));
+      check("an undo that fails at the write with 100 redo entries keeps all 100, unchanged", c !== "ok" && stackText(p, "redo") === before && stackText(p, "undo") === undo, { c, n: readdirSync(join(p, ".agentcut", "history", "redo")).length });
+    }
+  }
 }
 
 // ------------------------------------------------------------------ sidecars of a render
@@ -344,6 +377,54 @@ console.log("render/export/caption/preview output at project.json, .agentcut/ or
   for (const [name, f] of rows) check(`${name}: output_is_source`, (await code(f)) === "output_is_source" && sums() === before, name);
   const up = join(p, "PROJECT.JSON");
   if (S.lexists(up)) check("project.json under another letter case: output_is_source", (await code(() => api.exportTimeline(p, { format: "fcpxml", out: up }))) === "output_is_source" && sums() === before);
+}
+
+console.log("output paths through another spelling of the root, font files, and assets that cannot be inspected");
+{
+  const entry = (root: string) => join(root, ".agentcut", "history", "undo", "0000000000000000099.json");
+  const via = async (root: string, label: string) => {
+    const c = await code(() => api.render(root, { out: join(entry(root), "x.mp4"), draft: true, sheet: false }));
+    check(`${label}: output below a missing history entry is output_is_source, nothing is created`, c === "output_is_source" && !S.lexists(entry(root)), { c });
+  };
+  // a symlinked root
+  {
+    const p = await project("spelling"), lnk = join(tmp, "spelling-link");
+    symlinkSync(p, lnk);
+    await via(lnk, "root through a symlink");
+  }
+  // plain /tmp is /private/tmp on macOS
+  if (realpathSync("/tmp") !== "/tmp") {
+    const root = mkdtempSync("/tmp/agentcut-writes-");
+    try { api.create(root, { preset: "reels" }); await api.apply(root, [{ op: "add_clip", track: "main", src: join(m, "av.mp4") }]); await via(root, "root under /tmp"); } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+  // font files: a path a clip names, and anything in <root>/fonts/
+  {
+    const p = await project("fonts"), font = join(tmp, "Brand.ttf"), inFonts = join(p, "fonts", "Own.ttf");
+    writeFileSync(font, "font bytes");
+    mkdirSync(join(p, "fonts"), { recursive: true });
+    writeFileSync(inFonts, "font bytes");
+    await api.apply(p, [{ op: "add_clip", track: "text", type: "text", text: "hi", duration: 1, font }]);
+    const rows: [string, () => unknown, string][] = [
+      ["render over a font file a clip uses", () => api.render(p, { out: font, draft: true, sheet: false }), font],
+      ["export_timeline over a font file a clip uses", () => api.exportTimeline(p, { format: "fcpxml", out: font }), font],
+      ["render over a file in fonts/", () => api.render(p, { out: inFonts, draft: true, sheet: false }), inFonts],
+      ["export_captions into fonts/", () => api.exportCaptions(p, { out: join(p, "fonts", "new.srt"), format: "srt" }), join(p, "fonts", "new.srt")],
+    ];
+    for (const [name, f, file] of rows) check(`${name}: output_is_source, the font is unchanged`, (await code(f)) === "output_is_source" && (!regular(file) || readFileSync(file, "utf8") === "font bytes"), name);
+  }
+  // an asset path that cannot be inspected is a named refusal
+  {
+    const p = await project("loop"), a = join(tmp, "loop-a"), b = join(tmp, "loop-b");
+    symlinkSync(b, a); symlinkSync(a, b);
+    const tl = JSON.parse(readFileSync(join(p, "project.json"), "utf8"));
+    tl.assets.looped = { kind: "video", path: a };
+    writeFileSync(join(p, "project.json"), JSON.stringify(tl, null, 2));
+    const out = join(p, "renders", "l.wav"); // an existing output is compared with each asset by file identity
+    mkdirSync(join(p, "renders"), { recursive: true });
+    writeFileSync(out, "keep");
+    const c = await code(() => api.analyze.tts("hi", out, undefined, undefined, p)); // tts checks the output before any validation
+    check("an asset that is a symlink loop: the output is refused with unsafe_path, not a raw error", c === "unsafe_path" && readFileSync(out, "utf8") === "keep", c);
+  }
 }
 
 // ------------------------------------------------------------------ feedback store and font cache (outside the project tree)

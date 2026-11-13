@@ -50,6 +50,9 @@ export function registerFontDir(dir: string) {
   refreshFonts();
 }
 
+/** a font spec that names a file rather than a family */
+export const FONT_FILE = /\.(ttf|otf|ttc|woff2?)$/i;
+
 export interface FontSpec { family: string; weight: number; italic: boolean; stack: string[] }
 
 const cache = new Map<string, FontSpec>();
@@ -62,7 +65,7 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
   if (!spec) {
     family = DEFAULTS.map((d) => fam.get(d.toLowerCase())).find(Boolean) ?? [...fam.values()][0];
     w = 700;
-  } else if (/\.(ttf|otf|ttc|woff2?)$/i.test(spec) && existsSync(spec)) {
+  } else if (FONT_FILE.test(spec) && existsSync(spec)) {
     // the path hash keeps two files with the same name apart
     const alias = `agentcut-${basename(spec).replace(/\W+/g, "-")}-${createHash("sha1").update(resolve(spec)).digest("hex").slice(0, 8)}`;
     if (canvasLoaded()) { if (!fam.has(alias.toLowerCase())) { C().GlobalFonts.registerFromPath(spec, alias); refreshFonts(); } } else unregistered = true;
