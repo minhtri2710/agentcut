@@ -367,6 +367,15 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   let big: any;
   try { await buildAudio(await zigProject("ramp-zig600", 600), bigOut); } catch (e: any) { big = e; }
   check("a 600 s zigzag ramp (over every platform's bound) is refused as too_complex, names the clip, and leaves no mix file behind", big?.code === "too_complex" && /vid1/.test(big.message) && /speed keyframes/.test(big.hint) && !existsSync(bigOut) && !existsSync(bigOut + ".raw.wav"), big && { code: big.code, message: big.message.slice(0, 200) });
+  // no ramped clip: the same refusal names no clip and points at shorter renders. win32's 30000-char command bound is the one an unramped mix reaches with the fewest clips (400 clips of one short path)
+  const plainOut = join(tmp, "many-plain.wav"), plainTl = (await zigProject("many-plain", 1)) as any, onlyClip = plainTl.tracks.find((t: any) => t.id === "main").clips[0];
+  delete onlyClip.keyframes;
+  plainTl.tracks.find((t: any) => t.id === "main").clips = Array.from({ length: 400 }, (_, i) => ({ ...onlyClip, id: `p${i}`, start: i * 0.01, duration: 0.01 }));
+  const platformWas = Object.getOwnPropertyDescriptor(process, "platform")!;
+  let plain: any;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try { await buildAudio(plainTl, plainOut); } catch (e: any) { plain = e; } finally { Object.defineProperty(process, "platform", platformWas); }
+  check("an unramped mix over the platform bound is refused as too_complex with no clip named, the shorter-renders hint, and no mix file behind", plain?.code === "too_complex" && !/speed-ramped|p\d/.test(plain.message) && /shorter renders/.test(plain.hint) && !/speed keyframes/.test(plain.hint) && !existsSync(plainOut) && !existsSync(plainOut + ".raw.wav"), plain && { code: plain.code, message: plain.message.slice(0, 200), hint: plain.hint });
   const muted = await rmix("ramp-muted", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].muted = true; });
   check("muted: a ramped clip is silent", onsets(muted).length === 0, onsets(muted));
 }

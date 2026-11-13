@@ -5,20 +5,31 @@ import { type Dict, EditError, parseTime } from "./model.ts";
 // ------------------------------------------------------------------ captions
 export interface CWord { text: string; start: number; end: number }
 
+const VTT_ENTITY: Record<string, string> = { amp: "&", lt: "<", gt: ">", nbsp: "\u00a0", lrm: "\u200e", rlm: "\u200f" };
+
 export function parseSrt(path: string): CWord[] {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
   catch (e: any) { throw new EditError(`cannot read subtitle file ${path}: ${e.code === "ENOENT" ? "not found" : e.code ?? e.message}`, e.code === "ENOENT" ? "not_found" : "bad_media", `check the srt path: ${path}`); }
   const raw = text.replace(/^﻿/, "").replace(/\r/g, "");
+  // the WEBVTT header (not the extension) marks WebVTT: its cue text is markup with character references, SubRip has none
+  const vtt = /^WEBVTT(?![^ \t\n])/.test(raw);
   const ts = /(\d+:)?(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+:)?(\d+):(\d+)[,.](\d+)/;
   const sec = (h: string | undefined, m: string, s: string, ms: string) => (h ? parseInt(h) : 0) * 3600 + +m * 60 + +s + +ms / 10 ** ms.length;
   const out: CWord[] = [];
   for (const b of raw.split(/\n\s*\n/)) {
     const lines = b.trim().split("\n").filter((l) => l.trim());
+    if (vtt && /^(NOTE|STYLE|REGION)(?![^ \t])/.test(lines[0] ?? "")) continue; // comment, style and region blocks hold no cue
     const i = lines.findIndex((l) => ts.test(l));
     if (i < 0) continue;
     const g = ts.exec(lines[i])!;
-    const text = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").replace(/--\u2060>/g, "-->").trim(); // formatCues writes the cue arrow as --U+2060>
+    let text = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").replace(/--\u2060>/g, "-->"); // formatCues writes the cue arrow as --U+2060>
+    if (vtt) text = text.replace(/&(?:(amp|lt|gt|nbsp|lrm|rlm)|#(\d+)|#x([\da-f]+));/gi, (m, name, dec, hex) => {
+      if (name) return VTT_ENTITY[name.toLowerCase()];
+      const cp = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : m;
+    });
+    text = text.trim();
     if (text) out.push({ text, start: sec(g[1], g[2], g[3], g[4]), end: sec(g[5], g[6], g[7], g[8]) });
   }
   return out;

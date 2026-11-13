@@ -115,9 +115,9 @@ export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(read
  *  `unsafe_helper_dir`. Windows has no uid or mode bits: there only the real-directory checks apply. */
 function helperRoot(): string {
   const base = userCache(), uid = process.getuid?.(), posix = uid !== undefined;
-  const refuse = (dir: string, why: string) => new EditError(`the vision helper's run dir is refused: ${dir} ${why}`, "unsafe_helper_dir",
+  const refuse = (dir: string, why: string, fix: string) => new EditError(`the vision helper's run dir is refused: ${dir} ${why}`, "unsafe_helper_dir",
     "nothing was written or run; the helper runs only under a directory in the user cache (~/.cache/agentcut, or AGENTCUT_CACHE) that only you can write; "
-    + `if ${dir} is yours, make it private with: chmod go-w ${dir}`);
+    + `if ${dir} is yours, make it private with: ${fix} ${dir}`);
   let top = base; // the deepest part of the cache path that exists; what is missing below it is created here, under a checked parent
   while (!lstatSync(top, { throwIfNoEntry: false })) top = dirname(top);
   const real = realpathSync(top);
@@ -127,13 +127,13 @@ function helperRoot(): string {
     const st = lstatSync(d), isHome = d === home;
     // the home dir may be group-writable (user-private groups); no other directory on the way may be group- or world-writable
     const loose = posix && (st.mode & (isHome ? 0o002 : 0o022)) !== 0;
-    if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(d, "is not a directory that only you can write");
+    if (!st.isDirectory() || (posix && st.uid !== uid && st.uid !== 0) || loose) throw refuse(d, "is not a directory that only you can write", "chmod go-w");
     if (d === dirname(d)) break;
   }
   const root = join(real, relative(top, base), "helper-runs");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const st = lstatSync(root);
-  if (!st.isDirectory() || (posix && (st.uid !== uid || (st.mode & 0o777) !== 0o700))) throw refuse(root, "is not a private directory (owner you, mode 0700)");
+  if (!st.isDirectory() || (posix && (st.uid !== uid || (st.mode & 0o777) !== 0o700))) throw refuse(root, "is not a private directory (owner you, mode 0700)", "chmod 700");
   return root;
 }
 

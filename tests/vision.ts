@@ -244,6 +244,8 @@ await fails(Y, [{ op: "auto_reframe", id: "vid1" }], "nothing_to_do", "16:9 in 1
 await fails(P, [{ op: "auto_reframe", id: "vid1", axis: "z" }], "bad_value", "bad axis -> bad_value");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "hflip" }] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with an hflip filter -> unsupported");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["vflip"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a vflip filter (string form) -> unsupported");
+await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "stabilize" }] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter -> unsupported");
+await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["stabilize"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter (string form) -> unsupported");
 
 // ---------------------------------------------------------------- track_to
 console.log("track_to");
@@ -497,6 +499,18 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       mkdirSync(join(cMode, "helper-runs"));
       chmod(join(cMode, "helper-runs"), 0o755);
       await refused("helper-runs has mode 0755", cMode, [join(cMode, "helper-runs")]);
+      // the hint for a helper-runs dir that is not exactly 0700 is the chmod that fixes it: applying it makes the next run pass
+      const cFix = fresh("c-fix"), fixDir = join(cFix, "helper-runs");
+      mkdirSync(fixDir);
+      chmod(fixDir, 0o755);
+      seedFaceIn(cFix);
+      const keepCache = process.env.AGENTCUT_CACHE;
+      let fixErr: any;
+      process.env.AGENTCUT_CACHE = cFix;
+      try { await api.analyze.subject(join(m, "rb.mp4"), 5); } catch (e) { fixErr = e; } finally { process.env.AGENTCUT_CACHE = keepCache; }
+      const fixCmd = /with: (chmod \S+) (.+)$/.exec(fixErr?.hint ?? "");
+      check("helper-runs with mode 0755: the hint is chmod 700 on it, and running it makes the next run pass", fixErr?.code === "unsafe_helper_dir" && fixCmd?.[1] === "chmod 700" && fixCmd[2] === join(realpathSync(cFix), "helper-runs")
+        && spawnSync("chmod", ["700", fixCmd[2]]).status === 0 && await subject(cFix) === "ok", { hint: fixErr?.hint });
       const open = fresh("open");
       mkdirSync(join(open, "sub"));
       chmod(open, 0o777);

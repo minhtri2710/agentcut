@@ -219,6 +219,17 @@ console.log("caption sources and subtitle export");
   const rt = join(tmp, "arrow.srt");
   writeFileSync(rt, formatCues([{ start: 0, end: 1, text: "a --> b", clip: "c1" }], "srt"));
   check("an exported srt reads back to the same words (the cue arrow in text included)", parseSrt(rt).map((w) => w.text).join("|") === "a --> b", parseSrt(rt));
+  // a .vtt reads back to the characters it was written from: entities are decoded (after the tags are stripped), SubRip text is not, and comment, style and region blocks are no cues
+  const vttPath = join(tmp, "round.vtt");
+  writeFileSync(vttPath, formatCues([{ start: 0, end: 1, text: "a & <b> c &amp; --> d", clip: "c1" }], "vtt"));
+  check("an exported vtt reads back to the same words (&, <, > and the cue arrow in text included)", parseSrt(vttPath).map((w) => w.text).join("|") === "a & <b> c &amp; --> d", parseSrt(vttPath));
+  writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:01.000\n<i>x</i> &lt;i&gt; &nbsp;&#65;&#x42;&#0;&#1114112;&lrm;\n");
+  check("vtt: tags are stripped before character references are decoded (named and numeric; an invalid number stays)", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["x <i> \u00a0AB&#0;&#1114112;\u200e"]), parseSrt(vttPath));
+  writeFileSync(vttPath, "WEBVTT\n\nNOTE 00:00.000 --> 00:01.000 a comment\nmore comment\n\nSTYLE\n::cue { color: red }\n\nREGION\nid:r\n\nNOTE\nsee 1\n\n00:02.000 --> 00:03.000\nreal\n");
+  check("vtt: NOTE, STYLE and REGION blocks are not cues", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["real"]), parseSrt(vttPath));
+  const srtEnt = join(tmp, "ent.srt");
+  writeFileSync(srtEnt, "1\n00:00:00,000 --> 00:00:01,000\na &amp; b &lt;\n");
+  check("srt: character references stay literal text", parseSrt(srtEnt).map((w) => w.text).join("|") === "a &amp; b &lt;", parseSrt(srtEnt));
   // a soft subtitle stream keeps the caption's characters: webvtt stores entities (stream copy), mov_text and SubRip store plain text
   const { embedSubtitles } = await import("../src/subtitles.ts");
   const payload = (f: string) => spawnSync("ffmpeg", ["-v", "error", "-i", f, "-map", "0:s", "-c:s", "copy", "-f", "data", "-"], { encoding: "buffer" }).stdout;

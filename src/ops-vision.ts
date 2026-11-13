@@ -43,11 +43,12 @@ function plainTarget(c: Clip) {
   if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see agentcut info)");
   const busy = ["rotation", "scale_x", "scale_y"].filter((k) => c[k] !== undefined && Number(c[k]) !== (k === "rotation" ? 0 : 1));
   const kf = Object.keys(c.keyframes ?? {}).filter((k) => !["focus_x", "focus_y", "opacity", "volume", "blur"].includes(k));
-  // a mirrored picture is drawn before the focus crop, so the analysed coordinates would not match it
-  const flips = (c.filters ?? []).map((f: any) => (typeof f === "string" ? f : f?.type)).filter((t: string) => t === "hflip" || t === "vflip").map((t: string) => "filter " + t);
+  // a mirrored or deshaken picture is drawn before the focus crop, so the analysed coordinates (of the unshifted source) would not match it;
+  // the other filters (eq, lut, blur, sharpen, grayscale, vignette, denoise, chromakey) change pixel values only
+  const flips = (c.filters ?? []).map((f: any) => (typeof f === "string" ? f : f?.type)).filter((t: string) => t === "hflip" || t === "vflip" || t === "stabilize").map((t: string) => "filter " + t);
   if (c.position || busy.length || kf.length || flips.length || c.motion || c.reverse || c.fit === "none")
     throw new EditError(`'${c.id}' is moved/animated (${[c.position && "position", ...busy, ...kf.map((k) => "keyframes." + k), ...flips, c.motion && "motion", c.reverse && "reverse", c.fit === "none" && "fit none"].filter(Boolean).join(", ")})`,
-      "unsupported", "vision ops map source pixels through a static layout (fit cover/contain/blur, size, x/y, scale, focus); remove the animation or flip, run the op, then re-add it");
+      "unsupported", "vision ops map source pixels through a static layout (fit cover/contain/blur, size, x/y, scale, focus); remove the animation, flip or stabilize, run the op, then re-add it");
 }
 
 /** source fraction (0..1 of the full source frame) -> canvas px, at clip-local time t */
