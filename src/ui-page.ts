@@ -248,7 +248,6 @@ function clipEl(tr, c, i) {
     e.appendChild(k);
   });
   e.addEventListener("mousedown", function (ev) {
-    if (document.activeElement.classList.contains("clip")) { document.activeElement.blur(); mouseFocus = true; } // a mouse selection ends keyboard focus on a clip, so the page's keys work again
     if (ev.shiftKey) { ev.preventDefault(); if (!picked.length && sel && sel !== c.id) picked.push(sel); var i = picked.indexOf(c.id); if (i >= 0) picked.splice(i, 1); else picked.push(c.id); select(sel); return; }
     if (ev.target.dataset.t !== undefined) return kfDrag(ev, c, +ev.target.dataset.t);
     if (ev.detail === 2 && c.type === "compound") { ev.preventDefault(); openPath(path.concat([c.id])); return; } // the first click redraws, so no dblclick

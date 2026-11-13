@@ -366,6 +366,10 @@ try {
   check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `S.revision === ${load().revision} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
   check("  and it is still keyboard focus: Right walks on to the next clip", await js(`document.activeElement.dataset.id`) === order[2], await js(`document.activeElement.dataset.id`));
+  const tt = await js(`t`);
+  await click(`[data-id="${order[0]}"]`);
+  await press("ArrowRight", "ArrowRight", 39);
+  check("after a mouse click on another top-level clip, Right steps the playhead instead of walking from the keyboard-focused clip", Math.abs(await js(`t`) - (tt + 1 / 30)) < 1e-6 && await js(`sel`) === order[0], await js(`[t, ${tt}, sel, document.activeElement.className]`));
   // a nested clip takes focus from a mouse click (its mousedown does not cancel the default): the page's keys keep working there
   await click(`[data-id="cs2"]`, { count: 2 });
   await until("nested view", `V.nested && !!document.querySelector('[data-id="rb"]')`);

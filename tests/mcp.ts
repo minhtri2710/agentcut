@@ -198,6 +198,13 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   check("a failed job's error is logged once: the render call that waited on it, two render_status polls and two cancel_job calls add no second event", before.length === 1 && ofJob().length === 1, ofJob());
   const sumJob = (await call5("feedback_summary", {})).json.errors.find((x: any) => x.code === bad5.json.error.code);
   check("  that one event is a job event, not a second render call, and the feedback summary counts the error once", ofJob()[0].type === "job" && ofJob()[0].cmd === "render" && sumJob?.count === 1 && sumJob.cmds.join() === "render", { ev: ofJob(), sumJob });
+  // a failed job is an error event for the summary's error rate and naming misses, though it is not a second call
+  const calls0 = events().filter((e) => e.type === "call"), fails0 = calls0.filter((e) => !e.ok).length + events().filter((e) => e.type === "job").length;
+  const rate0 = (await call5("feedback_summary", {})).json.error_rate;
+  check("the feedback summary's error rate counts the failed job (not only failed calls)", fails0 > calls0.filter((e) => !e.ok).length && rate0 === +(fails0 / calls0.length).toFixed(3), { rate0, fails0, calls: calls0.length });
+  writeFileSync(join(tmp, "home", "feedback", "events.jsonl"), events().concat([1, 2].map(() => ({ t: new Date().toISOString(), type: "job", src: "mcp", cmd: "render", ms: 5, ok: false, code: "bad_font", msg: "font 'Nopefont' not found", misses: [{ kind: "font", guess: "Nopefont", suggestion: "Arial" }] }))).map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const sumMiss = (await call5("feedback_summary", {})).json;
+  check("  and a failed job's guessed names feed the naming misses", sumMiss.naming_misses.some((m: any) => m.guess === "Nopefont" && m.count === 2), sumMiss.naming_misses);
   const ghost = await call5("render_status", { job_id: "no-such-job", wait_seconds: 0 }), ghostCancel = await call5("cancel_job", { job_id: "no-such-job" });
   const ghostCalls = readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === "call" && e.ok === false && e.code === "not_found" && /no job no-such-job/.test(e.msg));
   check("an unknown job id is still an error and is logged each time", ghost.json.error.code === "not_found" && ghostCancel.json.error.code === "not_found" && ghostCalls.map((e) => e.cmd).sort().join() === "cancel_job,render_status", ghostCalls);

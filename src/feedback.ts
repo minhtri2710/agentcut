@@ -166,10 +166,11 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const limit = o.limit ?? 10;
   const ev = readEvents(o.sinceDays);
   const calls = ev.filter((e) => e.type === "call");
+  const jobs = ev.filter((e) => e.type === "job"); // a failed background job: an error event for the tables below, not a second call
   const renders = ev.filter((e) => e.type === "render");
   // naming misses -> alias candidates
   const missMap = new Map<string, { kind: string; guess: string; suggestion?: string; count: number }>();
-  for (const e of calls) for (const m of e.misses ?? []) {
+  for (const e of [...calls, ...jobs]) for (const m of e.misses ?? []) {
     const k = `${m.kind}|${m.guess}`;
     const cur = missMap.get(k) ?? { ...m, count: 0 };
     cur.count++; cur.suggestion ??= m.suggestion;
@@ -178,7 +179,7 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const misses = [...missMap.values()].sort((a, b) => b.count - a.count).slice(0, limit);
   // errors by code
   const errMap = new Map<string, { code: string; count: number; example: string; cmds: Set<string> }>();
-  for (const e of ev.filter((x) => (x.type === "call" || x.type === "job") && !x.ok)) {
+  for (const e of [...calls.filter((x) => !x.ok), ...jobs]) {
     const cur = errMap.get(e.code) ?? { code: e.code, count: 0, example: e.msg, cmds: new Set<string>() };
     cur.count++; cur.cmds.add(e.cmd);
     errMap.set(e.code, cur);
@@ -187,7 +188,7 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const internal = errors.filter((x) => x.code === "internal");
   // rejected batches: which validation messages agents keep hitting
   const rejMap = new Map<string, number>();
-  for (const e of calls) for (const i of e.issues ?? []) rejMap.set(i, (rejMap.get(i) ?? 0) + 1);
+  for (const e of [...calls, ...jobs]) for (const i of e.issues ?? []) rejMap.set(i, (rejMap.get(i) ?? 0) + 1);
   const rejections = [...rejMap].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([issue, count]) => ({ issue, count }));
   // latency per command
   const byCmd = new Map<string, number[]>();
@@ -214,7 +215,7 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   rec.sort((a, b) => b.priority - a.priority);
   return {
     store: dir(), telemetry: telemetryOn(), events: ev.length, calls: calls.length,
-    error_rate: calls.length ? +(calls.filter((e) => !e.ok).length / calls.length).toFixed(3) : 0,
+    error_rate: calls.length ? +((calls.filter((e) => !e.ok).length + jobs.length) / calls.length).toFixed(3) : 0, // every failed job has its starting call in the denominator
     recommendations: rec.slice(0, limit * 2).map(({ text, evidence }) => ({ text, evidence })),
     open_notes: notes.slice(0, limit).map(({ id, kind, severity, title, count, area, suggestion }) => ({ id, kind, severity, title, count, area, suggestion })),
     naming_misses: misses, errors, rejections, latency: latency.slice(0, limit), render: renderPerf,
