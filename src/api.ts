@@ -161,6 +161,15 @@ function inRange(name: string, v: unknown, lo: number, hi = Infinity, o: { whole
   if (!ok) throw new M.EditError(`${name} must be ${o.whole ? "a whole number" : "a number"} ${hi === Infinity ? `${o.open ? "above" : "of at least"} ${lo}` : `from ${lo} to ${hi}`}, got ${JSON.stringify(v)}`, "bad_value");
 }
 
+/** One output image (a sheet, a motion page) must stay a size the canvas can hold: bounded as a whole, not by its tile alone. */
+const MAX_IMAGE_SIDE = 16384, MAX_IMAGE_MEGAPIXELS = 100;
+function imageSize(what: string, w: number, h: number, hint: string) {
+  if (w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE || w * h > MAX_IMAGE_MEGAPIXELS * 1e6)
+    throw new M.EditError(`${what} would be ${w}x${h} px; at most ${MAX_IMAGE_SIDE} on a side and ${MAX_IMAGE_MEGAPIXELS} megapixels`, "bad_value", hint);
+}
+/** The height of a tile `tw` wide on this timeline's canvas. */
+const tileHeight = (tl: M.Timeline, tw: number) => Math.round((tw * tl.settings.height) / tl.settings.width);
+
 /** A timeline with no duration has no frame to show. */
 const emptyTimeline = (what: string) => new M.EditError(`the timeline is empty: ${what}`, "empty", "add clips first");
 
@@ -228,9 +237,11 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
     if (bad.length) throw outsideTimeline(tl, T, `times ${bad.join(", ")} ${bad.length > 1 ? "are" : "is"} outside the timeline (the duration is ${+T.toFixed(3)}s)`, "each time");
   } else if (o.every) { ts = []; for (let t = 0; t < T && ts.length < 64; t += o.every) ts.push(+t.toFixed(3)); }
   else { const n = Math.max(1, o.count ?? 12); ts = Array.from({ length: n }, (_, i) => +((T * (i + 0.5)) / n).toFixed(3)); }
+  const tw = o.tileWidth ?? 320, cols = Math.min(o.cols ?? 4, ts.length), gap = 4; // the same layout contactSheet draws
+  imageSize("the sheet", cols * tw + (cols - 1) * gap, Math.ceil(ts.length / cols) * (tileHeight(tl, tw) + gap) - gap, "lower tile_width, or use fewer frames or a wider cols");
   const { contactSheet } = await renderMod();
   const out = outPath(p, o.out, `previews/sheet-${Date.now()}.jpg`);
-  const png = await contactSheet(drawable(p, tl), p.root, ts, o.cols ?? 4, o.tileWidth ?? 320, !!o.guides, stillFmt(out));
+  const png = await contactSheet(drawable(p, tl), p.root, ts, o.cols ?? 4, tw, !!o.guides, stillFmt(out));
   writeOut(p, out, png);
   return { image: out, times: ts, duration: T };
 }
@@ -266,6 +277,8 @@ export async function motion(project: string | undefined, o: { start?: number | 
   const windows = o.start !== undefined || o.end !== undefined
     ? [{ label: "range", start: M.parseTime(o.start ?? 0), end: o.end !== undefined ? M.parseTime(o.end) : M.totalDuration(at) }]
     : transitionWindows(at, o.pad ?? 0.15);
+  const n = o.frames ?? 10, tw = o.tileWidth ?? Math.max(80, Math.min(320, Math.floor(1800 / n))); // the same layout motionStrips draws: 6 rows to an image
+  imageSize("a motion image", n * tw + (n - 1) * 3, Math.min(6, windows.length) * (20 + tileHeight(at, tw) + 3), "lower tile_width or frames");
   const r = await motionStrips(at, p.root, windows, { frames: o.frames, tileWidth: o.tileWidth });
   const base = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : join(p.root, `previews/motion-${Date.now()}.jpg`);
   const images = r.images.map((buf, i) => {
@@ -298,7 +311,7 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
-  const ext = o.out ? o.out.slice(o.out.lastIndexOf(".")).toLowerCase() : "";
+  const ext = o.out ? extname(o.out).toLowerCase() : "";
   // an explicit format is the caller's word whatever the file is called; the extension alone must name one (no silent fcpxml)
   const format = (o.format ?? (o.out ? INTERCHANGE[ext] : "fcpxml") ?? "").toLowerCase();
   if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${o.format ?? (ext || o.out)}'`, "bad_format", "use .fcpxml (Final Cut Pro) or .otio (DaVinci Resolve / Premiere / Avid), or pass format fcpxml|otio with the output");
@@ -363,7 +376,7 @@ export async function render(project: string | undefined, o: {
     const { QUALITY } = await import("./encode.ts");
     if (!own(QUALITY, o.quality)) throw new M.EditError(`unknown quality '${o.quality}'`, "bad_value", `quality is one of ${Object.keys(QUALITY).join(", ")}`);
   }
-  if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
+  if (o.out && INTERCHANGE[extname(o.out).toLowerCase()]) return exportTimeline(project, { out: o.out });
   if (o.out && SUB.SUB_FORMATS[extname(o.out).toLowerCase()]) return exportCaptions(project, { out: o.out });
   if (o.out && /^\.(png|webp)$/.test(extname(o.out).toLowerCase())) return renderStill(project, isAbsolute(o.out) ? o.out : presolve(o.out), o);
   const p = openProject(project);

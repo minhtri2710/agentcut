@@ -7,18 +7,21 @@
 // A refused path is an EditError "unsafe_path"; there is no fallback to a plain write. Lock and project files are created with a hard
 // link, so a volume without hard links is refused with "unsupported_fs".
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, copyFileSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, copyFileSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { EditError } from "./model.ts";
 
 const refuse = (what: string) => new EditError(`${what} is not a plain directory or file here (symlink or link?)`, "unsafe_path",
   "AgentCut never writes through symlinks or hard links: replace it with a real directory (or file)");
-/** A folder the user cannot write to, as a named error naming it; null for any other error. */
+/** A folder the user cannot write to, as a named error naming it: the nearest one that exists (a recursive mkdir reports the path it was
+ *  asked for, not the component that was refused); null for any other error. */
 export function notWritable(e: { code?: string; path?: string }, folder?: string): EditError | null {
   if (!["EACCES", "EPERM", "EROFS"].includes(e.code ?? "")) return null;
-  const dir = folder ?? (e.path ? dirname(e.path) : "the folder");
-  return new EditError(`cannot write in ${dir} (${e.code})`, "not_writable", `make ${dir} writable, or choose another folder`, e.path);
+  let dir = folder ?? (e.path ? dirname(e.path) : ".");
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+  return new EditError(`cannot write in ${dir} (${e.code})`, "not_writable",
+    `make ${dir} writable, or choose another folder${e.code === "EPERM" ? "; EPERM can also mean the file is in use by another program or the folder is protected by the system" : ""}`, e.path);
 }
 const outside = (rel: string) => rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
 

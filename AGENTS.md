@@ -49,7 +49,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac,
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.
-   Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio; the extension names the format, or pass format=fcpxml|otio):
+   Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio). The output extension names the format; MCP format=fcpxml|otio or CLI --format fcpxml|otio sets it for any file name; with no output the file is FCPXML:
    cuts, in-points, crossfades,
    constant speed, volume, titles and connected clips carry over (media linked by absolute path). The result has two lists of
    {id, type, reason}: skipped = not exported (effects, looks, keyframes, masks, captions, shapes, vision requests not yet prepared

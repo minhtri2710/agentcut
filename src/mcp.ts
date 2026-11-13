@@ -192,7 +192,7 @@ export function buildServer() {
   }, wrap((a) => (a.action === "prune" ? api.cache.prune(proj(a.project), { maxMb: a.max_mb, olderThan: a.older_than }) : api.cache.info(proj(a.project)))));
   s.registerTool("export_timeline", {
     description: "Hand the edit to a human editor: write an FCPXML (Final Cut Pro) or OTIO (OpenTimelineIO: DaVinci Resolve, Premiere, Avid) project that references the original media. Two lists of {id, type, reason}: skipped (not exported) and approximated (exported in another form).",
-    inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).optional(), output: z.string().optional() },
+    inputSchema: { project: P, format: z.enum(["fcpxml", "otio"]).optional().describe("default: from the output extension (.fcpxml, .otio); fcpxml when there is no output"), output: z.string().optional() },
   }, wrap((a) => api.exportTimeline(proj(a.project), { format: a.format, out: a.output })));
   s.registerTool("export_captions", {
     description: "Write the captions clips as a subtitle file (.srt or .vtt) in timeline time, same pages as the burned-in captions. For a soft subtitle track inside the video use render subtitles=true.",

@@ -596,6 +596,10 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const r = readOnly(outDir, () => run(["render", "-o", join(outDir, "o.mp4"), "--draft", "--no-sheet"], o));
   refused("render -o into a folder without write access", r, outDir);
   check("  and the render stops before encoding (no encoder error)", r.error?.code !== "encode_failed" && readdirSync(outDir).length === 0, r);
+  const deep = readOnly(outDir, () => run(["render", "-o", join(outDir, "new", "sub", "o.mp4"), "--draft", "--no-sheet"], o));
+  check("render -o into folders that do not exist below one without write access: the hint names the one that exists", deep.error?.code === "not_writable" && deep.error.hint.includes(basename(outDir)) && !deep.error.hint.includes("/new"), deep);
+  const eperm = S.notWritable({ code: "EPERM", path: join(tmp, "x", "f") }), eacces = S.notWritable({ code: "EACCES", path: join(tmp, "x", "f") });
+  check("EPERM also says the file may be in use or the folder protected; EACCES does not", /in use/.test(eperm?.hint ?? "") && !/in use/.test(eacces?.hint ?? ""), { eperm, eacces });
 }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });

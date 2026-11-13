@@ -56,6 +56,8 @@ const exNoFormat = await call("export_timeline", { output: join(tmp, "inferred.o
 check("export_timeline infers otio from the extension when no format is given", exNoFormat.json.ok && exNoFormat.json.format === "otio" && JSON.parse(readFileSync(join(tmp, "inferred.otio"), "utf8")).OTIO_SCHEMA === "Timeline.1", exNoFormat.json);
 const exTxt = await call("export_timeline", { output: join(tmp, "edit.txt") });
 check("export_timeline to an unknown extension with no format is refused and writes nothing", exTxt.json.error?.code === "bad_format" && !existsSync(join(tmp, "edit.txt")), exTxt.json);
+const exBare = await call("export_timeline", { output: join(tmp, "bare-name") });
+check("export_timeline to a file with no extension is refused naming the file, not its last letter", exBare.json.error?.code === "bad_format" && exBare.json.error.message.includes("bare-name") && !existsSync(join(tmp, "bare-name")), exBare.json);
 await call("apply_ops", { ops: [{ op: "add_captions", words: [{ text: "Hi", start: 0.2, end: 0.8 }] }] });
 const ec = await call("export_captions", { output: join(tmp, "subs.vtt") });
 check("export_captions vtt", ec.json.ok && ec.json.cues === 1 && readFileSync(join(tmp, "subs.vtt"), "utf8").startsWith("WEBVTT"), ec.json);

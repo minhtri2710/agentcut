@@ -140,6 +140,11 @@ console.log("frame time and caption file format");
     const e = cli([...args], { ok: false, cwd: P }).error;
     check(`${args.join(" ")}: bad_value naming ${field}`, e?.code === "bad_value" && e.message.startsWith(`${field} `), e);
   }
+  // the size of one output image is bounded as a whole: every argument is in range here, but the product is not
+  for (const [what, args] of [["sheet", ["sheet", "--count", 64, "--cols", 64, "--tile-width", 4096]], ["motion", ["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 4096]]] as const) {
+    const e = cli([...args], { ok: false, cwd: P }).error;
+    check(`${what} whose image would be too large is bad_value naming its size, nothing rendered`, e?.code === "bad_value" && /megapixels/.test(e.message) && /tile_width/.test(e.hint), e);
+  }
   check("the ends of the ranges work: motion frames 2 and 24", cli(["motion", "--start", 0, "--end", 1, "--frames", 2, "--tile-width", 40], C).images.length === 1 && cli(["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 40], C).strips[0].times.length === 24);
 }
 
