@@ -112,7 +112,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
         catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < (until ||= Date.now() + 10_000)) continue; throw e; }
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
-      return { ok: true, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
+      return { ok: true, project: p.root, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
     } catch (e) {
       if (!(e instanceof AN.NeedsAnalysis)) throw e;
       await AN.compute(p, e.req, o.signal);

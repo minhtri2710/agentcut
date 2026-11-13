@@ -174,6 +174,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
   apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
   Without a revision the batch is applied to the latest state. A replace_timeline whose timeline carries a "revision" other than the project's is refused the same way.
+  Every apply result names the project root it changed ("project"), a dry run included.
 
 ## Help improve AgentCut (please do this)
 Whenever AgentCut slows you down - a name you guessed that does not exist, a feature you had to work around, something

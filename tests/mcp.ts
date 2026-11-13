@@ -27,12 +27,15 @@ const callOn = (c: Client) => async (name: string, args: Record<string, unknown>
 };
 const call = callOn(client);
 check("guide", String((await call("guide")).json).includes("Mental model"));
-check("create_project", (await call("create_project", { path: join(tmp, "p"), preset: "youtube" })).json.ok);
+const created = await call("create_project", { path: join(tmp, "p"), preset: "youtube" });
+check("create_project", created.json.ok);
 const ap = await call("apply_ops", { ops: [
   { op: "add_sequence", track: "main", items: [join(tmp, "a.mp4"), join(tmp, "p.png")], defaults: { duration: 2, transition: "crossfade", motion: "ken_burns" } },
   { op: "add_clip", track: "text", text: "Hello MCP", attach_to: "main#0", offset: 0.2, match_duration: true, preset: "neon" },
 ] });
 check("apply_ops", ap.json.ok && ap.json.results[0].added.length === 2, ap.json);
+const dry = await call("apply_ops", { ops: [{ op: "add_marker", t: 1 }], dry_run: true });
+check("apply_ops names the project root, dry run included", ap.json.project === created.json.project && dry.json.dry_run && dry.json.project === created.json.project, { ap: ap.json.project, dry: dry.json.project, created: created.json.project });
 const bad = await call("apply_ops", { ops: [{ op: "add_clip", text: "x", enter: "fly_in" }] });
 check("bad batch rejected + hint", !bad.json.ok && bad.json.error.code === "validation_failed", bad.json);
 const fr = await call("preview_frame", { t: 1 });
