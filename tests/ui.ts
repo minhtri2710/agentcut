@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -303,6 +303,45 @@ if (process.platform !== "win32") {
   const e: any = await startUi(dir).then(() => null, (x) => x);
   hold.close();
   check("default port in use -> port_in_use naming 4810", e?.code === "port_in_use" && /4810/.test(e.message) && !/undefined/.test(e.message), e && { code: e.code, message: e.message });
+}
+
+// a listen that fails leaves nothing running: the child must end by itself (a live project.json watcher would keep it alive)
+{
+  const script = join(tmp, "listen-fails.ts");
+  writeFileSync(script, `import { createServer } from "node:net";
+const { startUi } = await import(${JSON.stringify(resolve(import.meta.dir, "../src/ui.ts"))});
+const hold = createServer();
+await new Promise<void>((ok) => hold.listen(0, "127.0.0.1", ok));
+const e: any = await startUi(process.argv[2], { port: (hold.address() as any).port }).then(() => null, (x: any) => x);
+console.log(e?.code ?? "started");
+hold.close();
+`);
+  const r = spawnSync(process.execPath, [script, dir], { encoding: "utf8", timeout: 20000, killSignal: "SIGKILL" });
+  check("a listen that fails rejects with port_in_use and leaves no watcher behind (the process ends by itself)", r.status === 0 && r.stdout.trim() === "port_in_use", { status: r.status, signal: r.signal, out: r.stdout, err: r.stderr.slice(0, 200) });
+}
+
+// a client that goes away mid-stream: the server keeps serving and the file descriptor of the read stream is released
+{
+  mkdirSync(join(dir, "renders"), { recursive: true });
+  writeFileSync(join(dir, "renders", "big.bin"), Buffer.alloc(64 * 1024 * 1024)); // far more than the socket buffers hold, so the stream is mid-read when the client leaves
+  const fds = () => readdirSync(existsSync("/proc/self/fd") ? "/proc/self/fd" : "/dev/fd").length;
+  await raw("/api/state"); // warm-up: lazily opened descriptors are in the baseline
+  const settle = async () => { let n = fds(); for (let same = 0; same < 4;) { await new Promise((ok) => setTimeout(ok, 100)); const m = fds(); same = m === n ? same + 1 : 0; n = m; } return n; }; // until the count holds still
+  const abort = () => new Promise<void>((ok, fail) => {
+    const rq = request({ host: "127.0.0.1", port: ui.port, path: "/files/renders/big.bin", headers: { host: `127.0.0.1:${ui.port}`, range: "bytes=0-" } }, (res) => {
+      res.once("data", () => { rq.destroy(); ok(); });
+    });
+    rq.on("error", () => {});
+    rq.end();
+    setTimeout(() => fail(new Error("no bytes")), 10000).unref();
+  });
+  const base = await settle(), N = 20;
+  for (let i = 0; i < N; i++) await abort();
+  const after = await settle();
+  const again = await jget("/api/state");
+  check(`${N} clients that leave mid-stream: their file descriptors are released`, after - base < N / 2, { base, after });
+  check("  and the server keeps serving", again.status === 200 && again.j.ok === true, again.status);
+  rmSync(join(dir, "renders", "big.bin"));
 }
 
 ctl.abort();

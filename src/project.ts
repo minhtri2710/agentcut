@@ -231,9 +231,10 @@ export class Project {
       if (!e.isFile()) throw new EditError(`.agentcut/history/${name}/${e.name} is not a regular file (symlink?)`, "unsafe_path", "AgentCut never reads or deletes history through symlinks: remove it");
       out.push(join(d, e.name));
     }
-    return out.sort();
+    const n = (f: string) => BigInt(basename(f, ".json"));
+    return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : 0));
   }
-  /** The next name is one more than the highest in the stack (19 digits, so names sort as text): the order never depends on the clock. Returns the new path. */
+  /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path. */
   private push(name: string, content: string, label: string) {
     const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
     const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);

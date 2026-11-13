@@ -292,6 +292,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   }
 }
 
+// ------------------------------------------------------------------ history order
+console.log("history entries order by number: a planted name with more digits than the writer's does not reorder undo");
+{
+  const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
+  const texts = (p: string) => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text).join();
+  const p = await project("history-order"), undo = join(p, ".agentcut", "history", "undo");
+  await api.apply(p, text("a"));
+  copyFileSync(join(undo, readdirSync(undo).sort()[0]), join(undo, "9999999999999999999.json")); // the writer's next name has 20 digits
+  await api.apply(p, text("b"));
+  api.undo(p, 1);
+  check("after a save, undo restores the state just before it", texts(p) === "a", texts(p));
+}
+
 // ------------------------------------------------------------------ sidecars of a render
 console.log("sidecar names next to a render that are links: the targets are unchanged");
 {

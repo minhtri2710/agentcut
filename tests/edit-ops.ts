@@ -1165,6 +1165,18 @@ console.log("untrusted field names and pending requests");
     try { await one({ op: "update_clip", id: "vid1", set: bad }, dry); } catch (e: any) { code = e.code; }
     check(`update_clip with a __proto__ field${dry ? " (dry run)" : ""}: refused as bad_key, Object.prototype unchanged`, code === "bad_key" && polluted(), { code });
   }
+  // the same refusal at the op input, for every op that copies input keys onto an object
+  const protoRows: [string, any][] = [
+    ["add_clip with an own __proto__ in the clip", JSON.parse('{"op":"add_clip","track":"overlay","type":"text","text":"x","duration":1,"__proto__":{"evil":1}}')],
+    ["set_keyframes with prop __proto__", { op: "set_keyframes", id: "vid1", prop: "__proto__", keyframes: [[0, 1]] }],
+    ["replace_timeline with an own __proto__ at the top", JSON.parse('{"op":"replace_timeline","timeline":' + JSON.stringify({ ...tl(), revision: undefined }).replace(/^\{/, '{"__proto__":{"evil":1},') + "}")],
+  ];
+  for (const [name, o] of protoRows) {
+    const before = JSON.stringify(tl());
+    let c = "ok";
+    try { await one(o); } catch (e: any) { c = e.code; }
+    check(`${name}: refused as bad_key, project and Object.prototype unchanged`, c === "bad_key" && polluted() && JSON.stringify(tl()) === before, { c });
+  }
   const { setDotted, deepMerge } = await import("../src/model.ts");
   let code2 = "ok";
   try { deepMerge({ a: {} }, JSON.parse('{"a": {"constructor": {"prototype": {"evil": 1}}}}')); } catch (e: any) { code2 = e.code; }

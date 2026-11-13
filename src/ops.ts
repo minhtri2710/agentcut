@@ -6,7 +6,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, EFFECTS, findClip, findTrack, linkedAudio, newId,
+  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, plainKey, refuseProtoKeys, EFFECTS, findClip, findTrack, linkedAudio, newId,
   normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
@@ -540,6 +540,7 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
   { id: "clip id", prop: "x|y|scale|scale_x|scale_y|rotation|opacity|blur|volume|speed", keyframes: "list or null" }, (p, tl, a) => {
     const [, , c] = findClip(tl, a.id);
     const k = (c.keyframes ??= {});
+    plainKey(a.prop);
     if (a.keyframes == null) delete k[a.prop]; else k[a.prop] = a.keyframes;
     if (!Object.keys(k).length) delete c.keyframes;
     return { id: c.id, keyframes: c.keyframes ?? {} };
@@ -775,6 +776,7 @@ export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict
     if (!def) { const s = suggest(o.op, Object.keys(OPS)); throw new EditError(`ops[${i}]: unknown op '${o.op}'`, "unknown_op", `${s ? `did you mean '${s}'? ` : ""}ops: ${Object.keys(OPS).join(", ")}`, `ops[${i}]`); }
     try {
       const { op: _n, ...args } = o;
+      refuseProtoKeys(args);
       results.push({ op: o.op, ...def.fn(p, work, args) });
     } catch (e: any) {
       if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${o.op}) ${e.path}` : `ops[${i}](${o.op})`; throw e; }

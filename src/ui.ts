@@ -34,13 +34,6 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const broadcast = (event: string, data: unknown) => { for (const c of clients) send(c, event, data); };
   const fileUrl = (abs: string) => "/files/" + relative(root, abs).split(sep).map(encodeURIComponent).join("/");
 
-  // live sync: stat-poll survives the atomic rename used by Project.save (fs.watch on the file does not)
-  let lastRev = -1;
-  watchFile(p.file, { interval: 150 }, () => {
-    try { const s = state(); if (s.revision !== lastRev) { lastRev = s.revision; broadcast("state", s); } }
-    catch (e: any) { broadcast("error", errJson(e)); }
-  });
-
   const server = createServer(async (req, res) => {
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("x-frame-options", "DENY");
@@ -170,6 +163,12 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   await new Promise<void>((ok, fail) => {
     server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${o.port ?? 4810} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
     server.listen(o.port ?? 4810, "127.0.0.1", ok);
+  });
+  // live sync: stat-poll survives the atomic rename used by Project.save (fs.watch on the file does not). Started only once the port is held, so a failed listen leaves nothing running.
+  let lastRev = -1;
+  watchFile(p.file, { interval: 150 }, () => {
+    try { const s = state(); if (s.revision !== lastRev) { lastRev = s.revision; broadcast("state", s); } }
+    catch (e: any) { broadcast("error", errJson(e)); }
   });
   server.on("close", () => unwatchFile(p.file));
   const port = (server.address() as any).port;
