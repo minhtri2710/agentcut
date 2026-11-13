@@ -112,7 +112,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
         const j = jobs.get(cancel[1]), r = running.get(cancel[1]);
         if (!j) throw new EditError("no such job", "not_found");
         if (r) { r.ctl.abort(new EditError("the job was cancelled", "aborted")); await r.settled; }
-        return json(res, 200, { ok: true, ...j });
+        return json(res, 200, { ok: j.status !== "failed", ...j }); // the same rule as MCP cancel_job: only a job that ended failed is not ok
       }
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
       if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare(body.allow_download === true) });
@@ -129,7 +129,8 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); return job; }
-    if (out && playing.has(out)) { jobs.delete(id); return playing.get(out)!; } // same range already rendering: share that job
+    const live = out ? playing.get(out) : undefined;
+    if (live && !running.get(live.id)?.ctl.signal.aborted) { jobs.delete(id); return live; } // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
     if (out) playing.set(out, job);
     let last = 0;
@@ -139,7 +140,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
       .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
-      .finally(() => { if (out) playing.delete(out); running.delete(id); }) });
+      .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); }) });
     return job;
   }
 

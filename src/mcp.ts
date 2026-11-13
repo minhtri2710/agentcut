@@ -140,12 +140,13 @@ export function buildServer() {
     return { content: [text({ ok, ...pub, elapsed: +(((j.finished ?? Date.now()) - j.started) / 1000).toFixed(1), ...(j.status === "running" ? { hint: `still running; call render_status(job_id='${j.job_id}') or cancel_job` } : {}) })], ...(ok ? {} : { isError: true }) };
   };
   const cancelled = new WeakSet<object>(); // jobs stopped on purpose (cancel_job, the starting call); a shutdown abort is a failure with code aborted
-  const cancel = (j: any, why: string) => { if (j.status === "running") { cancelled.add(j); j.ctl.abort(new EditError(why, "aborted")); } };
+  // once shutdown has begun it has aborted every job itself and they fail, whoever asks
+  const cancel = (j: any, why: string) => { if (j.status === "running" && !stopCalls.signal.aborted) { cancelled.add(j); j.ctl.abort(new EditError(why, "aborted")); } };
   /** `callSignal`: the call that started the job; it stops the job only while this call waits, and a job that is still running when the wait ends runs on without it */
   const waitJob = async (id: string, secs: number, callSignal?: AbortSignal) => {
     const j = jobs.get(id);
     if (!j) return noJob(id);
-    const stop = () => { if (!stopCalls.signal.aborted) cancel(j, "the call that started the job was cancelled"); }; // a shutdown aborts the calls too, but it fails the job (shutdown())
+    const stop = () => cancel(j, "the call that started the job was cancelled");
     if (callSignal?.aborted) stop(); else callSignal?.addEventListener("abort", stop, { once: true });
     try {
       const until = Date.now() + secs * 1000;

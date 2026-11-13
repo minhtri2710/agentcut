@@ -466,19 +466,20 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 for (const shift of [-30, -2, 0, 2, 30]) {
   const proj = join(tmp, `proj-late${shift}`);
   rmSync(uvLog, { force: true });
-  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog });
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: the cancel_job calls below end failed
   await srv.init();
   await srv.call("create_project", { path: proj, preset: "720p" });
   await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
-  await srv.call("prepare", { wait_seconds: 0 });
+  const first = await srv.call("prepare", { wait_seconds: 0 });
   const working = await until(() => existsSync(uvLog), 30_000);
   const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
   const t0 = performance.now();
   let late: any = null, lateMs: number | null = null;
   const send = () => srv.call("prepare", { wait_seconds: 5 }).then((r) => { late = r; lateMs = Math.round(performance.now() - t0); });
-  let sent: Promise<void>;
+  let sent: Promise<void>, cancelled: any = null;
   if (shift < 0) { sent = send(); await sleep(-shift); process.kill(srv.pid, "SIGTERM"); }
   else { process.kill(srv.pid, "SIGTERM"); await sleep(shift); sent = send(); }
+  if (shift >= 2) srv.call("cancel_job", { job_id: first.job_id }).then((r) => { cancelled = r; }); // inside the shutdown window, on a job the shutdown has aborted
   await until(() => srv.exit, 10_000);
   await Promise.race([sent, sleep(200)]); // a reply written before the exit is already in the pipe
   const exitMs = srv.exit ? Math.round(srv.exit.at - t0) : null;
@@ -486,6 +487,7 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
   check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
     working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
+  if (shift >= 2) check(`DL-02: a cancel_job ${shift} ms after SIGTERM leaves the job failed with code aborted, not cancelled`, cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { cancelled });
 }
 
 // DM-01: a reply bigger than the pipe buffer, read late by a client that is paused when SIGTERM arrives, still arrives whole (the shutdown waits
@@ -701,19 +703,39 @@ while :; do sleep 0.05; done
   // a command that does not end after the first signal is reported after a bound; a second signal exits at once with nothing printed
   {
     const P = await mk("cancel-cli-stuck");
-    const one = cli(P, ["apply", "-"]); // waits for ops on stdin that never come; nothing shows that the signal handlers are installed, so the process gets time to start
-    await sleep(2000);
+    // The ops never come (stdin stays open). More than a pipe holds is written to stdin, and the write callback fires only once the child has read it:
+    // readOps does that after onSignals(), so the handlers are installed by then.
+    const started = (c: ReturnType<typeof cli>) => new Promise<void>((r) => c.child.stdin!.write(" ".repeat(1 << 20), () => r()));
+    const one = cli(P, ["apply", "-"]);
+    await started(one);
     process.kill(one.pid, "SIGTERM");
     await until(() => one.exit, 20_000);
     const j = (() => { try { return JSON.parse(one.out); } catch { return null; } })();
     check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, the process ends by SIGTERM", j?.ok === false && j.error.code === "aborted" && one.exit?.signal === "SIGTERM" && one.exit.code === null, { out: one.out, exit: one.exit });
     const two = cli(P, ["apply", "-"]);
-    await sleep(2000);
+    await started(two);
     process.kill(two.pid, "SIGTERM");
-    await sleep(300);
+    await sleep(300); // nothing shows that the first signal was handled; two SIGTERMs sent together can merge into one
     try { process.kill(two.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
     await until(() => two.exit, 20_000);
     check("a second signal ends the process at once, by that signal, and prints nothing", two.exit?.signal === "SIGINT" && two.exit.code === null && two.out === "", { out: two.out, exit: two.exit });
+  }
+  // a second signal while the result is still being written: the object is not cut (the reader is slow, and takes the rest within the grace time)
+  {
+    const P = join(tmp, "cancel-cli-big");
+    api.create(P, { preset: "720p" });
+    await api.apply(P, [{ op: "add_clip", track: "text", text: "x".repeat(8_000_000), at: 0, duration: 1 }]); // the result is far more than a pipe holds
+    const r = cli(P, ["info", "--json"]);
+    let first = false;
+    r.child.stdout.once("data", () => { r.child.stdout.pause(); first = true; }); // the first chunk shows the write is in flight; the rest waits in the pipe
+    await until(() => first, 60_000);
+    process.kill(r.pid, "SIGTERM");
+    await sleep(300);
+    try { process.kill(r.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
+    r.child.stdout.resume();
+    await until(() => r.exit, 20_000);
+    const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
+    check("a second signal while a large result is being written: stdout is still one JSON object", first && j !== null && r.out.length > 65_536, { first, bytes: r.out.length, tail: r.out.slice(-80), exit: r.exit });
   }
 }
 

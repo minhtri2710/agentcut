@@ -337,6 +337,54 @@ console.log("cancel");
     ue.server.closeAllConnections?.();
     await new Promise((ok) => ue.server.close(ok));
   }
+  // a play asked for again after its job was cancelled, while the old job is still stopping, is a new job (the old one reads cancelled and must not be joined);
+  // a stand-in ffmpeg holds the render and takes 1 s to stop after its TERM, which it records
+  {
+    const bin = join(tmp, "stub-play-bin"), started = join(tmp, "stub-play.started"), termed = join(tmp, "stub-play.termed"), tone = join(media, "with-audio.mp4");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\ncase "$*" in *-version*|*-hide_banner*) exec ${JSON.stringify(spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim())} "$@" ;; esac\n: > ${JSON.stringify(started)}\ntrap ': > ${termed}; kill $! 2>/dev/null; sleep 1; exit 1' TERM\nsleep 60 &\nwait $!\n`);
+    chmodSync(join(bin, "ffmpeg"), 0o755);
+    const dirP = join(tmp, "cancel-play-again");
+    api.create(dirP, { preset: "720p" });
+    await api.apply(dirP, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
+    const up = await startUi(dirP, { port: 0 });
+    const was = process.env.PATH;
+    process.env.PATH = `${bin}:${was}`;
+    const play = async () => (await jget("/api/render", { method: "POST", port: up.port, body: { play: true, start: 0, end: 1 } })).j;
+    const status = async (id: string) => (await jget(`/api/jobs/${id}`, { port: up.port })).j.status;
+    try {
+      const old = await play();
+      const held = await poll(() => existsSync(started));
+      const cancelling = jget(`/api/jobs/${old.id}/cancel`, { method: "POST", port: up.port, body: {} }); // answers once the old job has stopped
+      const stopping = await poll(() => existsSync(termed));
+      const again = await play(), stillRunning = await status(old.id);
+      const joined = await play();
+      await cancelling;
+      const fourth = await play();
+      check("a play asked for again while its cancelled job is still stopping is a new job; later requests join the new job, also after the old one has ended",
+        held && stopping && stillRunning === "running" && again.id !== old.id && joined.id === again.id && fourth.id === again.id, { held, stopping, stillRunning, old: old.id, again: again.id, joined: joined.id, fourth: fourth.id });
+      await jget(`/api/jobs/${again.id}/cancel`, { method: "POST", port: up.port, body: {} });
+    } finally { process.env.PATH = was; }
+    up.server.closeAllConnections?.();
+    await new Promise((ok) => up.server.close(ok));
+  }
+  // a cancel of a job that already failed replies ok:false (HTTP 200), as MCP cancel_job does
+  {
+    const gone = join(media, "gone.mp4"), dirF = join(tmp, "cancel-failed");
+    writeFileSync(gone, readFileSync(join(media, "a.mp4")));
+    api.create(dirF, { preset: "720p" });
+    await api.apply(dirF, [{ op: "add_clip", track: "main", src: gone, at: 0, duration: 1 }]);
+    rmSync(gone);
+    const uf = await startUi(dirF, { port: 0 });
+    const f = (await jget("/api/render", { method: "POST", port: uf.port, body: {} })).j;
+    const state = async () => (await jget(`/api/jobs/${f.id}`, { port: uf.port })).j.status;
+    for (let i = 0; i < 200 && (await state()) === "running"; i++) await Bun.sleep(50);
+    const failed = (await state()) === "failed";
+    const fc = await jget(`/api/jobs/${f.id}/cancel`, { method: "POST", port: uf.port, body: {} });
+    check("UI cancel of a job that already failed: HTTP 200, ok false, status failed", failed && fc.status === 200 && fc.j.ok === false && fc.j.status === "failed", { failed, fc });
+    uf.server.closeAllConnections?.();
+    await new Promise((ok) => uf.server.close(ok));
+  }
   const UNDO = join(dirK, ".agentcut", "history", "undo"), undoCount = () => (existsSync(UNDO) ? readdirSync(UNDO).length : 0);
   const [rev0, undo0] = [api.openProject(dirK).load().revision, undoCount()];
   const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } });

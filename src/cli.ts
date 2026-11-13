@@ -111,14 +111,18 @@ async function readOps(file: string | undefined, inline: string | undefined) {
   return Array.isArray(data) ? data : data.ops ?? [data];
 }
 
+const SIGNAL_WRITE_MS = 500; // how long a second signal lets a result in flight finish
 const SIGNAL_GRACE_MS = 4000; // render workers stop their children within 1.5 s (proc.ts); the run does not wait for more than this
 /** The first SIGINT/SIGTERM aborts `stop`, which the long api calls take, so they stop their children and remove their temp files and reserved
  *  output. Whatever the command then does, the one JSON object is its `aborted` error (a command that finishes cleanly still prints its result), and
- *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal leaves at once. */
+ *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal leaves at once, except while the result is being written: then it waits for the write, at most SIGNAL_WRITE_MS. */
 function onSignals() {
   const stop = new AbortController();
   for (const [sig, n] of SIGNALS) process.on(sig, () => {
-    if (signalled) return leave(128 + n, sig);
+    if (signalled) { // the result is already being written: leave when the write is done (emit's callback), or after SIGNAL_WRITE_MS; a reader that has stopped reading still gets a cut object then, and SIGKILL cannot be helped
+      if (printed) return void setTimeout(() => leave(128 + n, sig), SIGNAL_WRITE_MS);
+      return leave(128 + n, sig);
+    }
     const reason = new EditError(`interrupted by ${sig}`, "aborted", "the command was stopped; its temporary files were removed");
     signalled = { sig, n, reason };
     stop.abort(reason);
