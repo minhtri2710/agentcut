@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
+  normAnim, parseTime, PRESETS, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import { checkRevision, type Project } from "./project.ts";
@@ -206,6 +206,10 @@ function inferType(tl: Timeline, a: Dict): string {
   throw new EditError("add_clip needs src, asset, text, words, srt, shape, color or gradient to infer the clip type", "missing_type", `or pass type: ${CLIP_TYPES.join("|")}`);
 }
 
+/** Captions stay up this long after their last word. */
+const CAPTION_HOLD = 0.3;
+const holdEnd = (words: { end: number }[]) => round6(words[words.length - 1].end + CAPTION_HOLD);
+
 function defaultDuration(tl: Timeline, c: Clip): number {
   if (c.type === "video" || c.type === "audio" || c.type === "lottie") {
     const a = tl.assets[c.asset];
@@ -214,7 +218,7 @@ function defaultDuration(tl: Timeline, c: Clip): number {
     const avail = Number(a.duration ?? 3) - parseTime(c.in ?? 0);
     return round6(Math.max(0.1, avail / (Number(c.speed ?? 1) || 1)));
   }
-  if (c.type === "captions") { const w = captionWords(c); return w.length ? round6(w[w.length - 1].end + 0.3) : 3; }
+  if (c.type === "captions") { const w = captionWords(c); return w.length ? holdEnd(w) : 3; }
   if (c.type === "gap") return 1;
   return 3;
 }
@@ -657,27 +661,48 @@ op("clear_markers", "Remove markers (all, or those whose label contains match)."
 });
 
 // ---------------------------------------------------------------- captions / voice / beats / templates
-function addCaptions(p: Project, tl: Timeline, a: Dict) {
+/** `cap`: the longest the clip may last (seconds from its start), so that the hold after the last word never outlives the sound. */
+function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number) {
   refuseUnknown(Object.keys(a), [...new Set([...argNames("add_captions"), ...Object.keys(fieldsFor("captions"))])].filter((k) => k !== "start"), "add_captions", { stored: true, list: "arguments: words, srt, transcribe, preset, track, at, style, or a text style field (see timeline_schema)" });
   a = { ...a };
   if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
+  let unmapped: string[] = [];
   if (a.transcribe) {
     const s = a.transcribe;
     const path = own(tl.assets, s) ? p.abs(tl.assets[s].path) : absPath(s);
-    a.words = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range }).words;
+    const asset = own(tl.assets, s) ? s : Object.keys(tl.assets).find((k) => presolve(p.abs(tl.assets[k].path)) === presolve(path));
+    const played = asset ? (resolve(tl), playedCut(tl, asset)) : undefined;
+    const follows = !!played && (played.cut.length > 0 || played.unmapped.length > 0);
+    if (follows && a.at !== undefined) throw new EditError(`'${asset}' plays on the timeline, so its captions follow the clips and 'at' has no meaning`, "bad_arg", "drop 'at'; to put captions elsewhere give words, or move the clips");
+    const t = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range });
+    if (follows) {
+      a.words = wordsOnTimeline(t.words, played.cut);
+      unmapped = played.unmapped;
+      if (!a.words.length) throw new EditError(`no transcribed word falls in a clip that plays '${asset}'`, "no_words",
+        unmapped.length ? `${unmapped.join(", ")} play it with a speed ramp, reverse, freeze, loop or inside a compound, which is not mapped` : "the clips that play it cover none of the speech; check in and duration");
+      a.timed_for = { asset, cut: played.cut };
+      cap = Math.max(...played.cut.map(([cin, out, start, speed]) => start + (out - cin) / speed));
+    } else {
+      a.words = t.words;
+      const end = Number((asset ? tl.assets[asset].duration : undefined) ?? probe(path).duration);
+      if (end > 0) cap = a.transcribe_range ? Math.min(a.transcribe_range[1], end) : end;
+    }
     delete a.transcribe; delete a.language; delete a.transcribe_range;
   }
   if (!(a.words?.length || a.srt)) throw new EditError("add_captions needs words, srt or transcribe", "missing_input");
   if (a.srt) a.srt = absPath(a.srt);
-  const sample = captionWords(a).map((w) => w.text).join(" ");
+  const words = captionWords(a);
+  if (cap !== undefined && a.duration === undefined && words.length) a.duration = round6(Math.min(holdEnd(words), cap));
+  const sample = words.map((w) => w.text).join(" ");
   const presetName = a.preset ?? "tiktok";
   delete a.preset;
   const given = Object.fromEntries(Object.entries(a).filter(([k]) => !["op", "track", "at"].includes(k)));
   const spec = { ...expandPreset("captions", presetName, sample, given), track: a.track ?? "captions", at: a.at ?? 0, type: "captions" };
-  return addClip(p, tl, spec);
+  const res = addClip(p, tl, spec);
+  return unmapped.length ? { ...res, unmapped } : res;
 }
 op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by transcribing media (needs whisper). preset: tiktok (default), bold_pop, pill, clean, reveal, neon.",
-  { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id", transcribe_range: "[start, end] seconds of the media to transcribe: only the speech; whisper may invent text over a long music-only stretch and times words early after a music lead-in", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0)", style: "karaoke|word|reveal|line", "...": "text style overrides" },
+  { words: "[{text,start,end}]", srt: "path", transcribe: "media path or asset id; where clips on the timeline play that media the words follow them (see GUIDE), else they are media seconds from at", transcribe_range: "[start, end] seconds of the media to transcribe: only the speech; a silent start is skipped, but whisper may invent text over a long music-only stretch and times words early after a music lead-in", language: "for transcribe", preset: "caption preset", track: "captions", at: "start (0); refused with a transcribe of media that plays on the timeline", style: "karaoke|word|reveal|line", "...": "text style overrides" },
   addCaptions);
 
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices (CLI: agentcut voices)), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
@@ -701,7 +726,9 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
         return scriptToWords(s.text, inside.length ? inside : [[s.start, s.end]]);
       });
       const extra = typeof a.captions === "object" ? a.captions : typeof a.captions === "string" ? { preset: a.captions } : {};
-      result.captions = addCaptions(p, tl, { words, at, ...extra });
+      resolve(tl);
+      const [, , voice] = findClip(tl, clip.id);
+      result.captions = addCaptions(p, tl, { words, at, ...extra, timed_for: { asset: voice.asset, cut: playedCut(tl, voice.asset).cut } }, clipDur(voice));
     }
     return result;
   });

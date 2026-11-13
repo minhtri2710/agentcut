@@ -243,6 +243,7 @@ export const CAPTION_FIELDS: F = {
   max_words: [T("number"), "words per page (3)"],
   highlight_color: [T("string"), "active word colour"],
   highlight_bg: [T("string"), "pill behind the active word"],
+  timed_for: [T("object"), "{asset, cut: [[in, out, start, speed], ...]}: the clips of the asset these words were timed for; written by add_captions transcribe and add_voiceover captions, never retimed: validate warns when the clips that play the asset no longer match"],
 };
 export const SHAPE_FIELDS: F = {
   shape: [T("string"), SHAPES.join("|")], size: [T("array"), "[w, h] px or %"], fill: [T("string"), "fill colour"],
@@ -481,6 +482,34 @@ export function soleAudio(tl: Timeline, v: Clip, op: string): [Track, Clip] | un
     "edit the pieces by id, or remove_clip all but one; split_clip and duplicate_clip on the video handle every piece");
   return la[0];
 }
+
+/** How the clips of a resolved timeline play the sound of one asset: `cut` lists [in, out, start, speed] (source seconds, timeline start, speed; ms), ordered by start;
+ *  `unmapped` names the clips whose source-to-timeline map is not linear (speed ramp, reverse, freeze, loop, or nested in a compound), which `cut` leaves out.
+ *  A video with detached audio is replaced by the pieces; mute is ignored (a muted clip still plays the moment), a disabled clip plays nothing.
+ *  add_captions snapshots it and validate recomputes it, so both read the one function. */
+export function playedCut(tl: Timeline, asset: string): { cut: number[][]; unmapped: string[] } {
+  const cut: number[][] = [], unmapped: string[] = [], ms = (x: number) => +x.toFixed(3);
+  for (const [, , , c] of iterClips(tl)) {
+    if (c.enabled === false) continue;
+    if (c.type === "compound") { if ([...allClips(c.tracks ?? [])].some((x) => (x.type === "video" || x.type === "audio") && x.asset === asset)) unmapped.push(c.id); continue; }
+    if ((c.type !== "video" && c.type !== "audio") || c.asset !== asset || linkedAudio(tl, c).length) continue;
+    if (c.reverse || c.freeze || c.loop || c.keyframes?.speed) { unmapped.push(c.id); continue; }
+    const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0);
+    cut.push([ms(cin), ms(cin + clipDur(c) * speed), ms(clipStart(c)), speed]);
+  }
+  return { cut: cut.sort((a, b) => a[2] - b[2] || a[0] - b[0]), unmapped };
+}
+
+/** Words in source seconds as the segments of `cut` play them: a word whose middle lies in a segment lands at start + (t - in) / speed, clipped to the segment; a word no segment plays is dropped, one played twice appears twice. */
+export function wordsOnTimeline<W extends { start: number; end: number }>(words: W[], cut: number[][]): W[] {
+  const ms = (x: number) => +x.toFixed(3);
+  return cut.flatMap(([cin, out, start, speed]) => words.filter((w) => { const m = (w.start + w.end) / 2; return m >= cin && m < out; })
+    .map((w) => ({ ...w, start: ms(start + (Math.max(w.start, cin) - cin) / speed), end: ms(start + (Math.min(w.end, out) - cin) / speed) }))).sort((a, b) => a.start - b.start);
+}
+
+/** Whether a stored cut (any JSON) equals the one played now, within a millisecond. */
+export const sameCut = (stored: unknown, now: number[][]) =>
+  Array.isArray(stored) && stored.length === now.length && stored.every((r, i) => Array.isArray(r) && r.length === 4 && r.every((x, j) => Math.abs(x - now[i][j]) < 1.5e-3));
 
 export function findTrack(tl: Timeline, id: string): Track {
   const t = tl.tracks.find((x) => x.id === id);
@@ -823,6 +852,11 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       if (c.type === "text" && !String(c.text ?? "").trim()) issues.push({ level: "error", path: `${p}.text`, message: "text clip has empty text" });
       if (c.type === "captions" && !(c.words?.length || c.srt)) issues.push({ level: "error", path: p, message: "captions need 'words' or 'srt'" });
       if (c.type === "captions" && c.srt && o.exists && !o.exists(c.srt)) issues.push({ level: "error", path: `${p}.srt`, message: `file not found: ${c.srt}` });
+      if (c.type === "captions" && root === "$" && c.timed_for && typeof c.timed_for === "object") { // a compound's inner clips are timed relative to the compound, so only the top level is compared
+        let now: number[][] | undefined;
+        try { now = playedCut(tl, String(c.timed_for.asset)).cut; } catch { /* a clip with an unreadable time is reported on its own */ }
+        if (now && !sameCut(c.timed_for.cut, now)) issues.push({ level: "warning", path: `${p}.timed_for`, message: `the clips that play '${c.timed_for.asset}' changed since these captions were timed: the words no longer match the sound`, hint: `remove_clip id=${c.id}, then add_captions transcribe='${c.timed_for.asset}' again (hand-corrected words are lost)` });
+      }
       for (const [key, opts, what] of [["enter", ENTER_EXIT, "animation"], ["exit", ENTER_EXIT, "animation"], ["transition", TRANSITIONS, "transition"], ["motion", MOTIONS, "motion"]] as const)
         if (key in c) checkName(c[key], opts as unknown as string[], `${p}.${key}`, issues, what);
       if (c.transition && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });

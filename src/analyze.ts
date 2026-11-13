@@ -1,6 +1,6 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
@@ -276,7 +276,7 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
       const vs = systemVoices();
       if (!vs.some((v) => v.name === voice || v.full_name === voice)) {
         const s = suggest(voice, vs.map((v) => v.name));
-        throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list them with list_voices (CLI: agentcut voices) (Vietnamese: 'Linh')`);
+        throw new EditError(`voice '${voice}' not installed`, "bad_voice", `${s ? `did you mean '${s}'? ` : ""}list them with list_voices (CLI: agentcut voices); for Vietnamese try 'Linh'`);
       }
       args.push("-v", voice);
     }
@@ -330,21 +330,34 @@ export function transcribeEngine() {
   };
 }
 
+/** What is kept of a silent start: the stretch sent to the engine begins this long before the first sound. */
+const LEAD_PAD = 0.1;
+
 /**
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
- * range = [start, end] seconds of the media: only that stretch is transcribed and the word times stay in media seconds.
+ * range = [start, end] seconds of the media: only that stretch is transcribed and the word times stay in media seconds, within [start, end].
+ * The stretch handed to the engine starts at the first sound (silence()'s default threshold) less LEAD_PAD, never before `start`: after a silent
+ * start whisper times the first words early. `skipped_leading` is the seconds left out. A music lead-in is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  */
 export async function transcribe(path: string, language?: string, model?: string, range?: [number, number], signal?: AbortSignal) {
   if (range !== undefined && !(Array.isArray(range) && range.length === 2 && range.every((x) => typeof x === "number" && Number.isFinite(x)) && range[0] >= 0 && range[1] > range[0]))
     throw new EditError("transcribe range must be [start, end] in seconds with 0 <= start < end", "bad_value", "e.g. [0, 12.5]: the speech only; analyze_silence or the voiceover's length gives it");
   const [from, to] = range ?? [0, undefined];
-  const shift = (x: number) => +(x + from).toFixed(3);
   needFfmpeg();
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
-    const wav = join(tmp, "a.wav");
-    await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", wav], { signal });
+    const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
+    let skipped = 0;
+    const cut = await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
+    if (cut.status === 0) {
+      const first = (await silence(raw, undefined, undefined, signal)).speech[0]?.[0] ?? 0;
+      skipped = Math.max(0, +(first - LEAD_PAD).toFixed(3));
+      if (skipped) await run("ffmpeg", ["-v", "error", "-y", "-ss", String(skipped), "-i", raw, "-c", "copy", wav], { signal });
+      else renameSync(raw, wav);
+    }
+    const at = (x: number) => +Math.min(Math.max(x + from + skipped, from), to ?? Infinity).toFixed(3); // engine time -> media time, inside the range
+    const late = (x: number) => to !== undefined && x + from + skipped >= to;
     const asr = asrEngine(model);
     if (asr && "cli" in asr) {
       const { cli, model: mdl } = asr;
@@ -359,18 +372,18 @@ export async function transcribe(path: string, language?: string, model?: string
         const text = String(s.text).trim();
         if (!text) continue;
         const prev = words[words.length - 1];
-        if (!/^\p{P}+$/u.test(text)) { words.push({ text: lead + text, start: shift(s.offsets.from / 1000), end: shift(s.offsets.to / 1000) }); lead = ""; }
-        else if (prev) { prev.text += text; prev.end = shift(s.offsets.to / 1000); }
+        if (!/^\p{P}+$/u.test(text)) { if (late(s.offsets.from / 1000)) break; words.push({ text: lead + text, start: at(s.offsets.from / 1000), end: at(s.offsets.to / 1000) }); lead = ""; }
+        else if (prev) { prev.text += text; prev.end = at(s.offsets.to / 1000); }
         else lead += text;
       }
-      return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words };
+      return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words, skipped_leading: skipped };
     }
     if (asr) {
       const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
       if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
-      const words = j.segments.flatMap((s: any) => (s.words || []).map((w: any) => ({ text: String(w.word).trim(), start: shift(w.start), end: shift(w.end) })));
-      return { source: path, language: j.language, text: j.text, words };
+      const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: at(w.end) })));
+      return { source: path, language: j.language, text: j.text, words, skipped_leading: skipped };
     }
     throw new EditError("transcription needs whisper", "missing_dependency",
       "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`; or supply an .srt to add_captions");

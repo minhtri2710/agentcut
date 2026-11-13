@@ -75,8 +75,16 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"add_clip","track":"music","src":"/abs/song.mp3","until_end":true,"fade_out":1.5}
 {"op":"add_sequence","track":"main","items":["/a.jpg","/b.jpg"],"defaults":{"duration":2,"transition":"crossfade","motion":"ken_burns"}}
 {"op":"add_captions","words":[{"text":"Hello","start":0,"end":0.4}],"preset":"tiktok"}       or "srt":"/abs/subs.srt" / "transcribe":"/abs/talk.mp4"
-   "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch: pass the speech only, since whisper may invent text
-   over a long music-only stretch and times words early after a music lead-in; analyze_silence or the voiceover's length gives the span
+   transcribe of media that clips on the timeline play: each word lands where the clip that plays that moment puts it (start + (word - in) / speed), so
+   in-points, trims, speed and remove_silence are followed, a word no clip plays is dropped, one captions clip covers the asset (cut first, caption once),
+   and 'at' is refused. A clip with a speed ramp, reverse, freeze, loop or inside a compound is not mapped: its id is in the result's 'unmapped'.
+   A video with detached audio is mapped through the audio pieces. Media no clip plays keeps media seconds from 'at'. The captions clip ends 0.3 s
+   after the last word, never after the last clip that plays the media (unmapped: the media or range end; add_voiceover captions: the voice clip).
+   The captions are not retimed after that: they record the cut they were timed for ('timed_for'), and validate (so review and every apply result) warns when
+   the clips that play the asset changed; remove the captions clip and run add_captions again, which loses any hand-corrected words.
+   "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. A silent start is skipped before whisper
+   (the result's 'skipped_leading' seconds; whisper times the first words early after one), but a music lead-in is not silence: pass the speech only, since
+   whisper may invent text over a long music-only stretch and times words early after a music lead-in; analyze_silence or the voiceover's length gives the span
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default

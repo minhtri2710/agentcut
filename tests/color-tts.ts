@@ -458,11 +458,21 @@ fi
     const startDb = (f: string) => { const m = /max_volume: (\S+) dB/.exec(spawnSync("ffmpeg", ["-v", "info", "-nostdin", "-t", "0.5", "-i", f, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" }).stderr); return m ? (m[1] === "-inf" ? -Infinity : +m[1]) : NaN; };
     const engine = [[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]], shifted = (by: number) => engine.map(([a, b]) => [+(a + by).toFixed(3), +(b + by).toFixed(3)]);
     const times = (ws: any[]) => JSON.stringify(ws.map((w) => [w.start, w.end]));
-    await AN.transcribe(src, "vi", fake);
-    check("no range: the engine gets the whole media, from its silent start", Math.abs(dur(given) - 6) < 0.05 && startDb(given) < -60, { dur: dur(given), db: startDb(given) });
-    const ranged = await AN.transcribe(src, "vi", fake, [2, 5]);
-    check("range [2, 5]: the engine gets end - start seconds, starting at start (not silent)", Math.abs(dur(given) - 3) < 0.05 && startDb(given) > -30, { dur: dur(given), db: startDb(given) });
-    check("range [2, 5]: every word start and end is the engine's time + start", times(ranged.words) === JSON.stringify(shifted(2)), times(ranged.words));
+    // a leading silence is not sent: the engine gets the media from 0.1 s before the first sound, the word times are shifted by what was left out, and the result says how much
+    const whole = await AN.transcribe(src, "vi", fake);
+    check("no range: the engine gets the media from 0.1 s before the first sound (2 s of silence: 1.9 s left out), starting on the tone", Math.abs(dur(given) - 4.1) < 0.05 && startDb(given) > -30 && whole.skipped_leading === 1.9, { dur: dur(given), db: startDb(given), skipped: whole.skipped_leading });
+    check("no range: every word start and end is the engine's time + what was left out", times(whole.words) === JSON.stringify(shifted(1.9)), times(whole.words));
+    const inSilence = await AN.transcribe(src, "vi", fake, [1, 5.5]);
+    check("a range that starts in silence is trimmed the same way (1 s of silence in the range: 0.9 s left out)", Math.abs(dur(given) - 3.6) < 0.05 && inSilence.skipped_leading === 0.9 && times(inSilence.words) === JSON.stringify(shifted(1.9)), { dur: dur(given), skipped: inSilence.skipped_leading, words: times(inSilence.words) });
+    const ranged = await AN.transcribe(src, "vi", fake, [2, 5.5]);
+    check("range [2, 5.5]: the engine gets end - start seconds, starting at start (not silent); no silence, nothing left out", Math.abs(dur(given) - 3.5) < 0.05 && startDb(given) > -30 && ranged.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: ranged.skipped_leading });
+    check("range [2, 5.5]: every word start and end is the engine's time + start", times(ranged.words) === JSON.stringify(shifted(2)), times(ranged.words));
+    // the words stay inside the range: one starting at or after the end is dropped (with its punctuation), one crossing it ends at it, a zero-length one stays
+    const fakeJson = readFileSync(join(tmp, "whisper.json"), "utf8");
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 100, 300), tok(" b", 1000, 1000), tok(" c", 2800, 3300), tok(".", 3300, 3350), tok(" d", 3300, 3600), tok("!", 3600, 3650)] }));
+    const held = await AN.transcribe(src, "vi", fake, [2, 5]);
+    writeFileSync(join(tmp, "whisper.json"), fakeJson);
+    check("range words are clamped to the range: a word past the end is dropped, one crossing it ends there, a zero-length word stays", JSON.stringify(held.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c.", 4.8, 5]]), held.words);
     const before = calls();
     const bads: any[] = [[-1, 2], [2, 2], [3, 2], [NaN, 2], [0, Infinity], [0], [0, 1, 2], ["1", 2], "2-5", 3];
     const badRange = await Promise.all(bads.map((r) => rejectsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value")));
@@ -474,13 +484,79 @@ fi
       const Q = join(tmp, "cap-range");
       api.create(Q, { preset: "720p" });
       const caps = async () => (await api.info(Q, "json")).timeline.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "captions");
-      await api.apply(Q, [{ op: "add_captions", transcribe: src, language: "vi", transcribe_range: [2, 5] }]);
+      await api.apply(Q, [{ op: "add_captions", transcribe: src, language: "vi", transcribe_range: [2, 5.5] }]);
       check("add_captions transcribe_range: the captions clip holds the shifted times and no range field", (await caps()).length === 1 && times((await caps())[0].words) === JSON.stringify(shifted(2)) && !("transcribe_range" in (await caps())[0]), (await caps())[0]?.words);
       const was2 = JSON.stringify((await api.info(Q, "json")).timeline);
       const e1: any = await api.apply(Q, [{ op: "add_captions", words: [{ text: "Hi", start: 0, end: 0.4 }], transcribe_range: [0, 2] }]).catch((x) => x);
       const e2: any = await api.apply(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
       check("add_captions: transcribe_range without transcribe, and a bad range, are bad_value and leave the timeline unchanged", e1.code === "bad_value" && e2.code === "bad_value" && JSON.stringify((await api.info(Q, "json")).timeline) === was2, { e1: e1.code, e2: e2.code });
     } finally { if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
+  }
+
+  // add_captions transcribe: where clips on the timeline play the media, the words follow them; the captions record the cut and validate warns when it changes
+  {
+    const talk = join(tmp, "talk.mp4"), fake = join(tmp, "fake.bin"), was = process.env.AGENTCUT_WHISPER_MODEL, saved = readFileSync(join(tmp, "whisper.json"), "utf8");
+    ff("-f", "lavfi", "-i", "color=c=blue:size=160x90:rate=30:d=8", "-f", "lavfi", "-i", "sine=f=440:d=8,volume='not(between(t,2,5))':eval=frame", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", talk); // tone, 3 s of silence, tone
+    const said = (ws: [string, number, number][]) => writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "en" }, transcription: ws.map(([t, a, b]) => tok(" " + t, a * 1000, b * 1000)) }));
+    said([["a", 0.5, 0.9], ["b", 2.2, 2.6], ["c", 3.2, 3.6], ["d", 5.5, 5.9], ["e", 6.5, 6.9], ["f", 7.8, 8]]);
+    const asrCalls = () => (existsSync(join(tmp, "whisper.calls")) ? readFileSync(join(tmp, "whisper.calls"), "utf8").split("\n").filter(Boolean).length : 0);
+    const tlOf = async (P: string) => (await api.info(P, "json")).timeline, capsOf = async (P: string) => (await tlOf(P)).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "captions");
+    const tw = (c: any) => c.words.map((w: any) => [w.text, w.start, w.end]);
+    const stale = async (P: string) => (await api.validate(P)).issues.filter((i: any) => /timed_for/.test(i.path));
+    process.env.AGENTCUT_WHISPER_MODEL = fake;
+    try {
+      // a clip taken from second 2, and a clip at 5 s playing source 4..8 at speed 2: a word lands at start + (word - in) / speed
+      const A = join(tmp, "cap-map");
+      api.create(A, { preset: "720p" });
+      await api.apply(A, [{ op: "add_clip", track: "overlay", src: talk, in: 2, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, speed: 2, duration: 2, at: 5 }]);
+      const made: any = await api.apply(A, [{ op: "add_captions", transcribe: "talk" }]);
+      const [ca] = await capsOf(A);
+      check("captions of media that clips play: words land at start + (word - in) / speed, and a word no clip plays is dropped",
+        (await capsOf(A)).length === 1 && JSON.stringify(tw(ca)) === JSON.stringify([["b", 0.2, 0.6], ["c", 1.2, 1.6], ["d", 5.75, 5.95], ["e", 6.25, 6.45], ["f", 6.9, 7]]), tw(ca));
+      check("the captions clip does not outlive the last clip that plays the media, and the timeline does not grow",
+        ca.start === 0 && ca.duration === 7 && made.duration === 7, { start: ca.start, dur: ca.duration, total: made.duration });
+      check("the captions record the asset and the cut they were timed for; validate has no warning for them", JSON.stringify(ca.timed_for) === JSON.stringify({ asset: "talk", cut: [[2, 5, 0, 1], [4, 8, 5, 2]] }) && (await stale(A)).length === 0, { t: ca.timed_for, issues: await stale(A) });
+      const before = asrCalls(), refused: any = await api.apply(A, [{ op: "add_captions", transcribe: "talk", at: 1 }]).catch((e) => e);
+      check("at is refused with bad_arg when the media plays on the timeline, before any engine runs", refused.code === "bad_arg" && /'at'/.test(refused.message) && asrCalls() === before && (await capsOf(A)).length === 1, { code: refused.code, msg: refused.message, calls: asrCalls() - before });
+      // the cut changes: a trim, then a move, each warn (in review too); putting it back clears the warning
+      const trimmed: any = await api.apply(A, [{ op: "trim_clip", id: "vid1", trim_start: 0.5 }]);
+      check("trimming a clip that plays the media warns in the apply result and in validate, naming the captions clip", trimmed.issues.some((i: any) => i.level === "warning" && /timed_for/.test(i.path) && i.hint.includes(ca.id)) && (await stale(A)).length === 1, trimmed.issues);
+      const rv: any = await api.review(A);
+      check("review carries the same warning", JSON.stringify(rv).includes("timed_for"), Object.keys(rv));
+      await api.apply(A, [{ op: "update_clip", id: "vid1", set: { start: 0, in: 2, duration: 3 } }]);
+      check("restoring the clip clears the warning", (await stale(A)).length === 0, await stale(A));
+      const moved: any = await api.apply(A, [{ op: "update_clip", id: "vid2", set: { start: 5.5 } }]);
+      check("moving a clip that plays the media warns", moved.issues.some((i: any) => /timed_for/.test(i.path)) && (await stale(A)).length === 1, moved.issues);
+
+      // remove_silence first (the video's detached audio is cut into the same segments), then one captions clip: the words follow the segments, those in the removed stretch are dropped
+      const B = join(tmp, "cap-cut");
+      api.create(B, { preset: "720p" });
+      await api.apply(B, [{ op: "add_clip", track: "main", src: talk }, { op: "detach_audio", id: "vid1" }, { op: "remove_silence", id: "vid1" }]);
+      const tB0 = await tlOf(B), pieces = tB0.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "audio"), second = pieces[pieces.length - 1];
+      const cutB: any = await api.apply(B, [{ op: "add_captions", transcribe: "talk" }]);
+      const [cb] = await capsOf(B), at = (src: number) => +(second.start + (src - second.in)).toFixed(3);
+      check("after remove_silence the words follow the audio pieces and those cut away are dropped: one captions clip, one engine run",
+        pieces.length === 2 && cb.words.map((w: any) => w.text).join("") === "adef" && cb.words[1].start === at(5.5) && cb.words[2].start === at(6.5) && (await capsOf(B)).length === 1, { pieces: pieces.map((c: any) => [c.in, c.start, c.duration]), words: tw(cb) });
+      check("the captions clip ends with the cut, so the timeline keeps its length", cb.duration <= cutB.duration + 1e-6 && Math.abs(cutB.duration - pieces.reduce((e: number, c: any) => Math.max(e, c.start + c.duration), 0)) < 1e-3 && (await stale(B)).length === 0, { cap: cb.duration, total: cutB.duration });
+
+      // a speed ramp is not a linear map: the clip is named and its words are not mapped
+      const C = join(tmp, "cap-ramp");
+      api.create(C, { preset: "720p" });
+      await api.apply(C, [{ op: "add_clip", track: "overlay", src: talk, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, duration: 2, at: 5 }, { op: "set_keyframes", id: "vid2", prop: "speed", keyframes: [[0, 1], [1, 2]] }]);
+      const ramp: any = await api.apply(C, [{ op: "add_captions", transcribe: "talk" }]);
+      check("a speed-ramped clip is named in the result and its words are not mapped", JSON.stringify(ramp.results[0].unmapped) === JSON.stringify(["vid2"]) && (await capsOf(C))[0].words.map((w: any) => w.text).join("") === "ab", { r: ramp.results[0], w: tw((await capsOf(C))[0]) });
+
+      // media no clip plays keeps its meaning: media seconds from at, ending at the media end
+      const D = join(tmp, "cap-free");
+      api.create(D, { preset: "720p" });
+      await api.apply(D, [{ op: "add_captions", transcribe: talk, at: 2 }]);
+      const [cd] = await capsOf(D);
+      check("media that no clip plays: media seconds from at, no recorded cut, and the clip ends at the media end (8 s, not 8.3)", cd.start === 2 && cd.words[0].start === 0.5 && cd.words[5].end === 8 && cd.duration === 8 && !("timed_for" in cd), { start: cd.start, dur: cd.duration, w: tw(cd) });
+      const E = join(tmp, "cap-limit");
+      api.create(E, { preset: "720p" });
+      await api.apply(E, [{ op: "add_captions", transcribe: talk, transcribe_range: [0, 6] }]);
+      check("a transcribe range ends the captions clip at the range end", (await capsOf(E))[0].duration === 6 && (await capsOf(E))[0].words.map((w: any) => w.text).join("") === "abcd", (await capsOf(E))[0]);
+    } finally { writeFileSync(join(tmp, "whisper.json"), saved); if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
 
   // analyses inside apply_ops (transcribe, speech, silence) run async with the call's signal and are kept for the call: the batch is re-run once per analysis it asks for, plus the last
@@ -509,6 +585,19 @@ fi
       // a caller that is not api.apply (prepare, a test) gets an internal error, never a result without the analysis
       const pz = api.openProject(Z), direct = (() => { try { applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }]); return null; } catch (x: any) { return x; } })();
       check("applyOps without the api.apply runner fails closed on an analysis: an internal error, not an EditError, and no piper start", direct && !(direct instanceof Error && "code" in direct) && /^internal: /.test(direct.message) && started("piper.calls") === p0 + 1, direct && direct.message);
+
+      // add_voiceover captions are timed for the voice clip: moving it warns, and the captions end with it
+      {
+        const V = join(tmp, "vo-captions");
+        api.create(V, { preset: "720p" });
+        const made: any = await api.apply(V, [{ op: "add_voiceover", text: "Chào bạn", voice: "piper", captions: true }]);
+        const tV = async () => (await api.info(V, "json")).timeline, vc = (await tV()).tracks.flatMap((t: any) => t.clips), voice = vc.find((c: any) => c.type === "audio"), cap = vc.find((c: any) => c.type === "captions");
+        const staleV = async () => (await api.validate(V)).issues.filter((i: any) => /timed_for/.test(i.path));
+        check("voiceover captions record the voice clip's cut, end with the voice clip, and have no warning", JSON.stringify(cap.timed_for) === JSON.stringify({ asset: voice.asset, cut: [[0, voice.duration, 0, 1]] }) && cap.duration <= voice.duration + 1e-6 && made.duration === voice.duration && (await staleV()).length === 0,
+          { t: cap.timed_for, cap: cap.duration, voice: voice.duration, total: made.duration });
+        await api.apply(V, [{ op: "update_clip", id: voice.id, set: { start: 1 } }]);
+        check("moving the voiceover clip warns that the captions no longer match", (await staleV()).length === 1, await staleV());
+      }
 
       // two voiceovers in one batch, in the same millisecond: each gets its own file and keeps its own speech (a stand-in piper speaks 0.5 s per word)
       {

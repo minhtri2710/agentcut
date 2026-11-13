@@ -219,7 +219,7 @@ if (process.platform !== "win32") {
   mkdirSync(bin);
   spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=5", join(tmp, "talk.wav")]);
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
-  writeFileSync(join(bin, say ? "say" : "espeak-ng"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${say ? "-o" : "-w"}" ] && cp "${join(tmp, "talk.wav")}" "$2"; shift; done\n`);
+  writeFileSync(join(bin, say ? "say" : "espeak-ng"), `#!/bin/sh\n${say ? `[ "$1" = "-v" ] && [ "$2" = "?" ] && { printf 'Linh                vi_VN    # Xin chào\\n'; exit 0; }\n` : ""}while [ $# -gt 0 ]; do [ "$1" = "${say ? "-o" : "-w"}" ] && cp "${join(tmp, "talk.wav")}" "$2"; shift; done\n`);
   for (const f of ["whisper-cli", say ? "say" : "espeak-ng"]) chmodSync(join(bin, f), 0o755);
   const env6: Record<string, string | undefined> = { ...env, PATH: `${bin}:${process.env.PATH}` }; delete env6.AGENTCUT_PROJECT; delete env6.AGENTCUT_WHISPER_MODEL;
   const c6 = new Client({ name: "agentcut-test-6", version: "1" });
@@ -238,6 +238,10 @@ if (process.platform !== "win32") {
   check("tts refuses the project's own file", own.json.ok === false && own.json.error.code === "output_is_source", own.json);
   const rates = await Promise.all([0, -3].map((rate) => call6("tts", { text: "hello", output: join(tmp, "r.wav"), rate })));
   check("tts: a rate that is not positive is bad_value", rates.every((r) => r.json.ok === false && r.json.error.code === "bad_value"), rates.map((r) => r.json));
+  if (say) {
+    const nv = await call6("tts", { text: "hello", output: join(tmp, "nv.wav"), voice: "Lihn" });
+    check("tts: an unknown system voice is bad_voice, and its hint names the voices listing of both surfaces as one sentence", nv.json.ok === false && nv.json.error.code === "bad_voice" && /list_voices/.test(nv.json.error.hint) && /agentcut voices/.test(nv.json.error.hint) && !/\)\s*\(/.test(nv.json.error.hint), nv.json);
+  }
   const out = join(TP, "media", "v.wav"), sp = await call6("tts", { text: "Hello there. Bye.", output: out, rate: 175 });
   check("tts writes the file and reports it", sp.json.ok === true && existsSync(out) && sp.json.path === out && sp.json.duration > 4 && sp.json.sentences.length === 2, sp.json);
   await c6.close();
