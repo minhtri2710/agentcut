@@ -6,6 +6,7 @@ import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
 import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource } from "./media.ts";
+import { safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, type Timeline, totalDuration,
   type Track, VISUAL_TYPES,
@@ -21,13 +22,6 @@ const BLEND: Record<string, GlobalCompositeOperation> = {
 type GlobalCompositeOperation = string;
 
 const even = (v: number) => Math.max(2, 2 * Math.round(v / 2));
-
-/** Safe areas in canvas px: title = 5% inset rect; ui = social-app overlay zones on 9:16 (caption/buttons/top bar). */
-export function safeZones(W: number, H: number) {
-  const ui: [string, number, number, number, number][] = H > W
-    ? [["top bar", 0, 0, W, H * 0.1], ["bottom caption/UI", 0, H * 0.8, W, H * 0.2], ["right-side buttons", W * 0.86, H * 0.45, W * 0.14, H * 0.35]] : [];
-  return { title: [W * 0.05, H * 0.05, W * 0.9, H * 0.9] as [number, number, number, number], ui };
-}
 
 interface Frame { canvas?: Canvas; buf?: Buffer; w: number; h: number; under?: { img: Canvas; w: number; h: number }; static?: boolean }
 

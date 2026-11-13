@@ -289,6 +289,20 @@ console.log("text wrap: a word wider than the line breaks into pieces");
   check("a plain frame has no highlight colour", red(renderText(long, st, MAX, { activeWord: null, highlightColor: "#ff0000" })) === 0);
 }
 
+console.log("text box: a glyph taller than the font's ascent is not clipped");
+{
+  const { TextStyle, layout, renderText } = await import("../src/text.ts");
+  const st = new TextStyle({ font_size: 600, color: "#ffffff" }, 1, 1080);
+  const cv = renderText("😀", st, 1e5), d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+  const rows: number[] = [];
+  for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) if (d[(y * cv.width + x) * 4 + 3] > 0) { rows.push(y); break; }
+  if (!rows.length) console.log("  - skipped: no emoji font draws the glyph");
+  else {
+    check("a 600 px emoji has transparent rows above and below its ink (its top was cut flat at row 0)", rows[0] > 0 && rows.at(-1)! < cv.height - 1, { first: rows[0], last: rows.at(-1), height: cv.height });
+  }
+  check("the line pitch is the font's, so a tall glyph does not change it", layout("😀\nx", st, 1e5).lh === layout("x\nx", st, 1e5).lh, [layout("😀\nx", st, 1e5).lh, layout("x\nx", st, 1e5).lh]);
+}
+
 console.log("audio only");
 for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix.m4a", "aac"], ["mix.flac", "flac"], ["mix.aac", "aac"]]) {
   r = await timed(file, () => renderVideo(tl(), p.root, out(file), {}));

@@ -51,11 +51,11 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.
    Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio). The output extension names the format; MCP format=fcpxml|otio or CLI --format fcpxml|otio sets it for any file name; with no output the file is FCPXML:
    cuts, in-points, crossfades,
-   constant speed, volume, titles and connected clips carry over (media linked by absolute path). The result has two lists of
+   constant speed, titles and connected clips carry over, and volume in FCPXML only (OTIO has no gain: it is metadata, listed as approximated); media is linked by absolute path. The result has two lists of
    {id, type, reason}: skipped = not exported (effects, looks, keyframes, masks, captions, shapes, vision requests not yet prepared
-   (type "pending"), or named fields of an exported clip); approximated = exported in another form (a speed ramp as constant speed,
-   a transition as a cross dissolve, fit 'blur' as fit 'contain' in FCPXML, a title as a named Gap in OTIO). Tell the human
-   what is left to finish.
+   (type "pending"), or named fields of an exported clip, titles included); approximated = exported in another form (a speed ramp as constant speed,
+   a transition as a cross dissolve, fit 'blur' as fit 'contain' in FCPXML, a title as a named Gap in OTIO, a volume kept only as OTIO metadata,
+   a clip that needs more than its source has: "clip X needs N s, source has M s"). Tell the human what is left to finish.
 6. Fix with update_clip / trim_clip / undo.
    A source file that moved or was replaced (validate: file not found): {"op":"relink_asset","id":"a1","path":"/abs/new.mp4"} points the asset at it and probes it again,
    same kind only (else bad_type: import_media it, then update_clip each clip). The clips are kept as they are; the result has changed (old/new per field) and recheck

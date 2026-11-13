@@ -365,6 +365,56 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
   } finally { ui.server.closeAllConnections?.(); await new Promise((ok) => ui.server.close(ok)); }
 }
 
+console.log("review: a cancelled review stops, progress is reported, findings do not change");
+{
+  const { EditError } = await import("../src/model.ts");
+  const RP = join(tmp, "rv-run");
+  api.create(RP, { width: 320, height: 240, fps: 24 });
+  await api.apply(RP, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }, { op: "add_clip", track: "main", type: "gap", duration: 1.5 }, { op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }]);
+  const ticks: [number, number][] = [];
+  const plain: any = await api.review(RP);
+  const reported: any = await api.review(RP, { progress: (d, n) => ticks.push([d, n]) });
+  check("review reports each black-frame sample, 1..total", ticks.length === 28 && ticks.every(([d, n], i) => d === i + 1 && n === 28), { n: ticks.length, last: ticks.at(-1) });
+  const black = plain.findings.filter((f: any) => f.type === "black_frames");
+  check("the black gap is found at its time, and the findings are the same with a progress callback", black.length === 1 && black[0].t >= 1.9 && black[0].t <= 2.2 && black[0].end >= 3.3 && black[0].end <= 3.7 && JSON.stringify(plain.findings) === JSON.stringify(reported.findings), plain.findings);
+  const ac = new AbortController();
+  let seen = 0;
+  const e: any = await api.review(RP, { signal: ac.signal, progress: () => { if (++seen === 3) ac.abort(new EditError("the review was cancelled", "aborted")); } }).catch((x) => x);
+  check("a cancelled review stops at the next sample with code aborted", e?.code === "aborted" && seen === 3, { code: e?.code, seen });
+  const pre = new AbortController();
+  pre.abort(new EditError("the review was cancelled", "aborted"));
+  await api.apply(RP, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 2 }]);
+  check("a review cancelled before it starts, with a text layer to measure, fails with aborted", (await api.review(RP, { signal: pre.signal }).catch((x) => x))?.code === "aborted");
+}
+
+console.log("templates: the text of every template stays inside the safe area at every preset size");
+{
+  const { TEMPLATES } = await import("../src/presets.ts");
+  const { PRESETS } = await import("../src/model.ts");
+  ff("-f", "lavfi", "-i", "gradients=size=800x800:n=4", "-frames:v", "1", join(m, "p.png"));
+  ff("-f", "lavfi", "-i", "aevalsrc='sin(2*PI*60*t)*exp(-25*mod(t,0.5))':s=44100:d=12", "-ac", "2", join(m, "beat.wav"));
+  const png = join(m, "p.png"), media = [png, png, png];
+  const args: Record<string, object> = {
+    slideshow: { media, title: "Summer trip" },
+    promo: { media, hook: "Big launch today", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
+    beat_montage: { media, music: join(m, "beat.wav"), title: "Album" },
+    quote: { text: "Stay hungry, stay foolish", author: "Steve" },
+    listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Second pick", media: png }] },
+  };
+  check("every template has arguments here", JSON.stringify(Object.keys(args).sort()) === JSON.stringify(Object.keys(TEMPLATES).sort()), Object.keys(TEMPLATES));
+  for (const name of Object.keys(TEMPLATES)) {
+    const bad: Record<string, string> = {};
+    for (const [preset, [w, h]] of Object.entries(PRESETS)) {
+      const d = join(tmp, `tpl-${name}-${preset}`);
+      api.create(d, { width: w, height: h });
+      await api.apply(d, [{ op: "apply_template", name, ...args[name] }]);
+      const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
+      if (unsafe.length) bad[preset] = unsafe.map((f: any) => f.message).join("; ");
+    }
+    check(`${name}: no text_unsafe at any preset size`, !Object.keys(bad).length, bad);
+  }
+}
+
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall review checks passed");
 process.exit(failures ? 1 : 0);

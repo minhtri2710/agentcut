@@ -162,6 +162,22 @@ const audioOnly = mut((t) => { t.tracks[0].clips.push({ ...structuredClone(clipO
 check("an audio-only clip on the primary storyline is approximated as a gap", ap(audioOnly.f, "aud1", "audio") && ap(audioOnly.o, "aud1", "audio") && !audioOnly.f.skipped.some((e) => e.id === "aud1"), { f: audioOnly.f, o: audioOnly.o.approximated });
 const squeezed = mut((t) => { clipOf(t, vid2).start = 70 / 30; });
 check("a transition shortened to fit its clips is approximated", ap(squeezed.f, vid2, "transition") && (squeezed.f.approximated ?? []).some((e) => /shortened/.test(e.reason)) && !squeezed.f.skipped.some((e) => /shortened/.test(e.reason)), squeezed.f.approximated);
+// the lists of the two formats name the same things; they differ only where a format carries more
+const fieldsOf = (r: { skipped: { id: string; type: string; reason: string }[] }, id: string) => r.skipped.filter((e) => e.id === id && e.type === "fields").map((e) => e.reason);
+check("a title's fill colour is exported, so it is not listed as a dropped colour grade (either format)", !fieldsOf(fx, txt1).length && !fieldsOf(ot, txt1).length, { f: fx.skipped, o: ot.skipped });
+const titled = mut((t) => { Object.assign(clipOf(t, txt1), { enter: "fade", exit: "fade", shadow: true, effects: [{ type: "grain" }] }); });
+check("a title with an animation, a shadow and an effect gets the same 'not exported' entry in both formats",
+  fieldsOf(titled.f, txt1).length === 1 && /enter animation, exit animation/.test(fieldsOf(titled.f, txt1)[0]) && JSON.stringify(fieldsOf(titled.f, txt1)) === JSON.stringify(fieldsOf(titled.o, txt1)), { f: titled.f.skipped, o: titled.o.skipped });
+const volOf = (r: { approximated?: { id: string; type: string; reason: string }[] }, id: string) => (r.approximated ?? []).filter((e) => e.id === id && e.type === "volume");
+check("the same volume: OTIO lists it as kept only in metadata, FCPXML writes it and lists nothing", volOf(ot, mus1).length === 1 && /0\.5\b.*metadata/.test(volOf(ot, mus1)[0].reason) && !volOf(fx, mus1).length && /<adjust-volume amount="-6.02dB"/.test(xml), { o: ot.approximated, f: fx.approximated });
+check("a clip at full volume has no volume entry", !volOf(ot, vid1).length && !volOf(fx, vid1).length);
+const longer = (d: number, extra: object = {}) => mut((t) => { Object.assign(clipOf(t, mus1), { duration: d, ...extra }); });
+const srcOf = (r: { approximated?: { id: string; type: string; reason: string }[] }) => (r.approximated ?? []).filter((e) => e.id === mus1 && e.type === "source_length");
+const over = longer(14), edge = longer(12.04), edge2 = longer(12.06), looped = longer(14, { loop: true });
+check("a clip longer than its source is approximated in both formats, with its need and the source length",
+  [over.f, over.o].every((r) => srcOf(r).length === 1 && srcOf(r)[0].reason === `clip ${mus1} needs 14 s, source has 12 s` && !r.skipped.some((e) => /source/.test(e.reason))) && !srcOf(fx).length && !srcOf(ot).length, { f: over.f.approximated, o: over.o.approximated });
+check("the margin is validate's: 0.04 s over is not listed, 0.06 s over is", !srcOf(edge.f).length && !srcOf(edge.o).length && srcOf(edge2.f).length === 1 && srcOf(edge2.o).length === 1);
+check("a loop clip is listed as well: neither format writes the loop, so its range runs past the source", srcOf(looped.f).length === 1 && srcOf(looped.o).length === 1 && fieldsOf(looped.f, mus1).some((x) => /loop/.test(x)) && fieldsOf(looped.o, mus1).some((x) => /loop/.test(x)), { f: looped.f, o: looped.o.approximated });
 const otioOut = join(tmp, "out", "edit.otio");
 if (typeof (api as any).exportTimeline === "function") { // wired through api.ts (CLI `export` / `render -o x.fcpxml`)
   const viaApi = await (api as any).exportTimeline(dir, { out: join(tmp, "out", "api.otio") });

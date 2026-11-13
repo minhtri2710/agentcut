@@ -54,6 +54,9 @@ const black = by("black_frames")[0];
 check("black frames in the gap (~3.25-3.75)", black && black.t >= 3.2 && black.t <= 3.45 && black.end >= 3.6 && black.end <= 3.9, by("black_frames"));
 check("validation warning reused: vid3 needs more source than the media", by("validation_warning").some((x: any) => x.id === "vid3" && /source/.test(x.message)), rv.findings);
 check("findings sorted by time", rv.findings.every((x: any, i: number) => !i || rv.findings[i - 1].t <= x.t));
+const rvErr = (...a: string[]) => spawnSync(CLI[0], [...CLI.slice(1), "review", "-p", P, "--beats", "0,1,2,3,4,5,6,7,8", ...a], { encoding: "utf8", env }).stderr.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const lines = rvErr();
+check("review prints progress lines on stderr, ending at 1; --quiet prints none", lines.length > 0 && lines.at(-1).progress === 1 && lines.at(-1).frame === lines.at(-1).frames && !rvErr("--quiet").length, lines.slice(-2));
 
 // fix everything the review complained about -> those findings disappear
 cli("apply", "-p", P, "--ops", JSON.stringify([

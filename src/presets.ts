@@ -3,6 +3,7 @@
 import { firstCovering } from "./fonts.ts";
 import { type Dict, EditError, suggest } from "./model.ts";
 import { own } from "./own.ts";
+import { safeMargin } from "./safe.ts";
 
 const heavy = (text = "AÁÀẢÃẠ") => firstCovering(["Arial Black", "Helvetica Neue Condensed Black", "Avenir Next Heavy", "Arial Bold", "Helvetica Neue Bold", "DejaVu Sans Bold"], text);
 const bold = (text = "AÁ") => firstCovering(["Arial Bold", "Helvetica Neue Bold", "Segoe UI Bold", "Noto Sans Bold", "DejaVu Sans Bold"], text);
@@ -45,17 +46,18 @@ export function expandPreset(kind: "text" | "captions", name: string, text: stri
 type Media = string | Dict;
 const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
 
-type Template = { doc: string; args: Dict; build: (a: Dict) => Dict[] };
-/** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). */
-const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }) => Dict[] }): Template => t;
+type Size = { width: number; height: number };
+type Template = { doc: string; args: Dict; build: (a: Dict, size: Size) => Dict[] };
+/** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). `size` is the project's width and height: text placed against an edge takes its margin from the safe area. */
+const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }, size: Size) => Dict[] }): Template => t;
 
 export const TEMPLATES: Record<string, Template> = {
   slideshow: tpl({
     doc: "photos/clips with Ken Burns + crossfades, optional title and music (cuts snap to beats)",
     args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)", every: "beats per cut (4)" },
-    build: (a) => {
+    build: (a, { width, height }) => {
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
-      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold" });
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold", position: "top", margin: safeMargin(width, height, "top") });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 4 });
       return ops;
     },
@@ -63,10 +65,10 @@ export const TEMPLATES: Record<string, Template> = {
   promo: tpl({
     doc: "product promo: hook title, one proof point per clip, CTA end card, beat-synced",
     args: { media: "clips/photos (required)", hook: "opening line", points: "list of short lines", cta: "end card text", music: "path", brand_color: "#FFD60A", seconds: "per clip (2)", every: "beats per cut (2)" },
-    build: (a) => {
+    build: (a, { width, height }) => {
       const n = a.media.length, seg = a.seconds ?? 2;
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
-      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: "16%" });
+      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, "top") });
       (a.points || []).slice(0, Math.max(0, n - 1)).forEach((p: string, i: number) =>
         ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
       if (a.cta) ops.push({ op: "add_clip", track: "main", type: "color", gradient: { colors: [a.brand_color ?? "#111111", "#000000"], angle: 160 }, duration: 2.5, transition: "flash" },
@@ -106,13 +108,13 @@ export const TEMPLATES: Record<string, Template> = {
   listicle: tpl({
     doc: "numbered list: title card, then one clip per item with a numbered label",
     args: { title: "headline (required)", items: "[{text, media}] (required)", seconds: "per item (3)", music: "path" },
-    build: (a) => {
+    build: (a, { width, height }) => {
       const s = a.seconds ?? 3;
       const ops: Dict[] = [{ op: "add_clip", track: "main", type: "color", gradient: { colors: ["#111827", "#1f2937"], angle: 180 }, duration: 2.2 },
         { op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.2, match_duration: true, preset: "title_bold" }];
       (a.items || []).forEach((it: Dict, i: number) => {
         ops.push({ op: "add_clip", track: "main", ...src(it.media), duration: s, transition: { type: "slide_left", duration: 0.35 }, fit: "blur" });
-        ops.push({ op: "add_clip", track: "text", text: `${i + 1}. ${it.text}`, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third" });
+        ops.push({ op: "add_clip", track: "text", text: `${i + 1}. ${it.text}`, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third", margin: safeMargin(width, height, "bottom", "left") });
       });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 1 });
       return ops;

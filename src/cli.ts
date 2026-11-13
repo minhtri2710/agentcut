@@ -155,6 +155,8 @@ export async function main(argv = process.argv.slice(2)) {
   const api = await import("./api.ts");
   const P = f.project;
   const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
+  let last = 0;
+  const progress = f.quiet ? undefined : (d: number, n: number) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr
   let res: any;
   try {
     switch (cmd) {
@@ -173,18 +175,18 @@ export async function main(argv = process.argv.slice(2)) {
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), signal }); break;
       case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every, "--every"), count: num(f.count, "--count"), cols: num(f.cols, "--cols"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width"), guides: f.guides }); break;
       case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
-      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"], "--min-shot"), maxShot: num(f["max-shot"], "--max-shot"), cps: num(f.cps, "--cps"), black: !f["no-black"], signal }); break;
+      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"], "--min-shot"), maxShot: num(f["max-shot"], "--max-shot"), cps: num(f.cps, "--cps"), black: !f["no-black"], signal,
+        progress }); break;
       case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width, "--width"), minSilence: num(f["min-silence"], "--min-silence"), out: f.output, signal }); break;
       case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames, "--frames"), pad: num(f.pad, "--pad"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width") }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
         if (f.format === "srt" || f.format === "vtt") { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
-        let last = 0;
         res = await api.render(P, {
           out: f.output, start: f.start, end: f.end, scale: num(f.scale, "--scale"), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
           workers: num(f.workers, "--workers"), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles, signal,
-          progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } },
+          progress,
         });
         break;
       }
@@ -215,8 +217,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
-        let last = 0;
-        res = await api.prepare(P, { allowDownload: f["allow-download"], signal, progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } } });
+        res = await api.prepare(P, { allowDownload: f["allow-download"], signal, progress });
         break;
       }
       case "cache": {

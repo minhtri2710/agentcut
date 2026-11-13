@@ -4,7 +4,8 @@ import * as AN from "./analyze.ts";
 import {
   type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, type Timeline, totalDuration,
 } from "./model.ts";
-import { type Layer, refuseJpegSize, Renderer, renderTiles, safeZones, tileSize } from "./render.ts";
+import { type Layer, refuseJpegSize, Renderer, renderTiles, tileSize } from "./render.ts";
+import { safeZones } from "./safe.ts";
 
 const r3 = (x: number) => +x.toFixed(3);
 const visual = (tl: Timeline) => tl.tracks.filter((t) => !t.hidden && (t.kind ?? "video") !== "audio");
@@ -55,6 +56,7 @@ export async function motionStrips(tl: Timeline, root: string, windows: Window[]
 // ------------------------------------------------------------------ review
 export interface ReviewOpts {
   beats?: number[] | "music"; minShot?: number; maxShot?: number; cps?: number; black?: boolean; issues?: Issue[]; signal?: AbortSignal;
+  progress?: (done: number, total: number) => void; // black-frame samples taken of all to take
 }
 export interface Finding { type: string; t: number; end?: number; id?: string; message: string; hint?: string }
 
@@ -118,9 +120,10 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
   const cps = o.cps ?? 15;
   const r = new Renderer(structuredClone(tl), root, Math.min(1, 540 / W));
   try {
-    const z = safeZones(W, H), [sx, sy, sw, sh] = z.title;
+    const z = safeZones(W, H), [sx, sy, sw, sh] = z.title, tol = Math.max(0.5, 1 / r.k); // the preview is drawn at scale k with its height rounded to an even size: a box edge is known to one preview pixel
     const texts = r.layers.filter((L) => TEXTY.has(L.type));
     for (const L of texts) {
+      o.signal?.throwIfAborted();
       const c = L.c;
       if (L.type === "text") {
         const chars = [...String(c.text ?? "").replace(/\s+/g, " ").trim()].length, need = Math.max(1, chars / cps);
@@ -131,8 +134,8 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
         if (!b) continue;
         const [x, y, w, h] = b.map((v) => v / r.k);
         const where: string[] = [];
-        if (x < sx - 0.5 || y < sy - 0.5 || x + w > sx + sw + 0.5 || y + h > sy + sh + 0.5) where.push("outside the title-safe area (5% inset)");
-        for (const [name, ux, uy, uw, uh] of z.ui) if (x < ux + uw && x + w > ux && y < uy + uh && y + h > uy) where.push(`under the ${name}`);
+        if (x < sx - tol || y < sy - tol || x + w > sx + sw + tol || y + h > sy + sh + tol) where.push("outside the title-safe area (5% inset)");
+        for (const [name, ux, uy, uw, uh] of z.ui) if (x < ux + uw - tol && x + w > ux + tol && y < uy + uh - tol && y + h > uy + tol) where.push(`under the ${name}`);
         if (where.length) {
           out.push({ type: "text_unsafe", t: r3(L.start + t), id: c.id, message: `${c.id} box [${[x, y, w, h].map(Math.round).join(", ")}] is ${where.join(" and ")}`, hint: "move it toward the centre (position/margin or y: \"40%\"-\"75%\"), shrink font_size/max_width; check with preview_frame guides=true" });
           break;
@@ -142,7 +145,7 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
   } finally { r.close(); }
 
   // black frames: sample the composite at low resolution
-  if (o.black !== false && T > 0) for (const f of await blackRuns(tl, root, T, fps)) out.push(f);
+  if (o.black !== false && T > 0) for (const f of await blackRuns(tl, root, T, fps, o)) out.push(f);
 
   out.sort((a, b) => a.t - b.t);
   const counts: Record<string, number> = {};
@@ -156,22 +159,25 @@ function probeTimes(L: Layer): number[] {
   return L.pages.slice(0, 40).map((pg) => Math.max(0, L.words[pg[0]].start) + 0.15).filter((t) => t < L.dur);
 }
 
-async function blackRuns(tl: Timeline, root: string, T: number, fps: number): Promise<Finding[]> {
+async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: ReviewOpts): Promise<Finding[]> {
   const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width));
   const dips: [number, number][] = [];
   for (const tr of visual(tl)) tr.clips.forEach((c, i) => {
     const s = i > 0 ? normAnim(c.transition, 0.5) : null;
     if (s && s.type === "dip_black") dips.push([clipStart(c), clipStart(c) + s.duration]);
   });
-  const black: number[] = [];
+  const black: number[] = [], times: number[] = [];
+  for (let t = 0; t < T - 1e-6; t += step) times.push(t);
   try {
-    for (let t = 0; t < T - 1e-6; t += step) {
+    for (const [n, t] of times.entries()) {
+      o.signal?.throwIfAborted();
       const tt = Math.min(t, T - 1 / fps);
       await r.frame(tt);
       const px = r.pixels();
       let bright = 0;
       for (let i = 0; i < px.length; i += 4) if (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2] > 24) bright++;
       if (bright / (px.length / 4) < 0.03 && !dips.some(([a, b]) => tt >= a - 1e-6 && tt <= b + 1e-6)) black.push(tt);
+      o.progress?.(n + 1, times.length);
     }
   } finally { r.close(); }
   const out: Finding[] = [];

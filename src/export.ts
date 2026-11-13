@@ -12,7 +12,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { own } from "./own.ts";
-import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, normAnim, parseColor, parseTime, type Timeline, type Track } from "./model.ts";
+import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, type Issue, normAnim, parseColor, parseTime, pastEnd, type Timeline, type Track } from "./model.ts";
 import { refuseSource } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
@@ -80,10 +80,10 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
   const main = mi >= 0 ? tracks[mi] : null;
 
   const notes = (c: Clip, kind: Kind) => {
-    if (fmt === "otio" && kind === "title") return; // the whole clip is reported
     const lost: string[] = [];
     for (const [k, label] of Object.entries(DROPPED)) {
       const v = c[k];
+      if (k === "color" && kind === "title") continue; // a title's colour is its fill, not a grade
       if (v === undefined || v === null || v === false || v === "none" || (Array.isArray(v) && !v.length)) continue;
       if (k === "keyframes" && kind === "media" && !Object.keys(v).some((x) => x !== "speed")) continue; // a speed ramp is listed as approximated
       lost.push(label);
@@ -232,6 +232,14 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     const tr = tracks[ti];
     if (ti === mi) { videoLanes.push({ track: tr, lane: 0, items: spine.entries }); continue; }
     for (const [k, items] of (lanesOf.get(ti) ?? []).entries()) ((tr.kind ?? "video") === "audio" ? audioLanes : videoLanes).push({ track: tr, lane: k, items });
+  }
+  // per exported clip: a volume OTIO keeps only as metadata, and a range that runs past its source (loop, freeze and a speed ramp are not exported, so the range written is in + duration x speed)
+  for (const ln of [...videoLanes, ...audioLanes]) for (const p of ln.items) {
+    if (p.kind !== "media") continue;
+    if (fmt === "otio" && p.audio && p.volume !== 1) approximated.push({ id: p.c.id, type: "volume", reason: `volume ${+p.volume.toFixed(4)} (${db(p.volume)}) is written only to metadata.agentcut: OTIO has no gain field, set it in the NLE` });
+    const a = assets[p.c.asset], need = (p.srcIn + p.dur * p.speed) / rate.fps, over: Issue[] = [];
+    if (typeof a.duration === "number" && a.duration > 0) pastEnd(over, "", p.c.asset, a, need, "");
+    if (over.length) approximated.push({ id: p.c.id, type: "source_length", reason: `clip ${p.c.id} needs ${+need.toFixed(2)} s, source has ${+a.duration!.toFixed(2)} s` });
   }
   for (const c of allClips(tracks)) {
     const ops = Object.keys(c.pending ?? {});

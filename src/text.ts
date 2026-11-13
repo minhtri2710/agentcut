@@ -52,6 +52,11 @@ function metrics(style: TextStyle) {
   return { asc, desc };
 }
 
+function inkOf(style: TextStyle, line: Line, key: "actualBoundingBoxAscent" | "actualBoundingBoxDescent") {
+  mctx!.font = style.css;
+  return Math.max(0, ...line.words.map((w) => mctx!.measureText(w.text)[key]));
+}
+
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const graphemes = (s: string) => [...segmenter.segment(s)].map((g) => g.segment);
 
@@ -110,8 +115,10 @@ export function layout(text: string, style: TextStyle, maxWidth: number) {
     }
     lines.push({ words: cur, w: curW });
   }
-  const { asc, desc } = metrics(style);
-  const lh = (asc + desc) * style.lineHeight;
+  const { asc: fa, desc: fd } = metrics(style);
+  // a glyph can leave the font's ascent/descent (a colour emoji from a fallback font): the box takes the first line's ascent and the last line's descent; the pitch stays the font's
+  const asc = Math.max(fa, inkOf(style, lines[0], "actualBoundingBoxAscent")), desc = Math.max(fd, inkOf(style, lines.at(-1)!, "actualBoundingBoxDescent"));
+  const lh = (fa + fd) * style.lineHeight;
   return { lines, width: Math.max(1, ...lines.map((l) => l.w)), lh, asc, glyphH: asc + desc, count: idx };
 }
 

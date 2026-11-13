@@ -842,7 +842,7 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
     refuseUnknown(Object.keys(a), ["name", ...Object.keys(t.args)], `apply_template ${a.name}`);
     if (["slideshow", "promo", "beat_montage"].includes(a.name) && !a.media?.length) throw new EditError(`template '${a.name}' needs media: [paths]`, "missing_arg");
-    const ops = t.build(a);
+    const ops = t.build(a, tl.settings as { width: number; height: number });
     const results = ops.map((o, i) => {
       const { op: name, ...args } = o;
       try { return { op: name, ...OPS[name].fn(p, tl, args) }; }

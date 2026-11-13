@@ -787,7 +787,7 @@ function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
 }
 
 /** The warning for a clip that needs `need` s of a source that is shorter (`ends`: what happens at the end). */
-function pastEnd(issues: Issue[], p: string, aid: string, a: Asset, need: number, ends: string) {
+export function pastEnd(issues: Issue[], p: string, aid: string, a: Asset, need: number, ends: string) {
   if (need > a.duration! + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration!.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
 }
 

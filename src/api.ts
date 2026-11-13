@@ -277,7 +277,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
 }
 
 /** Editorial lint with times: unsafe/short text, shot lengths, off-beat cuts, black frames + validation warnings. */
-export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal } = {}) {
+export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal; progress?: (done: number, total: number) => void } = {}) {
   inRange("min_shot", o.minShot, 0);
   inRange("max_shot", o.maxShot, 0, Infinity, { open: true });
   inRange("cps", o.cps, 0, Infinity, { open: true });
