@@ -424,7 +424,7 @@ export function capabilities() {
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
     matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name) })),
-    engines: { transcribe: AN.transcribeEngine(), tts: { ...AN.ttsProviders(), voices: "the installed voices list" }, vision: visionEngine() },
+    engines: { transcribe: AN.transcribeEngine(), tts: AN.ttsProviders(), vision: visionEngine() },
     ops: Object.keys(OPS),
   };
 }

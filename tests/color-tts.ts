@@ -186,7 +186,7 @@ case "$voice" in ""|en-us|en-us+f3|vi) cp "$d/ok.wav" "$out";; *) echo "Failed t
   try {
     const speak = async (v: string) => { try { await AN.tts("x", join(tmp, "e.wav"), v); return null; } catch (e: any) { return e; } };
     const bad = await speak("zz-nope");
-    check("espeak: a voice that is not installed is a bad_voice that points to the installed voices", bad?.code === "bad_voice" && /installed voices/.test(bad.hint ?? "") && /espeak-ng --voices/.test(bad.hint ?? ""), bad && { code: bad.code, msg: bad.message, hint: bad.hint });
+    check("espeak: a voice that is not installed is a bad_voice that names the voices listing", bad?.code === "bad_voice" && /list_voices/.test(bad.hint ?? "") && /agentcut voices/.test(bad.hint ?? "") && /espeak-ng --voices/.test(bad.hint ?? ""), bad && { code: bad.code, msg: bad.message, hint: bad.hint });
     check("espeak: the bad_voice message keeps what espeak printed", /Failed to read voice zz-nope/.test(bad?.message ?? ""), bad && bad.message);
     const second = await speak("zh"), mb = await speak("mb-en1");
     check("espeak: a failing synthesis with a voice from a later language group is a tts_failed, not a bad_voice", second?.code === "tts_failed", second && { code: second.code, msg: second.message });
@@ -614,8 +614,8 @@ fi
       setEnv({ PATH: eng, AGENTCUT_WHISPER_MODEL: join(eng, "ggml.bin"), AGENTCUT_PIPER_MODEL: join(eng, "v.onnx"), AGENTCUT_UV: join(eng, "uv"), AGENTCUT_TTS_PROVIDER: undefined });
       let e = engines();
       check("engines.transcribe: whisper-cli on PATH + an existing model is available", e.transcribe.available === true && e.transcribe.engine === "whisper-cli" && e.transcribe.model === join(eng, "ggml.bin") && /auto/.test(e.transcribe.languages) && !e.transcribe.hint, e.transcribe);
-      check("engines.tts: piper with a model is available, the default provider and the voices tool are named",
-        e.tts.default_provider === "system" && e.tts.providers.find((p: any) => p.name === "piper")?.available === true && e.tts.voices === "the installed voices list", e.tts);
+      check("engines.tts: piper with a model is available, and the default provider are named",
+        e.tts.default_provider === "system" && e.tts.providers.find((p: any) => p.name === "piper")?.available === true, e.tts);
       const system = () => engines().tts.providers.find((p: any) => p.name === "system")?.available;
       check("engines.tts: the system provider is not available without its engine on PATH", system() === false);
       setEnv({ PATH: `${eng}:${engSys}` });

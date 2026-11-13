@@ -81,7 +81,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default
-   provider env AGENTCUT_TTS_PROVIDER. The installed voices list shows which providers are available. Each sentence is synthesized separately
+   provider env AGENTCUT_TTS_PROVIDER. list_voices (CLI: agentcut voices) shows which providers are available. Each sentence is synthesized separately
    (openai: one request per sentence), so captions follow the real sentence timing.
    Outside the timeline: tts (CLI: agentcut tts "text" -o out.wav [--voice V] [--rate WPM]) writes the speech to a file; transcribe (CLI: agentcut transcribe F
    [--language L] [--model M] [--start S --end S]) returns word timings, of one stretch of the media when start or end is given (start defaults to 0, end to the media end).

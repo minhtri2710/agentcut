@@ -579,7 +579,19 @@ console.log("decode and render failures");
     check(`a frozen ${name} clip with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
     fz.close();
   }
-  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3, freeze: true, srcIn: 2, ...mode });
+  { // a looping clip's in past the source length wraps into it (freeze_frame in the second pass), and holds the frame that was playing, not the last one
+    const wrapped = frz(2.5, 2, { loop: true }), base = frz(0.5), w = await wrapped.readAt(0).catch((e) => e?.code), b = await base.readAt(0);
+    check("a frozen loop clip with in 2.5 (source 2 s) holds the frame at 0.5 s, not the last frame", Buffer.isBuffer(w) && w.equals(b) && !w.equals(tailRef), Buffer.isBuffer(w) ? w.length : w);
+    wrapped.close(); base.close();
+    const L = join(tmp, "freeze-loop"), P = join(tmp, "freeze-plain");
+    for (const [d, op, at] of [[L, { loop: true, duration: 4 }, 2.5], [P, {}, 0.5]] as const) {
+      api.create(d, { width: 64, height: 64, fps: 30 });
+      await api.apply(d, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4"), ...op }, { op: "freeze_frame", id: "vid1", at, duration: 1 }]);
+    }
+    const fl = await api.frameImage(L, 2.7, { scale: 1 }).catch((e: any) => e), fp = await api.frameImage(P, 0.7, { scale: 1 }).catch((e: any) => e);
+    check("freeze_frame in the second pass of a looping clip holds the frame that was playing", fl?.data?.length > 100 && fp?.data?.length > 100 && Buffer.from(fl.data).equals(Buffer.from(fp.data)), fl?.code ?? fp?.code);
+  }
+  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1.6, freeze: true, srcIn: 1, ...mode });
   const cut = cutOf({});
   check("a freeze in a source that ends well inside its probed length is decode_failed, not a held frame", (await code(cut.readAt(0))) === "decode_failed");
   for (const mode of [{ loop: true }, { reverse: true }]) {
