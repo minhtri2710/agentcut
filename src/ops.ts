@@ -185,8 +185,13 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
   const clips = tr.clips;
   if (tr.magnetic) {
     let idx = clips.length;
-    if (a.after) idx = clips.indexOf(findClip(tl, a.after)[2]) + 1;
-    else if (a.before) idx = clips.indexOf(findClip(tl, a.before)[2]);
+    const pos = (id: string) => { // a magnetic track is ordered, so the neighbour must be one of its own clips
+      const i = clips.indexOf(findClip(tl, id)[2]);
+      if (i < 0) throw new EditError(`clip '${id}' is not on track '${tr.id}'`, "bad_value", `after/before name a clip on '${tr.id}' (${clips.map((x) => x.id).join(", ") || "it is empty"}), or use index`);
+      return i;
+    };
+    if (a.after) idx = pos(a.after) + 1;
+    else if (a.before) idx = pos(a.before);
     else if (a.index !== undefined) idx = +a.index;
     clips.splice(idx, 0, c);
     delete c.start;
@@ -490,11 +495,12 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
   { id: "video clip id", at: "timeline seconds", duration: "s (2)" }, (p, tl, a) => {
     const [, , c0] = findClip(tl, a.id);
     if (c0.type !== "video") throw new EditError("freeze_frame needs a video clip", "bad_type");
-    const t = parseAt(tl, a.at);
-    const s = clipStart(c0), atStart = t <= s + 1e-3; // a freeze of the first frame plays before the clip
+    const t = parseAt(tl, a.at), s = clipStart(c0), e = s + clipDur(c0);
+    if (t < s - 1e-3 || t > e + 1e-3) throw new EditError(`at ${round6(t)}s is outside clip '${c0.id}' (${round6(s)}s to ${round6(e)}s)`, "bad_value", `freeze at a timeline time inside the clip: ${round6(s)} to ${round6(e)}`);
+    const atStart = t <= s + 1e-3; // a freeze of the first frame plays before the clip
     const srcT = parseTime(c0.in ?? 0) + Math.max(0, t - s) * (Number(c0.speed ?? 1) || 1);
     let insertAfter = c0;
-    if (!atStart && t < s + clipDur(c0) - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
+    if (!atStart && t < e - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
     const [tr] = findClip(tl, insertAfter.id);
     const fz: Clip = { ...structuredClone(c0), id: newId(tl, "frz"), in: round6(srcT), duration: round6(parseTime(a.duration ?? 2)), freeze: true };
     for (const k of ["transition", "enter", "exit", "keyframes", "fade_in", "fade_out", "reverse"]) delete fz[k];

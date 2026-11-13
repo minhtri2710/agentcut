@@ -24,8 +24,8 @@ export function parseSrt(path: string): CWord[] {
     if (i < 0) continue;
     const g = ts.exec(lines[i])!;
     let text = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").replace(/--\u2060>/g, "-->"); // formatCues writes the cue arrow as --U+2060>
-    if (vtt) text = text.replace(/&(?:(amp|lt|gt|nbsp|lrm|rlm)|#(\d+)|#x([\da-f]+));/gi, (m, name, dec, hex) => {
-      if (name) return VTT_ENTITY[name.toLowerCase()];
+    if (vtt) text = text.replace(/&(?:(amp|lt|gt|nbsp|lrm|rlm)|#(\d+)|#[xX]([\da-fA-F]+));/g, (m, name, dec, hex) => { // names are case-sensitive, as in HTML
+      if (name) return VTT_ENTITY[name];
       const cp = dec ? parseInt(dec, 10) : parseInt(hex, 16);
       return cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : m;
     });

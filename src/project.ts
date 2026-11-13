@@ -176,7 +176,7 @@ export class Project {
       tl.revision = disk + 1;
       // a failed save leaves the history as it was: the new undo entry goes again and redo is kept
       try { this.write(tl); } catch (e) { if (pushed) rmSync(pushed, { force: true }); throw e; }
-      if (snapshot) this.clear("redo");
+      if (snapshot) try { this.clear("redo"); } catch { /* the write is the commit point: a save that happened is not reported as failed; the next save clears it again */ }
       return tl.revision;
     });
   }

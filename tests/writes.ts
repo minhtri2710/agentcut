@@ -231,6 +231,22 @@ console.log("volumes without hard links: a named error, and init leaves nothing 
   }
 }
 
+// ------------------------------------------------------------------ redo is cleared after the project file is written
+console.log("a save whose redo clear fails is still a save");
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const p = await project("redo-clear"), hist = join(p, ".agentcut", "history");
+  const texts = () => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text);
+  const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
+  await api.apply(p, text("a"));
+  api.undo(p, 1);
+  chmodSync(hist, 0o500); // the redo dir cannot be removed from it
+  let c: string;
+  try { c = await code(() => api.apply(p, text("b"))); } finally { chmodSync(hist, 0o700); }
+  check("the batch is applied and reported as applied (no error after project.json was written)", c === "ok" && texts().join() === "b", { c, texts: texts() });
+  await api.apply(p, text("c"));
+  check("the next save clears the redo stack", api.history(p).redo.length === 0, api.history(p));
+}
+
 // ------------------------------------------------------------------ sidecars of a render
 console.log("sidecar names next to a render that are links: the targets are unchanged");
 {

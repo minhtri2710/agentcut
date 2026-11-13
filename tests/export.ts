@@ -227,6 +227,11 @@ console.log("caption sources and subtitle export");
   check("vtt: tags are stripped before character references are decoded (named and numeric; an invalid number stays)", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["x <i> \u00a0AB&#0;&#1114112;\u200e"]), parseSrt(vttPath));
   writeFileSync(vttPath, "WEBVTT\n\nNOTE 00:00.000 --> 00:01.000 a comment\nmore comment\n\nSTYLE\n::cue { color: red }\n\nREGION\nid:r\n\nNOTE\nsee 1\n\n00:02.000 --> 00:03.000\nreal\n");
   check("vtt: NOTE, STYLE and REGION blocks are not cues", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["real"]), parseSrt(vttPath));
+  writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:01.000\n&Lt; &NBSP; &lt; &nbsp; &#X41;\n");
+  check("vtt: character reference names are case-sensitive (&Lt; and &NBSP; stay as written, &lt; and &nbsp; decode)", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["&Lt; &NBSP; < \u00a0 A"]), parseSrt(vttPath));
+  const bomSrt = join(tmp, "bom.srt"); // the WEBVTT header marks WebVTT, not the .vtt extension
+  writeFileSync(bomSrt, "\ufeffWEBVTT\n\n00:00.000 --> 00:01.000\na &lt;b&gt;\n");
+  check("a body with a BOM and a WEBVTT header at a .srt path reads as WebVTT (decoded)", JSON.stringify(parseSrt(bomSrt).map((w) => w.text)) === JSON.stringify(["a <b>"]), parseSrt(bomSrt));
   const srtEnt = join(tmp, "ent.srt");
   writeFileSync(srtEnt, "1\n00:00:00,000 --> 00:00:01,000\na &amp; b &lt;\n");
   check("srt: character references stay literal text", parseSrt(srtEnt).map((w) => w.text).join("|") === "a &amp; b &lt;", parseSrt(srtEnt));

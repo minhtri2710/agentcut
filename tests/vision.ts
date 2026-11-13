@@ -426,12 +426,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   const cacheEnv = process.env.AGENTCUT_CACHE!;
   mkdirSync(cacheEnv, { recursive: true });
   /** analyze_subject against its own user cache dir `cache` (a fresh cache never hits a stored result); resolves to "ok" or the error code */
-  const subject = async (cache: string, fps = 5, seed = true) => {
+  const subjectErr = async (cache: string, fps = 5, seed = true) => {
     const keep = process.env.AGENTCUT_CACHE;
     if (seed) seedFaceIn(cache);
     process.env.AGENTCUT_CACHE = cache;
-    try { await api.analyze.subject(join(m, "rb.mp4"), fps); return "ok"; } catch (e: any) { return e.code as string; } finally { process.env.AGENTCUT_CACHE = keep; }
+    try { await api.analyze.subject(join(m, "rb.mp4"), fps); return undefined; } catch (e: any) { return e; } finally { process.env.AGENTCUT_CACHE = keep; }
   };
+  const subject = async (cache: string, fps = 5, seed = true) => (await subjectErr(cache, fps, seed) as any)?.code ?? "ok";
   const fresh = (name: string) => { const d = join(tmp, `hc-${name}`); mkdirSync(d, { recursive: true }); return d; };
   process.env.AGENTCUT_UV = rec;
   try {
@@ -488,29 +489,23 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
 
     // refusals come before anything is written and before uv runs
     const refused = async (name: string, cache: string, watch: string[]) => {
-      const n = runs().length, code = await subject(cache, 5, false);
+      const n = runs().length, err: any = await subjectErr(cache, 5, false), code = err?.code;
       check(`${name}: refused with unsafe_helper_dir, uv not run, nothing written`, code === "unsafe_helper_dir" && runs().length === n && watch.every((d) => !existsSync(d) || readdirSync(d).length === 0), { code, ran: runs().length - n });
+      return err?.hint as string | undefined;
     };
     if (posix) {
-      const cSym = fresh("c-symlink"), elsewhere = fresh("elsewhere");
+      // each cause has its own hint, and applying it makes the next run pass (the not-owned-by-you cause needs another user, so no row builds it)
+      const cSym = fresh("c-symlink"), elsewhere = fresh("elsewhere"), symRoot = join(realpathSync(cSym), "helper-runs");
       symlinkSync(elsewhere, join(cSym, "helper-runs"));
-      await refused("helper-runs is a symlink", cSym, [elsewhere]);
-      const cMode = fresh("c-mode");
+      const symHint = await refused("helper-runs is a symlink", cSym, [elsewhere]);
+      check("helper-runs is a symlink: the hint is to remove the link (no chmod), and doing so makes the next run pass", symHint?.includes(`(rm ${symRoot})`) === true && !symHint.includes("chmod")
+        && spawnSync("rm", [symRoot]).status === 0 && await subject(cSym) === "ok" && readdirSync(elsewhere).length === 0, { hint: symHint });
+      const cMode = fresh("c-mode"), modeRoot = join(realpathSync(cMode), "helper-runs");
       mkdirSync(join(cMode, "helper-runs"));
       chmod(join(cMode, "helper-runs"), 0o755);
-      await refused("helper-runs has mode 0755", cMode, [join(cMode, "helper-runs")]);
-      // the hint for a helper-runs dir that is not exactly 0700 is the chmod that fixes it: applying it makes the next run pass
-      const cFix = fresh("c-fix"), fixDir = join(cFix, "helper-runs");
-      mkdirSync(fixDir);
-      chmod(fixDir, 0o755);
-      seedFaceIn(cFix);
-      const keepCache = process.env.AGENTCUT_CACHE;
-      let fixErr: any;
-      process.env.AGENTCUT_CACHE = cFix;
-      try { await api.analyze.subject(join(m, "rb.mp4"), 5); } catch (e) { fixErr = e; } finally { process.env.AGENTCUT_CACHE = keepCache; }
-      const fixCmd = /with: (chmod \S+) (.+)$/.exec(fixErr?.hint ?? "");
-      check("helper-runs with mode 0755: the hint is chmod 700 on it, and running it makes the next run pass", fixErr?.code === "unsafe_helper_dir" && fixCmd?.[1] === "chmod 700" && fixCmd[2] === join(realpathSync(cFix), "helper-runs")
-        && spawnSync("chmod", ["700", fixCmd[2]]).status === 0 && await subject(cFix) === "ok", { hint: fixErr?.hint });
+      const modeHint = await refused("helper-runs has mode 0755", cMode, [join(cMode, "helper-runs")]);
+      check("helper-runs with mode 0755: the hint is chmod 700 on it, and running it makes the next run pass", modeHint?.endsWith(`with: chmod 700 ${modeRoot}`) === true
+        && spawnSync("chmod", ["700", modeRoot]).status === 0 && await subject(cMode) === "ok", { hint: modeHint });
       const open = fresh("open");
       mkdirSync(join(open, "sub"));
       chmod(open, 0o777);

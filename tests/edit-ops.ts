@@ -572,6 +572,12 @@ console.log("match_duration by clip reference");
     check("freeze_frame: the freeze clip is plain and keeps its length", at(x, fz.id).match_duration === undefined && at(x, fz.id).end_offset === undefined && at(x, fz.id).duration === 1.5 && at(x, "vid1").match_duration === "vo1", { fz, c: at(x, fz.id) });
     const [x2, rs2] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
       { op: "freeze_frame", id: "vid1", at: 1.5, duration: 1 }]);
+    for (const [name, atT] of [["after the clip ends", 50], ["before the clip starts", -2]] as const) {
+      const t1 = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 1, duration: 1 }])[0], before = JSON.stringify(t1);
+      let err: any;
+      try { run(t1, [{ op: "freeze_frame", id: "vid1", at: atT, duration: 1 }]); } catch (e) { err = e; }
+      check(`freeze_frame at a time ${name} is refused with its range, and nothing changes`, err?.code === "bad_value" && /1s to 2s/.test(err.message) && !!err.hint && JSON.stringify(t1) === before, { code: err?.code, message: err?.message });
+    }
     const fz2 = rs2[2];
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }
@@ -874,6 +880,11 @@ console.log("pieces of an attached clip keep their place and length");
     try { run(t, ops); check(name, false, "no error"); }
     catch (e: any) { check(name, e.code === code && !!e.hint && JSON.stringify(t) === before, { code: e.code, message: e.message, hint: e.hint }); }
   };
+  // a magnetic track is ordered: after/before name a clip of that track, never one of another track (it used to land first, or before the last clip)
+  const stories = run(base(), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "add_clip", track: "m2", asset: "i", id: "n1", duration: 1 }, { op: "add_clip", track: "m2", asset: "i", id: "n2", duration: 1 }])[0];
+  refused("add_clip after= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", after: "img1" }], "bad_value");
+  refused("add_clip before= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", before: "img1" }], "bad_value");
+  refused("move_clip to a magnetic track after= a clip of another track is refused", stories, [{ op: "move_clip", id: "img2", track: "m2", after: "img1" }], "bad_value");
   const [m1, [r1]] = run(base(), [{ op: "move_clip", id: "ovl", at: 1 }]);
   check("move_clip at on an attached clip: it lands at the asked time, stays attached, offset updated, result reports the start", near(at(m1, "ovl").start, 1) && at(m1, "ovl").attach_to === "img1" && near(at(m1, "ovl").offset, 1) && near(r1.start, 1), [at(m1, "ovl"), r1]);
   valid("move_clip at on an attached clip", m1);
