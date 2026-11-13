@@ -139,10 +139,14 @@ check("stale page edit -> 409 conflict with hint", cf.status === 409 && cf.j.err
 const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }] } });
 check("invalid batch rejected with issues", bad.status === 422 && bad.j.error.code === "validation_failed" && bad.j.error.issues?.length, bad.j);
 
-for (const [what, text] of [["{}", "{}"], ["[]", "[]"], ["an ops value that is not a list", '{"ops":"add_marker"}']] as const) {
+for (const [what, text, code] of [["{}", "{}", "bad_request"], ["[]", "[]", "bad_json"], ["an ops value that is not a list", '{"ops":"add_marker"}', "bad_request"]] as const) {
   const r = await jget("/api/ops", { method: "POST", text });
-  check(`/api/ops with ${what}: 400`, r.status === 400 && r.j.ok === false && ["bad_request", "bad_json"].includes(r.j.error.code), r);
+  check(`/api/ops with ${what}: 400 ${code}`, r.status === 400 && r.j.ok === false && r.j.error.code === code, r);
 }
+const histBefore = (await jget("/api/state")).j;
+const arrUndo = await jget("/api/undo", { method: "POST", text: "[]" });
+const histAfter = (await jget("/api/state")).j;
+check("/api/undo with []: 400 bad_json, and the history is unchanged", arrUndo.status === 400 && arrUndo.j.error.code === "bad_json" && histAfter.revision === histBefore.revision && JSON.stringify(histAfter.timeline) === JSON.stringify(histBefore.timeline), { arrUndo, before: histBefore.revision, after: histAfter.revision });
 for (const [path, body] of [["/api/ops", { ops: [{ op: "add_marker", t: 1 }], revision: "abc" }], ["/api/undo", { revision: "abc" }], ["/api/ops", { ops: [{ op: "add_marker", t: 1 }], revision: String(r0) }]] as const) {
   const r = await jget(path, { method: "POST", body });
   check(`${path} with revision ${JSON.stringify(body.revision)}: bad_revision that echoes the value as sent`, r.status === 400 && r.j.error.code === "bad_revision" && r.j.error.message.includes(`got ${JSON.stringify(body.revision)}`), r);
