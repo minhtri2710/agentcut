@@ -312,22 +312,35 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
 
 const WHISPER_CLIS = ["whisper-cli", "whisper-cpp", "main"];
 
-/** The engine transcribe() uses: whisper.cpp when a CLI is on PATH and a model is set, else OpenAI whisper on PATH, else none. A lookup only. */
-function asrEngine(model = process.env.AGENTCUT_WHISPER_MODEL): { cli: string; model: string } | { python: true } | null {
+/** What transcription can run: whisper.cpp when a CLI is on PATH and a model is named, else OpenAI whisper on PATH. The one place that decides; transcribe() and `capabilities` both read it. A lookup only. */
+type Asr = { kind: "cli"; cli: string; model: string } | { kind: "python" } | { kind: "bad_model"; cli: string; model: string } | { kind: "no_model"; cli: string } | { kind: "none" };
+function asrState(model = process.env.AGENTCUT_WHISPER_MODEL): Asr {
   const cli = WHISPER_CLIS.find(has);
-  if (cli && model) return { cli, model };
-  return has("whisper") ? { python: true } : null;
+  if (cli && model) return existsSync(model) ? { kind: "cli", cli, model } : { kind: "bad_model", cli, model };
+  if (has("whisper")) return { kind: "python" };
+  return cli ? { kind: "no_model", cli } : { kind: "none" };
 }
 
-/** What `capabilities` says about transcription (same selection as transcribe(); nothing is started). */
+/** What to do about a state that cannot transcribe. */
+const asrHint = (a: Asr) => a.kind === "bad_model" ? `whisper model ${a.model} does not exist: point AGENTCUT_WHISPER_MODEL (or the model argument) at a ggml model file`
+  : a.kind === "no_model" ? `${a.cli} found: set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin`
+  : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`";
+
+/** What `capabilities` says about transcription (same state as transcribe(); nothing is started). */
 export function transcribeEngine() {
-  const e = asrEngine(), model = process.env.AGENTCUT_WHISPER_MODEL, cli = WHISPER_CLIS.find(has);
-  const modelOk = !!model && existsSync(model), available = !!e && ("python" in e || modelOk);
+  const a = asrState(), available = a.kind === "cli" || a.kind === "python";
   return {
-    available, engine: e ? ("cli" in e ? e.cli : "whisper") : null, model: e && "cli" in e && modelOk ? model : null,
+    available, engine: a.kind === "python" ? "whisper" : a.kind === "cli" || a.kind === "bad_model" || a.kind === "no_model" ? a.cli : null, model: a.kind === "cli" ? a.model : null,
     languages: "auto, or a whisper language code such as vi or en",
-    ...(available ? {} : { hint: e && "cli" in e ? `AGENTCUT_WHISPER_MODEL=${model} does not exist: point it at a ggml model file` : cli ? `${cli} found: set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin` : "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`" }),
+    ...(available ? {} : { hint: asrHint(a) }),
   };
+}
+
+/** A failed engine run, by the engine's own words: its first `error:` line (or its exit status), never its usage text. A language it does not know is bad_value. */
+function asrError(name: string, r: { status: number | null; stderr: string }, language?: string) {
+  const line = r.stderr.split("\n").map((l) => l.trim()).find((l) => l.startsWith("error:"));
+  if (line && /unknown language/i.test(line)) return new EditError(`unknown language '${language ?? "auto"}'`, "bad_value", "a whisper language code such as vi or en, or leave language out to detect it");
+  return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
 
 /** What is kept of a silent start: the stretch sent to the engine begins this long before the first sound. */
@@ -335,35 +348,43 @@ const LEAD_PAD = 0.1;
 
 /**
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
- * range = [start, end] seconds of the media: only that stretch is transcribed and the word times stay in media seconds, within [start, end].
+ * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
+ * Checks run cheapest first: the media (not_found, bad_media, no_audio), the range, the engine (missing_dependency, not_found for a model file), then the extraction.
  * The stretch handed to the engine starts at the first sound (silence()'s default threshold) less LEAD_PAD, never before `start`: after a silent
  * start whisper times the first words early. `skipped_leading` is the seconds left out. A music lead-in is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  */
-export async function transcribe(path: string, language?: string, model?: string, range?: [number, number], signal?: AbortSignal) {
-  if (range !== undefined && !(Array.isArray(range) && range.length === 2 && range.every((x) => typeof x === "number" && Number.isFinite(x)) && range[0] >= 0 && range[1] > range[0]))
+export async function transcribe(path: string, language?: string, model?: string, range?: [number, number | undefined], signal?: AbortSignal) {
+  const info = probe(path);
+  if (!info.has_audio && info.kind !== "audio") throw new EditError(`${path} has no audio`, "no_audio");
+  const length = Number(info.duration ?? 0);
+  if (Array.isArray(range) && length > 0 && range[0] >= length)
+    throw new EditError(`transcribe start ${range[0]} s is at or past the end of the media (${length} s)`, "bad_value", `start below ${length} s`);
+  if (range !== undefined && !(Array.isArray(range) && range.length === 2 && Number.isFinite(range[0]) && range[0] >= 0 && (range[1] === undefined || (Number.isFinite(range[1]) && range[1] > range[0]))))
     throw new EditError("transcribe range must be [start, end] in seconds with 0 <= start < end", "bad_value", "e.g. [0, 12.5]: the speech only; analyze_silence or the voiceover's length gives it");
+  const asr = asrState(model);
+  if (asr.kind === "bad_model") throw new EditError(`whisper model not found: ${asr.model}`, "not_found", asrHint(asr));
+  if (asr.kind === "no_model" || asr.kind === "none") throw new EditError(asr.kind === "none" ? "transcription needs whisper" : `${asr.cli} found, but no model is set`, "missing_dependency", asrHint(asr));
   const [from, to] = range ?? [0, undefined];
-  needFfmpeg();
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
-    let skipped = 0;
+    const ffFail = (r: { status: number | null; stderr: string }) => new EditError(`cannot extract audio from ${path}: ${r.stderr.trim().slice(0, 300)}`, "decode_failed");
     const cut = await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
-    if (cut.status === 0) {
-      const first = (await silence(raw, undefined, undefined, signal)).speech[0]?.[0] ?? 0;
-      skipped = Math.max(0, +(first - LEAD_PAD).toFixed(3));
-      if (skipped) await run("ffmpeg", ["-v", "error", "-y", "-ss", String(skipped), "-i", raw, "-c", "copy", wav], { signal });
-      else renameSync(raw, wav);
-    }
+    if (cut.status !== 0) throw ffFail(cut);
+    const first = (await silence(raw, undefined, undefined, signal)).speech[0]?.[0] ?? 0;
+    const skipped = Math.max(0, +(first - LEAD_PAD).toFixed(3));
+    if (skipped) {
+      const trim = await run("ffmpeg", ["-v", "error", "-y", "-ss", String(skipped), "-i", raw, "-c", "copy", wav], { signal });
+      if (trim.status !== 0) throw ffFail(trim);
+    } else renameSync(raw, wav);
     const at = (x: number) => +Math.min(Math.max(x + from + skipped, from), to ?? Infinity).toFixed(3); // engine time -> media time, inside the range
     const late = (x: number) => to !== undefined && x + from + skipped >= to;
-    const asr = asrEngine(model);
-    if (asr && "cli" in asr) {
+    if (asr.kind === "cli") {
       const { cli, model: mdl } = asr;
       // -ml 1 alone splits inside a syllable ("ch","ào"); -sow splits only on whole words
       const r = await run(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { signal, maxBuffer: 1 << 28 });
-      if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
+      if (r.status !== 0 || !existsSync(join(tmp, "out.json"))) throw asrError(cli, r, language);
       const j = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
       // punctuation comes back as timed tokens of its own: it joins the previous word (a leading one, the next) and stretches its end
       const words: { text: string; start: number; end: number }[] = [];
@@ -378,15 +399,11 @@ export async function transcribe(path: string, language?: string, model?: string
       }
       return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words, skipped_leading: skipped };
     }
-    if (asr) {
-      const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
-      if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
-      const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
-      const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: at(w.end) })));
-      return { source: path, language: j.language, text: words.map((w: any) => w.text).join(" "), words, skipped_leading: skipped };
-    }
-    throw new EditError("transcription needs whisper", "missing_dependency",
-      "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`; or supply an .srt to add_captions");
+    const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
+    if (r.status !== 0 || !existsSync(join(tmp, "a.json"))) throw asrError("whisper", r, language);
+    const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
+    const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: at(w.end) })));
+    return { source: path, language: j.language, text: words.map((w: any) => w.text).join(" "), words, skipped_leading: skipped };
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 

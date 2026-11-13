@@ -251,6 +251,7 @@ console.log("cli surface: --start/--end, transcribe, tts");
   if (process.platform !== "win32") { // the fake engine is a shell script
   const bin = join(tmp, "asr-bin");
   mkdirSync(bin);
+  writeFileSync(model, ""); // the engine is a stand-in, but the model path is checked
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
   chmodSync(join(bin, "whisper-cli"), 0o755);
   const PATH = process.env.PATH;
@@ -258,6 +259,27 @@ console.log("cli surface: --start/--end, transcribe, tts");
   let got: any;
   try { got = cli(["transcribe", talk, "--language", "vi", "--model", model, "--start", "1", "--end", "2"]); } finally { process.env.PATH = PATH; }
   check("transcribe: the model reaches the engine and the range shifts the word times (media seconds)", readFileSync(join(tmp, "asr.model"), "utf8").trim() === model && got.words[0].start === 1.2 && got.words[0].end === 1.5, got);
+  // each error names its cause and is raised before an engine starts; a failed engine is reported by its own error line, not its usage text
+  const asr = (body: string) => writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\n${body}`, { mode: 0o755 });
+  const fail = (...a: string[]) => cli(["transcribe", ...a], { ok: false }).error;
+  const length = String(cli(["probe", talk]).duration), usage = `echo "usage: whisper-cli [options] file0 file1 ..." >&2\necho "  -h, --help   show this help message and exit" >&2\n`;
+  process.env.PATH = `${bin}${delimiter}${PATH}`;
+  try {
+    const missing = fail(join(tmp, "nope.wav")), still = fail(join(m, "p.png")), noModel = fail(talk, "--model", join(tmp, "no-such.bin"));
+    check("transcribe: a missing file is not_found naming the path, a still image is no_audio, a missing model path is not_found naming the model file",
+      missing.code === "not_found" && missing.message.includes(join(tmp, "nope.wav")) && still.code === "no_audio" && noModel.code === "not_found" && noModel.message.includes(join(tmp, "no-such.bin")), { missing, still, noModel });
+    const past = [fail(talk, "--model", model, "--start", "999"), fail(talk, "--model", model, "--start", "999", "--end", "1000")];
+    check("transcribe: a start past the media's end, with and without an end, is bad_value naming the media's length", past.every((x) => x.code === "bad_value" && x.message.includes(length)), past);
+    asr(`printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." >&2\nexit 0\n`);
+    const lang = fail(talk, "--model", model, "--language", "xx");
+    check("transcribe: the engine exits 0 with no output for an unknown language: bad_value naming it", lang.code === "bad_value" && lang.message.includes("xx") && !/usage/.test(lang.message), lang);
+    asr(`echo "error: failed to read the audio" >&2\nexit 0\n`);
+    const quiet = fail(talk, "--model", model, "--language", "xx");
+    check("transcribe: the engine exits 0 with no output and no language line: asr_failed with its error line", quiet.code === "asr_failed" && quiet.message.includes("failed to read the audio"), quiet);
+    asr(`${usage}exit 3\n`);
+    const usageOnly = fail(talk, "--model", model);
+    check("transcribe: an engine failure shows its exit status, never its usage text", usageOnly.code === "asr_failed" && usageOnly.message.includes("3") && !/usage|--help/.test(usageOnly.message), usageOnly);
+  } finally { process.env.PATH = PATH; }
   }
   const S = join(tmp, "tts-proj");
   cli(["init", S, "--preset", "reels"]);

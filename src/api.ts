@@ -432,9 +432,8 @@ export const schema = () => M.schemaDoc();
 export const opsDoc = () => opsDocs();
 /** start/end: the stretch of the media to transcribe (seconds or mm:ss), like a render range: start defaults to 0, end to the media's end. */
 async function transcribe(p: string, language?: string, model?: string, start?: number | string, end?: number | string, signal?: AbortSignal) {
-  const f = presolve(p);
-  if (start === undefined && end === undefined) return AN.transcribe(f, language, model, undefined, signal);
-  return AN.transcribe(f, language, model, [start === undefined ? 0 : M.parseTime(start, "start"), end === undefined ? Number(probeMedia(f).duration) : M.parseTime(end, "end")], signal);
+  const range = start === undefined && end === undefined ? undefined : [start === undefined ? 0 : M.parseTime(start, "start"), end === undefined ? undefined : M.parseTime(end, "end")] as [number, number | undefined];
+  return AN.transcribe(presolve(p), language, model, range, signal);
 }
 /** Speech into a file. The output is judged as a render's is: it may not replace the project's own files. A project is used when named or found, not required. */
 async function tts(text: string | undefined, out: string | undefined, voice?: string, rate?: number, project?: string, signal?: AbortSignal) {

@@ -469,7 +469,8 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     await abortRun("a beat analysis", "-f f32le", (signal) => api.analyze.beats(src, signal));
     await abortRun("review's music beats", "-f f32le", (signal) => api.review(BM, { beats: "music", signal }));
     await abortRun("snap_to_beats reading an audio file", "-f f32le", (signal) => api.apply(BM, [{ op: "snap_to_beats", track: "main", beats: src }], { signal }));
-    await abortRun("a transcription's audio extraction", "-ar 16000", (signal) => api.analyze.transcribe(src, "vi", undefined, undefined, undefined, signal));
+    writeFileSync(join(bin, "whisper-cli"), "#!/bin/sh\nexit 0\n", { mode: 0o755 }); // found on PATH and never started: the extraction stops first
+    await abortRun("a transcription's audio extraction", "-ar 16000", (signal) => api.analyze.transcribe(src, "vi", src, undefined, undefined, signal));
     const speaker = join(bin, process.platform === "darwin" ? "say" : "espeak-ng");
     writeFileSync(speaker, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "${process.platform === "darwin" ? "-o" : "-w"}" ] && cp '${src}' "$2"; shift; done\n`, { mode: 0o755 });
     await abortRun("the speech conversion", "p0.wav", (signal) => api.analyze.tts("Hello there.", join(tmp, "abort-tts.wav"), undefined, undefined, Q, signal));

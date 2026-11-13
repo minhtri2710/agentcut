@@ -217,6 +217,7 @@ if (process.platform !== "win32") {
   const { chmodSync, existsSync, mkdirSync } = await import("node:fs");
   const bin = join(tmp, "engine-bin"), model = join(tmp, "fake.bin"), say = process.platform === "darwin";
   mkdirSync(bin);
+  writeFileSync(model, ""); // the engine is a stand-in, but the model path is checked
   spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=300:duration=5", join(tmp, "talk.wav")]);
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-m" ] && echo "$2" > "${tmp}/asr.model"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
   writeFileSync(join(bin, say ? "say" : "espeak-ng"), `#!/bin/sh\n${say ? `[ "$1" = "-v" ] && [ "$2" = "?" ] && { printf 'Linh                vi_VN    # Xin chào\\n'; exit 0; }\n` : ""}while [ $# -gt 0 ]; do [ "$1" = "${say ? "-o" : "-w"}" ] && cp "${join(tmp, "talk.wav")}" "$2"; shift; done\n`);
@@ -252,7 +253,8 @@ if (process.platform !== "win32") {
   const real = process.env.PATH!.split(delimiter).map((d) => join(d, "ffmpeg")).find((f) => existsSync(f))!;
   mkdirSync(bin);
   const stall = (key: string) => writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexec '${real}' "$@"\n`, { mode: 0o755 });
-  const stallEnv = { ...env, PATH: bin + delimiter + process.env.PATH };
+  const stallEnv = { ...env, PATH: bin + delimiter + process.env.PATH, AGENTCUT_WHISPER_MODEL: join(tmp, "fake.bin") }; // an engine and a model, so a transcription reaches its extraction (the engine is never started)
+  writeFileSync(join(bin, "whisper-cli"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const until = async (cond: () => unknown, ms: number) => { const t = performance.now(); while (performance.now() - t < ms && !cond()) await sleep(25); return !!cond(); };
