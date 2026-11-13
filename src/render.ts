@@ -564,7 +564,6 @@ export class Renderer {
   }
 }
 
-/** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. webp keeps alpha: lossy at 90, or lossless (quality 100 makes the encoder write VP8L). */
 /** JPEG's limit on either side as Skia's encoder reports it: 65500 px encodes, 65501 fails ("Get jpeg data from surface failed"); pinned in tests/codecs.ts. PNG has no limit that can be reached. */
 export const JPEG_MAX_SIDE = 65500;
 
@@ -577,6 +576,7 @@ export function refuseJpegSize(what: string, tileW: number, size: (tileW: number
   throw new EditError(`${what} would be ${w}x${h} px; a JPEG holds at most ${JPEG_MAX_SIDE} on a side`, "bad_value", `${hint}${fit >= 1 ? ` (or a tile_width of ${fit} or below)` : ""}`);
 }
 
+/** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. webp keeps alpha: lossy at 90, or lossless (quality 100 makes the encoder write VP8L). */
 export const encodeStill = (cv: Canvas, fmt: string) =>
   fmt === "png" ? cv.encodeSync("png") : fmt === "webp" ? cv.encodeSync("webp", 90) : fmt === "webp_lossless" ? cv.encodeSync("webp", 100) : cv.encodeSync("jpeg", 88);
 
