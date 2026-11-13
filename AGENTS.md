@@ -171,7 +171,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}
 - filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip
 - masks: rect, circle, ellipse, heart, star, linear, mirror (+ feather, invert, x, y, width, height, angle)
-- layout: position+margin or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy] (the source point, 0..1 after crop, kept at the centre of the view; clamped at the picture edges; [0.5,0.5] = centre); radius; border; shadow; blend; opacity
+- layout: position+margin ('8%', or 'x y' for the left/right and the top/bottom distance) or x/y (centre); fit cover|contain|fill|none|blur; size [w,h]; focus [fx,fy] (the source point, 0..1 after crop, kept at the centre of the view; clamped at the picture edges; [0.5,0.5] = centre); radius; border; shadow; blend; opacity
 - text: preset, font (agentcut fonts), font_size, weight, italic, color, gradient, stroke, glow, shadow, background, max_width, align, uppercase, letter_spacing
 - text presets: title_bold, subtitle_box, neon, gradient, lower_third, quote, typewriter, sticker, outline, cinematic
 - caption presets: tiktok, bold_pop, pill, clean, reveal, neon (styles: karaoke | word | reveal | line)

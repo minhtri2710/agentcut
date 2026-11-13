@@ -361,14 +361,15 @@ export class Renderer {
     const { W0, H0, k, W, H } = this;
     const pos: string | undefined = c.position;
     const mn = Math.min(W0, H0);
-    const mg = parseLen(c.margin, mn, pos ? 0.06 * mn : 0) * k;
+    const [mx, my = mx] = typeof c.margin === "string" ? c.margin.trim().split(/\s+/) : [c.margin]; // "x y": the left/right and the top/bottom distance
+    const mgx = parseLen(mx, mn, pos ? 0.06 * mn : 0) * k, mgy = parseLen(my, mn, pos ? 0.06 * mn : 0) * k;
     let cx = W / 2, cy = H / 2;
     if (c.type === "captions" && !pos && c.y === undefined) cy = H * (H > W ? 0.7 : 0.84);
     if (pos) {
-      if (pos.includes("top")) cy = mg + lh / 2;
-      if (pos.includes("bottom")) cy = H - mg - lh / 2;
-      if (pos.includes("left")) cx = mg + lw / 2;
-      if (pos.includes("right")) cx = W - mg - lw / 2;
+      if (pos.includes("top")) cy = mgy + lh / 2;
+      if (pos.includes("bottom")) cy = H - mgy - lh / 2;
+      if (pos.includes("left")) cx = mgx + lw / 2;
+      if (pos.includes("right")) cx = W - mgx - lw / 2;
     }
     if (c.x !== undefined) cx = parseLen(c.x, W0) * k;
     if (c.y !== undefined) cy = parseLen(c.y, H0) * k;

@@ -174,7 +174,7 @@ export const VISUAL_FIELDS: F = {
   x: [T("number", "string"), "centre x in px or '50%'"],
   y: [T("number", "string"), "centre y in px or '50%'"],
   position: [T("string"), POSITIONS.join("|") + " (anchor preset, with margin)"],
-  margin: [T("number", "string"), "distance from the edge for position presets (px or %)"],
+  margin: [T("number", "string"), "distance from the edge for position presets (px or %); 'x y' sets the left/right and the top/bottom distance apart"],
   scale: ranged("scale", "uniform scale, 1 = fitted size"),
   scale_x: [T("number"), "extra horizontal scale (negative mirrors)"], scale_y: [T("number"), "extra vertical scale (negative mirrors)"],
   rotation: [T("number"), "degrees clockwise"],

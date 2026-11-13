@@ -395,11 +395,11 @@ console.log("templates: the text of every template stays inside the safe area at
   ff("-f", "lavfi", "-i", "aevalsrc='sin(2*PI*60*t)*exp(-25*mod(t,0.5))':s=44100:d=12", "-ac", "2", join(m, "beat.wav"));
   const png = join(m, "p.png"), media = [png, png, png];
   const args: Record<string, object> = {
-    slideshow: { media, title: "Summer trip" },
-    promo: { media, hook: "Big launch today", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
+    slideshow: { media, title: "Our summer trip" },
+    promo: { media, hook: "Meet the new Model X", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
     beat_montage: { media, music: join(m, "beat.wav"), title: "Album" },
     quote: { text: "Stay hungry, stay foolish", author: "Steve" },
-    listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Second pick", media: png }] },
+    listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Noise-cancelling wireless earbuds with a charging case", media: png }] },
   };
   check("every template has arguments here", JSON.stringify(Object.keys(args).sort()) === JSON.stringify(Object.keys(TEMPLATES).sort()), Object.keys(TEMPLATES));
   for (const name of Object.keys(TEMPLATES)) {
@@ -413,6 +413,30 @@ console.log("templates: the text of every template stays inside the safe area at
     }
     check(`${name}: no text_unsafe at any preset size`, !Object.keys(bad).length, bad);
   }
+}
+
+console.log("templates: placement is kept where it was safe, a preset's own placement is kept, margin takes x and y");
+{
+  const { Project } = await import("../src/project.ts");
+  const { Renderer } = await import("../src/render.ts");
+  const { resolve } = await import("../src/model.ts");
+  const MP = join(tmp, "margin-xy");
+  api.create(MP, { preset: "reels" });
+  await api.apply(MP, [{ op: "add_clip", track: "text", text: "Label", at: 0, duration: 2, font_size: 60, position: "bottom_left", margin: "5% 20%" }]);
+  const pj = new Project(MP), R = new Renderer(pj.absolutized(resolve(pj.load())), pj.root, 1);
+  const b = await R.layoutBox(R.layers.find((l) => l.type === "text")!, 1);
+  R.close();
+  check("a margin 'x y' sets the left distance and the bottom distance apart (5% and 20% of 1080 px)", !!b && Math.abs(b[0] - 54) < 2 && Math.abs(1920 - (b[1] + b[3]) - 216) < 2, b);
+  check("the project with a 'x y' margin validates and renders a frame", (await api.validate(MP)).valid && (await api.frame(MP, 1, { out: join(tmp, "margin-xy.jpg") })).bytes > 0, await api.validate(MP));
+  const titleOf = async (preset: string, extra: object = {}) => {
+    const d = join(tmp, `ttl-${preset}-${Object.keys(extra).length}`);
+    api.create(d, { preset });
+    await api.apply(d, [{ op: "apply_template", name: "slideshow", media: [join(m, "p.png")], title: "Hi", ...extra }]);
+    return ((await api.info(d, "json")).timeline as any).tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
+  };
+  const land = await titleOf("youtube"), vert = await titleOf("reels"), own = await titleOf("youtube", { title_preset: "lower_third" }), ownV = await titleOf("reels", { title_preset: "lower_third" });
+  check("slideshow title: centred where the canvas has no UI zones, at the top where it has", land.position === undefined && vert.position === "top", [land.position, vert.position]);
+  check("slideshow title_preset keeps its own position (bottom-left) at both sizes, with a margin inside the safe area", own.position === "bottom_left" && ownV.position === "bottom_left" && /^[\d.]+% [\d.]+%$/.test(ownV.margin), [own, ownV]);
 }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });

@@ -1,9 +1,9 @@
 // Style presets (text + captions) and whole-video templates. Templates expand into ordinary ops, so the
 // result is a normal timeline the agent can keep editing.
 import { firstCovering } from "./fonts.ts";
-import { type Dict, EditError, suggest } from "./model.ts";
+import { type Dict, EditError, parseLen, suggest } from "./model.ts";
 import { own } from "./own.ts";
-import { safeMargin } from "./safe.ts";
+import { edgesOf, safeMargin, safeWidth, safeZones } from "./safe.ts";
 
 const heavy = (text = "AÁÀẢÃẠ") => firstCovering(["Arial Black", "Helvetica Neue Condensed Black", "Avenir Next Heavy", "Arial Bold", "Helvetica Neue Bold", "DejaVu Sans Bold"], text);
 const bold = (text = "AÁ") => firstCovering(["Arial Bold", "Helvetica Neue Bold", "Segoe UI Bold", "Noto Sans Bold", "DejaVu Sans Bold"], text);
@@ -49,6 +49,18 @@ const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
 type Size = { width: number; height: number };
 type Template = { doc: string; args: Dict; build: (a: Dict, size: Size) => Dict[] };
 /** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). `size` is the project's width and height: text placed against an edge takes its margin from the safe area. */
+/** Placement fields for text set in `preset`: its own position, with a margin that keeps the box inside the safe area of a W x H canvas (never less than the preset's own margin).
+ * A preset with no position stays where it is, centred, except on a canvas with UI zones, where a wide centred box would cover the side buttons: it goes to the top.
+ * Text anchored on the left also gets the widest `max_width` that ends before the side zones; the box ring (stroke + background padding) is counted, a shadow or glow is not. */
+function placed(preset: string, text: string, W: number, H: number): Dict {
+  const base = own(TEXT_PRESETS, preset)?.make(text) ?? {}, mn = Math.min(W, H);
+  const position: string | undefined = base.position ?? (safeZones(W, H).ui.length ? "top" : undefined);
+  if (!position) return {};
+  const margin = safeMargin(W, H, edgesOf(position), (parseLen(base.margin, mn, 0.06 * mn) / mn) * 100);
+  const left = edgesOf(position).includes("left") ? parseLen(margin.split(" ")[0], mn) : undefined;
+  return { position, margin, ...(left === undefined ? {} : { max_width: safeWidth(W, H, left, 2 * (2 + Number(base.stroke?.width ?? 0) + Number(base.background?.padding ?? 0)) + 2) }) };
+}
+
 const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }, size: Size) => Dict[] }): Template => t;
 
 export const TEMPLATES: Record<string, Template> = {
@@ -57,7 +69,7 @@ export const TEMPLATES: Record<string, Template> = {
     args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)", every: "beats per cut (4)" },
     build: (a, { width, height }) => {
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
-      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold", position: "top", margin: safeMargin(width, height, "top") });
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold", ...placed(a.title_preset ?? "title_bold", String(a.title), width, height) });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 4 });
       return ops;
     },
@@ -68,7 +80,7 @@ export const TEMPLATES: Record<string, Template> = {
     build: (a, { width, height }) => {
       const n = a.media.length, seg = a.seconds ?? 2;
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
-      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, "top") });
+      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, ["top"], 16) });
       (a.points || []).slice(0, Math.max(0, n - 1)).forEach((p: string, i: number) =>
         ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
       if (a.cta) ops.push({ op: "add_clip", track: "main", type: "color", gradient: { colors: [a.brand_color ?? "#111111", "#000000"], angle: 160 }, duration: 2.5, transition: "flash" },
@@ -113,8 +125,9 @@ export const TEMPLATES: Record<string, Template> = {
       const ops: Dict[] = [{ op: "add_clip", track: "main", type: "color", gradient: { colors: ["#111827", "#1f2937"], angle: 180 }, duration: 2.2 },
         { op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.2, match_duration: true, preset: "title_bold" }];
       (a.items || []).forEach((it: Dict, i: number) => {
+        const label = `${i + 1}. ${it.text}`;
         ops.push({ op: "add_clip", track: "main", ...src(it.media), duration: s, transition: { type: "slide_left", duration: 0.35 }, fit: "blur" });
-        ops.push({ op: "add_clip", track: "text", text: `${i + 1}. ${it.text}`, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third", margin: safeMargin(width, height, "bottom", "left") });
+        ops.push({ op: "add_clip", track: "text", text: label, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third", ...placed("lower_third", label, width, height) });
       });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 1 });
       return ops;
