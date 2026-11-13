@@ -1377,10 +1377,23 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   check("an audio clip longer than its source says when the sound ends; a video clip keeps the held-frame wording", /sound ends at 1\.00s into the clip and is silent after that/.test(am) && !/last frame/.test(am) && /the last frame is held/.test(vm), { am, vm });
 
   const tiny = base();
-  tiny.tracks = [{ id: "v", kind: "video", clips: [{ id: "tv", type: "video", asset: "vi", start: 0, duration: 0.01 }, { id: "tt", type: "text", text: "x", start: 1, duration: 0.01 }, { id: "ok", type: "text", text: "x", start: 2, duration: 1 / 30 }] },
+  tiny.tracks = [{ id: "v", kind: "video", clips: [{ id: "tv", type: "video", asset: "vi", start: 0, duration: 0.01 }, { id: "tt", type: "text", text: "x", start: 1, duration: 0.01 } ] },
     { id: "a", kind: "audio", clips: [{ id: "ta", type: "audio", asset: "au", start: 0, duration: 0.01 }] }] as any;
   const sub = w(tiny).filter((i: any) => /shorter than one frame/.test(i.message)).map((i: any) => /<(\w+)>/.exec(i.path)?.[1]);
-  check("a video or text clip under one frame warns by id; an audio clip and a clip of exactly one frame do not", sub.length === 2 && sub.includes("tv") && sub.includes("tt"), sub);
+  check("a video or text clip under one frame warns by id; an audio clip does not", sub.length === 2 && sub.includes("tv") && sub.includes("tt"), sub);
+
+  const pastEnd = base();
+  pastEnd.tracks = [{ id: "a", kind: "audio", clips: [{ id: "pe", type: "audio", asset: "au", start: 0, duration: 1, in: 3 }] }] as any;
+  const pe = w(pastEnd).find((i: any) => /<pe>/.test(i.path) && /of source/.test(i.message))?.message ?? "";
+  check("an audio clip whose 'in' is past the source end says the clip is silent, with no negative time", /the clip is silent/.test(pe) && !/-\d/.test(pe.split("; ")[1] ?? "-"), pe);
+
+  for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps
+    const F = join(tmp, `oneframe-${fps}`);
+    api.create(F, { preset: "720p", fps });
+    await api.apply(F, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 1 / fps, id: "one" }]);
+    const v: any = await api.validate(F);
+    check(`a clip of exactly one frame made by add_clip at ${fps} fps does not warn`, !v.issues.some((i: any) => /shorter than one frame/.test(i.message)), v.issues);
+  }
 
   const dims = (f: string) => { const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", f], { encoding: "utf8" }); return r.stdout.trim(); };
   for (const [name, W, H, full, draft] of [["odd", 1081, 1921, "1082,1922", "540,960"], ["even", 1080, 1920, "1080,1920", "540,960"]] as const) {

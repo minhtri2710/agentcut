@@ -788,7 +788,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       try {
         dur = clipDur(c); start = clipStart(c);
         if (dur <= 0) issues.push({ level: "error", path: `${p}.duration`, message: "duration must be > 0" });
-        else if (c.type !== "audio" && c.type !== "gap" && dur < 1 / Number(tl.settings.fps) - 1e-9) issues.push({ level: "warning", path: `${p}.duration`, message: `shorter than one frame (1/fps s): it may appear on no frame` });
+        else if (c.type !== "audio" && c.type !== "gap" && dur < 1 / Number(tl.settings.fps) - 1e-6) issues.push({ level: "warning", path: `${p}.duration`, message: `shorter than one frame (1/fps s): it may appear on no frame` });
         if (start < 0) issues.push({ level: "error", path: `${p}.start`, message: "start must be >= 0" });
       } catch (e: any) { issues.push({ level: "error", path: p, message: e.message, hint: e.hint }); return; }
       const vis = c.enabled === false ? null : visibleSpan(start, start + dur, flow.w0, flow.w1); // null: audio.ts and subtitles.ts never reach this clip
@@ -806,7 +806,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           const a = assets[aid];
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !c.freeze && !(c.keyframes?.speed)) {
             const need = parseTime(c.in ?? 0) + dur * Number(c.speed ?? 1);
-            const ends = c.type === "audio" ? `the sound ends at ${((a.duration - parseTime(c.in ?? 0)) / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that` : "the last frame is held";
+            const left = a.duration - parseTime(c.in ?? 0); // source left for an audio clip; <= 0: 'in' is at or past the end
+            const ends = c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`;
             if (need > a.duration + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
           }
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
