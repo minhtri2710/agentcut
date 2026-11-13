@@ -7,6 +7,7 @@ import * as FB from "./feedback.ts";
 import { fontsKnown, listFonts, needsProbe } from "./fonts.ts";
 import { LOOKS } from "./color.ts";
 import { needFfmpeg, probe as probeMedia } from "./media.ts";
+import { own } from "./own.ts";
 import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
@@ -151,6 +152,14 @@ const scaleOf = (v: number | undefined, dflt: number) => {
   return v;
 };
 const MAX_SCALE = 4, MAX_SHEET_TILES = 64; // the sheet already stopped `every` at 64 tiles
+const MOTION_FRAMES = [2, 24] as const, TILE_WIDTH = [16, 4096] as const;
+
+/** A number argument that must lie in [lo, hi] (above lo when `open`), a whole number when `whole`; undefined is the default. Refused, never clamped. */
+function inRange(name: string, v: unknown, lo: number, hi = Infinity, o: { whole?: boolean; open?: boolean } = {}) {
+  if (v === undefined) return;
+  const ok = typeof v === "number" && Number.isFinite(v) && (o.open ? v > lo : v >= lo) && v <= hi && (!o.whole || Number.isInteger(v));
+  if (!ok) throw new M.EditError(`${name} must be ${o.whole ? "a whole number" : "a number"} ${hi === Infinity ? `${o.open ? "above" : "of at least"} ${lo}` : `from ${lo} to ${hi}`}, got ${JSON.stringify(v)}`, "bad_value");
+}
 
 /** A timeline with no duration has no frame to show. */
 const emptyTimeline = (what: string) => new M.EditError(`the timeline is empty: ${what}`, "empty", "add clips first");
@@ -209,6 +218,8 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   let ts: number[];
   if (o.every !== undefined && !(o.every > 0)) throw new M.EditError(`every must be a number above 0, got ${JSON.stringify(o.every)}`, "bad_value");
   if (o.count !== undefined && !(Number.isInteger(o.count) && o.count >= 1 && o.count <= MAX_SHEET_TILES)) throw new M.EditError(`count must be a whole number from 1 to ${MAX_SHEET_TILES}, got ${JSON.stringify(o.count)}`, "bad_value");
+  inRange("cols", o.cols, 1, MAX_SHEET_TILES, { whole: true });
+  inRange("tile_width", o.tileWidth, ...TILE_WIDTH, { whole: true });
   if (o.times) {
     const list = typeof o.times === "string" ? o.times.split(",") : o.times;
     if (list.length > MAX_SHEET_TILES) throw new M.EditError(`times lists ${list.length} frames; a sheet holds at most ${MAX_SHEET_TILES}`, "bad_value", "split it into several sheets");
@@ -244,6 +255,9 @@ export async function audioCheck(project: string | undefined, o: { source?: stri
 
 /** Dense frame strips: one row per transition (default) or per given window, so motion can be judged from stills. */
 export async function motion(project: string | undefined, o: { start?: number | string; end?: number | string; frames?: number; pad?: number; out?: string; tileWidth?: number } = {}) {
+  inRange("frames", o.frames, ...MOTION_FRAMES, { whole: true });
+  inRange("pad", o.pad, 0);
+  inRange("tile_width", o.tileWidth, ...TILE_WIDTH, { whole: true });
   const p = openProject(project);
   const tl = p.load();
   p.requireValid(tl);
@@ -264,6 +278,9 @@ export async function motion(project: string | undefined, o: { start?: number | 
 
 /** Editorial lint with times: unsafe/short text, shot lengths, off-beat cuts, black frames + validation warnings. */
 export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal } = {}) {
+  inRange("min_shot", o.minShot, 0);
+  inRange("max_shot", o.maxShot, 0, Infinity, { open: true });
+  inRange("cps", o.cps, 0, Infinity, { open: true });
   const p = openProject(project);
   const tl = p.load();
   await loadForText(tl);
@@ -282,8 +299,9 @@ export async function exportTimeline(project: string | undefined, o: { format?: 
   const tl = p.load();
   p.requireValid(tl);
   const ext = o.out ? o.out.slice(o.out.lastIndexOf(".")).toLowerCase() : "";
-  const format = (o.format ?? INTERCHANGE[ext] ?? "fcpxml").toLowerCase();
-  if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${format}'`, "bad_format", "use fcpxml (Final Cut Pro) or otio (DaVinci Resolve / Premiere / Avid)");
+  // an explicit format is the caller's word whatever the file is called; the extension alone must name one (no silent fcpxml)
+  const format = (o.format ?? (o.out ? INTERCHANGE[ext] : "fcpxml") ?? "").toLowerCase();
+  if (format !== "fcpxml" && format !== "otio") throw new M.EditError(`unknown interchange format '${o.format ?? (ext || o.out)}'`, "bad_format", "use .fcpxml (Final Cut Pro) or .otio (DaVinci Resolve / Premiere / Avid), or pass format fcpxml|otio with the output");
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p.defaultOutput(`.${format}`);
   try {
     const { exportTimeline: ex } = await import("./export.ts");
@@ -341,6 +359,10 @@ export async function render(project: string | undefined, o: {
   /** abort the render (MCP shutdown): children are stopped, temp files removed, the call rejects with signal.reason */
   signal?: AbortSignal;
 } = {}) {
+  if (o.quality !== undefined) {
+    const { QUALITY } = await import("./encode.ts");
+    if (!own(QUALITY, o.quality)) throw new M.EditError(`unknown quality '${o.quality}'`, "bad_value", `quality is one of ${Object.keys(QUALITY).join(", ")}`);
+  }
   if (o.out && INTERCHANGE[o.out.slice(o.out.lastIndexOf(".")).toLowerCase()]) return exportTimeline(project, { out: o.out });
   if (o.out && SUB.SUB_FORMATS[extname(o.out).toLowerCase()]) return exportCaptions(project, { out: o.out });
   if (o.out && /^\.(png|webp)$/.test(extname(o.out).toLowerCase())) return renderStill(project, isAbsolute(o.out) ? o.out : presolve(o.out), o);

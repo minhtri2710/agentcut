@@ -52,6 +52,10 @@ const emptyRange = await call("render", { draft: true, start: 3, end: 1, wait_se
 check("render with start after end: code empty and a hint that names no command-line flag", emptyRange.json.status === "failed" && emptyRange.json.error.code === "empty" && /start/.test(emptyRange.json.error.hint) && !/--/.test(emptyRange.json.error.hint), emptyRange.json);
 const ex = await call("export_timeline", { format: "otio", output: join(tmp, "edit.otio") });
 check("export_timeline otio", ex.json.ok && ex.json.format === "otio" && JSON.parse(readFileSync(join(tmp, "edit.otio"), "utf8")).OTIO_SCHEMA === "Timeline.1", ex.json);
+const exNoFormat = await call("export_timeline", { output: join(tmp, "inferred.otio") });
+check("export_timeline infers otio from the extension when no format is given", exNoFormat.json.ok && exNoFormat.json.format === "otio" && JSON.parse(readFileSync(join(tmp, "inferred.otio"), "utf8")).OTIO_SCHEMA === "Timeline.1", exNoFormat.json);
+const exTxt = await call("export_timeline", { output: join(tmp, "edit.txt") });
+check("export_timeline to an unknown extension with no format is refused and writes nothing", exTxt.json.error?.code === "bad_format" && !existsSync(join(tmp, "edit.txt")), exTxt.json);
 await call("apply_ops", { ops: [{ op: "add_captions", words: [{ text: "Hi", start: 0.2, end: 0.8 }] }] });
 const ec = await call("export_captions", { output: join(tmp, "subs.vtt") });
 check("export_captions vtt", ec.json.ok && ec.json.cues === 1 && readFileSync(join(tmp, "subs.vtt"), "utf8").startsWith("WEBVTT"), ec.json);

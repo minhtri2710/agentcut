@@ -60,7 +60,7 @@ function needEncoder(name: string, what: string) {
 
 /** Encoder args for a video codec. `mux` are output-container args that must go on the final file (not on segments). */
 export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean, alpha = false, ext = ""): { v: string[]; mux: string[] } {
-  const q = own(QUALITY, quality) ?? QUALITY.standard;
+  const q = QUALITY[quality]; // api.render refuses an unknown name before any encode
   const apple = ext === ".mp4" || ext === ".m4v" || ext === ".mov";
   switch (codec) {
     case "h264":

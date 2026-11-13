@@ -9,7 +9,7 @@ import {
   totalDuration, type Track, validate,
 } from "./model.ts";
 import { own } from "./own.ts";
-import { checkDir, createExclusive, createFile, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
+import { checkDir, createExclusive, createFile, ensureDir, ensureRoot, lexists, notWritable, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
 const MAX_HISTORY = 100;
@@ -215,7 +215,11 @@ export class Project {
 
   private write(tl: Timeline) { writeFile(this.file, JSON.stringify(tl, null, 2), this.root); }
 
-  private locked<T>(fn: () => T): T { return withLock(join(this.plainDir(".agentcut"), "lock"), fn); }
+  /** history and the lock live under .agentcut: a permission failure anywhere in the locked call (making the dirs, the lock, a history entry) is the named not_writable. */
+  private locked<T>(fn: () => T): T {
+    try { return withLock(join(this.plainDir(".agentcut"), "lock"), fn); }
+    catch (e: any) { throw notWritable(e) ?? e; }
+  }
 
   /** root/<parts> as a real directory: an existing component that is not a real directory (a symlink) is refused before anything is created or written there. */
   private plainDir(...parts: string[]) { return ensureDir(this.root, join(this.root, ...parts)); }

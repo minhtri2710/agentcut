@@ -7,13 +7,19 @@
 // A refused path is an EditError "unsafe_path"; there is no fallback to a plain write. Lock and project files are created with a hard
 // link, so a volume without hard links is refused with "unsupported_fs".
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, copyFileSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { EditError } from "./model.ts";
 
 const refuse = (what: string) => new EditError(`${what} is not a plain directory or file here (symlink or link?)`, "unsafe_path",
   "AgentCut never writes through symlinks or hard links: replace it with a real directory (or file)");
+/** A folder the user cannot write to, as a named error naming it; null for any other error. */
+export function notWritable(e: { code?: string; path?: string }, folder?: string): EditError | null {
+  if (!["EACCES", "EPERM", "EROFS"].includes(e.code ?? "")) return null;
+  const dir = folder ?? (e.path ? dirname(e.path) : "the folder");
+  return new EditError(`cannot write in ${dir} (${e.code})`, "not_writable", `make ${dir} writable, or choose another folder`, e.path);
+}
 const outside = (rel: string) => rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
 
 /** exists, a dangling symlink included (existsSync follows the link, so a dangling one reads as absent) */
@@ -26,14 +32,14 @@ function walk(base: string, dir: string, make: boolean): string {
   base = resolve(base); dir = resolve(dir);
   const rel = relative(base, dir);
   if (outside(rel)) throw new EditError(`${dir} is not inside ${base}`, "unsafe_path", "AgentCut writes only below the project folder");
-  if (make) mkdirSync(base, { recursive: true });
+  if (make) try { mkdirSync(base, { recursive: true }); } catch (e: any) { throw notWritable(e) ?? e; }
   let d = base;
   for (const part of rel.split(sep).filter(Boolean)) {
     d = join(d, part);
     let st = lstatSync(d, { throwIfNoEntry: false });
     if (!st) {
       if (!make) break;
-      try { mkdirSync(d); continue; } catch (e: any) { if (e.code !== "EEXIST") throw e; st = lstatSync(d); } // another process made it first
+      try { mkdirSync(d); continue; } catch (e: any) { if (e.code !== "EEXIST") throw notWritable(e) ?? e; st = lstatSync(d); } // another process made it first
     }
     if (!st.isDirectory()) throw refuse(relative(base, d));
   }
@@ -71,7 +77,9 @@ function below(base: string, dir: string): string | null {
 function ensureParent(file: string, base?: string) {
   const dir = dirname(resolve(file)), inner = base ? below(base, dir) : null;
   if (inner !== null) ensureDir(base!, inner);
-  else mkdirSync(dir, { recursive: true });
+  else try { mkdirSync(dir, { recursive: true }); } catch (e: any) { throw notWritable(e) ?? e; }
+  // the folder is known now: an external writer (ffmpeg) would only fail after the work it was started for
+  try { accessSync(dir, constants.W_OK | constants.X_OK); } catch (e: any) { throw notWritable(e, dir) ?? e; }
 }
 
 /** The project root `root`, made if missing, on a volume that supports hard links (see createExclusive): one probe with the same
@@ -82,7 +90,7 @@ export function ensureRoot(root: string) {
   for (let d = root; !lexists(d); d = dirname(d)) missing.push(d);
   const made: string[] = [];
   try {
-    for (const d of missing.reverse()) { try { mkdirSync(d); made.push(d); } catch (e: any) { if (e.code !== "EEXIST") throw e; } }
+    for (const d of missing.reverse()) { try { mkdirSync(d); made.push(d); } catch (e: any) { if (e.code !== "EEXIST") throw notWritable(e) ?? e; } }
     probeLinks(root);
   } catch (e) {
     for (const d of made.reverse()) { try { rmdirSync(d); } catch { break; } } // deepest first; rmdir only removes an empty directory
@@ -113,11 +121,13 @@ export function partSibling(file: string, base?: string): string {
 /** Put the finished temp file at `file`; a symlink or file already there is replaced, never written through. A directory there is refused. */
 export function commit(tmp: string, file: string) {
   try { renameSync(tmp, file); }
-  catch (e: any) { throw e.code === "EISDIR" || e.code === "ENOTDIR" ? refuse(file) : e; }
+  catch (e: any) { throw e.code === "EISDIR" || e.code === "ENOTDIR" ? refuse(file) : notWritable(e) ?? e; }
 }
 
 /** Create `file` (O_EXCL: it never follows a link and never reuses an existing name). For files in a directory we just made. */
-export const createFile = (file: string, data: string | Uint8Array, mode?: number) => writeFileSync(file, data, { flag: "wx", mode });
+export function createFile(file: string, data: string | Uint8Array, mode?: number) {
+  try { writeFileSync(file, data, { flag: "wx", mode }); } catch (e: any) { throw notWritable(e) ?? e; }
+}
 
 /** `make` puts the content at the new name `tmp`, then it replaces `file`. If `make` fails with EEXIST the name was not ours and is left
  *  alone; any other failure, and a failed rename, removes the temp file. */
@@ -135,7 +145,7 @@ export function writeFile(file: string, data: string | Uint8Array, base?: string
 /** Copy `src` to `file` the same way (the content lands under a new name first, then replaces `file`). */
 export function copyFile(src: string, file: string, base?: string) {
   const tmp = tmpSibling(file, base);
-  place(tmp, file, () => copyFileSync(src, tmp, constants.COPYFILE_EXCL));
+  place(tmp, file, () => { try { copyFileSync(src, tmp, constants.COPYFILE_EXCL); } catch (e: any) { throw notWritable(e) ?? e; } });
 }
 
 /** The link errors of a volume that has no hard links (exFAT, FAT, some network and FUSE mounts), as a named error; null for any other error. */

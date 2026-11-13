@@ -576,6 +576,28 @@ console.log("subtitle mux part file carries the host tag (the render sweep can r
   check("embedSubtitles writes its part file under a host-tagged name", c === "encode_failed" && new RegExp(`^out\\.part-${process.pid}-${S.HOST_TAG}-[0-9a-f]{12}\\.mp4$`).test(name), { c, name, tag: S.HOST_TAG });
 }
 
+// ------------------------------------------------------------------ a folder that cannot be written
+console.log("a folder that cannot be written is the named error not_writable, with a hint naming the folder");
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const run = (args: string[], cwd: string) => {
+    const r = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), ...args], { cwd, encoding: "utf8" });
+    return { status: r.status, ...JSON.parse(r.stdout) };
+  };
+  const readOnly = <T,>(dir: string, f: () => T): T => { chmodSync(dir, 0o555); try { return f(); } finally { chmodSync(dir, 0o700); } }; // always writable again: the suite removes it
+  const refused = (what: string, r: any, dir: string) => check(`${what}: not_writable, exit 1, the hint names the folder`, r.status === 1 && r.error?.code === "not_writable" && r.error.hint.includes(basename(dir)), r);
+  const a = await project("nw-add"), u = await project("nw-undo"), o = await project("nw-render");
+  refused("add in a project folder without write access", readOnly(a, () => run(["op", "add_marker", "t=1"], a)), a);
+  await api.apply(u, [{ op: "add_marker", t: 1 }]);
+  refused("undo in a project folder without write access", readOnly(u, () => run(["undo"], u)), u);
+  const parent = join(tmp, "nw-parent"); mkdirSync(parent);
+  refused("init under a folder without write access", readOnly(parent, () => run(["init", join(parent, "proj"), "--preset", "reels"], tmp)), parent);
+  check("  and init leaves no folder behind", !existsSync(join(parent, "proj")));
+  const outDir = join(tmp, "nw-out"); mkdirSync(outDir);
+  const r = readOnly(outDir, () => run(["render", "-o", join(outDir, "o.mp4"), "--draft", "--no-sheet"], o));
+  refused("render -o into a folder without write access", r, outDir);
+  check("  and the render stops before encoding (no encoder error)", r.error?.code !== "encode_failed" && readdirSync(outDir).length === 0, r);
+}
+
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall write checks passed");
 process.exit(failures ? 1 : 0);

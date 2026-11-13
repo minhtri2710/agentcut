@@ -28,7 +28,7 @@ export function transitionWindows(tl: Timeline, pad = 0.15): Window[] {
 export async function motionStrips(tl: Timeline, root: string, windows: Window[], o: { frames?: number; tileWidth?: number; perImage?: number } = {}) {
   resolve(tl);
   const T = totalDuration(tl), fps = Number(tl.settings.fps) || 30;
-  const n = Math.max(2, Math.min(24, Math.round(o.frames ?? 10)));
+  const n = o.frames ?? 10; // api.motion refuses a count outside 2..24
   const ws = windows.map((w) => ({ ...w, start: Math.max(0, w.start), end: Math.min(T, w.end) })).filter((w) => w.end > w.start);
   if (!ws.length) throw new EditError("no time window to inspect", "empty", "the timeline has no transitions: pass start/end (or times) to inspect a range");
   const times = ws.map((w) => Array.from({ length: n }, (_, i) => +Math.min(w.start + ((w.end - w.start) * i) / (n - 1), T - 1 / fps).toFixed(3)));

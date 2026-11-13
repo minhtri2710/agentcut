@@ -20,6 +20,7 @@ const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, forbi
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
+  if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
   const p = api.openProject(project);
   const root = p.root;
   const clients = new Set<ServerResponse>();

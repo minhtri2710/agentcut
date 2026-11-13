@@ -55,6 +55,11 @@ check("stale undo -> conflict", und.ok === false && und.error.code === "conflict
 
 // ---------------------------------------------------------------- HTTP server
 console.log("server");
+for (const port of [99999, -1, 4810.5]) { // a port is a whole number from 0 to 65535: refused before anything listens
+  const r: any = await startUi(dir, { port }).catch((e: any) => e);
+  r.server?.close();
+  check(`ui port ${port} is bad_value naming the range`, r.code === "bad_value" && /0 to 65535/.test(r.message), r.message ?? "started");
+}
 const ui = await startUi(dir, { port: 0 });
 const base = ui.url.replace(/\/$/, "");
 // `text` is a raw JSON body (possibly empty or malformed); `port` aims at another ui server

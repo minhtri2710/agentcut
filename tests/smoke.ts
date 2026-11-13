@@ -125,6 +125,22 @@ console.log("frame time and caption file format");
   check("a sheet of an empty timeline is a clean refusal whichever way the times are chosen", [["--every", "1"], ["--count", "3"], ["--times", "0"], []].every((a) => cli(["sheet", ...a], { ok: false, cwd: E }).error?.code === "empty"));
   check("captions to an unknown extension is bad_format and writes nothing; an explicit format names the content", code(["captions", "-o", "subs.txt"]) === "bad_format" && !existsSync(join(P, "subs.txt"))
     && cli(["captions", "-o", "subs.txt", "--format", "vtt"], C).format === "vtt" && readFileSync(join(P, "subs.txt"), "utf8").startsWith("WEBVTT"));
+  check("an export to an unknown extension is refused and writes nothing", code(["export", "-o", "edit.txt"]) === "bad_format" && !existsSync(join(P, "edit.txt")));
+  // a render quality is one of the named levels, whatever the output (a still reads it too); nothing is written for a refused one
+  for (const [what, args] of [["video", ["-o", "q.mp4", "--quality", "ultra"]], ["inherited name", ["-o", "q.mp4", "--quality", "constructor"]], ["still", ["-o", "q.png", "--quality", "ultra"]]] as const) {
+    const e = cli(["render", ...args], { ok: false, cwd: P }).error;
+    check(`render quality, ${what}: bad_value naming the levels`, e?.code === "bad_value" && /draft, standard, high/.test(e.hint) && !existsSync(join(P, "q.mp4")) && !existsSync(join(P, "q.png")), e);
+  }
+  // a number argument outside its range is refused (never clamped), naming the field
+  for (const [field, args] of [
+    ["cols", ["sheet", "--cols", 0]], ["cols", ["sheet", "--cols", 65]], ["tile_width", ["sheet", "--tile-width", 4]], ["tile_width", ["sheet", "--tile-width", 100.5]],
+    ["frames", ["motion", "--frames", 1]], ["frames", ["motion", "--frames", 25]], ["frames", ["motion", "--frames", 2.5]], ["pad", ["motion", "--pad", -1]], ["tile_width", ["motion", "--tile-width", 0]],
+    ["min_shot", ["review", "--min-shot", -1]], ["max_shot", ["review", "--max-shot", 0]], ["cps", ["review", "--cps", 0]],
+  ] as const) {
+    const e = cli([...args], { ok: false, cwd: P }).error;
+    check(`${args.join(" ")}: bad_value naming ${field}`, e?.code === "bad_value" && e.message.startsWith(`${field} `), e);
+  }
+  check("the ends of the ranges work: motion frames 2 and 24", cli(["motion", "--start", 0, "--end", 1, "--frames", 2, "--tile-width", 40], C).images.length === 1 && cli(["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 40], C).strips[0].times.length === 24);
 }
 
 console.log("moved media: the hinted relink_asset repairs the project");

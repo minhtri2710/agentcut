@@ -50,7 +50,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac,
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.
-   Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio):
+   Hand-off to a human editor: export_timeline (CLI: agentcut export -o edit.fcpxml | edit.otio; the extension names the format, or pass format=fcpxml|otio):
    cuts, in-points, crossfades,
    constant speed, volume, titles and connected clips carry over (media linked by absolute path). The result has two lists of
    {id, type, reason}: skipped = not exported (effects, looks, keyframes, masks, captions, shapes, vision requests not yet prepared
@@ -180,10 +180,10 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - 9:16: keep text out of the top 10% and bottom 20% (preview with guides). Use fit "blur" for landscape footage.
 - Never invent logos/screens/metrics: only use files you were given; a missing asset is a blocker - ask.
 - "Done" needs evidence: a contact sheet or frame you looked at + the render result JSON.
-- The project folder must be on a volume with hard links (APFS, NTFS, ext4; not exFAT or FAT): project.json and the lock need them, and error unsupported_fs says so. Media files may stay on any volume.
+- The project folder must be on a volume with hard links (APFS, NTFS, ext4; not exFAT or FAT): project.json and the lock need them, and error unsupported_fs says so. Media files may stay on any volume. A folder you cannot write to (permissions, read-only volume) is error not_writable, and its hint names the folder.
 
 ## Working alongside a human (agentcut ui)
-- \`agentcut ui [DIR] [--port 4810]\` serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
+- \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
   editor, compound open/expand/regroup, prepare, render). The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
   The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.
