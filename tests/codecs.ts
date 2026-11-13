@@ -551,6 +551,29 @@ console.log("decode and render failures");
   const fresh = short(), held = await fresh.readAt(5).catch(() => Buffer.alloc(0));
   check("a fresh source read past the end returns the held last frame", held.length === 64 * 64 * 4 && held.some((x) => x !== 0) && held.equals(await b.readAt(2)), held.length);
   fresh.close();
+  // a freeze at or past the video's end holds its last frame, as a playing clip does (the seek of a still lands past the last frame's interval)
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "endclip.mp4"));
+  const frz = (srcIn: number, srcDuration = 2) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn });
+  const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2 });
+  const tailRef = await lastPlayed.readAt(5);
+  const inside = frz(1.0), insideFrame = await inside.readAt(0);
+  check("a freeze well inside the source still holds the frame at its in-point", insideFrame.length === 64 * 64 * 4 && !insideFrame.equals(tailRef));
+  for (const at of [2, 2.2, 6]) {
+    const fz = frz(at);
+    const got = await fz.readAt(0).catch((e) => e?.code);
+    check(`a freeze with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
+    fz.close();
+  }
+  const cut = new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3, freeze: true, srcIn: 2 });
+  check("a freeze in a source that ends well inside its probed length is decode_failed, not a held frame", (await code(cut.readAt(0))) === "decode_failed");
+  for (const x of [inside, lastPlayed, cut]) x.close();
+  {
+    const F = join(tmp, "freeze-end");
+    api.create(F, { width: 64, height: 64, fps: 30 });
+    await api.apply(F, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4") }, { op: "freeze_frame", id: "vid1", at: "end", duration: 1 }]);
+    const fr = await api.frameImage(F, 2.5, { scale: 1 }).catch((e: any) => e);
+    check("freeze_frame at the end of a clip that runs to the end of its file renders", fr?.data?.length > 100, fr?.code ?? fr?.message);
+  }
   // audio longer than video: the container length is not the video's end
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
   const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });

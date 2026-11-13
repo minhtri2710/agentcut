@@ -811,8 +811,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           const a = assets[aid];
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
             const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
-            if (c.freeze) pastEnd(issues, p, aid, a, inn, "there is no frame at 'in' to hold");
-            else pastEnd(issues, p, aid, a, inn + dur * Number(c.speed ?? 1), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
+            pastEnd(issues, p, aid, a, inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
           }
           if (c.type === "audio" && a.kind === "video" && !a.has_audio) issues.push({ level: "warning", path: `${p}.asset`, message: `asset '${aid}' has no audio track: the clip is silent`, hint: "point the clip at a file with sound (relink_asset, or update_clip asset=<id>), or remove it" });
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });

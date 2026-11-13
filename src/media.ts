@@ -275,7 +275,8 @@ export class FrameSource {
     this.eof = false;
   }
 
-  private async decodeStill(t: number): Promise<Buffer> {
+  /** One frame at `t`. endOk: a clean ffmpeg exit with no frame (the seek landed at or past the video's end) answers null instead of an error. */
+  private async decodeStill(t: number, endOk = false): Promise<Buffer | null> {
     const o = this.o;
     const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), ...this.input, "-frames:v", "1",
       "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
@@ -289,6 +290,7 @@ export class FrameSource {
       p.on("error", (e) => res({ status: -1, out: Buffer.alloc(0), err: String(e) }));
       p.on("close", (status) => res({ status, out: Buffer.concat(chunks), err }));
     });
+    if (endOk && r.status === 0 && !r.out.length) return null;
     if (r.status !== 0 || r.out.length < n) throw new EditError(`cannot decode ${o.path}: ${r.err.slice(0, 300)}`, "decode_failed");
     return r.out.subarray(0, n);
   }
@@ -315,10 +317,33 @@ export class FrameSource {
     return out;
   }
 
+  /** A source that ends well inside its probed length (at `at` source seconds) is damaged or was replaced, and holding its last frame would hide that.
+   *  The container length counts the longest stream: a clip may run past the video stream's own end (audio longer than video). */
+  private endedEarly(at: number) {
+    const o = this.o, inside = (d?: number) => !o.reverse && !o.loop && !!d && at < d - 0.5 - 1 / o.rate;
+    return inside(o.srcDuration) && inside(this.videoEnd() ?? o.srcDuration);
+  }
+
+  private gone(why: string, at: number) {
+    return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "re-run prepare or re-import the media; the file may be truncated or have changed");
+  }
+
+  /** The frame a freeze holds: the one at the in-point; at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
+  private async frozenFrame(): Promise<Buffer> {
+    const at = this.o.srcIn ?? 0;
+    const f = await this.decodeStill(at, true);
+    if (f) return f;
+    if (this.endedEarly(at)) throw this.gone("the source ended before the frozen frame", at);
+    const last = this.o.reverse || this.o.loop ? null : await this.tailFrame();
+    if (!last) throw this.gone("the source has no frame", at);
+    return last;
+  }
+
   /** u: source seconds since the in-point (>= 0). */
   async readAt(u: number): Promise<Buffer> {
     const o = this.o;
-    if (o.kind === "image" || o.freeze) return (this.still ??= await this.decodeStill(o.srcIn ?? 0));
+    if (o.kind === "image") return (this.still ??= (await this.decodeStill(o.srcIn ?? 0))!);
+    if (o.freeze) return (this.still ??= await this.frozenFrame());
     const k = Math.max(0, Math.round(u * o.rate));
     if (this.eof && k > this.pos) return this.last!;
     if (k === this.pos && this.last) return this.last;
@@ -334,14 +359,11 @@ export class FrameSource {
         // a clean end: past the probed length the last frame is held (the documented 'clip needs more source' warning);
         // a source that ends well inside its probed length is damaged or was replaced, and a hold would hide that
         const at = (o.srcIn ?? 0) + k / o.rate;
-        const inside = (d?: number) => !o.reverse && !o.loop && !!d && at < d - 0.5 - 1 / o.rate;
-        const gone = (why: string) => new EditError(`decode failed for ${o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "re-run prepare or re-import the media; the file may be truncated or have changed");
-        // the container length counts the longest stream: a clip may run past the video stream's own end (audio longer than video)
-        if (inside(o.srcDuration) && inside(this.videoEnd() ?? o.srcDuration)) throw gone(`the source ended after ${this.pos + 1} frames`);
+        if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at);
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
         this.last = this.tip ?? (o.reverse || o.loop ? null : await this.tailFrame());
-        if (!this.last) throw gone("the source has no frame");
+        if (!this.last) throw this.gone("the source has no frame", at);
         this.eof = true;
         return this.last;
       }

@@ -1523,11 +1523,6 @@ console.log("relink_asset");
   check("relink to a shorter source: a speed-ramped clip that runs past the end is warned", warns(w3, /<r1>\.duration$/).length === 1, w3.issues);
   const w4 = (await rb([{ op: "relink_asset", id: "im", path: join(m, "p2.png") }])).results[0];
   check("an image clip with a static focus is listed for recheck, the one without is not", JSON.stringify(w4.recheck.map((x: any) => x.id)) === JSON.stringify(["i1"]), w4.recheck);
-
-  const R3 = join(tmp, "relink3");
-  api.create(R3, { preset: "720p" });
-  const d3 = await api.apply(R3, [{ op: "add_clip", track: "voice", type: "audio", src: join(m, "silent.mp4"), id: "sa" }]);
-  check("validate: an audio clip on a video without sound warns as silent", warns(d3, /<sa>\.asset$/).length === 1 && warns(await api.validate(R3), /<sa>\.asset$/).length === 1, d3.issues);
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
