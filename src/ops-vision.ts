@@ -95,7 +95,7 @@ function subjectTrack(tl: Timeline, c: Clip, d: V.Derived, within?: [number, num
   return { pts, face_samples: samples.filter((s) => s.kind === "face").length, n: samples.length, ...V.subjectSummary(samples) };
 }
 
-export const PREPARE_HINT = "run prepare to compute it; preview and render need it";
+export const PREPARE_HINT = "run prepare (CLI: agentcut prepare; MCP: prepare, then render_status) to compute it; preview and render need it";
 let sink: V.Derived[] | null = null;
 /** Run f and collect the analyses that vision ops found missing (each recorded a pending request instead). */
 export const collectMissing = <T,>(f: () => T) => collect(f, (d) => !V.isReady(d));

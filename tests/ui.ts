@@ -302,6 +302,28 @@ console.log("cancel");
   const pc = await jget(`/api/jobs/${p1.id}/cancel`, { method: "POST", port: uk.port, body: {} });
   const shared = (await jget(`/api/jobs/${p2.id}`, { port: uk.port })).j;
   check("a play job shared by two requests is cancelled for both", p1.id === p2.id && pc.j.status === "cancelled" && shared.status === "cancelled" && !played().length, { p1: p1.id, p2: p2.id, pc, shared });
+  // a cancel takes effect until the output is written: with the loudness pass held by a stand-in ffmpeg on PATH, the cancel gives a done job with the output
+  {
+    const bin = join(tmp, "stub-bin"), mark = join(tmp, "stub-loud.mark"), tone = join(media, "with-audio.mp4");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\ncase "$*" in\n  *ebur128*) : > ${JSON.stringify(mark)}; exec sleep 60 ;;\nesac\nexec ${JSON.stringify(spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim())} "$@"\n`);
+    chmodSync(join(bin, "ffmpeg"), 0o755);
+    ff("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2", "-f", "lavfi", "-i", "sine=d=2", "-shortest", "-pix_fmt", "yuv420p", tone);
+    const dirE = join(tmp, "cancel-extras");
+    api.create(dirE, { preset: "720p" });
+    await api.apply(dirE, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
+    const ue = await startUi(dirE, { port: 0 });
+    const was = process.env.PATH;
+    process.env.PATH = `${bin}:${was}`;
+    try {
+      const e = (await jget("/api/render", { method: "POST", port: ue.port, body: { draft: true } })).j;
+      const held = await poll(() => existsSync(mark));
+      const ec = await jget(`/api/jobs/${e.id}/cancel`, { method: "POST", port: ue.port, body: {} });
+      check("UI cancel while the loudness pass runs: the job is done with its output; the loudness is skipped and marked", held && ec.status === 200 && ec.j.status === "done" && existsSync(ec.j.result?.output) && /skipped/.test(ec.j.result.loudness_error ?? "") && !ec.j.result.loudness, { held, ec });
+    } finally { process.env.PATH = was; }
+    ue.server.closeAllConnections?.();
+    await new Promise((ok) => ue.server.close(ok));
+  }
   const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } }); // what an empty list does today; whether it may save a revision is decided elsewhere
   check("/api/ops with an empty list is accepted and applies no op", emptyOps.status === 200 && emptyOps.j.ok === true && emptyOps.j.results.length === 0, emptyOps);
   sse.destroy();

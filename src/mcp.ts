@@ -199,7 +199,7 @@ export function buildServer() {
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
   s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds; cancelling this call leaves the job running). status is running, done, failed or cancelled.", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("cancel_job", {
-    description: "Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged; an unknown job_id is not_found.",
+    description: "Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. A cancel takes effect until a render's output is written; after that the render is done (the output stays, the contact sheet and loudness are skipped and marked). Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged; an unknown job_id is not_found.",
     inputSchema: { job_id: z.string() },
   }, async (a) => {
     const j = jobs.get(a.job_id);

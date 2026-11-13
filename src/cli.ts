@@ -77,12 +77,23 @@ function emit(obj: unknown, code = 0) {
   if (printed) return;
   printed = true;
   recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {});
-  process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n", () => process.exit(code));
+  process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n", () => leave(signalled ? 128 + signalled.n : code, signalled?.sig));
 }
-/** exit status of the signal that stopped the run (128 + n), once one arrived */
-let signalled: number | undefined;
+const SIGNALS = [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]] as const;
+/** the first signal that stopped the run, once one arrived: after it every result is reported as its `aborted` error, whatever failed */
+let signalled: { sig: NodeJS.Signals; n: number; reason: EditError } | undefined;
+/** The one way out. After a signal the process dies by that signal again (a shell loop or a parent sees a signal death, as before the handlers), the
+ *  exit status 128 + n still reads the same; win32 has no signal to re-raise, so there the exit status alone carries it. `process.exit` also covers a
+ *  runtime that survives the re-raise. */
+function leave(code: number, sig?: NodeJS.Signals): never {
+  if (sig && process.platform !== "win32") {
+    for (const [s] of SIGNALS) process.removeAllListeners(s);
+    process.kill(process.pid, sig);
+  }
+  return process.exit(code);
+}
 function fail(e: any) {
-  if (e instanceof EditError && e.code === "aborted" && signalled) return emit({ ok: false, error: e.toJSON() }, signalled);
+  if (signalled) return emit({ ok: false, error: signalled.reason.toJSON() }, 128 + signalled.n);
   if (e instanceof EditError) return emit({ ok: false, error: e.toJSON() }, e.code === "usage" ? 2 : 1);
   if (e instanceof SyntaxError) return emit({ ok: false, error: { code: "bad_json", message: e.message, hint: "ops must be valid JSON" } }, 2);
   return emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
@@ -101,14 +112,14 @@ async function readOps(file: string | undefined, inline: string | undefined) {
 
 const SIGNAL_GRACE_MS = 4000; // render workers stop their children within 1.5 s (proc.ts); the run does not wait for more than this
 /** The first SIGINT/SIGTERM/SIGHUP aborts `stop`, which the long api calls take, so they stop their children and remove their temp files and reserved
- *  output; the command's own `aborted` error is the one JSON object, exit 128 + n. A command that has not ended after the grace time is reported the same
- *  way. A second signal exits at once. */
+ *  output. Whatever the command then does, the one JSON object is its `aborted` error (a command that finishes cleanly still prints its result), and
+ *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal leaves at once. */
 function onSignals() {
   const stop = new AbortController();
-  for (const [sig, n] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]] as const) process.on(sig, () => {
-    if (signalled) process.exit(128 + n);
-    signalled = 128 + n;
+  for (const [sig, n] of SIGNALS) process.on(sig, () => {
+    if (signalled) return leave(128 + n, sig);
     const reason = new EditError(`interrupted by ${sig}`, "aborted", "the command was stopped; its temporary files were removed");
+    signalled = { sig, n, reason };
     stop.abort(reason);
     setTimeout(() => fail(reason), SIGNAL_GRACE_MS);
   });

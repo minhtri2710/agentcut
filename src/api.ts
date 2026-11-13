@@ -366,28 +366,34 @@ export async function render(project: string | undefined, o: {
       start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
       hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
     });
-    o.signal?.throwIfAborted();
+    // The output is committed: a cancel takes effect until here, not after. The subtitle mux (a stream copy that commits again) finishes;
+    // the contact sheet and the loudness pass are skipped once the signal is aborted, and the result says so.
     if (res.audio_only) return res;
     if (o.subtitles) {
       const [t0, t1] = res.range as [number, number];
       const inRange = SUB.cuesInRange(cues, t0, t1);
-      await SUB.embedSubtitles(out, inRange, p.root, o.signal);
+      await SUB.embedSubtitles(out, inRange, p.root);
       res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
     }
     FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
       encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
       effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });
     if (o.sheet !== false && !out.endsWith(".gif")) {
-      const loud = res.has_audio ? AN.loudness(out, o.signal) : undefined;
+      const skipped = "skipped: cancelled after the output was written";
+      const loud = res.has_audio && !o.signal?.aborted ? AN.loudness(out, o.signal) : undefined;
       loud?.catch(() => {}); // an abort rejects it while the contact sheet is still being drawn; the await below reports it
       try {
+        o.signal?.throwIfAborted();
         const ts = Array.from({ length: 8 }, (_, i) => +(start + (res.duration * (i + 0.5)) / 8).toFixed(3));
         const png = await contactSheet(drawable(p, tl), p.root, ts, 4, 300);
+        o.signal?.throwIfAborted();
         const sp = join(p.root, "previews", `render-${basename(out, extname(out))}-${Date.now()}.sheet.jpg`);
         writeFile(sp, png, p.root); // capped below together with the output, so neither evicts the other
         res.contact_sheet = sp;
-      } catch (e: any) { res.contact_sheet_error = e.message; }
-      if (loud) res.loudness = await loud;
+      } catch (e: any) { res.contact_sheet_error = o.signal?.aborted ? skipped : e.message; }
+      if (loud) {
+        try { res.loudness = await loud; } catch (e) { if (!o.signal?.aborted) throw e; res.loudness_error = skipped; }
+      } else if (res.has_audio) res.loudness_error = skipped;
     }
     CACHE.capPreviews(p, out, ...(res.contact_sheet ? [res.contact_sheet as string] : [])); // UI play drafts are rendered into previews/
     return res;

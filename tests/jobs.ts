@@ -592,13 +592,77 @@ console.log("cancel a render or prepare job");
   await until(() => srv.exit, 10_000);
 
   // a CLI render stopped by SIGTERM: one JSON object (code aborted), exit 143, and nothing left in renders/ or the render temp
-  const cli = (P: string, args: string[], env: Record<string, string> = {}) => {
-    const child = spawn(process.execPath, [cmd, "-p", P, ...args], { env: { ...(process.env as Record<string, string>), TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+  const cli = (P: string, args: string[], env: Record<string, string> = {}, detached = false) => {
+    const child = spawn(process.execPath, [cmd, "-p", P, ...args], { env: { ...(process.env as Record<string, string>), TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"], detached });
     let out = "", exit: { code: number | null; signal: string | null } | null = null;
     child.stdout.on("data", (d) => (out += d));
     child.on("close", (code, signal) => { exit = { code, signal }; });
     return { child, pid: child.pid!, get out() { return out; }, get exit() { return exit; } };
   };
+  // A cancel takes effect until the output is written. A stand-in ffmpeg on PATH holds the loudness pass (extras) or the subtitle mux (until released) so the
+  // cancel lands in that phase; every other call goes to the real one. The cancel is made once the stand-in has started: no sleeps.
+  {
+    const realFfmpeg = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
+    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark"), goMux = join(tmp, "stub-mux.go");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh
+case "$*" in
+  *ebur128*) : > ${JSON.stringify(markLoud)}; exec sleep 60 ;;
+  *mov_text*) : > ${JSON.stringify(markMux)}; while [ ! -e ${JSON.stringify(goMux)} ]; do sleep 0.05; done ;;
+esac
+exec ${JSON.stringify(realFfmpeg)} "$@"
+`);
+    chmodSync(join(bin, "ffmpeg"), 0o755);
+    const withBin = `${bin}:${process.env.PATH}`;
+    const tone = join(m, "with-audio.mp4");
+    ff("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2", "-f", "lavfi", "-i", "sine=d=2", "-shortest", "-pix_fmt", "yuv420p", tone);
+    const mkAudio = async (name: string) => { const P = join(tmp, name); api.create(P, { preset: "720p" }); await api.apply(P, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]); return P; };
+    const streams = (f: string) => spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).sort().join();
+
+    // MCP: cancel_job while the loudness pass runs
+    {
+      const out = join(tmp, "cancel-extras-out", "out.mp4"), P = await mkAudio("cancel-extras");
+      rmSync(markLoud, { force: true });
+      const s2 = mcpProc({ PATH: withBin });
+      await s2.init();
+      const job = await s2.call("render", { project: P, output: out, draft: true, wait_seconds: 0 });
+      const held = await until(() => existsSync(markLoud), 60_000);
+      const size = existsSync(out) ? statSync(out).size : 0;
+      const c = await s2.call("cancel_job", { job_id: job.job_id });
+      check("cancel_job while the loudness pass runs: the output was written, so the job is done with the output; the sheet and loudness are skipped and marked", held && size > 0 && c.ok === true && c.status === "done" && c.result?.output === out && statSync(out).size > 0 && !c.result.loudness && /skipped/.test(c.result.loudness_error ?? "") && (c.result.contact_sheet || /skipped/.test(c.result.contact_sheet_error ?? "")), { held, size, c });
+      process.kill(s2.pid, "SIGTERM");
+      await until(() => s2.exit, 10_000);
+    }
+    // CLI: the same signal after the commit prints the real ok:true result, and the process still ends by the signal
+    {
+      const P = await mkAudio("cancel-extras-cli"), D = join(P, "renders");
+      rmSync(markLoud, { force: true });
+      const r = cli(P, ["render", "--draft", "--quiet"], { PATH: withBin });
+      const held = await until(() => existsSync(markLoud), 60_000);
+      process.kill(r.pid, "SIGTERM");
+      await until(() => r.exit, 20_000);
+      const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
+      check("SIGTERM to a CLI render after its output was written: the ok:true result with the skip marks, the file stays, the process ends by SIGTERM", held && j?.ok === true && /skipped/.test(j.loudness_error ?? "") && existsSync(j.output) && statSync(j.output).size > 0 && stray(D).filter((f) => f.endsWith(".mp4")).length === 1 && r.exit?.signal === "SIGTERM" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
+    }
+    // api: the signal aborts while the subtitle mux runs (released only after the abort): the file still gets its subtitle stream
+    {
+      const P = join(tmp, "cancel-mux"), out = join(tmp, "cancel-mux-out", "out.mp4");
+      api.create(P, { preset: "720p" });
+      await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }, { op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
+      rmSync(markMux, { force: true }); rmSync(goMux, { force: true });
+      const was = process.env.PATH, ctl = new AbortController();
+      process.env.PATH = withBin;
+      try {
+        const pending = api.render(P, { out, subtitles: true, sheet: false, workers: 1, end: 1, signal: ctl.signal }).then((r: any) => r, (e: any) => e);
+        const held = await until(() => existsSync(markMux), 60_000);
+        const size = existsSync(out) ? statSync(out).size : 0;
+        ctl.abort(); // the mux has started; the release comes after the abort
+        writeFileSync(goMux, "");
+        const r: any = await pending;
+        check("an abort during the subtitle mux: the render finishes (done), and the file has its subtitle stream", held && size > 0 && r?.output === out && r.subtitles?.cues > 0 && streams(out) === "subtitle,video", { held, size, r: r?.message ?? r, streams: existsSync(out) ? streams(out) : null });
+      } finally { process.env.PATH = was; writeFileSync(goMux, ""); }
+    }
+  }
   {
     const P = await mk("cancel-cli"), R = join(P, "renders");
     const r = cli(P, ["render", "--no-sheet", "--quiet"]);
@@ -607,9 +671,29 @@ console.log("cancel a render or prepare job");
     process.kill(r.pid, "SIGTERM");
     await until(() => r.exit, 20_000);
     const lines = r.out.trim().split("\n"), j = (() => { try { return lines.length === 1 ? JSON.parse(lines[0]) : null; } catch { return null; } })();
-    check("SIGTERM to a CLI render: one JSON object with code aborted, exit 143, renders/ is empty and no render temp is left", sawPart && j?.ok === false && j.error.code === "aborted" && r.exit?.code === 143 && !stray(R).length && !renderTmpLeft(P).length, { sawPart, out: r.out, exit: r.exit, left: stray(R), tmp: renderTmpLeft(P) });
+    check("SIGTERM to a CLI render: one JSON object with code aborted, the process ends by SIGTERM, renders/ is empty and no render temp is left", sawPart && j?.ok === false && j.error.code === "aborted" && r.exit?.signal === "SIGTERM" && r.exit.code === null && !stray(R).length && !renderTmpLeft(P).length, { sawPart, out: r.out, exit: r.exit, left: stray(R), tmp: renderTmpLeft(P) });
     check("  and its render workers are gone", procs.length > 0 && procs.every((p) => !isAlive(p)), procs.filter(isAlive));
     for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
+  }
+  // Ctrl-C reaches the whole process group: the decoder of a `frame` dies with it (a stand-in ffmpeg that fails when interrupted, and on every retry), and the run
+  // still reports the signal, not the decoder's failure
+  {
+    const P = await mk("cancel-cli-group"), bin = join(tmp, "decode-bin"), mark = join(tmp, "decode.mark");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh
+case "$*" in *-version*|*-hide_banner*) exec ${JSON.stringify(spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim())} "$@" ;; esac
+[ -e ${JSON.stringify(mark)} ] && { echo "decoder failed" >&2; exit 1; }
+: > ${JSON.stringify(mark)}
+trap 'echo "decoder interrupted" >&2; exit 1' INT TERM
+while :; do sleep 0.05; done
+`);
+    chmodSync(join(bin, "ffmpeg"), 0o755);
+    const r = cli(P, ["frame", "1"], { PATH: `${bin}:${process.env.PATH}` }, true);
+    const decoding = await until(() => existsSync(mark), 60_000);
+    process.kill(-r.pid, "SIGINT");
+    await until(() => r.exit, 20_000);
+    const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
+    check("SIGINT to the process group of a CLI frame whose decoder fails: one JSON object with code aborted, the process ends by SIGINT", decoding && j?.ok === false && j.error.code === "aborted" && r.exit?.signal === "SIGINT" && r.exit.code === null, { decoding, out: r.out.slice(0, 300), exit: r.exit });
   }
   // a command that does not end after the first signal is reported after a bound; a second signal exits at once with nothing printed
   {
@@ -619,14 +703,14 @@ console.log("cancel a render or prepare job");
     process.kill(one.pid, "SIGTERM");
     await until(() => one.exit, 20_000);
     const j = (() => { try { return JSON.parse(one.out); } catch { return null; } })();
-    check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, exit 143", j?.ok === false && j.error.code === "aborted" && one.exit?.code === 143, { out: one.out, exit: one.exit });
+    check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, the process ends by SIGTERM", j?.ok === false && j.error.code === "aborted" && one.exit?.signal === "SIGTERM" && one.exit.code === null, { out: one.out, exit: one.exit });
     const two = cli(P, ["apply", "-"]);
     await sleep(2000);
     process.kill(two.pid, "SIGTERM");
     await sleep(300);
     try { process.kill(two.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
     await until(() => two.exit, 20_000);
-    check("a second signal exits at once (128 + its number) and prints nothing", two.exit?.code === 130 && two.out === "", { out: two.out, exit: two.exit });
+    check("a second signal ends the process at once, by that signal, and prints nothing", two.exit?.signal === "SIGINT" && two.exit.code === null && two.out === "", { out: two.out, exit: two.exit });
   }
 }
 
