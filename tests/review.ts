@@ -427,7 +427,11 @@ console.log("templates: placement is kept where it was safe, a preset's own plac
   const b = await R.layoutBox(R.layers.find((l) => l.type === "text")!, 1);
   R.close();
   check("a margin 'x y' sets the left distance and the bottom distance apart (5% and 20% of 1080 px)", !!b && Math.abs(b[0] - 54) < 2 && Math.abs(1920 - (b[1] + b[3]) - 216) < 2, b);
-  check("the project with a 'x y' margin validates and renders a frame", (await api.validate(MP)).valid && (await api.frame(MP, 1, { out: join(tmp, "margin-xy.jpg") })).bytes > 0, await api.validate(MP));
+  const marginIn = async (margin: unknown) => code(() => api.apply(MP, [{ op: "add_clip", track: "text", text: "M", at: 3, duration: 1, position: "top", margin }]));
+  const refused = [await marginIn("5% 20% 30%"), await marginIn("5% x"), await marginIn("abc"), await marginIn("")];
+  check("a margin with three parts, a part that is not a length, or no value is refused at validation", refused.every((c) => c === "validation_failed"), refused);
+  const accepted = [await marginIn("5% 12%"), await marginIn("40px 12%"), await marginIn("8%"), await marginIn(40)];
+  check("one length or 'x y' (number, px or %) is accepted", accepted.every((c) => c === "ok"), accepted);
   const titleOf = async (preset: string, extra: object = {}) => {
     const d = join(tmp, `ttl-${preset}-${Object.keys(extra).length}`);
     api.create(d, { preset });

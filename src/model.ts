@@ -139,6 +139,8 @@ const CLIP_RANGES: Record<string, readonly [(n: number) => boolean, string]> = {
   weight: [(n) => n >= 100 && n <= 900, "100..900"],
 };
 /** Where the values of a keyframe list may differ from the field's own range: a scale of 0 is a pop-in's first value, while a still scale of 0 draws nothing. */
+/** A margin string: one length, or two ("x y"); each a number with an optional % or px. */
+const MARGIN = /^-?\d+(?:\.\d+)?(?:%|px)?(?:\s+-?\d+(?:\.\d+)?(?:%|px)?)?$/;
 const KEYFRAME_RANGES: Record<string, readonly [(n: number) => boolean, string]> = { scale: [(n) => n >= 0, ">= 0"] };
 const keyframeRange = (k: string) => KEYFRAME_RANGES[k] ?? CLIP_RANGES[k];
 const ranged = (k: string, doc: string, ...types: string[]): [string[], string] =>
@@ -873,6 +875,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           const s = suggest(c[key], opts);
           issues.push({ level: "error", path: `${p}.${key}`, message: `invalid ${key} '${c[key]}'`, hint: s ? `did you mean '${s}'?` : `options: ${opts.join(", ")}` });
         }
+      if (typeof c.margin === "string" && !MARGIN.test(c.margin.trim())) issues.push({ level: "error", path: `${p}.margin`, message: `invalid margin ${JSON.stringify(c.margin)}`, hint: "one length ('8%', '40px', 40) or 'x y' (left/right, then top/bottom)" });
       if (c.mask) checkName(typeof c.mask === "string" ? c.mask : c.mask.shape, MASKS, `${p}.mask`, issues, "mask shape");
       (Array.isArray(c.filters) ? c.filters : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
