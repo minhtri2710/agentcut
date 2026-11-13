@@ -82,6 +82,18 @@ const click = async (sel: string, o: { dx?: number; shift?: boolean; count?: num
     await page("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: b.y, button: "left", clickCount: n, modifiers });
   }
 };
+/** one real key press (key events through the browser's input pipeline, so focus-visible and native activation behave as for a person) */
+const press = async (key: string, code: string, vk: number, text?: string) => {
+  await page("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, ...(text ? { text } : {}) });
+  await page("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk });
+};
+const SPACE = () => press(" ", "Space", 32, " "), ENTER = () => press("Enter", "Enter", 13, "\r");
+/** Tab until the focused element satisfies the page expression (a bounded number of presses) */
+const tabTo = async (cond: string, max = 80) => {
+  for (let i = 0; i < max; i++) { await press("Tab", "Tab", 9); if (await js(`(function(){var e=document.activeElement;return !!(${cond})})()`)) return true; }
+  return false;
+};
+const viewport = (width: number) => page("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
 const shot = async (name: string) => {
   const { data } = await page("Page.captureScreenshot", { format: "png" });
   const out = join(process.env.AGENTCUT_UI_SHOTS ?? tmp, `${name}.png`);
@@ -313,6 +325,56 @@ try {
   check("contact sheet lands in previews/ui/", await until("sheet", `document.querySelector("#out img") && document.querySelector("#out img").src.indexOf("/files/previews/ui/") > 0`, 30_000));
   check("sheet image loads", await until("sheet img", `document.querySelector("#out img").naturalWidth > 0`));
 
+  console.log("keyboard");
+  await js(`document.activeElement.blur()`);
+  check("Tab reaches Render, and Space on it starts a render, not play", await tabTo(`e.id === "render"`)
+    && (await SPACE(), await until("render started", `renderJob !== null || !!document.querySelector("#out a")`)) && await js(`!playJob && $("video").style.display === "none"`),
+    await js(`[document.activeElement.id, renderJob, playJob, $("play").textContent]`));
+  check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !$("render").disabled`, 120_000), await js(`[$("msg").textContent, renderJob]`));
+  await api.apply(dir, [{ op: "add_marker", t: 0.5 }]);
+  await until("marker seen", `S.revision === ${load().revision} && !$("undo").disabled`);
+  const rev0 = load().revision;
+  await click("#undo");
+  check("a mouse click on Undo undoes", await untilFile((tl) => tl.revision > rev0 && !(tl.markers ?? []).some((m: any) => m.t === 0.5)), load().markers);
+  await until("undo seen", `S.revision === ${load().revision}`);
+  await SPACE();
+  check("after that click, Space plays", await until("play started", `playJob !== null || $("video").style.display !== "none"`), await js(`[document.activeElement.id, playJob, $("play").textContent]`));
+  check("  the play draft starts the video", await until("playing", `$("play").textContent === "Stop"`, 120_000), await js(`[$("play").textContent, $("msg").textContent]`));
+  await SPACE();
+  check("  and Space stops it", await until("stopped", `$("video").style.display === "none" && $("play").textContent === "Play"`), await js(`[$("video").style.display, $("play").textContent]`));
+  await js(`select(null); drawTimeline(); document.activeElement.blur()`);
+  const byTime = `[].slice.call(document.querySelectorAll("#lanes .clip")).map(function (n, i) { return [parseFloat(n.style.left), i, n.dataset.id]; }).sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; }).map(function (x) { return x[2]; })`;
+  const order = await js(byTime) as string[];
+  check("exactly one clip is in the tab order, the others are -1, each is a button with a label naming its id and type", await js(`(function(){
+    var n = [].slice.call(document.querySelectorAll("#lanes .clip"));
+    return n.filter(function (x) { return x.tabIndex === 0; }).length === 1 && n.every(function (x) { return x.getAttribute("role") === "button" && x.getAttribute("aria-label").indexOf(x.dataset.id + ", " + S.timeline.tracks.flatMap(function (t) { return t.clips; }).filter(function (c) { return c.id === x.dataset.id; })[0].type + ", ") === 0; });
+  })()`));
+  check("Tab reaches the clips at the one tab stop", await tabTo(`e.classList.contains("clip")`) && await js(`document.activeElement.dataset.id`) === order[0], await js(`[document.activeElement.dataset.id, ${JSON.stringify(order)}]`));
+  const t0 = await js(`t`);
+  await press("ArrowRight", "ArrowRight", 39);
+  check("Right moves the focus to the next clip in time order and does not move the playhead", await js(`document.activeElement.dataset.id`) === order[1] && await js(`t`) === t0 && await js(`document.activeElement.tabIndex`) === 0, await js(`[document.activeElement.dataset.id, t]`));
+  await press("ArrowLeft", "ArrowLeft", 37);
+  await press("ArrowRight", "ArrowRight", 39);
+  await ENTER();
+  check("Enter selects the focused clip and the inspector shows it", await until("keyboard selection", `sel === ${JSON.stringify(order[1])} && $("selinfo").textContent.indexOf(${JSON.stringify(order[1])}) === 0 && JSON.parse($("insp").value).id === ${JSON.stringify(order[1])}`), await js(`[sel, $("selinfo").textContent]`));
+  await js(`window.oldClip = document.activeElement`);
+  await api.apply(dir, [{ op: "add_marker", t: 0.7 }]);
+  check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `S.revision === ${load().revision} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
+  await js(`document.activeElement.blur()`);
+  await js(`seek(1)`);
+  await press("ArrowRight", "ArrowRight", 39);
+  check("with no clip focused, Right still steps the playhead by a frame", Math.abs(await js(`t`) - (1 + 1 / 30)) < 1e-6, await js(`t`));
+
+  console.log("page width");
+  await api.apply(dir, [{ op: "add_clip", track: "wide", type: "color", color: "gray", id: "wide1", at: 0, duration: 120 }]);
+  await until("wide timeline", `!!document.querySelector('[data-id="wide1"]') && S.revision === ${load().revision}`);
+  for (const w of [1000, 1440]) {
+    await viewport(w); await sleep(200);
+    const f = await js(`(function(){var r=function(id){return $(id).getBoundingClientRect().right}; return {w: innerWidth, scrollW: document.documentElement.scrollWidth, render: r("render"), side: r("side"), inner: $("scroll").scrollWidth, shown: $("scroll").clientWidth}})()`);
+    check(`${w} px: a timeline far wider than the window scrolls inside the timeline; the page, Render and the side panel stay inside the window`,
+      f.w === w && f.inner > f.shown && f.scrollW <= f.w && f.render <= f.w && f.side <= f.w, f);
+  }
+
   console.log("not_prepared");
   const fake = join(tmp, "fake-uv.mjs");
   writeFileSync(fake, `#!/usr/bin/env node
@@ -328,6 +390,15 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb1" }, { op: "remove_background", id: "rb1" }]);
   check("viewer shows not_prepared with its hint and a Prepare action", await until("not_prepared", `$("vstat").textContent.indexOf("not prepared") >= 0 && $("vstat").textContent.indexOf("render_status") > 0 && $("prepare").style.display === ""`),
     await js(`[$("vstat").textContent, $("prepare") && $("prepare").style.display]`));
+  await viewport(1000); await js(`window.beforeReload = 1; location.reload()`);
+  await until("not prepared after a reload", `window.beforeReload === undefined && $("vstat").textContent.indexOf("not prepared") >= 0 && $("prepare").style.display === ""`);
+  const np = await js(`(function(){
+    var shown = [].filter.call(document.querySelectorAll("#viewer img"), function (i) { return i.offsetWidth > 0; }), tm = $("time").getBoundingClientRect(), st = $("vstat").getBoundingClientRect(), v = $("viewer").getBoundingClientRect();
+    return { imgs: shown.map(function (i) { return i.complete && i.naturalWidth > 0; }), timeH: tm.height, lineH: parseFloat(getComputedStyle($("time")).fontSize) * 1.35, statShown: st.height > 0 && st.left >= v.left && st.right <= v.right, text: $("vstat").textContent };
+  })()`);
+  check("a viewer with no frame (not prepared, page just loaded) shows no broken image, the state text inside the viewer, and the time on one line",
+    np.imgs.every((ok: boolean) => ok) && np.statShown && np.text.includes("render_status") && np.timeH < np.lineH * 1.5, np);
+  await viewport(1440);
   await click("#prepare");
   check("Prepare runs the job, the matte lands and the frame returns", await until("prepared", `$("prepare").style.display === "none" && $("vstat").textContent.indexOf("ms/frame") > 0`, 30_000),
     await js(`[$("vstat").textContent, $("msg").textContent]`));

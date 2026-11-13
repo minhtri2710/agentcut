@@ -466,7 +466,7 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 for (const shift of [-30, -2, 0, 2, 30]) {
   const proj = join(tmp, `proj-late${shift}`);
   rmSync(uvLog, { force: true });
-  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: the cancel_job calls below end failed
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: the prepare jobs below end failed (aborted by the stop)
   await srv.init();
   await srv.call("create_project", { path: proj, preset: "720p" });
   await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });

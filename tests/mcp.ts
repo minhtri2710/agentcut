@@ -189,6 +189,15 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
 
   const bad5 = await call5("render", { project: A, draft: true, output: join(tmp, "no-such-dir", "x.xyz"), wait_seconds: 30 });
   check("a failed job is an error result", bad5.json.status === "failed" && bad5.json.ok === false && bad5.r.isError === true, { json: bad5.json, isError: bad5.r.isError });
+  // reading or cancelling a failed job describes it; the job's error is logged once, where the job ended
+  const failedCalls = () => readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    .filter((e) => e.type === "call" && e.ok === false && ["render", "render_status", "cancel_job"].includes(e.cmd) && e.code === bad5.json.error.code);
+  const logged = failedCalls().length;
+  for (let i = 0; i < 2; i++) { await call5("render_status", { job_id: bad5.json.job_id, wait_seconds: 0 }); await call5("cancel_job", { job_id: bad5.json.job_id }); }
+  check("a failed job's error is logged once: the render call, two render_status polls and two cancel_job calls add nothing", logged === 1 && failedCalls().length === 1, failedCalls());
+  const ghost = await call5("render_status", { job_id: "no-such-job", wait_seconds: 0 }), ghostCancel = await call5("cancel_job", { job_id: "no-such-job" });
+  const ghostCalls = readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === "call" && e.ok === false && e.code === "not_found" && /no job no-such-job/.test(e.msg));
+  check("an unknown job id is still an error and is logged each time", ghost.json.error.code === "not_found" && ghostCancel.json.error.code === "not_found" && ghostCalls.map((e) => e.cmd).sort().join() === "cancel_job,render_status", ghostCalls);
 
   const txt = join(tmp, "note.txt"); writeFileSync(txt, "not a picture");
   const vi = await call5("view_image", { path: txt }), vm = await call5("view_image", { path: join(tmp, "missing.png") }), vd = await call5("view_image", { path: tmp + ".png" });

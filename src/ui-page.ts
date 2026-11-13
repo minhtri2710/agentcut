@@ -7,16 +7,18 @@ export const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 *{box-sizing:border-box}
-body{margin:0;font:13px/1.35 system-ui,sans-serif;background:#16181d;color:#dde;display:grid;grid-template-rows:auto 1fr auto;height:100vh;overflow:hidden}
+body{margin:0;font:13px/1.35 system-ui,sans-serif;background:#16181d;color:#dde;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr auto;height:100vh;overflow:hidden}
 header{display:flex;gap:8px;align-items:center;padding:6px 10px;background:#1f2229;border-bottom:1px solid #333}
 header b{font-size:14px}
 button{background:#2d323c;color:#eee;border:1px solid #444;border-radius:4px;padding:3px 9px;cursor:pointer;font:inherit}
 button:hover{background:#3a404c}button:disabled{opacity:.4;cursor:default}
 dialog{background:#1f2229;color:#dde;border:1px solid #555;border-radius:6px;max-width:420px}
-#main{display:grid;grid-template-columns:1fr 360px;min-height:0}
-#viewer{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;background:#0d0e11;position:relative}
-#viewer img,#viewer video{max-width:100%;max-height:calc(100% - 30px);object-fit:contain;background:#000}
-#vbar{display:flex;gap:8px;align-items:center;height:30px}
+#main{display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:0;min-width:0}
+#viewer{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;min-width:0;background:#0d0e11;position:relative}
+#viewer img,#viewer video{max-width:100%;max-height:calc(100% - 80px);object-fit:contain;background:#000}
+#frame.none{display:none}
+#vbar{display:flex;gap:8px;align-items:center;height:30px}#time{white-space:nowrap}
+#vstat{max-width:90%;max-height:48px;overflow:auto;text-align:center}
 #side{border-left:1px solid #333;display:flex;flex-direction:column;min-height:0;overflow:auto;padding:8px;gap:6px}
 #side>*{flex:none}
 textarea{width:100%;background:#0f1115;color:#cfe;border:1px solid #333;border-radius:4px;font:12px ui-monospace,monospace;padding:6px}
@@ -25,7 +27,7 @@ textarea{width:100%;background:#0f1115;color:#cfe;border:1px solid #333;border-r
 #msg.err{display:block;background:#4a1d1d;color:#fcc}#msg.ok{display:block;background:#1d3a24;color:#cfc}
 #out a{color:#8cf}#out img{width:100%;margin-top:4px;cursor:zoom-in}
 progress{width:100%}
-#tl{height:290px;border-top:1px solid #333;background:#1b1d23;display:flex;flex-direction:column}
+#tl{min-width:0;height:290px;border-top:1px solid #333;background:#1b1d23;display:flex;flex-direction:column}
 #tbar{display:flex;gap:8px;align-items:center;padding:4px 8px;font-size:12px}
 #scroll{flex:1;overflow:auto;position:relative}
 #inner{position:relative}
@@ -59,8 +61,8 @@ progress{width:100%}
   <button id="render">Render</button><button id="sheet">Contact sheet</button>
 </header>
 <div id="main">
-  <div id="viewer"><img id="frame" alt="preview"><video id="video" style="display:none" controls></video>
-    <div id="vbar"><button id="play">Play</button><button id="prepare" style="display:none">Prepare</button><span id="time">0.00 s</span><span class="mut" id="vstat"></span></div></div>
+  <div id="viewer"><img id="frame" class="none" alt="preview"><video id="video" style="display:none" controls></video>
+    <div id="vbar"><button id="play">Play</button><button id="prepare" style="display:none">Prepare</button><span id="time">0.00 s</span></div><div class="mut" id="vstat"></div></div>
   <div id="side">
     <div class="mut" id="selinfo">Select a clip on the timeline.</div>
     <textarea id="insp" spellcheck="false" placeholder="clip JSON"></textarea>
@@ -175,6 +177,7 @@ es.addEventListener("error", function (e) { if (e.data) fail(JSON.parse(e.data))
 // ------------------------------------------------------------ timeline
 function drawTimeline() {
   var tl = S.timeline, W = Math.max(total() + 5, 10) * pps, lanes = $("lanes");
+  var ae = document.activeElement, keep = ae && ae.classList && ae.classList.contains("clip") ? ae.dataset.id : null; // the rebuild below drops the focused clip
   $("inner").style.width = (W + LABEL) + "px";
   var r = $("ruler"); r.innerHTML = ""; r.style.width = W + "px";
   var step = pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : 10;
@@ -205,6 +208,13 @@ function drawTimeline() {
     svg.appendChild(ln); svg.appendChild(dot);
   }); });
   $("ph").style.height = (H + 20) + "px"; movePlayhead(); drawRegroup();
+  var order = clipOrder(), stop = order.filter(function (c) { return c.id === (keep || sel); })[0] || order[0]; // one clip is in the tab order
+  if (stop) { var n = lanes.querySelector('[data-id="' + stop.id + '"]'); n.tabIndex = 0; if (keep) n.focus(); }
+}
+/** every clip of the shown tracks in time order (ties: lane order), the order Left and Right walk */
+function clipOrder() {
+  var r = []; V.tracks.slice().reverse().forEach(function (tr) { tr.clips.forEach(function (c) { r.push(c); }); });
+  return r.map(function (c, i) { return [V.off + V.k * start(c), i, c]; }).sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; }).map(function (x) { return x[2]; });
 }
 function resolveRef(ref) {
   var m = /^(.+)#(-?\\d+)$/.exec(ref);
@@ -214,7 +224,8 @@ function resolveRef(ref) {
 }
 function clipEl(tr, c, i) {
   var e = document.createElement("div"); e.className = "clip" + (c.id === sel ? " sel" : "") + (picked.indexOf(c.id) >= 0 ? " pick" : "");
-  e.dataset.id = c.id;
+  e.dataset.id = c.id; e.tabIndex = -1; e.setAttribute("role", "button");
+  e.setAttribute("aria-label", c.id + ", " + c.type + ", starts at " + start(c).toFixed(2) + " s");
   var x0 = V.off + V.k * start(c), x1 = x0 + V.k * dur(c);
   if (c.enabled === false || x1 <= V.lo + 1e-6 || x0 >= V.hi - 1e-6) e.classList.add("off"); // disabled, or outside the opened compound's window
   e.style.left = x0 * pps + "px"; e.style.width = Math.max(4, V.k * dur(c) * pps) + "px";
@@ -303,9 +314,10 @@ function pump() {
   var url = "/api/frame?t=" + at.toFixed(3) + "&scale=" + scale + "&rev=" + S.revision; want = null; busy = true;
   var t0 = performance.now();
   fetch(url).then(function (r) { if (!r.ok) return r.json().then(function (j) { throw j.error; }); return r.blob(); }).then(function (b) {
-    var old = $("frame").src; $("frame").src = URL.createObjectURL(b); if (old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
+    var old = $("frame").src; $("frame").src = URL.createObjectURL(b); $("frame").classList.remove("none"); if (old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
     $("vstat").textContent = Math.round(performance.now() - t0) + " ms/frame"; if (!prepJob) $("prepare").style.display = "none";
   }, function (e) {
+    $("frame").classList.add("none"); // no frame for this revision: no stale or empty picture, the state text says why
     $("vstat").textContent = e && e.message ? e.message + (e.hint ? " (" + e.hint + ")" : "") : "frame failed";
     if (e && e.code === "not_prepared") $("prepare").style.display = "";
   }).then(function () { busy = false; pump(); });
@@ -468,10 +480,27 @@ $("applyo").addEventListener("click", function () {
 function hist(kind) { api("/api/" + kind, { revision: S.revision }).then(function () { show("ok", kind + " done"); }, fail); }
 $("undo").addEventListener("click", function () { hist("undo"); });
 $("redo").addEventListener("click", function () { hist("redo"); });
+/** the control holds focus from the keyboard: :focus-visible, and no mouse press since the last Tab (a key press after a click makes the clicked control :focus-visible too) */
+var mouseFocus = false;
+document.addEventListener("mousedown", function () { mouseFocus = true; }, true);
+document.addEventListener("keydown", function (e) { if (e.key === "Tab") mouseFocus = false; }, true);
+function kbFocus(n) { return !mouseFocus && n.matches(":focus-visible"); }
+/** Left / Right walk the clips in time order, Enter or Space selects the focused one (a click does the same) */
+function clipKey(e, n) {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(n.dataset.id); return; }
+  var order = clipOrder(), i = order.map(function (c) { return c.id; }).indexOf(n.dataset.id), next = order[i + (e.key === "ArrowLeft" ? -1 : 1)];
+  e.preventDefault();
+  if (!next) return;
+  n.tabIndex = -1; var m = $("lanes").querySelector('[data-id="' + next.id + '"]'); m.tabIndex = 0; m.focus();
+}
 document.addEventListener("keydown", function (e) {
-  if ($("consent").open || e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return; // the dialog owns the keys while open
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); }
-  else if (e.key === " ") { e.preventDefault(); $("play").click(); }
+  var g = e.target;
+  if ($("consent").open || g.tagName === "TEXTAREA" || g.tagName === "INPUT") return; // the dialog owns the keys while open
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); return; }
+  if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || (e.key === " " && kbFocus(g)))) return clipKey(e, g);
+  // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays
+  if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button" || g.isContentEditable) && kbFocus(g)) return;
+  if (e.key === " ") { e.preventDefault(); $("play").click(); }
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { var f = 1 / S.timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(t + (e.key === "ArrowLeft" ? -f : f)); }
 });
 

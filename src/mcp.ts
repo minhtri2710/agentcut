@@ -74,6 +74,7 @@ export function buildServer() {
       try { r = await handler(a, { ...extra, signal: ctl.signal }); } finally { for (const [sig, fn] of relays) sig.removeEventListener("abort", fn); }
       let res: any = r?.isError ? { ok: false, error: { code: "internal", message: "the tool replied with an error that is not JSON" } } : { ok: true };
       try { const t = r?.content?.find((c: any) => c.type === "text")?.text; if (t?.startsWith("{")) res = JSON.parse(t); } catch { /* not JSON */ }
+      if (res?.job_id) res = { ok: true }; // a reply that describes a job is a read; the job's own failure is logged once, where the job ends (startJob)
       recordCall("mcp", name, performance.now() - t0, res, name === "apply_ops" ? { ops: (a?.ops ?? []).map((o: any) => o?.op) } : {});
       return r;
     })();
@@ -165,6 +166,7 @@ export function buildServer() {
       .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => {
         job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) };
         job.status = cancelled.has(job) && job.error.code === "aborted" ? "cancelled" : "failed";
+        if (job.status === "failed") recordCall("mcp", kind, Date.now() - job.started, { ok: false, error: job.error });
       })
       .finally(() => { job.finished = Date.now(); });
     return id;
