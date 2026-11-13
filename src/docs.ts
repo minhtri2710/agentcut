@@ -141,9 +141,12 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
-  -> a model (a matte model, or the 0.23 MB face model that subject analysis, auto_reframe and track_to without box use) is downloaded only on
-     request: prepare fails with code model_not_cached until the model is in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE)
-     or you run prepare with allow_download=true (CLI: prepare --allow-download; analyze_subject takes allow_download too, CLI: subject --allow-download);
+  -> a model (a matte model, or the 0.23 MB face model that subject analysis, auto_reframe and track_to without box use) and a Python interpreter
+     (3.12 or 3.13, which uv installs if none is found) are downloaded only on request: prepare fails with code model_not_cached until the model is
+     in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or you run prepare with allow_download=true (CLI: prepare --allow-download;
+     analyze_subject takes allow_download too, CLI: subject --allow-download). allow_download covers models and the interpreter; uv fetches the
+     packages on a first run either way, so that run needs network access. Without allow_download and without a 3.12/3.13 Python the helper fails
+     with a hint to run: uv python install 3.12;
      capabilities.matte_models, engines.vision.face_model and prepare --status (models_to_download) list the sizes (null = not known offline) and what is cached.
   -> analyze_subject with a project open (project arg, the one MCP remembered, or CLI -p / $AGENTCUT_PROJECT / the nearest project.json) caches its result in that project;
      auto_reframe on a clip covering the same range at the same fps reuses it (no pending, nothing to prepare). With no project it caches in the user cache. A named project that is not one fails with no_project (MCP: the project arg or the remembered project; CLI: -p / $AGENTCUT_PROJECT).

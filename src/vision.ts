@@ -15,6 +15,8 @@ import { VISION_PY } from "./vision-py.ts";
 // pinned so cached results and mattes stay reproducible; opencv 4.12 ships the YuNet face detector (cv2.FaceDetectorYN), whose model is a separate download (FACE_MODEL)
 const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
+// follows the pins above: numpy 2.2.6 (CV) has no cp314 wheel and numpy 2.5.4 (REMBG) needs Python >= 3.12
+const PYTHON = ">=3.12,<3.14";
 
 const userCache = () => resolve(process.env.AGENTCUT_CACHE ?? join(homedir(), ".cache", "agentcut"));
 /** Models live only in `<user cache>/models/<name>/<name>.onnx`: the helper runs with U2NET_HOME = the user cache, and rembg 2.0.86 keeps a
@@ -30,6 +32,16 @@ export const FACE_MODEL = {
   sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
   bytes: 232589,
 };
+/** The u2netp matte model (rembg 2.0.86's release asset; its md5 pin there is 8e83ca70e441ab06c318d82300c84806). Fetched by `downloadModel` and
+ *  verified before the helper loads it from the models dir (U2NET_HOME = the user cache), so rembg finds it and downloads nothing. */
+export const U2NETP_MODEL = {
+  name: "u2netp",
+  url: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+  sha256: "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+  bytes: 4574861,
+};
+/** Models that AgentCut fetches and verifies itself, by name. */
+const PINNED_MODELS: Record<string, typeof FACE_MODEL> = { [FACE_MODEL.name]: FACE_MODEL, [U2NETP_MODEL.name]: U2NETP_MODEL };
 /** A face counts from this detector score up; below FACE_SURE a result warns that it may not be a face. Fixed, not tuned. */
 export const FACE_MIN = 0.6, FACE_SURE = 0.9;
 const mbOf = (bytes: number) => +(bytes / 1e6).toFixed(2);
@@ -77,7 +89,7 @@ export async function downloadModel(m: { name: string; url: string; sha256: stri
   if (body.length !== m.bytes) throw fail(`got ${body.length} bytes, expected ${m.bytes}`);
   if (createHash("sha256").update(body).digest("hex") !== m.sha256) throw fail("the sha256 does not match");
   const tmp = tmpSibling(file, userCache());
-  try { createFile(tmp, body); commit(tmp, file); } finally { rmSync(tmp, { force: true }); }
+  try { createFile(tmp, body, 0o644); commit(tmp, file); } finally { rmSync(tmp, { force: true }); }
 }
 export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
 
@@ -186,15 +198,15 @@ async function runHelper(root: string, d: Derived, out: string, allowDownload: b
   try {
     const script = join(dir, "helper.py");
     createFile(script, VISION_PY, 0o600);
-    return await spawnHelper(uv, dir, script, d, job, onFrames, signal);
+    return await spawnHelper(uv, dir, script, d, job, allowDownload, onFrames, signal);
   } finally { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort: never mask the result or the abort reason */ } }
 }
 
-function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
+function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: Record<string, unknown>, allowDownload: boolean, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   checkHelper(script);
   const env = { ...process.env, ...ORT_ENV, ...(d.kind === "matte" && { U2NET_HOME: userCache() }) };
   return new Promise((res, rej) => {
-    const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, env, stdio: ["pipe", "pipe", "pipe"] });
+    const ch = spawn(uv, ["run", "--no-project", "--no-config", "--quiet", "--python", PYTHON, ...(allowDownload ? [] : ["--no-python-downloads"]), ...d.pkgs.flatMap((p) => ["--with", p]), "python", "-I", script, JSON.stringify(job)], { cwd: dir, env, stdio: ["pipe", "pipe", "pipe"] });
     // stdin is the stop channel: the helper exits when it reads EOF (we close it on abort, and it closes when this process dies)
     ch.stdin.on("error", () => {});
     stopOnAbort(ch, signal);
@@ -213,7 +225,9 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       if (code !== 0) {
         const name = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
         const model = name && modelCached(name) ? modelFile(name) : null; // an existing model file is trusted: the helper never re-checks it
-        return rej(new EditError(`vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`, "vision_failed",
+        const detail = `vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`;
+        if (/No interpreter found/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the vision helper needs a Python ${PYTHON}; install one with \`uv python install 3.12\` (or put one on PATH) and retry`));
+        return rej(new EditError(detail, "vision_failed",
           "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
           + (model ? `; if the error is about loading the model, the model file ${model} may be damaged: delete it and run with allow_download=true` : "")));
       }
@@ -226,8 +240,8 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
 const baseOf = (d: Derived) => d.root ?? userCache();
 
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file.
- *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then the face model is fetched here
- *  (`downloadModel`) and a matte model by the helper. The helper dir and uv are checked first, so an unsafe cache or a missing uv
+ *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then a pinned model (the face model, u2netp) is
+ *  fetched and verified here (`downloadModel`) and any other matte model by the helper. The helper dir and uv are checked first, so an unsafe cache or a missing uv
  *  is refused before a download. */
 export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
@@ -236,7 +250,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   requireUv([d]);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
-  if (d.kind === "subject" && need.length) await downloadModel(FACE_MODEL, signal);
+  for (const n of need) if (PINNED_MODELS[n.model]) await downloadModel(PINNED_MODELS[n.model], signal);
   const tmp = tmpSibling(d.file, baseOf(d));
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {

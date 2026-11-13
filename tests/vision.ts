@@ -1042,6 +1042,88 @@ console.log("the face model: descriptor, job, gate, download");
   } finally { delete process.env.FAKE_JOB_LOG; process.env.AGENTCUT_CACHE = mainCache; process.env.AGENTCUT_UV = fake; }
 }
 
+// ---------------------------------------------------------------- the helper's Python range, and the pinned u2netp
+console.log("the vision helper's Python range and the u2netp pin");
+{
+  const { createHash } = await import("node:crypto");
+  const logFile = join(tmp, "py-runs.jsonl"), pyUv = join(tmp, "py-uv.mjs");
+  // records argv and the u2netp file as the helper would find it under U2NET_HOME, then fails with FAKE_PY_ERR on stderr
+  writeFileSync(pyUv, `#!/usr/bin/env node
+import { appendFileSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+const home = process.env.U2NET_HOME ?? null;
+let model = null;
+if (home) try { const f = join(home, "models", "u2netp", "u2netp.onnx"); model = { sha: createHash("sha256").update(readFileSync(f)).digest("hex"), mode: lstatMode(f) }; } catch {}
+function lstatMode(f) { return statSync(f).mode & 0o777; }
+appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ argv: process.argv.slice(2), home, model }) + "\\n");
+process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(2);
+`);
+  chmodSync(pyUv, 0o755);
+  type PyRun = { argv: string[]; home: string | null; model: { sha: string; mode: number } | null };
+  const pyRuns = () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as PyRun[];
+  const caught = async (f: () => unknown) => { try { await f(); return null as any; } catch (e: any) { return e; } };
+  const rb = join(m, "rb.mp4"), keep = process.env.AGENTCUT_CACHE!, sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+  let n = 0;
+  const root = () => { const d = join(tmp, `py-root-${n++}`); mkdirSync(d); return d; }; // a fresh project dir: nothing is cached
+  const jobs = {
+    subject: () => V.subjectJob(rb, { fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
+    track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], srcW: 640, srcH: 360, root: root() }),
+    matte: () => V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
+  };
+  /** compute one job under the failing uv; the run it logged, and the error */
+  const go = async (job: ReturnType<(typeof jobs)[keyof typeof jobs]>, allow: boolean) => {
+    const before = pyRuns().length, e = await caught(() => V.compute(job, undefined, undefined, allow));
+    return { run: pyRuns().slice(before)[0], runs: pyRuns().length - before, e };
+  };
+  process.env.AGENTCUT_UV = pyUv;
+  try {
+    for (const kind of ["subject", "track", "matte"] as const) {
+      const off = await go(jobs[kind](), false), on = await go(jobs[kind](), true), at = off.run?.argv.indexOf("--python") ?? -1;
+      check(`${kind}: uv gets --python with the pinned range`, at >= 0 && off.run.argv[at + 1] === ">=3.12,<3.14" && on.run?.argv[on.run.argv.indexOf("--python") + 1] === ">=3.12,<3.14", { off: off.run?.argv, on: on.run?.argv });
+      check(`${kind}: --no-python-downloads is passed without allow_download and left out with it`, off.run?.argv.includes("--no-python-downloads") === true && on.run?.argv.includes("--no-python-downloads") === false, { off: off.run?.argv, on: on.run?.argv });
+    }
+    process.env.FAKE_PY_ERR = "error: No interpreter found for Python >=3.12, <3.14 in managed installations or search path";
+    const ni = await go(jobs.track(), false);
+    check("uv found no interpreter: vision_failed, the hint names the range and `uv python install 3.12`, not network or model advice",
+      ni.e?.code === "vision_failed" && ni.e.hint.includes(">=3.12,<3.14") && ni.e.hint.includes("uv python install 3.12") && !/network|model/.test(ni.e.hint), { code: ni.e?.code, hint: ni.e?.hint });
+    process.env.FAKE_PY_ERR = "boom";
+    const other = await go(jobs.track(), false);
+    check("any other helper failure keeps the network and decode hint", other.e?.code === "vision_failed" && /network access/.test(other.e.hint) && !/uv python install/.test(other.e.hint), { hint: other.e?.hint });
+
+    // u2netp: AgentCut fetches it, checks sha256 and size, and only then lets the helper load it
+    const U = V.U2NETP_MODEL;
+    check("u2netp is pinned: a name, an https URL, a sha256 and a size", U.name === "u2netp" && /^https:\/\/.*\/u2netp\.onnx$/.test(U.url)
+      && U.sha256 === "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8" && U.bytes === 4574861, U);
+    const realFetch = globalThis.fetch, fetched: string[] = [];
+    const serve = (body: Buffer) => { globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response(body); }) as typeof fetch; };
+    const fresh = (name: string) => { const d = join(tmp, `u2-${name}`); mkdirSync(d, { recursive: true }); return d; };
+    const inCache = async <T>(cache: string, f: () => Promise<T>) => { process.env.AGENTCUT_CACHE = cache; try { return await f(); } finally { process.env.AGENTCUT_CACHE = keep; } };
+    const pin = { sha256: U.sha256, bytes: U.bytes };
+    try {
+      const W = fresh("wrong"), runs0 = pyRuns().length;
+      serve(Buffer.alloc(U.bytes, 1)); // the right size, other content
+      const bad = await inCache(W, () => go(jobs.matte(), true));
+      check("a u2netp download with the wrong hash is refused: model_download_failed, nothing written, the helper never started",
+        bad.e?.code === "model_download_failed" && fetched.join() === U.url && pyRuns().length === runs0 && !existsSync(join(W, "models")), { code: bad.e?.code, fetched, runs: pyRuns().length - runs0 });
+
+      const good = Buffer.from("not a real model: some bytes for a local download test"), P = fresh("good");
+      Object.assign(U, { sha256: sha(good), bytes: good.length }); // the pin of this row; restored below
+      fetched.length = 0;
+      serve(good);
+      const ok = await inCache(P, () => go(jobs.matte(), true)), file = join(P, "models", "u2netp", "u2netp.onnx"), modeOf = () => (existsSync(file) ? lstat(file).mode & 0o777 : null);
+      const umask = Number.parseInt(spawnSync("sh", ["-c", "umask"], { encoding: "utf8" }).stdout.trim(), 8);
+      check("a good u2netp download is written once, as the only file, at mode 0644", fetched.join() === U.url && existsSync(file) && readFileSync(file).equals(good)
+        && readdirSync(join(P, "models", "u2netp")).join() === "u2netp.onnx" && modeOf() === (0o644 & ~umask), { fetched, mode: modeOf(), umask });
+      check("the helper is pointed at the verified file: U2NET_HOME is the cache whose models/u2netp/u2netp.onnx holds the checked bytes when the helper starts",
+        ok.runs === 1 && ok.run.home === P && ok.run.model?.sha === sha(good) && ok.run.model.mode === (0o644 & ~umask), ok.run);
+      fetched.length = 0;
+      await inCache(P, () => go(jobs.matte(), true));
+      check("a cached u2netp is not fetched again", fetched.length === 0, fetched);
+    } finally { globalThis.fetch = realFetch; Object.assign(U, pin); delete process.env.FAKE_PY_ERR; process.env.AGENTCUT_CACHE = keep; process.env.AGENTCUT_UV = fake; }
+  } finally { process.env.AGENTCUT_UV = fake; delete process.env.FAKE_PY_ERR; }
+}
+
 // ---------------------------------------------------------------- missing tool
 console.log("missing uv");
 process.env.AGENTCUT_UV = join(tmp, "no-such-uv");
