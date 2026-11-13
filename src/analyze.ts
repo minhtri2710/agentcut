@@ -383,7 +383,7 @@ export async function transcribe(path: string, language?: string, model?: string
       if (r.status !== 0) throw new EditError(`whisper failed: ${r.stderr.slice(-300)}`, "asr_failed");
       const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
       const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: at(w.end) })));
-      return { source: path, language: j.language, text: j.text, words, skipped_leading: skipped };
+      return { source: path, language: j.language, text: words.map((w: any) => w.text).join(" "), words, skipped_leading: skipped };
     }
     throw new EditError("transcription needs whisper", "missing_dependency",
       "install whisper.cpp (`brew install whisper-cpp`) and set AGENTCUT_WHISPER_MODEL=/path/ggml-model.bin, or `pip install openai-whisper`; or supply an .srt to add_captions");

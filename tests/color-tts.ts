@@ -473,6 +473,21 @@ fi
     const held = await AN.transcribe(src, "vi", fake, [2, 5]);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
     check("range words are clamped to the range: a word past the end is dropped, one crossing it ends there, a zero-length word stays", JSON.stringify(held.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c.", 4.8, 5]]), held.words);
+    check("whisper.cpp: text is the kept words, not the dropped one", held.text === "a b c.", held.text);
+
+    // python whisper takes the same rules: it names its output after the wav it is given (a stand-in that does the same), and its text is rebuilt from the kept words
+    {
+      const binPy = join(tmp, "bin-py-range"), pathNow = process.env.PATH!, modelNow = process.env.AGENTCUT_WHISPER_MODEL;
+      mkdirSync(binPy);
+      writeFileSync(join(binPy, "whisper"), `#!/bin/sh\ncp "$1" "${tmp}/py.wav"\nwav="$1"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_dir" ] && od="$2"; shift; done\nn=$(basename "$wav" .wav)\nprintf '%s' '{"language":"vi","text":" a b c d","segments":[{"words":[{"word":" a","start":0.1,"end":0.3},{"word":" b","start":1,"end":1},{"word":" c","start":2.8,"end":3.3},{"word":" d","start":3.3,"end":3.6}]}]}' > "$od/$n.json"\n`, { mode: 0o755 });
+      process.env.PATH = `${binPy}:${pathNow}`; delete process.env.AGENTCUT_WHISPER_MODEL;
+      try {
+        const py = await AN.transcribe(src, "vi", undefined, [2, 5]);
+        check("python whisper: words are clamped to the range, a word past the end is dropped from words and from text", JSON.stringify(py.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c", 4.8, 5]]) && py.text === "a b c" && py.skipped_leading === 0, { w: py.words, t: py.text });
+        const lead = await AN.transcribe(src, "vi", undefined);
+        check("python whisper: the engine gets the media from 0.1 s before the first sound, the times are shifted by it, and the result says so", Math.abs(dur(join(tmp, "py.wav")) - 4.1) < 0.05 && lead.skipped_leading === 1.9 && lead.words[0].start === 2 && lead.words[0].end === 2.2, { dur: dur(join(tmp, "py.wav")), skipped: lead.skipped_leading, w: lead.words[0] });
+      } finally { process.env.PATH = pathNow; if (modelNow !== undefined) process.env.AGENTCUT_WHISPER_MODEL = modelNow; }
+    }
     const before = calls();
     const bads: any[] = [[-1, 2], [2, 2], [3, 2], [NaN, 2], [0, Infinity], [0], [0, 1, 2], ["1", 2], "2-5", 3];
     const badRange = await Promise.all(bads.map((r) => rejectsCode(() => AN.transcribe(src, "vi", fake, r), "bad_value")));
@@ -539,6 +554,29 @@ fi
         pieces.length === 2 && cb.words.map((w: any) => w.text).join("") === "adef" && cb.words[1].start === at(5.5) && cb.words[2].start === at(6.5) && (await capsOf(B)).length === 1, { pieces: pieces.map((c: any) => [c.in, c.start, c.duration]), words: tw(cb) });
       check("the captions clip ends with the cut, so the timeline keeps its length", cb.duration <= cutB.duration + 1e-6 && Math.abs(cutB.duration - pieces.reduce((e: number, c: any) => Math.max(e, c.start + c.duration), 0)) < 1e-3 && (await stale(B)).length === 0, { cap: cb.duration, total: cutB.duration });
 
+      // splitting a clip that plays the media leaves the same sound: no warning
+      const H = join(tmp, "cap-split-played");
+      api.create(H, { preset: "720p" });
+      await api.apply(H, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
+      const splitH: any = await api.apply(H, [{ op: "split_clip", id: "vid1", at: 3 }]);
+      check("splitting a clip that plays the media gives no warning, and a clip that continues the previous one is one row", splitH.issues.length === 0 && (await stale(H)).length === 0 && JSON.stringify((await capsOf(H))[0].timed_for.cut) === JSON.stringify([[0, 8, 0, 1]]), { issues: splitH.issues, cut: (await capsOf(H))[0].timed_for.cut });
+
+      // the cut is relative to the captions clip: the captions moved alone warn; trimming or splitting the captions clip moves its words and the cut together
+      const G = join(tmp, "cap-own-start");
+      api.create(G, { preset: "720p" });
+      await api.apply(G, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
+      const wl = async () => (await stale(G)).length;
+      await api.apply(G, [{ op: "update_clip", id: "cap1", set: { start: 1 } }]);
+      const alone = await wl();
+      await api.apply(G, [{ op: "update_clip", id: "cap1", set: { start: 0 } }]);
+      check("the captions clip moved alone warns, and moved back it does not", alone === 1 && (await wl()) === 0, { alone, back: await wl() });
+      await api.apply(G, [{ op: "trim_clip", id: "cap1", trim_start: 0.5 }]);
+      const trimmedCaps = await wl();
+      await api.apply(G, [{ op: "split_clip", id: "cap1", at: 3 }]);
+      check("a head trim of the captions clip, then a split of it, leave no warning on either half (the recorded cut moves with the words)", trimmedCaps === 0 && (await capsOf(G)).length === 2 && (await wl()) === 0, { trim: trimmedCaps, halves: (await capsOf(G)).map((c: any) => c.timed_for), issues: await stale(G) });
+      const magnetic: any = await api.apply(G, [{ op: "add_track", id: "mcap", kind: "video", magnetic: true }, { op: "add_captions", transcribe: "talk", track: "mcap" }]).catch((e) => e);
+      check("a transcript's captions on a magnetic track are bad_arg", magnetic.code === "bad_arg" && /magnetic/.test(magnetic.message), { code: magnetic.code, msg: magnetic.message });
+
       // a speed ramp is not a linear map: the clip is named and its words are not mapped
       const C = join(tmp, "cap-ramp");
       api.create(C, { preset: "720p" });
@@ -597,6 +635,8 @@ fi
           { t: cap.timed_for, cap: cap.duration, voice: voice.duration, total: made.duration });
         await api.apply(V, [{ op: "update_clip", id: voice.id, set: { start: 1 } }]);
         check("moving the voiceover clip warns that the captions no longer match", (await staleV()).length === 1, await staleV());
+        await api.apply(V, [{ op: "update_clip", id: cap.id, set: { start: 1 } }]);
+        check("moving the captions clip with it clears the warning", (await staleV()).length === 0, await staleV());
       }
 
       // two voiceovers in one batch, in the same millisecond: each gets its own file and keeps its own speech (a stand-in piper speaks 0.5 s per word)

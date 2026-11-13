@@ -661,8 +661,9 @@ op("clear_markers", "Remove markers (all, or those whose label contains match)."
 });
 
 // ---------------------------------------------------------------- captions / voice / beats / templates
-/** `cap`: the longest the clip may last (seconds from its start), so that the hold after the last word never outlives the sound. */
-function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number) {
+/** `cap`: the longest the clip may last (seconds from its start), so that the hold after the last word never outlives the sound.
+ *  `timed`: the clips the words were timed for, with absolute timeline starts; the clip records them relative to its own start. */
+function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { asset: string; cut: number[][] }) {
   refuseUnknown(Object.keys(a), [...new Set([...argNames("add_captions"), ...Object.keys(fieldsFor("captions"))])].filter((k) => k !== "start"), "add_captions", { stored: true, list: "arguments: words, srt, transcribe, preset, track, at, style, or a text style field (see timeline_schema)" });
   a = { ...a };
   if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
@@ -673,6 +674,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number) {
     const asset = own(tl.assets, s) ? s : Object.keys(tl.assets).find((k) => presolve(p.abs(tl.assets[k].path)) === presolve(path));
     const played = asset ? (resolve(tl), playedCut(tl, asset)) : undefined;
     const follows = !!played && (played.cut.length > 0 || played.unmapped.length > 0);
+    if (follows && tl.tracks.find((x) => x.id === (a.track ?? "captions"))?.magnetic) throw new EditError(`track '${a.track ?? "captions"}' is magnetic, which places captions by order, but these words are timed on the timeline`, "bad_arg", "use a track that is not magnetic");
     if (follows && a.at !== undefined) throw new EditError(`'${asset}' plays on the timeline, so its captions follow the clips and 'at' has no meaning`, "bad_arg", "drop 'at'; to put captions elsewhere give words, or move the clips");
     const t = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range });
     if (follows) {
@@ -680,7 +682,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number) {
       unmapped = played.unmapped;
       if (!a.words.length) throw new EditError(`no transcribed word falls in a clip that plays '${asset}'`, "no_words",
         unmapped.length ? `${unmapped.join(", ")} play it with a speed ramp, reverse, freeze, loop or inside a compound, which is not mapped` : "the clips that play it cover none of the speech; check in and duration");
-      a.timed_for = { asset, cut: played.cut };
+      timed = { asset: asset!, cut: played.cut };
       cap = Math.max(...played.cut.map(([cin, out, start, speed]) => start + (out - cin) / speed));
     } else {
       a.words = t.words;
@@ -699,6 +701,11 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number) {
   const given = Object.fromEntries(Object.entries(a).filter(([k]) => !["op", "track", "at"].includes(k)));
   const spec = { ...expandPreset("captions", presetName, sample, given), track: a.track ?? "captions", at: a.at ?? 0, type: "captions" };
   const res = addClip(p, tl, spec);
+  if (timed) {
+    resolve(tl);
+    const [, , made] = findClip(tl, res.id), s0 = clipStart(made);
+    made.timed_for = { asset: timed.asset, cut: timed.cut.map(([i, o, s, sp]) => [i, o, round6(s - s0), sp]) };
+  }
   return unmapped.length ? { ...res, unmapped } : res;
 }
 op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by transcribing media (needs whisper). preset: tiktok (default), bold_pop, pill, clean, reveal, neon.",
@@ -728,7 +735,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
       const extra = typeof a.captions === "object" ? a.captions : typeof a.captions === "string" ? { preset: a.captions } : {};
       resolve(tl);
       const [, , voice] = findClip(tl, clip.id);
-      result.captions = addCaptions(p, tl, { words, at, ...extra, timed_for: { asset: voice.asset, cut: playedCut(tl, voice.asset).cut } }, clipDur(voice));
+      result.captions = addCaptions(p, tl, { words, at, ...extra }, clipDur(voice), { asset: voice.asset, cut: playedCut(tl, voice.asset).cut });
     }
     return result;
   });

@@ -37,6 +37,8 @@ export function shiftKfs(c: Clip, e: number, srtHint = "give the clip 'words' (s
     throw new EditError(`captions '${c.id}' come from srt, whose times cannot be moved by this edit`, "bad_type", srtHint);
   if (c.type === "captions" && Array.isArray(c.words))
     c.words = c.words.map(normWord).filter((w: any) => w.end + e > 0).map((w: any) => ({ ...w, start: round6(w.start + e), end: round6(w.end + e) }));
+  if (c.type === "captions" && Array.isArray(c.timed_for?.cut)) // the recorded cut is relative to the clip's start, as the words are
+    c.timed_for = { ...c.timed_for, cut: c.timed_for.cut.map((r: any) => (Array.isArray(r) ? [r[0], r[1], round6(r[2] + e), r[3]] : r)) };
   if (Array.isArray(c.effects)) { // an effect with no start/duration covers the whole clip and stays
     c.effects = c.effects.flatMap((f: any) => {
       if (f?.type === "flash") { // fires at start + at for its own length (duration), whatever its window: keep that moment, drop it once it is over

@@ -81,8 +81,10 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    and 'at' is refused. A clip with a speed ramp, reverse, freeze, loop or inside a compound is not mapped: its id is in the result's 'unmapped'.
    A video with detached audio is mapped through the audio pieces. Media no clip plays keeps media seconds from 'at'. The captions clip ends 0.3 s
    after the last word, never after the last clip that plays the media (unmapped: the media or range end; add_voiceover captions: the voice clip).
-   The captions are not retimed after that: they record the cut they were timed for ('timed_for'), and validate (so review and every apply result) warns when
-   the clips that play the asset changed; remove the captions clip and run add_captions again, which loses any hand-corrected words.
+   The captions are not retimed after that: they record the cut they were timed for ('timed_for': each start is relative to the captions clip's start, so moving
+   the captions with their clips is fine), and validate (so review and every apply result) warns when the captions clip moved alone or the clips that play the
+   asset changed; move the captions clip back, or remove it and run add_captions again, which loses any hand-corrected words. A transcript's captions go on a
+   track that is not magnetic.
    "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. A silent start is skipped before whisper
    (the result's 'skipped_leading' seconds; whisper times the first words early after one), but a music lead-in is not silence: pass the speech only, since
    whisper may invent text over a long music-only stretch and times words early after a music lead-in; analyze_silence or the voiceover's length gives the span
