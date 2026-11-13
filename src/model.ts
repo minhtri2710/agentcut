@@ -113,7 +113,7 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
   duration: [(n) => n >= 0, "a number >= 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
 };
 // Download size in MB, one source per number; null = not known offline. u2net_human_seg: 175,997,641 B, measured; silueta: 43 MB, rembg 2.0.86 README;
-// u2netp: 4,574,861 B (vision.ts U2NETP_MODEL, pinned by sha256). u2net and isnet-general-use have no local source.
+// u2netp: 4,574,861 B (vision.ts U2NETP_MODEL, pinned by sha256; model.ts cannot import vision.ts, which imports model.ts, so the 5 below is a second source). u2net and isnet-general-use have no local source.
 // shortcut: u2net, u2net_human_seg, isnet-general-use and silueta are not pinned; rembg downloads and md5-checks them itself. Remove when each is fetched once,
 // md5-matched to rembg's pin, and its sha256 and size are recorded in vision.ts, so every matte model goes through downloadModel.
 export const MATTE_MB: Record<string, number | null> = { u2netp: 5, u2net: null, u2net_human_seg: 176, "isnet-general-use": null, silueta: 43 };

@@ -782,6 +782,23 @@ def remove(*a, **k): raise SystemExit("stub rembg")
         !!closed.seen && ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].every((k) => dead(closed.seen[k])) && !closed.seen.NO_PROXY && !closed.seen.no_proxy, closed);
       check("helper, allow_download true: the proxy variables are left as they were", open.seen?.HTTPS_PROXY === "http://allowed.example:3128" && open.seen?.NO_PROXY === "*", open);
 
+      { // a pinned model is hashed where the helper loads it: the right bytes reach the stub loader, other bytes are refused before it
+        const { createHash } = await import("node:crypto");
+        writeFileSync(join(stubs, "cv2.py"), "class FaceDetectorYN:\n  @staticmethod\n  def create(*a): raise SystemExit('stub yunet')\n");
+        const fixture = join(run, "fixture.onnx"), sha = (b: string) => createHash("sha256").update(b).digest("hex");
+        writeFileSync(fixture, "small model fixture");
+        const load = (job: Record<string, unknown>) => spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, JSON.stringify(job)], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: childEnv({ STUB_OUT: join(run, "seen-load.json") }) });
+        const matteJob = (extra: Record<string, unknown>) => ({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: true, model_file: fixture, ...extra });
+        const subjectJob = (extra: Record<string, unknown>) => ({ cmd: "subject", w: 2, h: 2, fps: 1, face_min: 0.6, path: "x", face_model: fixture, ...extra });
+        const refused = (r: { status: number | null; stderr: string }, stub: string) => r.status !== 0 && /does not match its pinned sha256/.test(r.stderr) && !r.stderr.includes(stub);
+        const reached = (r: { stderr: string }, stub: string) => r.stderr.includes(stub) && !/does not match/.test(r.stderr);
+        const okSha = sha("small model fixture"), badSha = sha("other bytes");
+        check("helper, matte: a model file with the job's sha256 reaches the loader; other bytes are refused before it", reached(load(matteJob({ model_sha256: okSha })), "stub rembg: u2netp") && refused(load(matteJob({ model_sha256: badSha })), "stub rembg"));
+        check("helper, matte: a job with no sha256 (an unpinned model) reaches the loader unchecked", reached(load(matteJob({})), "stub rembg: u2netp"));
+        check("helper, subject: the face model with the job's sha256 reaches the detector; other bytes are refused before it", reached(load(subjectJob({ model_sha256: okSha })), "stub yunet") && refused(load(subjectJob({ model_sha256: badSha })), "stub yunet"));
+        writeFileSync(join(stubs, "cv2.py"), "");
+      }
+
       // the decoder child: a fake ffmpeg (a shell script first on PATH) and a stub numpy; the `track` command reads every frame with the real helper text
       writeFileSync(join(stubs, "numpy.py"), "uint8 = 0\nclass _A:\n  def __init__(s, b): s.b = b\n  def reshape(s, *a): return s\ndef frombuffer(b, t): return _A(b)\n");
       writeFileSync(join(stubs, "cv2.py"), "");
@@ -808,7 +825,7 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       writeFileSync(join(stubs, "rembg.py"), "def new_session(model): return None\ndef remove(*a, **k): raise SystemExit('stub rembg')\n");
       const pids = join(run, "children.pids"), late = join(run, "late.mov");
       fakeFfmpeg(`echo $$ >> ${JSON.stringify(pids)}\ncase " $* " in *" pipe:0 "*) cat >/dev/null; sleep 1; for a; do o=$a; done; echo late > "$o";; *) exec sleep 30;; esac`);
-      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, allow_download: true });
+      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, allow_download: true, model_file: join(run, "unused.onnx") });
       const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const kids = () => (existsSync(pids) ? readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
       const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -925,7 +942,7 @@ console.log("the face model: descriptor, job, gate, download");
     const ja = await jobIn(A), jb = await jobIn(B);
     check("the cache key is the same under two cache roots, while face_model follows the root", basename(ja.file) === basename(jb.file) && ja.job.face_model === faceFile(A) && jb.job.face_model === faceFile(B), { a: ja.file, b: jb.file, fa: ja.job.face_model, fb: jb.job.face_model });
     { // the key is the hash of the job's own parameters (the path and the model file excluded), face_min among them
-      const { path: _path, face_model: _model, ...params } = ja.job, keyOf = (p: unknown) => `subject-${V.cacheKey(rb, p)}.json`;
+      const { path: _path, face_model: _model, model_sha256: _sha, ...params } = ja.job, keyOf = (p: unknown) => `subject-${V.cacheKey(rb, p)}.json`;
       check("the cache key covers face_min: it is the key of the job's parameters, and another face_min gives another key",
         typeof params.face_min === "number" && basename(ja.file) === keyOf(params) && basename(ja.file) !== keyOf({ ...params, face_min: V.FACE_MIN + 0.05 }), { params, file: ja.file });
     }
@@ -1078,23 +1095,32 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
   };
   process.env.AGENTCUT_UV = pyUv;
   try {
-    for (const kind of ["subject", "track", "matte"] as const) {
-      const off = await go(jobs[kind](), false), on = await go(jobs[kind](), true), at = off.run?.argv.indexOf("--python") ?? -1;
-      check(`${kind}: uv gets --python with the pinned range`, at >= 0 && off.run.argv[at + 1] === ">=3.12,<3.14" && on.run?.argv[on.run.argv.indexOf("--python") + 1] === ">=3.12,<3.14", { off: off.run?.argv, on: on.run?.argv });
-      check(`${kind}: --no-python-downloads is passed without allow_download and left out with it`, off.run?.argv.includes("--no-python-downloads") === true && on.run?.argv.includes("--no-python-downloads") === false, { off: off.run?.argv, on: on.run?.argv });
+    { // the args are built once for every helper, so one kind observes them
+      const off = await go(jobs.track(), false), on = await go(jobs.track(), true), at = off.run?.argv.indexOf("--python") ?? -1;
+      check("uv gets --python with the pinned range", at >= 0 && off.run.argv[at + 1] === ">=3.12,<3.14" && on.run?.argv[on.run.argv.indexOf("--python") + 1] === ">=3.12,<3.14", { off: off.run?.argv, on: on.run?.argv });
+      check("--no-python-downloads is passed without allow_download and left out with it", off.run?.argv.includes("--no-python-downloads") === true && on.run?.argv.includes("--no-python-downloads") === false, { off: off.run?.argv, on: on.run?.argv });
+    }
+    { // the job of a pinned model carries the pin's sha256 and the model file; an unpinned model carries no sha256
+      const jobOf = (r: PyRun) => JSON.parse(r.argv.at(-1)!);
+      const u2netp = jobOf((await go(jobs.matte(), false)).run), u2net = jobOf((await go(V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, model: "u2net", root: root() }), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
+      check("the matte job for u2netp carries its sha256 and model file; the job for u2net carries a model file and no sha256",
+        u2netp.model_sha256 === V.U2NETP_MODEL.sha256 && u2netp.model_file === V.modelFile("u2netp") && u2net.model_sha256 === undefined && u2net.model_file === V.modelFile("u2net"), { u2netp, u2net });
+      check("the subject job carries the face model's sha256", face.model_sha256 === V.FACE_MODEL.sha256 && face.face_model === V.modelFile(V.FACE_MODEL.name), face);
+      process.env.FAKE_PY_ERR = "model file does not match its pinned sha256: " + V.modelFile("u2netp");
+      const mm = await go(jobs.matte(), false);
+      check("the helper refusing a model file: vision_failed, the hint names the file and says to delete it and run with allow_download=true",
+        mm.e?.code === "vision_failed" && mm.e.hint.includes(V.modelFile("u2netp")) && /delete it/.test(mm.e.hint) && mm.e.hint.includes("allow_download=true") && !/network/.test(mm.e.hint), { code: mm.e?.code, hint: mm.e?.hint });
     }
     process.env.FAKE_PY_ERR = "error: No interpreter found for Python >=3.12, <3.14 in managed installations or search path";
     const ni = await go(jobs.track(), false);
-    check("uv found no interpreter: vision_failed, the hint names the range and `uv python install 3.12`, not network or model advice",
-      ni.e?.code === "vision_failed" && ni.e.hint.includes(">=3.12,<3.14") && ni.e.hint.includes("uv python install 3.12") && !/network|model/.test(ni.e.hint), { code: ni.e?.code, hint: ni.e?.hint });
+    check("uv found no interpreter: vision_failed, the hint names the range, `uv python install 3.12` and allow_download=true, not network or model advice",
+      ni.e?.code === "vision_failed" && ni.e.hint.includes(">=3.12,<3.14") && ni.e.hint.includes("uv python install 3.12") && ni.e.hint.includes("allow_download=true") && !/network|model/.test(ni.e.hint), { code: ni.e?.code, hint: ni.e?.hint });
     process.env.FAKE_PY_ERR = "boom";
     const other = await go(jobs.track(), false);
     check("any other helper failure keeps the network and decode hint", other.e?.code === "vision_failed" && /network access/.test(other.e.hint) && !/uv python install/.test(other.e.hint), { hint: other.e?.hint });
 
     // u2netp: AgentCut fetches it, checks sha256 and size, and only then lets the helper load it
     const U = V.U2NETP_MODEL;
-    check("u2netp is pinned: a name, an https URL, a sha256 and a size", U.name === "u2netp" && /^https:\/\/.*\/u2netp\.onnx$/.test(U.url)
-      && U.sha256 === "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8" && U.bytes === 4574861, U);
     const realFetch = globalThis.fetch, fetched: string[] = [];
     const serve = (body: Buffer) => { globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response(body); }) as typeof fetch; };
     const fresh = (name: string) => { const d = join(tmp, `u2-${name}`); mkdirSync(d, { recursive: true }); return d; };

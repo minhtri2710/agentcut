@@ -25,7 +25,7 @@ export const modelFile = (name: string) => join(userCache(), "models", name, `${
 export const modelCached = (name: string) => lstatSync(modelFile(name), { throwIfNoEntry: false })?.isFile() === true;
 
 /** The YuNet face detector (opencv_zoo, 2023mar), pinned to a commit and a hash. It is fetched by `downloadModel`, only when the caller allows
- *  downloads, and an existing file is trusted at use time like the matte models. */
+ *  downloads; the helper hashes it against sha256 where it loads it, a file that was already there included. */
 export const FACE_MODEL = {
   name: "face_detection_yunet_2023mar",
   url: "https://media.githubusercontent.com/media/opencv/opencv_zoo/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
@@ -33,7 +33,7 @@ export const FACE_MODEL = {
   bytes: 232589,
 };
 /** The u2netp matte model (rembg 2.0.86's release asset; its md5 pin there is 8e83ca70e441ab06c318d82300c84806). Fetched by `downloadModel` and
- *  verified before the helper loads it from the models dir (U2NET_HOME = the user cache), so rembg finds it and downloads nothing. */
+ *  verified before the helper loads it from the models dir (U2NET_HOME = the user cache), so rembg finds it and downloads nothing; the helper hashes it again where it loads it. */
 export const U2NETP_MODEL = {
   name: "u2netp",
   url: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
@@ -224,9 +224,10 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
         const name = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
-        const model = name && modelCached(name) ? modelFile(name) : null; // an existing model file is trusted: the helper never re-checks it
+        const model = name && modelCached(name) ? modelFile(name) : null; // named only when the file exists; the helper hashes a pinned one, an unpinned one loads unchecked
         const detail = `vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`;
-        if (/No interpreter found/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the vision helper needs a Python ${PYTHON}; install one with \`uv python install 3.12\` (or put one on PATH) and retry`));
+        if (model && /does not match its pinned sha256/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the model file ${model} is not the pinned file (its sha256 differs): delete it and run with allow_download=true to fetch it again`));
+        if (/No interpreter found/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the vision helper needs a Python ${PYTHON}; install one with \`uv python install 3.12\` (or put one on PATH), or run with allow_download=true so uv may fetch one, and retry`));
         return rej(new EditError(detail, "vision_failed",
           "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
           + (model ? `; if the error is about loading the model, the model file ${model} may be damaged: delete it and run with allow_download=true` : "")));
@@ -289,6 +290,7 @@ export function subjectJob(path: string, o: { still?: boolean; start?: number; d
   const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
   const d = derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
   d.job.face_model = modelFile(FACE_MODEL.name);
+  d.job.model_sha256 = FACE_MODEL.sha256; // the helper hashes the file it loads; neither field is part of the cache key
   return d;
 }
 /** Cached subject samples; throws vision_failed when the helper decoded nothing. */
@@ -332,7 +334,10 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
   const fps = o.kind === "image" ? null : o.fps ?? 30; // a video of unknown rate is matted at 30
   const params = { cmd: "matte", kind: o.kind, fps, w, h, model };
-  return derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
+  const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
+  d.job.model_file = modelFile(model);
+  if (PINNED_MODELS[model]) d.job.model_sha256 = PINNED_MODELS[model].sha256; // an unpinned model carries none and loads unchecked
+  return d;
 }
 
 // ---------------------------------------------------------------- path smoothing (pure)

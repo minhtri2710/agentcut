@@ -53,10 +53,19 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     p.stdout.close(); p.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
     if p.returncode != 0: raise SystemExit("ffmpeg exited %s: %s" % (p.returncode, err.strip()[:400]))  # a decoder that died silently still means a short result
 
+def _verify(path, sha):  # a pinned model is hashed right before it is loaded; no sha in the job (an unpinned model) loads as before
+    if not sha: return
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
+    if h.hexdigest() != sha: raise SystemExit("model file does not match its pinned sha256: " + path)
+
 def subject(j):
     import cv2, numpy as np
     w, h = j["w"], j["h"]
     face_min = float(j["face_min"])
+    _verify(j["face_model"], j.get("model_sha256"))
     det = cv2.FaceDetectorYN.create(j["face_model"], "", (w, h), face_min, 0.3, 5000)  # YuNet: score threshold, NMS threshold, top-k before NMS
     sal = cv2.saliency.StaticSaliencyFineGrained_create()  # spectral residual aliases on flat footage
     c01 = lambda v: min(1.0, max(0.0, v))  # a face box may reach past the frame edge
@@ -116,6 +125,7 @@ def matte(j):
     import numpy as np
     from rembg import new_session, remove
     from PIL import Image
+    _verify(j["model_file"], j.get("model_sha256"))
     sess = new_session(j.get("model", "u2netp"))
     w, h = j["w"], j["h"]
     def rgba(f):
