@@ -231,20 +231,32 @@ console.log("volumes without hard links: a named error, and init leaves nothing 
   }
 }
 
-// ------------------------------------------------------------------ redo is cleared after the project file is written
-console.log("a save whose redo clear fails is still a save");
+// ------------------------------------------------------------------ redo after a save
+console.log("after a save the redo stack is empty, or the save did not happen");
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
-  const p = await project("redo-clear"), hist = join(p, ".agentcut", "history");
-  const texts = () => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text);
   const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
-  await api.apply(p, text("a"));
-  api.undo(p, 1);
-  chmodSync(hist, 0o500); // the redo dir cannot be removed from it
-  let c: string;
-  try { c = await code(() => api.apply(p, text("b"))); } finally { chmodSync(hist, 0o700); }
-  check("the batch is applied and reported as applied (no error after project.json was written)", c === "ok" && texts().join() === "b", { c, texts: texts() });
-  await api.apply(p, text("c"));
-  check("the next save clears the redo stack", api.history(p).redo.length === 0, api.history(p));
+  const texts = (p: string) => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text).join();
+  const undone = async (name: string) => { const p = await project(name); await api.apply(p, text("a")); api.undo(p, 1); return p; }; // redo holds "a"
+  {
+    // a redo dir that cannot be emptied: the save either does not happen, or leaves nothing a redo could replay
+    const p = await undone("redo-stuck"), hist = join(p, ".agentcut", "history"), redo = join(hist, "redo");
+    chmodSync(redo, 0o500);
+    let c: string;
+    try { c = await code(() => api.apply(p, text("b"))); } finally { if (existsSync(redo)) chmodSync(redo, 0o700); for (const e of readdirSync(hist)) if (e.startsWith(".redo-")) chmodSync(join(hist, e), 0o700); } // a leftover must stay removable for the suite
+    const saved = texts(p) === "b", left = api.history(p).redo.length;
+    check("redo/ cannot be emptied: the save is refused with nothing written, or redo is empty", saved ? c === "ok" && left === 0 : c !== "ok" && texts(p) === "" && left === 1, { c, texts: texts(p), left });
+    const r = await code(() => api.redo(p));
+    check("  and redo does not replay the superseded edit over the saved one", saved ? r === "empty_history" && texts(p) === "b" : r === "ok" && texts(p) === "a", { r, texts: texts(p) });
+  }
+  {
+    // the write fails after redo was moved aside: history is as it was, redo still replays
+    const p = await undone("redo-write-fails"), before = api.history(p);
+    chmodSync(p, 0o500); // no file can be created in the project dir
+    let c: string;
+    try { c = await code(() => api.apply(p, text("b"))); } finally { chmodSync(p, 0o700); }
+    check("a save whose write fails keeps the history (undo and redo) as it was", c !== "ok" && JSON.stringify(api.history(p)) === JSON.stringify(before) && texts(p) === "", { c, before, after: api.history(p) });
+    check("  and redo still replays the undone edit", (await code(() => api.redo(p))) === "ok" && texts(p) === "a", texts(p));
+  }
 }
 
 // ------------------------------------------------------------------ sidecars of a render

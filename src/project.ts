@@ -1,6 +1,6 @@
 // Project folder: project.json + media/ renders/ previews/ fonts/ + .agentcut/history (undo/redo).
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve, sep } from "node:path";
 import { fontCheck, registerFontDir } from "./fonts.ts";
@@ -174,9 +174,18 @@ export class Project {
       let pushed: string | undefined;
       if (snapshot) { this.entries("undo"); this.entries("redo"); pushed = this.push("undo", cur, label); } // both stacks verified before the first write
       tl.revision = disk + 1;
-      // a failed save leaves the history as it was: the new undo entry goes again and redo is kept
-      try { this.write(tl); } catch (e) { if (pushed) rmSync(pushed, { force: true }); throw e; }
-      if (snapshot) try { this.clear("redo"); } catch { /* the write is the commit point: a save that happened is not reported as failed; the next save clears it again */ }
+      // invariant: after a save the redo stack is empty, or the save did not happen. The stack is moved aside before the write (a failure there throws with nothing
+      // written), put back if the write fails (history stays as it was), and removed afterwards; a removal that fails leaves an unread dir, never a replayable stack.
+      let aside: string | undefined;
+      try {
+        if (snapshot) { const redo = this.stack("redo"), to = join(dirname(redo), `.redo-${randomBytes(8).toString("hex")}`); renameSync(redo, to); aside = to; }
+        this.write(tl);
+      } catch (e) {
+        if (aside) try { renameSync(aside, join(dirname(aside), "redo")); } catch { /* redo stays gone: empty, never stale */ }
+        if (pushed) rmSync(pushed, { force: true });
+        throw e;
+      }
+      if (aside) try { rmSync(aside, { recursive: true, force: true }); } catch { /* inert: no stack reads this name */ }
       return tl.revision;
     });
   }
@@ -214,7 +223,6 @@ export class Project {
     for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old);
     return file;
   }
-  private clear(name: string) { rmSync(this.stack(name), { recursive: true, force: true }); }
   /** A history entry (label + timeline text); an entry that is not valid JSON is a named error, never a raw SyntaxError. */
   private static readEntry(file: string, stack: string): { label: string; timeline: string } {
     const at = `${stack}/${basename(file)}`;
