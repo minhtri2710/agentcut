@@ -245,11 +245,10 @@ console.log("cli surface: --start/--end, transcribe, tts");
   const ts = (...a: string[]) => cli(["tts", ...a], { ok: false, cwd: S }).error.code;
   check("tts: a rate that is not a number is a usage error, 0 is bad_value, a missing text or output is missing_input, the project's own file is refused",
     ts("hi", "-o", "x.wav", "--rate", "abc") === "usage" && ts("hi", "-o", "x.wav", "--rate", "0") === "bad_value" && ts("-o", "x.wav") === "missing_input" && ts("hi") === "missing_input" && ts("hi", "-o", "project.json") === "output_is_source");
-  for (const [label, flags] of [["--width abc", ["--width", "abc"]], ["--fps 0", ["--fps", "0"]]] as const) {
+  for (const [label, flags, code] of [["--width abc", ["--width", "abc"], "usage"], ["--fps 0", ["--fps", "0"], "bad_value"]] as const) {
     const D = join(tmp, `init-${label.replace(/\W/g, "")}`), r = cli(["init", D, ...flags], { ok: false });
-    check(`init ${label} fails before writing anything`, r.ok === false && ["usage", "bad_value"].includes(r.error?.code) && !existsSync(D), r);
+    check(`init ${label} fails with ${code} before writing anything`, r.ok === false && r.error?.code === code && !existsSync(D), r);
   }
-  check("init --fps 0 is bad_value and --width abc is a usage error", cli(["init", join(tmp, "init-code"), "--fps", "0"], { ok: false }).error?.code === "bad_value" && cli(["init", join(tmp, "init-code"), "--width", "abc"], { ok: false }).error?.code === "usage");
   check("another numeric flag: sheet --count abc is a usage error", cli(["sheet", "--count", "abc"], { ok: false, cwd: S }).error?.code === "usage");
 }
 

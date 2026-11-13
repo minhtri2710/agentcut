@@ -110,7 +110,7 @@ const trackKeys = (name: string) => [...new Set([...argNames(name), ...Object.ke
 op("add_track", "Add a track. Later tracks draw on top.",
   { id: "track id", kind: "video|audio", magnetic: "bool", role: "voice|music|sfx|titles|dialogue", duck: "dB", index: "position", above: "track id", below: "track id", "...": "any other track field (volume, muted, hidden, name, audio processing)" },
   (p, tl, a) => {
-    refuseUnknown(Object.keys(a), trackKeys("add_track"), "add_track", { stored: true });
+    refuseUnknown(Object.keys(a), trackKeys("add_track"), "add_track"); // the args are copied key by key, so a "_" key is not saved
     const id = a.id || newId(tl, "track");
     if (tl.tracks.some((t) => t.id === id)) throw new EditError(`track '${id}' already exists`, "exists");
     const tr: Track = { id, kind: a.kind ?? "video", clips: [] };
@@ -353,7 +353,11 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
       const tr = tl.tracks.find((t) => t.id === tid);
       if (i === 0 && !("transition" in it) && (!tr || !tr.clips.length)) delete spec.transition;
       for (const k of Object.keys(spec)) if (spec[k] === undefined) delete spec[k];
-      out.push(addClip(p, tl, spec));
+      try { out.push(addClip(p, tl, spec)); }
+      catch (e) { // name where the unknown key sits: items[i] (0-based) or defaults
+        if (e instanceof EditError && e.code === "bad_arg" && e.path?.startsWith(".")) e.path = `${e.path.slice(1) in it ? `.items[${i}]` : ".defaults"}${e.path}`;
+        throw e;
+      }
     });
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
