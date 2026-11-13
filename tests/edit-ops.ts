@@ -1306,15 +1306,24 @@ console.log("op arguments, documented ranges, undo steps");
   check("a clip's own effects entry is checked against the effect's params", (await err({ op: "update_clip", id: "c1", effects: [{ type: "grain", intesity: 1 }] })).details?.issues?.[0]?.hint === "did you mean 'intensity'?");
 
   const ranges: [string, any][] = [["opacity 5", { opacity: 5 }], ["opacity -1", { opacity: -1 }], ["fade_in -2", { fade_in: -2 }], ["scale 0", { scale: 0 }], ["scale -1", { scale: -1 }], ["radius -5", { radius: -5 }],
-    ["an opacity keyframe 2", { keyframes: { opacity: [[0, 0], [1, 2]] } }]];
+    ["an opacity keyframe 2", { keyframes: { opacity: [[0, 0], [1, 2]] } }], ["a scale keyframe -1", { keyframes: { scale: [[0, 1], [1, -1]] } }]];
   for (const [name, patch] of ranges) {
     const e = await err({ op: "update_clip", id: "c1", set: patch });
     check(`a value outside its documented range is refused at apply: ${name}`, e.code === "validation_failed" && /^\$\.tracks.*\.(opacity|fade_in|scale|radius|keyframes\.opacity)$/.test(e.details?.issues?.[0]?.path ?? ""), { code: e.code, issues: e.details?.issues });
   }
+  const text = (weight: unknown) => err({ op: "add_clip", track: "text", text: "hi", weight });
+  check("a numeric string weight is checked against the same range as a number", (await text("950")).details?.issues?.[0]?.path?.endsWith(".weight") && (await text(950)).details?.issues?.[0]?.path?.endsWith(".weight")
+    && (await text("700")).code === undefined && (await text("bold")).code === undefined);
   const vol = await err({ op: "update_clip", id: "c1", set: { volume: 99 } });
   check("volume 99 is refused at apply, before any render", vol.code === "validation_failed" && /\.volume$/.test(vol.details?.issues?.[0]?.path ?? ""), { code: vol.code, issues: vol.details?.issues });
-  check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { scale_x: -1 }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined)
+  check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror), a scale keyframe of 0 (pop-in)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { scale_x: -1 }, { keyframes: { scale: [[0, 0], [0.3, 1]] } }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined)
     && (await err({ op: "update_clip", id: "c1", set: { volume: 4 } })).code === undefined);
+
+  const pop = join(tmp, "pop-proj");
+  api.create(pop, { preset: "720p" });
+  await api.apply(pop, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 2, id: "p1", keyframes: { scale: [[0, 0], [0.3, 1]] } }]).catch(() => {}); // refused: the row below fails, the later rows still run
+  const popFrame: any = await api.frame(pop, 0, { out: join(tmp, "pop0.png"), scale: 0.25 }).catch((e: any) => e);
+  check("a pop-in scale keyframe (0 -> 1) validates and its t=0 frame renders", (await api.validate(pop)).valid && popFrame.ok !== false && popFrame.code === undefined, popFrame);
 
   const hist = join(tmp, "hist-proj");
   api.create(hist, { preset: "720p" });

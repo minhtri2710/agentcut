@@ -136,11 +136,20 @@ const CLIP_RANGES: Record<string, readonly [(n: number) => boolean, string]> = {
   radius: [(n) => n >= 0, ">= 0"],
   weight: [(n) => n >= 100 && n <= 900, "100..900"],
 };
-const ranged = (k: string, doc: string, ...types: string[]): [string[], string] => [types.length ? types : T("number"), `${doc} (${CLIP_RANGES[k][1]})`];
+/** Where the values of a keyframe list may differ from the field's own range: a scale of 0 is a pop-in's first value, while a still scale of 0 draws nothing. */
+const KEYFRAME_RANGES: Record<string, readonly [(n: number) => boolean, string]> = { scale: [(n) => n >= 0, ">= 0"] };
+const keyframeRange = (k: string) => KEYFRAME_RANGES[k] ?? CLIP_RANGES[k];
+const ranged = (k: string, doc: string, ...types: string[]): [string[], string] =>
+  [types.length ? types : T("number"), `${doc} (${CLIP_RANGES[k][1]}${KEYFRAME_RANGES[k] ? `; keyframe values ${KEYFRAME_RANGES[k][1]}` : ""})`];
+/** The number a ranged field holds, or undefined when there is none to check: a number, or for `weight` a numeric string ("bold" is a name, not a number). */
+const rangeValue = (k: string, v: unknown) => typeof v === "number" ? v : k === "weight" && typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : undefined;
 /** Errors for the numeric fields of `obj` (a clip, or a track with only `keys`) that are outside their range. */
 function rangeIssues(obj: Dict, path: string, issues: Issue[], keys = Object.keys(CLIP_RANGES)) {
-  for (const k of keys) if (typeof obj[k] === "number" && !(Number.isFinite(obj[k]) && CLIP_RANGES[k][0](obj[k])))
-    issues.push({ level: "error", path: `${path}.${k}`, message: `${k} must be ${CLIP_RANGES[k][1]}, got ${obj[k]}` });
+  for (const k of keys) {
+    const n = rangeValue(k, obj[k]);
+    if (n !== undefined && !(Number.isFinite(n) && CLIP_RANGES[k][0](n)))
+      issues.push({ level: "error", path: `${path}.${k}`, message: `${k} must be ${CLIP_RANGES[k][1]}, got ${JSON.stringify(obj[k])}` });
+  }
 }
 
 export const COMMON_FIELDS: F = {
@@ -855,8 +864,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           else if (prop === "speed") {
             const v = Number(kk[1]);
             if (!(v >= SPEED_MIN && v <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `speed keyframe ${JSON.stringify(kk[1])} must be ${SPEED_MIN}..${SPEED_MAX}` });
-          } else if (own(CLIP_RANGES, prop) && !(Number.isFinite(Number(kk[1])) && CLIP_RANGES[prop][0](Number(kk[1]))))
-            issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `${prop} keyframe ${JSON.stringify(kk[1])} must be ${CLIP_RANGES[prop][1]}` });
+          } else if (own(CLIP_RANGES, prop) && !(Number.isFinite(Number(kk[1])) && keyframeRange(prop)[0](Number(kk[1]))))
+            issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `${prop} keyframe ${JSON.stringify(kk[1])} must be ${keyframeRange(prop)[1]}` });
         }
         const parsed = issues.length === n0; // every keyframe is well formed, so parseKfs reads them
         if (prop === "speed") {
