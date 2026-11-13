@@ -366,13 +366,14 @@ export async function render(project: string | undefined, o: {
       start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
       hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
     });
-    // The output is committed: a cancel takes effect until here, not after. The subtitle mux (a stream copy that commits again) finishes;
-    // the contact sheet and the loudness pass are skipped once the signal is aborted, and the result says so.
+    // The output is committed. A cancel during the subtitle mux rejects (the output stays, without its subtitle stream); after it, the contact sheet
+    // and the loudness pass are skipped once the signal is aborted, and the result says so, so the render is done.
     if (res.audio_only) return res;
     if (o.subtitles) {
       const [t0, t1] = res.range as [number, number];
       const inRange = SUB.cuesInRange(cues, t0, t1);
-      await SUB.embedSubtitles(out, inRange, p.root);
+      try { await SUB.embedSubtitles(out, inRange, p.root, o.signal); }
+      catch (e) { throw e instanceof M.EditError && e.code === "aborted" ? new M.EditError(e.message, "aborted", `the output was written without its subtitle stream: ${out}`) : e; }
       res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
     }
     FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,

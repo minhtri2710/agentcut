@@ -1,7 +1,7 @@
 // Audio processing (denoise, eq, compressor, pan, pitch, normalize; clip + track bus), enhance_voice, subtitle export/embed.
 // Measures rendered audio with FFmpeg. Run: bun tests/audio.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -401,14 +401,15 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // the stand-in sleeps 60 s, so a rejection within 5 s of the abort shows the abort stopped it rather than the child ending on its own
     // `tool`: the stand-in is that tool's own binary (it waits when an argument contains `key`, else exits `other`), and ffmpeg runs for real around it
     const stallTool = (tool: string, key: string, other: number) => writeFileSync(join(bin, tool), `#!/bin/sh\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexit ${other}\n`, { mode: 0o755 });
-    const abortRun = async (name: string, key: string, start: (signal: AbortSignal) => Promise<unknown>, tool?: { name: string; other?: number }) => {
+    // `ends`: the call is not rejected by the abort but ends with a result that satisfies it (the step is past the point where a cancel takes effect)
+    const abortRun = async (name: string, key: string, start: (signal: AbortSignal) => Promise<unknown>, tool?: { name: string; other?: number }, ends?: (r: any) => unknown) => {
       const ac = new AbortController();
       if (tool) { rmSync(join(bin, "ffmpeg"), { force: true }); stallTool(tool.name, key, tool.other ?? 0); } else standIn(key);
-      let err: any, pid = 0, aliveBefore = false, took = -1;
+      let err: any, res: any, pid = 0, aliveBefore = false, took = -1;
       rmSync(pidFile, { force: true });
       process.env.PATH = bin + delimiter + realPath;
       try {
-        const done = start(ac.signal).catch((e) => { err = e; });
+        const done = start(ac.signal).then((r) => { res = r; }, (e) => { err = e; });
         for (let i = 0; i < 200 && !pid; i++) { await new Promise((r) => setTimeout(r, 25)); if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf8")) || 0; }
         try { process.kill(pid, 0); aliveBefore = true; } catch { /* not running */ }
         const t0 = Date.now();
@@ -418,7 +419,8 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
       } finally { process.env.PATH = realPath; }
       let aliveAfter = true;
       try { process.kill(pid, 0); } catch { aliveAfter = false; }
-      check(`abort during ${name}: the call rejects with the abort within 5 s and the child it started is gone`, pid > 0 && aliveBefore && err?.name === "AbortError" && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message });
+      const outcome = ends ? !err && !!ends(res) : err?.name === "AbortError";
+      check(`abort during ${name}: the call ${ends ? "ends done with the step skipped" : "rejects with the abort"} within 5 s and the child it started is gone`, pid > 0 && aliveBefore && outcome && took >= 0 && took < 5000 && !aliveAfter, { pid, aliveBefore, aliveAfter, took, err: err?.message, res });
     };
     await abortRun("the mix", "", (signal) => buildAudio(pq.absolutized(pq.load()), join(tmp, "abort.wav"), 0, undefined, signal));
     await abortRun("an audio render", "", (signal) => api.render(Q, { out: join(tmp, "abort-render.wav"), signal }));
@@ -440,8 +442,14 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     api.create(S, { width: 320, height: 240, fps: 24 });
     await api.apply(S, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }, { op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }], preset: "clean", at: 0 }]);
     await abortRun("the render subtitle mux", "-c:s", (signal) => api.render(S, { out: join(tmp, "abort-render-sub.mp4"), workers: 1, sheet: false, subtitles: true, signal }));
-    // the contact sheet is drawn while the loudness measurement runs: the render still rejects with the abort
-    await abortRun("the render-tail loudness", "ebur128", (signal) => api.render(R, { out: join(tmp, "abort-tail.mp4"), workers: 1, signal }));
+    // the video was committed before the mux: it stays, without a subtitle stream, and the mux's own part file and sidecar are gone
+    const subOut = join(tmp, "abort-render-sub.mp4");
+    const kinds = existsSync(subOut) ? spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", subOut], { encoding: "utf8" }).stdout.split("\n").filter(Boolean) : [];
+    const beside = readdirSync(tmp).filter((f) => f.startsWith("abort-render-sub"));
+    check("  and the output stays without a subtitle stream, with no part file or sidecar beside it", kinds.includes("video") && !kinds.includes("subtitle") && beside.join() === "abort-render-sub.mp4", { kinds, beside });
+    // the output is written before the render's loudness measurement and contact sheet: an abort there stops the measurement's child, skips it with a mark, and the render is done
+    await abortRun("the render-tail loudness", "ebur128", (signal) => api.render(R, { out: join(tmp, "abort-tail.mp4"), workers: 1, signal }), undefined,
+      (r) => r.output === join(tmp, "abort-tail.mp4") && !r.loudness && /skipped/.test(r.loudness_error ?? "") && statSync(r.output).size > 0);
     // audio_check, scenes and scopes: the signal reaches each of their ffmpeg steps
     const src = join(m, "tone.wav");
     await abortRun("audio_check decoding a source", "pcm_s16le", (signal) => api.audioCheck(undefined, { source: src, out: join(tmp, "abort-check.png"), signal }));

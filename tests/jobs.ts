@@ -599,16 +599,16 @@ console.log("cancel a render or prepare job");
     child.on("close", (code, signal) => { exit = { code, signal }; });
     return { child, pid: child.pid!, get out() { return out; }, get exit() { return exit; } };
   };
-  // A cancel takes effect until the output is written. A stand-in ffmpeg on PATH holds the loudness pass (extras) or the subtitle mux (until released) so the
-  // cancel lands in that phase; every other call goes to the real one. The cancel is made once the stand-in has started: no sleeps.
+  // A cancel takes effect until the output is written, plus the subtitle mux. A stand-in ffmpeg on PATH holds the loudness pass (extras) or the subtitle
+  // mux so the cancel lands in that phase; every other call goes to the real one. The cancel is made once the stand-in has started: no sleeps.
   {
     const realFfmpeg = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
-    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark"), goMux = join(tmp, "stub-mux.go");
+    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark");
     mkdirSync(bin);
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh
 case "$*" in
   *ebur128*) : > ${JSON.stringify(markLoud)}; exec sleep 60 ;;
-  *mov_text*) : > ${JSON.stringify(markMux)}; while [ ! -e ${JSON.stringify(goMux)} ]; do sleep 0.05; done ;;
+  *mov_text*) : > ${JSON.stringify(markMux)}; exec sleep 60 ;;
 esac
 exec ${JSON.stringify(realFfmpeg)} "$@"
 `);
@@ -644,23 +644,23 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
       const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
       check("SIGTERM to a CLI render after its output was written: the ok:true result with the skip marks, the file stays, the process ends by SIGTERM", held && j?.ok === true && /skipped/.test(j.loudness_error ?? "") && existsSync(j.output) && statSync(j.output).size > 0 && stray(D).filter((f) => f.endsWith(".mp4")).length === 1 && r.exit?.signal === "SIGTERM" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
     }
-    // api: the signal aborts while the subtitle mux runs (released only after the abort): the file still gets its subtitle stream
+    // MCP: cancel_job while the subtitle mux runs: the job is cancelled, the error names the output, which stays (committed) without a subtitle stream
     {
-      const P = join(tmp, "cancel-mux"), out = join(tmp, "cancel-mux-out", "out.mp4");
+      const P = join(tmp, "cancel-mux"), out = join(tmp, "cancel-mux-out", "out.mp4"), D = join(tmp, "cancel-mux-out");
       api.create(P, { preset: "720p" });
       await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }, { op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
-      rmSync(markMux, { force: true }); rmSync(goMux, { force: true });
-      const was = process.env.PATH, ctl = new AbortController();
-      process.env.PATH = withBin;
-      try {
-        const pending = api.render(P, { out, subtitles: true, sheet: false, workers: 1, end: 1, signal: ctl.signal }).then((r: any) => r, (e: any) => e);
-        const held = await until(() => existsSync(markMux), 60_000);
-        const size = existsSync(out) ? statSync(out).size : 0;
-        ctl.abort(); // the mux has started; the release comes after the abort
-        writeFileSync(goMux, "");
-        const r: any = await pending;
-        check("an abort during the subtitle mux: the render finishes (done), and the file has its subtitle stream", held && size > 0 && r?.output === out && r.subtitles?.cues > 0 && streams(out) === "subtitle,video", { held, size, r: r?.message ?? r, streams: existsSync(out) ? streams(out) : null });
-      } finally { process.env.PATH = was; writeFileSync(goMux, ""); }
+      rmSync(markMux, { force: true });
+      const s3 = mcpProc({ PATH: withBin });
+      await s3.init();
+      const job = await s3.call("render", { project: P, output: out, subtitles: true, sheet: false, end: 1, wait_seconds: 0 });
+      const held = await until(() => existsSync(markMux), 60_000);
+      const size = existsSync(out) ? statSync(out).size : 0;
+      const c = await s3.call("cancel_job", { job_id: job.job_id });
+      check("cancel_job while the subtitle mux runs: cancelled with code aborted, the error names the output, which stays without a subtitle stream; no part file or sidecar is left",
+        held && size > 0 && c.status === "cancelled" && c.error?.code === "aborted" && String(c.error.hint).includes(out) && /without its subtitle stream/.test(c.error.hint)
+        && existsSync(out) && streams(out) === "video" && stray(D).join() === "out.mp4", { held, size, c, streams: existsSync(out) ? streams(out) : null, files: stray(D) });
+      process.kill(s3.pid, "SIGTERM");
+      await until(() => s3.exit, 10_000);
     }
   }
   {
