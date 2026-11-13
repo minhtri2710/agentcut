@@ -131,6 +131,7 @@ await bad("prores_4444 in .mp4", { codec: "prores_4444" }, "x.mp4");
 await bad("alpha:true in .mp4", { alpha: true }, "x.mp4");
 await bad("alpha:true with vp9 .mkv", { codec: "vp9", alpha: true }, "x.mkv");
 await bad("unknown codec", { codec: "av2" }, "x.mp4");
+await bad("codec named like a prototype member", { codec: "constructor" }, "x.mp4");
 await bad("codec on audio export", { codec: "hevc" }, "x.mp3");
 await bad("unknown extension", {}, "x.avi", "bad_format");
 

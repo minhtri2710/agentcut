@@ -181,6 +181,9 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   const txt = join(tmp, "note.txt"); writeFileSync(txt, "not a picture");
   const vi = await call5("view_image", { path: txt }), vm = await call5("view_image", { path: join(tmp, "missing.png") }), vd = await call5("view_image", { path: tmp + ".png" });
   check("view_image refuses a non-image file", vi.json?.ok === false && vi.json.error.code === "bad_request" && vi.images.length === 0, [vi.json, vi.images.length]);
+  const named = join(tmp, "note.constructor"); writeFileSync(named, "not a picture");
+  const vn = await call5("view_image", { path: named });
+  check("view_image refuses a file whose extension is a prototype member name", vn.json?.ok === false && vn.json.error.code === "bad_request" && vn.images.length === 0, [vn.json, vn.images.length]);
   check("view_image of a missing file -> not_found", vm.json?.ok === false && vm.json.error.code === "not_found" && vd.json?.error?.code === "not_found", [vm.json ?? vm.r, vd.json ?? vd.r]);
   const vp = await call5("view_image", { path: join(tmp, "p.png") });
   check("view_image still returns a picture", vp.images.length === 1, vp.json ?? vp.r);

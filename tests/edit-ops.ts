@@ -1214,17 +1214,22 @@ console.log("inherited names are not registry entries");
   const before = JSON.stringify(tl());
   const rows: [string, any, string][] = [
     ["op constructor", { op: "constructor" }, "unknown_op"],
-    ["op toString", { op: "toString" }, "unknown_op"],
     ["add_clip asset toString", { op: "add_clip", track: "main", asset: "toString" }, "not_found"],
-    ["add_clip asset constructor", { op: "add_clip", track: "main", asset: "constructor" }, "not_found"],
     ["remove_asset id toString", { op: "remove_asset", id: "toString" }, "not_found"],
     ["apply_template name constructor", { op: "apply_template", name: "constructor" }, "bad_template"],
     ["add_clip text preset constructor", { op: "add_clip", track: "overlay", type: "text", text: "x", duration: 1, preset: "constructor" }, "bad_preset"],
-    ["add_clip captions preset toString", { op: "add_clip", track: "captions", type: "captions", words: [{ text: "a", start: 0, end: 1 }], preset: "toString" }, "bad_preset"],
+    ["add_effect type constructor", { op: "add_effect", id: "vid1", type: "constructor" }, "bad_effect"],
     ["set_settings preset constructor", { op: "set_settings", preset: "constructor" }, "bad_preset"],
   ];
   for (const [name, o, want] of rows) { const c = await code(o); check(`${name}: ${want}`, c === want, { c }); }
   check("none of those rows changed the project", JSON.stringify(tl()) === before);
+  // the validator reads field, filter and effect names from the same tables: each name is one issue, not a throw or a pass
+  const named = structuredClone(tl()), c0 = named.tracks.flatMap((t: any) => t.clips)[0];
+  c0.constructor = 1; c0.filters = ["toString"]; c0.effects = ["constructor"]; named.settings.effects = ["constructor"];
+  let paths: string[] | string;
+  try { paths = validate(named).filter((i: any) => i.level === "error").map((i: any) => i.path); } catch (e: any) { paths = `threw ${e.message}`; }
+  check("validate: a field, filter and effect named like a prototype member are issues", Array.isArray(paths) && paths.includes("$.settings.effects[0]")
+    && paths.some((x) => x.endsWith(".constructor")) && paths.some((x) => x.endsWith(".filters[0]")) && paths.some((x) => x.startsWith("$.tracks") && x.endsWith(".effects[0]")), paths);
   let pc = "ok";
   try { api.create(join(tmp, "proj-constructor"), { preset: "constructor" }); } catch (e: any) { pc = e.code; }
   check("create with preset constructor: bad_preset", pc === "bad_preset", { pc });
