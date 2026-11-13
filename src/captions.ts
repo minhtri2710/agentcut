@@ -35,10 +35,14 @@ export function parseSrt(path: string): CWord[] {
   return out;
 }
 
+/** The one word rule for caption and text content: whitespace separates words, except the no-break spaces (U+00A0, U+2007, U+202F), which join one. */
+const WORD_SPACE = String.raw`[^\S\u00a0\u2007\u202f]+`;
+export const splitWords = (text: string): string[] => text.split(new RegExp(WORD_SPACE)).filter(Boolean);
+
 export function phrasesToWords(phrases: CWord[]): CWord[] {
   const words: CWord[] = [];
   for (const ph of phrases) {
-    const toks = ph.text.split(/[^\S\u00a0\u2007\u202f]+/).filter(Boolean); // the no-break spaces (U+00A0, U+2007, U+202F) join a word
+    const toks = splitWords(ph.text);
     const total = toks.reduce((a, t) => a + t.length + 1, 0);
     let t = ph.start;
     for (const tok of toks) {
@@ -50,7 +54,8 @@ export function phrasesToWords(phrases: CWord[]): CWord[] {
   return words;
 }
 
-const SENTENCE_BREAK = /(?<=[.!?…])\s+/;
+const SENTENCE_BREAK = new RegExp(`(?<=[.!?…])${WORD_SPACE}`);
+const CLAUSE_BREAK = new RegExp(`(?<=[.!?…,;:])${WORD_SPACE}`);
 /** The sentences of a script (the unit a voiceover is synthesized in); a script with no sentence break is one part. */
 export function splitSentences(text: string): string[] {
   const parts = text.trim().split(SENTENCE_BREAK).filter(Boolean);
@@ -60,7 +65,7 @@ export function splitSentences(text: string): string[] {
 /** Word timings for one sentence read aloud: its clauses map 1:1 onto detected speech segments when the counts agree,
  * so captions pause with the voice; otherwise the words spread over first..last speech. */
 export function scriptToWords(text: string, speech: number[][]): CWord[] {
-  const parts = text.trim().split(/(?<=[.!?…,;:])\s+/).filter(Boolean);
+  const parts = text.trim().split(CLAUSE_BREAK).filter(Boolean);
   if (parts.length > 1 && parts.length === speech.length) return phrasesToWords(parts.map((p, i) => ({ text: p, start: speech[i][0], end: speech[i][1] })));
   return phrasesToWords([{ text, start: speech[0][0], end: speech[speech.length - 1][1] }]);
 }

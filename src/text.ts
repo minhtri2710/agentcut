@@ -2,11 +2,12 @@
 import * as Skia from "@napi-rs/canvas";
 import { type Canvas, createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import { setCanvas } from "./canvas.ts";
+import { splitWords } from "./captions.ts";
 import { cssFont, type FontSpec, resolveFont } from "./fonts.ts";
 import { css, type Dict, parseColor, parseLen } from "./model.ts";
 
 setCanvas(Skia);
-export { captionPages, captionWords, type CWord, pageSpans, parseSrt, phrasesToWords } from "./captions.ts";
+export { captionPages, captionWords, type CWord, pageSpans, parseSrt, phrasesToWords, splitWords } from "./captions.ts";
 
 export class TextStyle {
   font: FontSpec; size: number; fill: string; gradient?: Dict; strokeW: number; strokeC?: string;
@@ -88,8 +89,7 @@ export function layout(text: string, style: TextStyle, maxWidth: number) {
   let idx = 0;
   for (const para of text.split("\n")) {
     let cur: Word[] = [], curW = 0;
-    for (const word of para.split(" ")) {
-      if (!word) continue;
+    for (const word of splitWords(para)) {
       const ww = measure(style, word);
       const fill = cur.length > 0 && curW + space + ww > maxWidth && CJK.test(word); // a CJK word that does not fit after earlier words starts on this line
       if (ww > maxWidth || fill) { // wider than an empty line (a long token, or CJK text with no spaces), or CJK text to fill the line: break it; every piece keeps the word's index

@@ -10,7 +10,7 @@ import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, type Timeline, totalDuration,
   type Track, VISUAL_TYPES,
 } from "./model.ts";
-import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, TextStyle } from "./text.ts";
+import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
 
 setCanvas(Skia);
 
@@ -181,7 +181,7 @@ export class Layer {
         const mw = maxWidthPx(c, r.W0, r.k);
         const n = [...(st.uppercase ? text.toUpperCase() : text)].length;
         const vc = m.chars === null ? null : Math.floor(m.chars * n + 1e-6);
-        const nw = text.split(/\s+/).filter(Boolean).length;
+        const nw = splitWords(text).length;
         const vw = m.words === null ? null : Math.ceil(m.words * nw - 1e-6);
         const cv = this.cache.getOr(`t${vc}|${vw}`, () => renderText(text, st, mw, { visibleChars: vc, visibleWords: vw }));
         return { canvas: cv, w: cv.width, h: cv.height };

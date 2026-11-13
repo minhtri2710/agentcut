@@ -305,6 +305,24 @@ console.log("history entries order by number: a planted name with more digits th
   check("after a save, undo restores the state just before it", texts(p) === "a", texts(p));
 }
 
+console.log("history entries with equal numeric values order by name, whichever file was created first");
+{
+  const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
+  const texts = (p: string) => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text).join();
+  const got: string[] = [];
+  for (const order of [["02", "2"], ["2", "02"]]) {
+    const p = await project(`history-tie-${order.join("-")}`), undo = join(p, ".agentcut", "history", "undo");
+    await api.apply(p, text("a"));
+    await api.apply(p, text("b"));
+    const [first, second] = readdirSync(undo).sort().slice(-2); // the states before "a" and before "b"
+    for (const name of order) copyFileSync(join(undo, name === "2" ? second : first), join(undo, `${name}.json`)); // 2.json holds the later state, 02.json the earlier
+    rmSync(join(undo, first)); rmSync(join(undo, second));
+    api.undo(p, 1);
+    got.push(texts(p));
+  }
+  check("after planting 02.json and 2.json in either order, undo restores the entry whose name sorts last", got[0] === got[1] && got[0].includes("a"), got);
+}
+
 // ------------------------------------------------------------------ sidecars of a render
 console.log("sidecar names next to a render that are links: the targets are unchanged");
 {

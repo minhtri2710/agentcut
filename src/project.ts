@@ -234,7 +234,7 @@ export class Project {
       out.push(join(d, e.name));
     }
     const n = (f: string) => BigInt(basename(f, ".json"));
-    return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : 0));
+    return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : a < b ? -1 : a > b ? 1 : 0)); // equal values (1.json, 01.json) fall back to the name text, so readdir order never shows
   }
   /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path. */
   private push(name: string, content: string, label: string) {

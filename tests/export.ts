@@ -233,6 +233,15 @@ console.log("caption sources and subtitle export");
   check("vtt: character reference names are case-sensitive (&Lt; and &NBSP; stay as written, &lt; and &nbsp; decode)", JSON.stringify(parseSrt(vttPath).map((w) => w.text)) === JSON.stringify(["&Lt; &NBSP; < \u00a0 A"]), parseSrt(vttPath));
   writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:01.000\n10&nbsp;km now\n");
   check("vtt: a decoded no-break space does not split a caption word", JSON.stringify(phrasesToWords(parseSrt(vttPath)).map((w) => w.text)) === JSON.stringify(["10\u00a0km", "now"]), phrasesToWords(parseSrt(vttPath)));
+  // the same cue gives the same words everywhere text is split: sentence and clause paging, and the reveal count of a text clip
+  const { scriptToWords, splitSentences } = await import("../src/captions.ts");
+  check("a no-break space joins one word in sentence and clause paging too", splitSentences("Wait.\u00a010\u00a0km now.").length === 1
+    && JSON.stringify(scriptToWords("Wait,\u00a010\u00a0km now.", [[0, 1], [1, 2]]).map((w) => w.text)) === JSON.stringify(["Wait,\u00a010\u00a0km", "now."]), scriptToWords("Wait,\u00a010\u00a0km now.", [[0, 1], [1, 2]]));
+  const nb = join(tmp, "nbsp-reveal");
+  api.create(nb, { preset: "square", empty: true });
+  await api.apply(nb, [{ op: "add_clip", track: "text", type: "text", text: "10\u00a0km now", duration: 3, enter: { type: "words", duration: 1 } }]);
+  const half = readFileSync((await api.frame(nb, 0.5)).image), full = readFileSync((await api.frame(nb, 1.5)).image);
+  check("a text clip of two words (one joined by a no-break space) shows one of them half way through a word reveal", !half.equals(full));
   const bomSrt = join(tmp, "bom.srt"); // the WEBVTT header marks WebVTT, not the .vtt extension
   writeFileSync(bomSrt, "\ufeffWEBVTT\n\n00:00.000 --> 00:01.000\na &lt;b&gt;\n");
   check("a body with a BOM and a WEBVTT header at a .srt path reads as WebVTT (decoded)", JSON.stringify(parseSrt(bomSrt).map((w) => w.text)) === JSON.stringify(["a <b>"]), parseSrt(bomSrt));
