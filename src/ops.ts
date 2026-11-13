@@ -85,7 +85,7 @@ op("import_media", "Import a media file (video/image/audio/Lottie .json) as an a
   { path: "file path (required)", id: "asset id", copy: "copy into project media/ (false)" },
   (p, tl, a) => { const id = importAsset(p, tl, a.path, a.id, !!a.copy); const { path, ...rest } = tl.assets[id]; return { asset: id, ...rest }; });
 
-op("relink_asset", "Point an asset at another file (it moved, or was replaced) and probe it again; clip ids and clip fields are kept as they are. The new file must be the same kind (video, image, audio, lottie), else bad_type: import_media it and update_clip each clip. Returns the new probe and `changed` ({field: {old, new}}), and `recheck`: clips whose auto_reframe / track_to keyframes were made from the old picture (run those ops again; nothing is changed or deleted). The old file is never removed, so undo restores the old record. The clips are kept as they are; captions made from a transcript of the old file keep their timings.",
+op("relink_asset", "Point an asset at another file (it moved, or was replaced) and probe it again. The new file must be the same kind (video, image, audio, lottie), else bad_type: import_media it and update_clip each clip. Returns the new probe and `changed` ({field: {old, new}}), and `recheck`: clips whose auto_reframe focus or track_to x/y keyframes may come from the old picture (run those ops again; nothing is changed or deleted). The old file is never removed, so undo restores the old record. The clips are kept as they are; captions made from a transcript of the old file keep their timings.",
   { id: "asset id (required)", path: "the new file (required)", copy: "copy into project media/ (false)" },
   (p, tl, a) => {
     if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");
@@ -99,8 +99,8 @@ op("relink_asset", "Point an asset at another file (it moved, or was replaced) a
     const clips = [...allClips(tl.tracks)], mine = new Set(clips.filter((c) => c.asset === a.id).map((c) => c.id)), why = new Map<string, string[]>();
     const flag = (c: Clip, reason: string) => why.set(c.id, [...(why.get(c.id) ?? []), reason]);
     for (const c of clips) {
-      if (mine.has(c.id) && (c.keyframes?.focus_x || c.keyframes?.focus_y)) flag(c, "focus keyframes (auto_reframe) were made from the old picture");
-      if (mine.has(c.attach_to) && (c.keyframes?.x || c.keyframes?.y)) flag(c, "x/y keyframes (track_to) follow the old picture");
+      if (mine.has(c.id) && (c.focus || c.keyframes?.focus_x || c.keyframes?.focus_y)) flag(c, "focus may come from the old picture (auto_reframe)");
+      if (mine.has(c.attach_to) && (c.keyframes?.x || c.keyframes?.y)) flag(c, "x/y keyframes may follow the old picture (track_to)");
     }
     const recheck = [...why].map(([id, r]) => ({ id, reason: r.join("; ") }));
     const { path, ...rest } = info;

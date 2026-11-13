@@ -1,6 +1,6 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
-import { ease, parseKfs } from "./anim.ts";
+import { ease, parseKfs, speedIntegral } from "./anim.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 import { own } from "./own.ts";
@@ -749,6 +749,11 @@ function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
   }
 }
 
+/** The warning for a clip that needs `need` s of a source that is shorter (`ends`: what happens at the end). */
+function pastEnd(issues: Issue[], p: string, aid: string, a: Asset, need: number, ends: string) {
+  if (need > a.duration! + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration!.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
+}
+
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
 function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds: Map<string, string>, root: string, flow: Flow) {
   const assets = tl.assets || {};
@@ -804,12 +809,12 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
         } else {
           const a = assets[aid];
-          if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !c.freeze && !(c.keyframes?.speed)) {
-            const need = parseTime(c.in ?? 0) + dur * Number(c.speed ?? 1);
-            const left = a.duration - parseTime(c.in ?? 0); // source left for an audio clip; <= 0: 'in' is at or past the end
-            const ends = c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`;
-            if (need > a.duration + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
+          if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
+            const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
+            if (c.freeze) pastEnd(issues, p, aid, a, inn, "there is no frame at 'in' to hold");
+            else pastEnd(issues, p, aid, a, inn + dur * Number(c.speed ?? 1), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
           }
+          if (c.type === "audio" && a.kind === "video" && !a.has_audio) issues.push({ level: "warning", path: `${p}.asset`, message: `asset '${aid}' has no audio track: the clip is silent`, hint: "point the clip at a file with sound (relink_asset, or update_clip asset=<id>), or remove it" });
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
           if (c.type === "audio" && a.kind === "image") issues.push({ level: "error", path: `${p}.type`, message: "asset is an image, cannot be audio" });
           if (c.type === "lottie" && a.kind !== "lottie") issues.push({ level: "error", path: `${p}.asset`, message: "asset is not a Lottie animation" });
@@ -878,6 +883,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
             hint: la.length > 1 ? `no op joins the ${la.length} audio pieces: ${la.map((id) => `remove_clip id=${id}`).join(", ")} to drop that audio and its processing, then update_clip id=${c.id} muted=false so the video's own sound (which follows the ramp) plays`
               : `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
           if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
+          const ra = own(assets, c.asset) && assets[c.asset];
+          if (parsed && ra && c.type === "video" && typeof ra.duration === "number" && ra.duration > 0 && !c.loop && !c.freeze) pastEnd(issues, p, c.asset, ra, parseTime(c.in ?? 0) + speedIntegral(kfs as any[], dur), "the last frame is held");
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {

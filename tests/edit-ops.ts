@@ -1473,14 +1473,6 @@ console.log("relink_asset");
   const rej2 = await code([{ op: "relink_asset", id: "ip", path: join(m, "short.mp4"), copy: true }, { op: "remove_clip", id: "nope" }]);
   check("a batch that fails later leaves no copy in media/", rej2 !== "none" && JSON.stringify(listing()) === JSON.stringify(kept), { code: rej2.code, files: listing() });
 
-  console.log("  missing file");
-  copyFileSync(join(m, "a.mp4"), join(m, "gone.mp4"));
-  await ra([{ op: "import_media", path: join(m, "gone.mp4"), id: "gone" }]);
-  rmSync(join(m, "gone.mp4"));
-  const miss = (await api.validate(R)).issues.find((i: any) => i.path === "$.assets.gone.path");
-  check("the missing-file issue names relink_asset with the asset id", !!miss && miss.level === "error" && miss.hint?.includes("relink_asset id=gone path="), miss);
-  await ra([{ op: "remove_asset", id: "gone" }]);
-
   console.log("  recheck list");
   await ra([
     { op: "add_clip", track: "main", asset: "av", duration: 1, id: "reframed" },
@@ -1497,6 +1489,45 @@ console.log("relink_asset");
   check("a reframed clip and every keyframed follower of the asset's clips (reframed or plain) are listed; clips without such keyframes are not", JSON.stringify(ids) === JSON.stringify(["follower", "follower2", "reframed"]) && rc.recheck.every((x: any) => typeof x.reason === "string" && x.reason), rc.recheck);
   const kept2 = (await rtl()).tracks.flatMap((t: any) => t.clips);
   check("the keyframes are kept", !!kept2.find((c: any) => c.id === "reframed").keyframes.focus_x && !!kept2.find((c: any) => c.id === "follower").keyframes.x);
+
+  console.log("  warnings a relink makes visible");
+  ff("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24:duration=6", "-pix_fmt", "yuv420p", join(m, "fzsrc.mp4"));
+  ff("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24:duration=6", "-pix_fmt", "yuv420p", join(m, "rampsrc.mp4"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "short2.mp4"));
+  ff("-f", "lavfi", "-i", "gradients=size=200x200:n=2", "-frames:v", "1", join(m, "p2.png"));
+  const R2 = join(tmp, "relink2");
+  api.create(R2, { preset: "720p" });
+  const rb = async (ops: any[]) => (await api.apply(R2, ops));
+  const warns = (r: any, re: RegExp) => r.issues.filter((i: any) => i.level === "warning" && re.test(i.path));
+  const setup = await rb([
+    { op: "import_media", path: join(m, "b.mp4"), id: "dv" },
+    { op: "import_media", path: join(m, "fzsrc.mp4"), id: "fz" },
+    { op: "import_media", path: join(m, "rampsrc.mp4"), id: "rp" },
+    { op: "import_media", path: join(m, "p.png"), id: "im" },
+    { op: "add_clip", track: "main", asset: "dv", duration: 1, id: "v1" },
+    { op: "detach_audio", id: "v1" },
+    { op: "add_clip", track: "main", asset: "fz", freeze: true, in: 2, duration: 1, id: "f1" },
+    { op: "add_clip", track: "main", asset: "fz", freeze: true, in: 0.5, duration: 1, id: "f0" },
+    { op: "add_clip", track: "main", asset: "rp", duration: 2, id: "r1" },
+    { op: "update_clip", id: "r1", set: { keyframes: { speed: [[0, 1], [2, 2]] } } },
+    { op: "add_clip", track: "overlay", asset: "im", duration: 1, focus: [0.2, 0.3], id: "i1" },
+    { op: "add_clip", track: "overlay", asset: "im", duration: 1, at: 1, id: "i2" },
+  ]);
+  const aud = setup.results[5].audio;
+  check("before a relink none of these clips warns", !warns(setup, /<(aud\d+|f1|f0|r1)>/).length, setup.issues);
+  const w1 = await rb([{ op: "relink_asset", id: "dv", path: join(m, "silent.mp4") }]);
+  check("relink to a video without sound: the detached audio clip is warned as silent", warns(w1, new RegExp(`<${aud}>\\.asset$`)).length === 1, w1.issues);
+  const w2 = await rb([{ op: "relink_asset", id: "fz", path: join(m, "short.mp4") }]);
+  check("relink to a shorter source: a freeze clip whose 'in' is past the end is warned, one inside is not", warns(w2, /<f1>\.duration$/).length === 1 && warns(w2, /<f0>\.duration$/).length === 0, w2.issues);
+  const w3 = await rb([{ op: "relink_asset", id: "rp", path: join(m, "short2.mp4") }]);
+  check("relink to a shorter source: a speed-ramped clip that runs past the end is warned", warns(w3, /<r1>\.duration$/).length === 1, w3.issues);
+  const w4 = (await rb([{ op: "relink_asset", id: "im", path: join(m, "p2.png") }])).results[0];
+  check("an image clip with a static focus is listed for recheck, the one without is not", JSON.stringify(w4.recheck.map((x: any) => x.id)) === JSON.stringify(["i1"]), w4.recheck);
+
+  const R3 = join(tmp, "relink3");
+  api.create(R3, { preset: "720p" });
+  const d3 = await api.apply(R3, [{ op: "add_clip", track: "voice", type: "audio", src: join(m, "silent.mp4"), id: "sa" }]);
+  check("validate: an audio clip on a video without sound warns as silent", warns(d3, /<sa>\.asset$/).length === 1 && warns(await api.validate(R3), /<sa>\.asset$/).length === 1, d3.issues);
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);

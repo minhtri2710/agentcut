@@ -59,7 +59,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 6. Fix with update_clip / trim_clip / undo.
    A source file that moved or was replaced (validate: file not found): {"op":"relink_asset","id":"a1","path":"/abs/new.mp4"} points the asset at it and probes it again,
    same kind only (else bad_type: import_media it, then update_clip each clip). The clips are kept as they are; the result has changed (old/new per field) and recheck
-   (clips whose auto_reframe / track_to keyframes came from the old picture: run those ops again). Captions made from a transcript of the old file keep their timings.
+   (clips whose auto_reframe focus or track_to x/y keyframes may come from the old picture: run those ops again). Captions made from a transcript of the old file keep their timings.
 
 ## Ops cheat-sheet
 {"op":"add_clip","track":"main","src":"/abs/clip.mp4","in":2,"duration":4,"transition":"crossfade"}
