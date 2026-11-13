@@ -468,7 +468,23 @@ console.log("CJK text: an installed CJK font fills in, and glyphs no font has ar
   const { loadCanvas, C } = await import("../src/canvas.ts");
   await loadCanvas();
   const NONE = "\u{10FFFD}"; // a private-use code point in plane 16: no font maps it
-  const cjkFont = (C().GlobalFonts.families as { family: string }[]).find((f) => /^(Hiragino Sans|Heiti|Noto Sans CJK|Microsoft YaHei|Yu Gothic|Apple SD Gothic Neo|Malgun Gothic)/.test(f.family));
+  const CJK_RE = /^(Hiragino Sans|Heiti|Noto Sans CJK|Microsoft YaHei|Yu Gothic|Apple SD Gothic Neo|Malgun Gothic)/;
+  const families = (C().GlobalFonts.families as { family: string }[]).map((f) => f.family);
+  const cjkFont = families.find((f) => CJK_RE.test(f));
+  {
+    // symbols that an emoji font and a CJK font both have, and no other font of the stack: they keep the colour emoji glyph, drawn as the emoji font alone draws them
+    const { resolveFont, cssFont, missingChars } = await import("../src/fonts.ts");
+    const f = resolveFont(undefined), emoji = f.stack.find((s) => /Emoji/.test(s));
+    const cv = C().createCanvas(80, 80), cx = cv.getContext("2d");
+    const ink = (font: string, ch: string) => { cx.clearRect(0, 0, 80, 80); cx.font = font; cx.fillText(ch, 8, 60); return Buffer.from(cx.getImageData(0, 0, 80, 80).data.buffer); };
+    const beforeEmoji = f.stack.slice(0, f.stack.indexOf(emoji ?? "")).filter((s) => !CJK_RE.test(s));
+    const syms = [..."▶➡⬇☎"].filter((ch) => emoji && cjkFont && !missingChars(emoji, ch) && beforeEmoji.every((s) => missingChars(s, ch)));
+    const { firstCovering } = await import("../src/fonts.ts");
+    const bold = ["Arial Bold", "Helvetica Neue Bold", "Segoe UI Bold", "Noto Sans Bold", "DejaVu Sans Bold"];
+    check("a preset font is chosen the same for text with symbols, emoji or CJK as for plain text", firstCovering(bold, "▶️ Watch ➡️ 🔥 你好") === firstCovering(bold, "Watch") && firstCovering(bold, "Watch") !== undefined, [firstCovering(bold, "▶️ Watch ➡️ 🔥 你好"), firstCovering(bold, "Watch")]);
+    if (!syms.length) console.log("  - skipped: no emoji font or no symbol only the emoji and CJK fonts have");
+    else check("symbols the emoji font has keep their colour glyph with a CJK font installed", syms.every((ch) => ink(cssFont(f, 48), ch).equals(ink(`400 48px "${emoji}"`, ch))), syms);
+  }
   const D = join(tmp, "cjk");
   api.create(D, { width: 320, height: 120, fps: 24 });
   await api.apply(D, [{ op: "add_clip", track: "text", id: "t", text: NONE, at: 0, duration: 1, font_size: 60 }]);

@@ -94,7 +94,7 @@ export function resolveFont(spec: string | undefined | null, weight?: number | s
   }
   if (weight !== undefined && weight !== null) w = typeof weight === "number" ? weight : own(WEIGHTS, String(weight).toLowerCase()) ?? (Number(weight) || 400);
   const have = (names: string[]) => names.filter((s) => fam.has(s.toLowerCase()) && s !== family);
-  const stack = [family!, ...have(SANS), ...have(CJK), ...EMOJI.filter((s) => fam.has(s.toLowerCase()))];
+  const stack = [family!, ...have(SANS), ...EMOJI.filter((s) => fam.has(s.toLowerCase())), ...have(CJK)]; // emoji first: symbols both have keep the colour glyph; the emoji fonts have no Han, kana or Hangul
   const out = { family: family!, weight: w, italic: it, stack };
   if (!unregistered) cache.set(key, out); // an alias not yet registered with Skia must be resolved again once it is
   return out;
@@ -165,13 +165,13 @@ function fontCheckRaw(font: string | undefined, text: string): FontCheck {
 
 /** Pick the first candidate font that has every glyph of text (used for caption defaults). */
 export function firstCovering(cands: string[], text: string): string | undefined {
-  for (const c of cands) {
-    try {
-      const f = resolveFont(c);
-      if (!missingChars(f.family, text)) return c;
-    } catch { /* not installed */ }
+  const have: { name: string; miss: string[] }[] = [];
+  for (const name of cands) {
+    try { have.push({ name, miss: [...missingChars(resolveFont(name).family, text)] }); } catch { /* not installed */ }
   }
-  return undefined;
+  // a char no candidate has (an emoji, a CJK char) is no reason to skip one: it falls through the font stack whichever is chosen
+  const none = new Set(have.length ? have[0].miss.filter((ch) => have.every((h) => h.miss.includes(ch))) : []);
+  return have.find((h) => h.miss.every((ch) => none.has(ch)))?.name;
 }
 
 export function listFonts(query = "", limit = 60) {

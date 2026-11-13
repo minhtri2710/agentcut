@@ -134,6 +134,12 @@ try {
   await js(`$("vstat").textContent = ""; seek(total())`);
   check("the playhead at the duration shows the last frame, not an out-of-timeline error", await until("end frame", `$("vstat").textContent.indexOf("ms/frame") > 0`), await js(`$("vstat").textContent`));
 
+  // a timeline with no duration has no frame: the viewer asks for none and shows no error (the page state is swapped for the check and put back)
+  await js(`window.__S = S; S = Object.assign({}, S, { duration: 0 }); $("vstat").textContent = ""; seek(0)`);
+  await sleep(600);
+  check("an empty timeline: the viewer requests no frame and shows no error", (await js(`$("vstat").textContent`)) === "", await js(`$("vstat").textContent`));
+  await js(`S = window.__S`);
+
   console.log("keyframes");
   await js(`seek(1)`);
   await js(`(function(){var s=$("kfprop"); s.value="opacity"; s.dispatchEvent(new Event("change"));})()`);

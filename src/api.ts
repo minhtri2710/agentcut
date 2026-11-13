@@ -150,13 +150,17 @@ const scaleOf = (v: number | undefined, dflt: number) => {
 };
 const MAX_SCALE = 4, MAX_SHEET_TILES = 64; // the sheet already stopped `every` at 64 tiles
 
-/** A time outside the timeline, as the error every frame request gives: the hint names the last frame that exists. */
+/** A timeline with no duration has no frame to show. */
+const emptyTimeline = (what: string) => new M.EditError(`the timeline is empty: ${what}`, "empty", "add clips first");
+
+/** A time outside a timeline that has a duration, as the error every frame request gives: the hint names the last frame that exists. */
 const outsideTimeline = (tl: M.Timeline, T: number, message: string, name: string) => new M.EditError(message, "bad_value",
-  `a frame is one point in time: use 0 <= ${name} < ${+T.toFixed(3)} (the duration)${T > 0 ? `; the last frame starts at ${+Math.max(0, T - 1 / tl.settings.fps).toFixed(3)}` : ""}`);
+  `a frame is one point in time: use 0 <= ${name} < ${+T.toFixed(3)} (the duration); the last frame starts at ${+Math.max(0, T - 1 / tl.settings.fps).toFixed(3)}`);
 
 /** The time of a single frame (a preview, scopes or a still): 0 <= t < duration. `name` is the argument the caller gave it as. */
 function frameTime(tl: M.Timeline, t: number | string, name: string) {
   const tt = M.parseTime(t), T = M.totalDuration(M.resolve(M.clone(tl)));
+  if (!(T > 0)) throw emptyTimeline("there is no frame to show");
   if (!(tt >= 0 && tt < T)) throw outsideTimeline(tl, T, `${name} ${tt}s is outside the timeline`, name);
   return tt;
 }
@@ -199,7 +203,7 @@ export async function sheet(project: string | undefined, o: { times?: (number | 
   const tl = p.load();
   p.requireValid(tl);
   const T = M.totalDuration(M.resolve(tl));
-  if (!(T > 0)) throw new M.EditError("the timeline is empty: a sheet has no frames to show", "empty", "add clips first");
+  if (!(T > 0)) throw emptyTimeline("a sheet has no frames to show");
   let ts: number[];
   if (o.every !== undefined && !(o.every > 0)) throw new M.EditError(`every must be a number above 0, got ${JSON.stringify(o.every)}`, "bad_value");
   if (o.count !== undefined && !(Number.isInteger(o.count) && o.count >= 1 && o.count <= MAX_SHEET_TILES)) throw new M.EditError(`count must be a whole number from 1 to ${MAX_SHEET_TILES}, got ${JSON.stringify(o.count)}`, "bad_value");

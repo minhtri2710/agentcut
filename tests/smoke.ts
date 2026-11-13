@@ -119,7 +119,9 @@ console.log("frame time and caption file format");
   check("a sheet with a time at the duration is bad_value, naming the time and the duration, and the hint names the last frame", sh?.code === "bad_value" && sh.message.includes(`${dur}`) && /duration is/.test(sh.message) && /last frame starts at/.test(sh.hint), sh);
   check("a sheet at the last frame works", existsSync(cli(["sheet", "--times", `0,${(dur - 1 / 30).toFixed(3)}`], C).image));
   const E = join(tmp, "empty-sheet");
+  const code2 = (args: (string | number)[], cwd: string) => cli(args, { ok: false, cwd }).error?.code;
   cli(["init", E, "--preset", "square"]);
+  check("a frame or scopes of an empty timeline is `empty`, not a time outside it", code2(["frame", 0], E) === "empty" && code2(["scopes", 0], E) === "empty");
   check("a sheet of an empty timeline is a clean refusal whichever way the times are chosen", [["--every", "1"], ["--count", "3"], ["--times", "0"], []].every((a) => cli(["sheet", ...a], { ok: false, cwd: E }).error?.code === "empty"));
   check("captions to an unknown extension is bad_format and writes nothing; an explicit format names the content", code(["captions", "-o", "subs.txt"]) === "bad_format" && !existsSync(join(P, "subs.txt"))
     && cli(["captions", "-o", "subs.txt", "--format", "vtt"], C).format === "vtt" && readFileSync(join(P, "subs.txt"), "utf8").startsWith("WEBVTT"));

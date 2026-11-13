@@ -296,6 +296,7 @@ var deb = 0;
 function requestFrame() { clearTimeout(deb); deb = setTimeout(function () { want = t; pump(); }, 60); }
 function pump() {
   if (busy || want === null || !S) return;
+  if (!(total() > 0)) { want = null; return; } // an empty timeline has no frame: the server would refuse it
   var st = S.timeline.settings, box = $("viewer").getBoundingClientRect();
   var scale = Math.max(0.25, Math.min(1, Math.ceil(4 * Math.min(box.width / st.width, box.height / st.height) * (window.devicePixelRatio || 1)) / 4));
   var at = Math.min(want, Math.max(0, total() - 1 / st.fps)); // the server refuses t at or past the duration: the playhead at the end shows the last frame

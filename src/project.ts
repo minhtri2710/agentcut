@@ -311,7 +311,7 @@ export class Project {
   }
   /** A new file in renders/ no other call has: the name is reserved with an exclusive create (0 bytes), so two calls in the same second
    *  get two names (`-2`, `-3` ... after the stamp). The caller's output replaces the reserved file; a caller that fails calls `releaseOutput`.
-   *  shortcut: a SIGKILL between reserve and rename leaves a 0-byte file in renders/; sweep it if that ever matters */
+   *  shortcut: a process killed by a signal between reserve and rename leaves a 0-byte file in renders/; sweep it if that ever matters */
   defaultOutput(ext = ".mp4", tag = "") {
     // one file-name component: no separators or control characters, no leading dot (so never ".." or a hidden file)
     const name = String(this.load().name ?? "").replace(/[\\/\x00-\x1f]/g, "_").replace(/^\.+/, "") || "video";
