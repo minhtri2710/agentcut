@@ -324,8 +324,10 @@ console.log("cancel");
     ue.server.closeAllConnections?.();
     await new Promise((ok) => ue.server.close(ok));
   }
-  const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } }); // what an empty list does today; whether it may save a revision is decided elsewhere
-  check("/api/ops with an empty list is accepted and applies no op", emptyOps.status === 200 && emptyOps.j.ok === true && emptyOps.j.results.length === 0, emptyOps);
+  const UNDO = join(dirK, ".agentcut", "history", "undo"), undoCount = () => (existsSync(UNDO) ? readdirSync(UNDO).length : 0);
+  const [rev0, undo0] = [api.openProject(dirK).load().revision, undoCount()];
+  const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } });
+  check("/api/ops with an empty list answers 200 with the same revision, applies no op and adds no undo entry", emptyOps.status === 200 && emptyOps.j.ok === true && emptyOps.j.results.length === 0 && emptyOps.j.revision === rev0 && api.openProject(dirK).load().revision === rev0 && undoCount() === undo0, { emptyOps, rev0, undo0 });
   sse.destroy();
   uk.server.closeAllConnections?.();
   await new Promise((ok) => uk.server.close(ok));

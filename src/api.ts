@@ -121,7 +121,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
       if (added.length && !o.allowInvalid)
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
-      if (!o.dryRun) {
+      if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
         try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); saved = true; }
         catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < (until ||= Date.now() + 10_000)) continue; throw e; }
       }

@@ -44,6 +44,10 @@ const sh = await call("contact_sheet", { count: 6 });
 check("contact_sheet returns image", sh.images.length === 1);
 const rd = await call("render", { draft: true, wait_seconds: 60 });
 check("render draft", rd.json.ok && rd.json.status === "done" && rd.json.result.frames > 0, rd.json);
+if (process.platform === "darwin" && spawnSync("ffmpeg", ["-hide_banner", "-encoders"]).stdout.toString().includes("h264_videotoolbox")) {
+  const sw = await call("render", { draft: true, fast: false, output: join(tmp, "draft-sw.mp4"), wait_seconds: 60 });
+  check("MCP render draft uses the hardware encoder; fast:false with draft uses the software one", rd.json.result.encoder === "h264_videotoolbox" && sw.json.result.encoder === "libx264", { hw: rd.json.result?.encoder, sw: sw.json.result?.encoder });
+} else console.log("  - skipped: MCP draft hardware encoder (no h264_videotoolbox on this host)");
 const emptyRange = await call("render", { draft: true, start: 3, end: 1, wait_seconds: 60 });
 check("render with start after end: code empty and a hint that names no command-line flag", emptyRange.json.status === "failed" && emptyRange.json.error.code === "empty" && /start/.test(emptyRange.json.error.hint) && !/--/.test(emptyRange.json.error.hint), emptyRange.json);
 const ex = await call("export_timeline", { format: "otio", output: join(tmp, "edit.otio") });

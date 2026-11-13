@@ -20,7 +20,7 @@ const BLEND: Record<string, GlobalCompositeOperation> = {
 } as any;
 type GlobalCompositeOperation = string;
 
-const even = (v: number) => { const r = Math.round(v); return r + (r % 2); };
+const even = (v: number) => Math.max(2, 2 * Math.round(v / 2));
 
 /** Safe areas in canvas px: title = 5% inset rect; ui = social-app overlay zones on 9:16 (caption/buttons/top bar). */
 export function safeZones(W: number, H: number) {

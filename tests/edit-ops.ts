@@ -1354,6 +1354,45 @@ const tone = (ss: number) => {
 const [before, lead] = [tone(1.4), tone(2.1)];
 check("B's audio is heard in the J-cut lead", lead - before > 12, { before, lead });
 
+console.log("empty batch, source-length wording, sub-frame clips, odd canvas draft size");
+{
+  const E = join(tmp, "empty-proj");
+  api.create(E, { preset: "720p" });
+  await api.apply(E, [{ op: "add_marker", t: 1, label: "a" }]);
+  await api.apply(E, [{ op: "add_marker", t: 2, label: "b" }]);
+  await api.undo(E, 1); // redo holds one entry
+  const loaded = (await api.apply(E, [], { dryRun: true })) as any;
+  const empty: any = await api.apply(E, []);
+  check("an empty batch keeps the revision and returns no results", empty.ok && empty.revision === loaded.revision && empty.results.length === 0, { empty, loaded });
+  check("an empty batch keeps the redo stack and adds no undo entry", (await Promise.resolve().then(() => api.redo(E, 5)).catch((e: any) => e) as any).done === 1 && (await Promise.resolve().then(() => api.undo(E, 5)).catch((e: any) => e) as any).done === 2, {});
+  const stale = await api.apply(E, [], { revision: 0 }).then(() => ({}), (e: any) => e);
+  check("an empty batch with a stale revision is a conflict", stale.code === "conflict", stale);
+
+  const base = () => { const t = newTimeline(640, 360, 30); t.assets = { au: { path: "x.wav", kind: "audio", duration: 2 }, vi: { path: "x.mp4", kind: "video", duration: 2 } } as any; return t; };
+  const w = (t: any) => validate(t).filter((i: any) => i.level === "warning");
+  const longer = base();
+  longer.tracks = [{ id: "a", kind: "audio", clips: [{ id: "ac", type: "audio", asset: "au", start: 0, duration: 5, in: 0.5, speed: 1.5 }] }, { id: "v", kind: "video", clips: [{ id: "vc", type: "video", asset: "vi", start: 0, duration: 5 }] }] as any;
+  const src = w(longer).filter((i: any) => /of source/.test(i.message));
+  const am = src.find((i: any) => /<ac>/.test(i.path))?.message ?? "", vm = src.find((i: any) => /<vc>/.test(i.path))?.message ?? "";
+  check("an audio clip longer than its source says when the sound ends; a video clip keeps the held-frame wording", /sound ends at 1\.00s into the clip and is silent after that/.test(am) && !/last frame/.test(am) && /the last frame is held/.test(vm), { am, vm });
+
+  const tiny = base();
+  tiny.tracks = [{ id: "v", kind: "video", clips: [{ id: "tv", type: "video", asset: "vi", start: 0, duration: 0.01 }, { id: "tt", type: "text", text: "x", start: 1, duration: 0.01 }, { id: "ok", type: "text", text: "x", start: 2, duration: 1 / 30 }] },
+    { id: "a", kind: "audio", clips: [{ id: "ta", type: "audio", asset: "au", start: 0, duration: 0.01 }] }] as any;
+  const sub = w(tiny).filter((i: any) => /shorter than one frame/.test(i.message)).map((i: any) => /<(\w+)>/.exec(i.path)?.[1]);
+  check("a video or text clip under one frame warns by id; an audio clip and a clip of exactly one frame do not", sub.length === 2 && sub.includes("tv") && sub.includes("tt"), sub);
+
+  const dims = (f: string) => { const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", f], { encoding: "utf8" }); return r.stdout.trim(); };
+  for (const [name, W, H, full, draft] of [["odd", 1081, 1921, "1082,1922", "540,960"], ["even", 1080, 1920, "1080,1920", "540,960"]] as const) {
+    const D = join(tmp, `${name}-canvas`);
+    api.create(D, { width: W, height: H, fps: 30 });
+    await api.apply(D, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 0.2 }]);
+    const a: any = await api.render(D, { out: join(tmp, `${name}-full.mp4`), quality: "draft" });
+    const b: any = await api.render(D, { out: join(tmp, `${name}-draft.mp4`), draft: true });
+    check(`${name} ${W}x${H} canvas renders ${full} at scale 1 and ${draft} as a draft`, dims(join(tmp, `${name}-full.mp4`)) === full && dims(join(tmp, `${name}-draft.mp4`)) === draft, { a: dims(join(tmp, `${name}-full.mp4`)), b: dims(join(tmp, `${name}-draft.mp4`)) });
+  }
+}
+
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);
