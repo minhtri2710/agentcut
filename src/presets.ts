@@ -45,20 +45,24 @@ export function expandPreset(kind: "text" | "captions", name: string, text: stri
 type Media = string | Dict;
 const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
 
-export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dict) => Dict[] }> = {
-  slideshow: {
+type Template = { doc: string; args: Dict; build: (a: Dict) => Dict[] };
+/** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). */
+const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }) => Dict[] }): Template => t;
+
+export const TEMPLATES: Record<string, Template> = {
+  slideshow: tpl({
     doc: "photos/clips with Ken Burns + crossfades, optional title and music (cuts snap to beats)",
-    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)" },
+    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)", every: "beats per cut (4)" },
     build: (a) => {
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
       if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold" });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 4 });
       return ops;
     },
-  },
-  promo: {
+  }),
+  promo: tpl({
     doc: "product promo: hook title, one proof point per clip, CTA end card, beat-synced",
-    args: { media: "clips/photos (required)", hook: "opening line", points: "list of short lines", cta: "end card text", music: "path", brand_color: "#FFD60A" },
+    args: { media: "clips/photos (required)", hook: "opening line", points: "list of short lines", cta: "end card text", music: "path", brand_color: "#FFD60A", seconds: "per clip (2)", every: "beats per cut (2)" },
     build: (a) => {
       const n = a.media.length, seg = a.seconds ?? 2;
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
@@ -70,8 +74,8 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 2 });
       return ops;
     },
-  },
-  beat_montage: {
+  }),
+  beat_montage: tpl({
     doc: "fast montage: a cut on every N beats, flash/glitch transitions, shake on drops",
     args: { media: "clips/photos (required)", music: "path (required)", every: "beats per cut (1)", title: "optional" },
     build: (a) => {
@@ -84,8 +88,8 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
       if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.1, match_duration: true, preset: "gradient" });
       return ops;
     },
-  },
-  quote: {
+  }),
+  quote: tpl({
     doc: "single quote card over a background clip/photo or gradient",
     args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
     build: (a) => {
@@ -98,8 +102,8 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, duration: d, fade_in: 0.5, fade_out: 1.2 });
       return ops;
     },
-  },
-  listicle: {
+  }),
+  listicle: tpl({
     doc: "numbered list: title card, then one clip per item with a numbered label",
     args: { title: "headline (required)", items: "[{text, media}] (required)", seconds: "per item (3)", music: "path" },
     build: (a) => {
@@ -113,5 +117,5 @@ export const TEMPLATES: Record<string, { doc: string; args: Dict; build: (a: Dic
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 1 });
       return ops;
     },
-  },
+  }),
 };

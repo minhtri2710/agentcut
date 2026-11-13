@@ -6,7 +6,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
-  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, EFFECTS, findClip, findTrack, linkedAudio, newId,
+  allClips, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
   normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
@@ -22,7 +22,14 @@ import { registerVisionOps } from "./ops-vision.ts";
 const PREFIX: Record<string, string> = { video: "vid", image: "img", text: "txt", captions: "cap", shape: "shp", color: "col", audio: "aud", gap: "gap", lottie: "lot" };
 type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict;
 export const OPS: Record<string, { fn: OpFn; doc: string; args: Dict }> = {};
-const op = (name: string, doc: string, args: Dict, fn: OpFn) => { OPS[name] = { fn, doc, args }; };
+/** The argument names an op declares: a key "a|b" declares both; "..." makes the op open (any key, which the op checks itself). */
+type ArgNames<K extends string> = K extends `${infer H}|${infer T}` ? H | ArgNames<T> : K;
+type OpArgs<A> = "..." extends keyof A ? Dict : { [K in ArgNames<keyof A & string>]?: any };
+/** `a` is typed from the declared args, so reading an undeclared key is a compile error. */
+const op = <A extends Dict>(name: string, doc: string, args: A, fn: (p: Project, tl: Timeline, a: OpArgs<A>) => Dict) => { OPS[name] = { fn: fn as OpFn, doc, args }; };
+
+/** The names op `name` declares ("a|b" is both). "..." is not a name: it marks an op that checks the rest itself. */
+const argNames = (name: string) => Object.keys(OPS[name].args).flatMap((k) => k.split("|")).filter((k) => k !== "...");
 
 const absPath = (p: string) => presolve(p.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
 
@@ -84,7 +91,7 @@ op("remove_asset", "Remove an asset (force=true also removes clips using it).", 
 
 // ---------------------------------------------------------------- settings / tracks
 op("set_settings", "Change canvas/output settings. effects: whole-frame effects (letterbox, grain, vignette...).",
-  { preset: Object.keys(PRESETS).join("|"), width: "px", height: "px", fps: "n", background: "colour", duration: "s|null", loudness: "LUFS|null", effects: "list", name: "project name" },
+  { preset: Object.keys(PRESETS).join("|"), width: "px", height: "px", fps: "n", background: "colour", duration: "s|null", loudness: "LUFS|null", sample_rate: "Hz (48000)", effects: "list", name: "project name" },
   (p, tl, a) => {
     const st = tl.settings;
     if (a.preset) {
@@ -97,9 +104,13 @@ op("set_settings", "Change canvas/output settings. effects: whole-frame effects 
     return { settings: st };
   });
 
+/** What a track op may carry: its declared names and every track field except the clips (those are added with add_clip). */
+const trackKeys = (name: string) => [...new Set([...argNames(name), ...Object.keys(TRACK_FIELDS).filter((k) => k !== "clips")])];
+
 op("add_track", "Add a track. Later tracks draw on top.",
-  { id: "track id", kind: "video|audio", magnetic: "bool", role: "voice|music|sfx|titles|dialogue", duck: "dB", index: "position", above: "track id", below: "track id" },
+  { id: "track id", kind: "video|audio", magnetic: "bool", role: "voice|music|sfx|titles|dialogue", duck: "dB", index: "position", above: "track id", below: "track id", "...": "any other track field (volume, muted, hidden, name, audio processing)" },
   (p, tl, a) => {
+    refuseUnknown(Object.keys(a), trackKeys("add_track"), "add_track", { stored: true });
     const id = a.id || newId(tl, "track");
     if (tl.tracks.some((t) => t.id === id)) throw new EditError(`track '${id}' already exists`, "exists");
     const tr: Track = { id, kind: a.kind ?? "video", clips: [] };
@@ -114,10 +125,21 @@ op("add_track", "Add a track. Later tracks draw on top.",
     return { track: id, index: idx };
   });
 
-op("update_track", "Update track properties (set: {...}). magnetic=true is refused while the track holds an attached clip (attached_magnetic).", { id: "track id", set: "fields" }, (p, tl, a) => {
+/** The fields an update op writes: `set`, or the other arguments (shorthand). Both at once is refused, so one never silently wins. */
+function patchOf(a: Dict, name: string): Dict {
+  if (a.set === undefined) return Object.fromEntries(Object.entries(a).filter(([k]) => k !== "id"));
+  const extra = Object.keys(a).filter((k) => k !== "id" && k !== "set");
+  if (extra.length) throw new EditError(`${name}: '${extra[0]}' is passed next to set`, "bad_arg", "pass the fields in set, or directly, not both", `.${extra[0]}`);
+  if (!a.set || typeof a.set !== "object" || Array.isArray(a.set)) throw new EditError(`${name}: set must be an object of fields`, "bad_arg", undefined, ".set");
+  return { ...a.set };
+}
+/** The patch keys that must be known fields. A null for a field the target already holds only deletes it, which stays possible for a field that has become invalid. */
+const keysToSet = (patch: Dict, target: Dict) => Object.keys(patch).filter((k) => !(patch[k] === null && k in target));
+
+op("update_track", "Update track properties (set: {...}, or pass the fields directly). magnetic=true is refused while the track holds an attached clip (attached_magnetic).", { id: "track id", set: "fields", "...": "track fields (instead of set)" }, (p, tl, a) => {
   const tr = findTrack(tl, a.id);
-  const patch = { ...(a.set ?? Object.fromEntries(Object.entries(a).filter(([k]) => k !== "op" && k !== "id"))) };
-  delete patch.clips;
+  const patch = patchOf(a, "update_track");
+  refuseUnknown(keysToSet(patch, tr), trackKeys("update_track"), "update_track", { kind: "field", stored: true });
   deepMerge(tr, patch);
   if (patch.magnetic) for (const x of tr.clips) refuseAttachedMagnetic(x, tr);
   return { track: tr.id };
@@ -137,6 +159,8 @@ op("move_track", "Reorder a track (draw order).", { id: "track id", index: "new 
 
 // ---------------------------------------------------------------- clips
 const ADD_META = new Set(["op", "track", "at", "index", "after", "before", "end", "type", "id", "src"]);
+/** What add_clip takes: its declared names and the clip fields (of one type, or of any before the type is known). A clip is placed with `at`, so the clip field `start` is not an argument here. */
+const addKeys = (type?: string) => [...new Set([...argNames("add_clip"), ...(type ? Object.keys(fieldsFor(type)) : CLIP_TYPES.flatMap((t) => Object.keys(fieldsFor(t))))])].filter((k) => k !== "start");
 
 function inferType(tl: Timeline, a: Dict): string {
   if (a.type) return a.type;
@@ -145,7 +169,7 @@ function inferType(tl: Timeline, a: Dict): string {
   if (a.shape) return "shape";
   if (a.asset) return ({ image: "image", audio: "audio", lottie: "lottie" } as Dict)[tl.assets[a.asset].kind] ?? "video";
   if (a.color || a.gradient) return "color";
-  throw new EditError("cannot infer clip type", "missing_type", `pass type: ${CLIP_TYPES.join("|")}`);
+  throw new EditError("add_clip needs src, asset, text, words, srt, shape, color or gradient to infer the clip type", "missing_type", `or pass type: ${CLIP_TYPES.join("|")}`);
 }
 
 function defaultDuration(tl: Timeline, c: Clip): number {
@@ -164,6 +188,7 @@ function defaultDuration(tl: Timeline, c: Clip): number {
 export const trackEnd = (tr: Track) => Math.max(0, ...tr.clips.map(clipEnd));
 
 function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
+  const given = Object.keys(a);
   a = { ...a };
   if (a.src) a.asset = importAsset(p, tl, a.src);
   if (a.asset && !own(tl.assets, a.asset)) { const s = suggest(a.asset, Object.keys(tl.assets)); throw new EditError(`asset '${a.asset}' not found`, "not_found", `${s ? `did you mean '${s}'? ` : ""}import it first or pass src`); }
@@ -171,6 +196,7 @@ function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
   for (const f of a.filters ?? []) if (f && typeof f === "object" && f.type === "lut" && f.path) f.path = absPath(f.path);
   const type = inferType(tl, a);
   if (!CLIP_TYPES.includes(type)) { const s = suggest(type, CLIP_TYPES); throw new EditError(`unknown clip type '${type}'`, "bad_type", s ? `did you mean '${s}'?` : CLIP_TYPES.join(", ")); }
+  refuseUnknown(given, addKeys(type), "add_clip", { stored: true, list: `see timeline_schema for the fields of a ${type} clip` });
   if (a.preset) {
     if (type !== "text" && type !== "captions") throw new EditError("preset applies to text and captions clips", "bad_preset");
     const sample = type === "text" ? String(a.text ?? "") : captionWords(a).map((w) => w.text).join(" ");
@@ -181,7 +207,7 @@ function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
   for (const [k, v] of Object.entries(a)) if (!ADD_META.has(k) && v !== undefined && v !== null) c[k] = structuredClone(v);
   if (!c.id) c.id = newId(tl, PREFIX[type]);
   else if ([...allClips(tl.tracks)].some((x) => x.id === c.id)) throw new EditError(`clip id '${c.id}' already exists`, "exists");
-  if (a.end !== undefined && a.duration === undefined) c.duration = parseAt(tl, a.end) - parseAt(tl, a.at ?? a.start ?? 0);
+  if (a.end !== undefined && a.duration === undefined) c.duration = parseAt(tl, a.end) - parseAt(tl, a.at ?? 0);
   else if (a.duration === undefined) c.duration = defaultDuration(tl, c);
   c.duration = round6(parseTime(c.duration));
   return c;
@@ -202,7 +228,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
     clips.splice(idx, 0, c);
     delete c.start;
   } else {
-    if (a.at !== undefined || a.start !== undefined) c.start = round6(parseAt(tl, a.at ?? a.start));
+    if (a.at !== undefined) c.start = round6(parseAt(tl, a.at));
     else if (a.after) c.start = round6(clipEnd(findClip(tl, a.after)[2]));
     else c.start = round6(trackEnd(tr));
     clips.push(c);
@@ -290,6 +316,8 @@ function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
 }
 
 function addClip(p: Project, tl: Timeline, a: Dict): Dict {
+  if ("start" in a) throw new EditError("add_clip: unknown argument 'start'", "bad_arg", "add_clip places a clip with 'at'", ".start");
+  refuseUnknown(Object.keys(a), addKeys(), "add_clip", { stored: true, list: "arguments: track, src, asset, type, at, index, after, before, duration, end, preset, or a clip field (see timeline_schema)" });
   if (a.attach_to) { a = { ...a, attach_to: resolveRef(tl, a.attach_to) }; findClip(tl, a.attach_to); }
   if (typeof a.match_duration === "string") a = { ...a, match_duration: followTarget(tl, null, a.match_duration) };
   if (!a.track) {
@@ -310,7 +338,7 @@ function addClip(p: Project, tl: Timeline, a: Dict): Dict {
 
 op("add_clip", "Add a clip. Type is inferred (src/asset -> video|image|audio|lottie, text -> text, words/srt -> captions). " +
   "Magnetic tracks append back-to-back (index/after/before) and refuse attach_to (attached_magnetic); other tracks use 'at' (seconds, or 'end'/'end-2'). " +
-  "preset expands a text/caption style (see capabilities). Any clip field may be passed directly.",
+  "preset expands a text/caption style (see capabilities). Any clip field except start may be passed directly (start is refused: use at).",
   { track: "track id (created if missing)", src: "file path (auto-import)", asset: "asset id", type: "clip type", at: "start", "index|after|before": "magnetic position", duration: "s", end: "alt. to duration", preset: "text/caption preset", "...": "any clip field" },
   addClip);
 
@@ -331,9 +359,10 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
   });
 
 op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. Shorthand: pass fields directly. start on an attached clip sets its offset (start with offset is refused); a clip on a magnetic track cannot be attached (attached_magnetic).",
-  { id: "clip id", set: "fields (dicts merge; keyframes replace)" }, (p, tl, a) => {
+  { id: "clip id", set: "fields (dicts merge; keyframes replace)", "...": "clip fields (instead of set)" }, (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
-    const patch: Dict = { ...(a.set ?? Object.fromEntries(Object.entries(a).filter(([k]) => k !== "op" && k !== "id"))) };
+    const patch = patchOf(a, "update_clip");
+    refuseUnknown(keysToSet(patch, c), Object.keys(fieldsFor(c.type)), "update_clip", { kind: "field", stored: true, list: `see timeline_schema for the fields of a ${c.type} clip` });
     if (patch.src) { patch.asset = importAsset(p, tl, patch.src); delete patch.src; }
     if (patch.attach_to) patch.attach_to = resolveRef(tl, patch.attach_to);
     if (typeof patch.match_duration === "string") patch.match_duration = followTarget(tl, c, patch.match_duration);
@@ -375,7 +404,7 @@ op("remove_clip", "Remove a clip (and clips attached to it, and those attached t
   return { removed: c.id, removed_attached: attached, unlinked_durations: unlinked };
 });
 
-op("move_clip", "Move a clip in time and/or to another track. An attached clip moves by its offset and stays attached; a magnetic track refuses it (attached_magnetic).", { id: "clip id", at: "start (non-magnetic)", shift: "+/- seconds", track: "destination", index: "magnetic position" }, (p, tl, a) => {
+op("move_clip", "Move a clip in time and/or to another track. An attached clip moves by its offset and stays attached; a magnetic track refuses it (attached_magnetic).", { id: "clip id", at: "start (non-magnetic)", shift: "+/- seconds", track: "destination", "index|after|before": "magnetic position" }, (p, tl, a) => {
   const [tr, ci, c] = findClip(tl, a.id);
   const dest = a.track ? findTrack(tl, a.track) : tr;
   refuseAttachedMagnetic(c, dest);
@@ -554,7 +583,7 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
 
 op("add_transition", "Set the transition into a clip from the previous clip on its track. An attached clip moves by its offset and stays attached.",
   { to: "incoming clip id", type: TRANSITIONS.join("|"), duration: "s (0.5)" }, (p, tl, a) => {
-    const [tr, ci, c] = findClip(tl, a.to ?? a.id);
+    const [tr, ci, c] = findClip(tl, a.to);
     if (ci === 0) throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead");
     const t = a.type ?? "crossfade";
     if (t === "none") delete c.transition;
@@ -568,9 +597,10 @@ op("add_transition", "Set the transition into a clip from the previous clip on i
   });
 
 op("add_effect", "Add a CapCut-style effect to a clip (or to the whole video with id omitted).",
-  { id: "clip id (omit = whole frame)", type: Object.keys(EFFECTS).join("|"), start: "s (relative to clip)", duration: "s", "...": "effect params (intensity, amount, ratio...)" }, (p, tl, a) => {
+  { id: "clip id (omit = whole frame)", type: Object.keys(EFFECTS).join("|"), start: "s (relative to clip)", duration: "s", "...": "the effect's own params (see capabilities.effects)" }, (p, tl, a) => {
     const { op: _o, id, ...fx } = a;
     if (!own(EFFECTS, fx.type)) { const s = suggest(fx.type, Object.keys(EFFECTS)); throw new EditError(`unknown effect '${fx.type}'`, "bad_effect", s ? `did you mean '${s}'?` : Object.keys(EFFECTS).join(", ")); }
+    refuseUnknown(Object.keys(fx), effectKeys(fx.type), `add_effect ${fx.type}`, { kind: "parameter", stored: true });
     if (!id) { (tl.settings.effects ??= []).push(fx); return { scope: "global", effects: tl.settings.effects.length }; }
     const [, , c] = findClip(tl, id);
     (c.effects ??= []).push(fx);
@@ -590,6 +620,7 @@ op("clear_markers", "Remove markers (all, or those whose label contains match)."
 
 // ---------------------------------------------------------------- captions / voice / beats / templates
 function addCaptions(p: Project, tl: Timeline, a: Dict) {
+  refuseUnknown(Object.keys(a), [...new Set([...argNames("add_captions"), ...Object.keys(fieldsFor("captions"))])].filter((k) => k !== "start"), "add_captions", { stored: true, list: "arguments: words, srt, transcribe, preset, track, at, style, or a text style field (see timeline_schema)" });
   a = { ...a };
   if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
   if (a.transcribe) {
@@ -737,6 +768,7 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
   { name: Object.keys(TEMPLATES).join("|"), "...": "template args (see capabilities.templates)" }, (p, tl, a) => {
     const t = own(TEMPLATES, a.name);
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
+    refuseUnknown(Object.keys(a), ["name", ...Object.keys(t.args)], `apply_template ${a.name}`);
     if (["slideshow", "promo", "beat_montage"].includes(a.name) && !a.media?.length) throw new EditError(`template '${a.name}' needs media: [paths]`, "missing_arg");
     const ops = t.build(a);
     const results = ops.map((o, i) => {
@@ -783,10 +815,11 @@ export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict
     try {
       const { op: _n, ...args } = o;
       refuseProtoKeys(args);
+      if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(o.op), o.op);
       results.push({ op: o.op, ...def.fn(p, work, args) });
     } catch (e: any) {
-      if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${o.op}) ${e.path}` : `ops[${i}](${o.op})`; throw e; }
-      if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${o.op}): missing or invalid argument (${e.message})`, "missing_arg", `args: ${JSON.stringify(def.args)}`, `ops[${i}]`);
+      if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${o.op})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${o.op})`; throw e; }
+      if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${o.op}): missing or invalid argument`, "missing_arg", `${o.op} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
       throw e;
     }
   });

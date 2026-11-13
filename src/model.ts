@@ -38,24 +38,29 @@ export const POSITIONS = ["center", "top", "bottom", "left", "right", "top_left"
 export const CAPTION_STYLES = ["karaoke", "word", "reveal", "line"];
 export const SHAPES = ["rect", "circle", "ellipse", "line", "triangle", "star", "heart", "arrow"];
 export const MASKS = ["rect", "circle", "ellipse", "linear", "mirror", "heart", "star"];
-export const EFFECTS: Record<string, string> = {
-  glitch: "digital glitch slices + colour split; intensity 0..1",
-  rgb_split: "chromatic aberration; amount px (default 12)",
-  flash: "white flash; at (s, default 0), duration (0.25)",
-  grain: "film grain; intensity 0..1 (0.25)",
-  zoom_blur: "radial zoom blur; intensity 0..1",
-  vignette: "dark edges; intensity 0..1 (0.5)",
-  vhs: "scanlines + colour bleed + wobble; intensity 0..1",
-  letterbox: "cinematic bars; ratio (2.39)",
-  strobe: "on/off blink; freq Hz (8)",
-  blur: "gaussian blur; radius px",
-  bw: "black & white",
-  invert: "invert colours",
-  hue: "hue rotate; degrees",
-  brightness: "multiplier (1.2)",
-  contrast: "multiplier (1.2)",
-  saturate: "multiplier (1.4)",
+/** One source of truth per effect: its doc and the parameters it reads besides type, start and duration, so add_effect and validate refuse a misspelled one. */
+export const EFFECT_SPECS: Record<string, { doc: string; params: string[] }> = {
+  glitch: { doc: "digital glitch slices + colour split; intensity 0..1", params: ["intensity"] },
+  rgb_split: { doc: "chromatic aberration; amount px (default 12)", params: ["amount"] },
+  flash: { doc: "white flash; at (s, default 0), duration (0.25)", params: ["at"] },
+  grain: { doc: "film grain; intensity 0..1 (0.25)", params: ["intensity"] },
+  zoom_blur: { doc: "radial zoom blur; intensity 0..1", params: ["intensity"] },
+  vignette: { doc: "dark edges; intensity 0..1 (0.5)", params: ["intensity"] },
+  vhs: { doc: "scanlines + colour bleed + wobble; intensity 0..1", params: ["intensity"] },
+  letterbox: { doc: "cinematic bars; ratio (2.39)", params: ["ratio"] },
+  strobe: { doc: "on/off blink; freq Hz (8)", params: ["freq"] },
+  blur: { doc: "gaussian blur; radius px", params: ["radius"] },
+  bw: { doc: "black & white", params: [] },
+  invert: { doc: "invert colours", params: [] },
+  hue: { doc: "hue rotate; degrees", params: ["degrees"] },
+  brightness: { doc: "multiplier (1.2)", params: ["amount"] },
+  contrast: { doc: "multiplier (1.2)", params: ["amount"] },
+  saturate: { doc: "multiplier (1.4)", params: ["amount"] },
 };
+export const EFFECTS: Record<string, string> = Object.fromEntries(Object.entries(EFFECT_SPECS).map(([k, s]) => [k, s.doc]));
+/** The keys an effect entry may hold (add_effect and the `effects` lists of a clip and of the settings). */
+export const effectKeys = (type: string) => ["type", "start", "duration", ...EFFECT_SPECS[type].params];
+const effectTable = (type: string): F => Object.fromEntries(effectKeys(type).map((k) => [k, [k === "type" ? T("string") : T("number", "string"), k === "type" ? "effect name" : EFFECT_SPECS[type].doc]]));
 type FilterField = { kind: "number"; lo: number; hi: number; def: number } | { kind: "color"; def: string } | { kind: "path" };
 const fnum = (lo: number, hi: number, def: number): FilterField => ({ kind: "number", lo, hi, def });
 /** One source of truth for the clip filters: each parameter's kind, range and default. Validation, the filter graph and the
@@ -121,6 +126,23 @@ export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", 
 type F = Record<string, [string[], string]>;
 const T = (...t: string[]) => t; // allowed json types: number,string,boolean,object,array,null
 
+/** Numeric clip fields with a documented range, one source: [predicate, description]. The field docs, the validate check of the value and the check of every keyframe value of the same prop read it (errors, never clamps).
+ *  scale_x and scale_y are not here: a negative one mirrors the picture, so any number is legal. */
+const CLIP_RANGES: Record<string, readonly [(n: number) => boolean, string]> = {
+  opacity: [(n) => n >= 0 && n <= 1, "0..1"],
+  volume: [(n) => n >= 0 && n <= 4, "0..4"],
+  fade_in: [(n) => n >= 0, ">= 0"], fade_out: [(n) => n >= 0, ">= 0"],
+  scale: [(n) => n > 0, "> 0"],
+  radius: [(n) => n >= 0, ">= 0"],
+  weight: [(n) => n >= 100 && n <= 900, "100..900"],
+};
+const ranged = (k: string, doc: string, ...types: string[]): [string[], string] => [types.length ? types : T("number"), `${doc} (${CLIP_RANGES[k][1]})`];
+/** Errors for the numeric fields of `obj` (a clip, or a track with only `keys`) that are outside their range. */
+function rangeIssues(obj: Dict, path: string, issues: Issue[], keys = Object.keys(CLIP_RANGES)) {
+  for (const k of keys) if (typeof obj[k] === "number" && !(Number.isFinite(obj[k]) && CLIP_RANGES[k][0](obj[k])))
+    issues.push({ level: "error", path: `${path}.${k}`, message: `${k} must be ${CLIP_RANGES[k][1]}, got ${obj[k]}` });
+}
+
 export const COMMON_FIELDS: F = {
   id: [T("string"), "unique id (auto-assigned)"],
   type: [T("string"), CLIP_TYPES.join("|")],
@@ -142,17 +164,17 @@ export const VISUAL_FIELDS: F = {
   y: [T("number", "string"), "centre y in px or '50%'"],
   position: [T("string"), POSITIONS.join("|") + " (anchor preset, with margin)"],
   margin: [T("number", "string"), "distance from the edge for position presets (px or %)"],
-  scale: [T("number"), "uniform scale (1 = fitted size)"],
-  scale_x: [T("number"), "extra horizontal scale"], scale_y: [T("number"), "extra vertical scale"],
+  scale: ranged("scale", "uniform scale, 1 = fitted size"),
+  scale_x: [T("number"), "extra horizontal scale (negative mirrors)"], scale_y: [T("number"), "extra vertical scale (negative mirrors)"],
   rotation: [T("number"), "degrees clockwise"],
-  opacity: [T("number"), "0..1"],
+  opacity: ranged("opacity", "opacity"),
   blend: [T("string"), BLENDS.join("|")],
   keyframes: [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.join(",")],
   enter: [T("string", "object"), "entrance animation: name or {type, duration, ease}: " + ENTER_EXIT.join(",")],
   exit: [T("string", "object"), "exit animation: name or {type, duration, ease}"],
   transition: [T("string", "object"), "transition FROM the previous clip on the same track: " + TRANSITIONS.join(",")],
   motion: [T("string", "object"), "continuous motion: name or {type, amount}: " + MOTIONS.join(",")],
-  radius: [T("number"), "rounded corner radius px"],
+  radius: ranged("radius", "rounded corner radius px"),
   shadow: [T("object", "boolean"), "{color, x, y, blur} drop shadow"],
   border: [T("object"), "{color, width} outline around the layer box"],
   mask: [T("object", "string"), "{shape: " + MASKS.join("|") + ", x, y, width, height (0..1 of layer), feather px, invert, angle}"],
@@ -169,8 +191,8 @@ export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
   speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1)`],
-  volume: [T("number"), "linear gain 0..4"], muted: [T("boolean"), "drop audio"],
-  fade_in: [T("number"), "audio fade-in s"], fade_out: [T("number"), "audio fade-out s"],
+  volume: ranged("volume", "linear gain"), muted: [T("boolean"), "drop audio"],
+  fade_in: ranged("fade_in", "audio fade-in s"), fade_out: ranged("fade_out", "audio fade-out s"),
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
   focus: [T("array"), "[fx, fy] the source point (0..1 of the picture after crop) that cover keeps at the centre of the view, clamped at the picture edges; [0.5, 0.5] = centre (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
@@ -203,7 +225,7 @@ export const TEXT_FIELDS: F = {
   uppercase: [T("boolean"), "force upper case"],
   letter_spacing: [T("number"), "extra px between characters"],
   italic: [T("boolean"), "italic style"],
-  weight: [T("number", "string"), "100..900 or bold/black"],
+  weight: ranged("weight", "a number or bold/black", "number", "string"),
 };
 export const CAPTION_FIELDS: F = {
   words: [T("array"), "[{text, start, end}] seconds relative to clip start"],
@@ -229,7 +251,7 @@ export const COMPOUND_FIELDS: F = {
   tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
   in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
   speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)`],
-  volume: [T("number"), "gain applied to all nested audio"], muted: [T("boolean"), "drop nested audio"],
+  volume: ranged("volume", "gain applied to all nested audio"), muted: [T("boolean"), "drop nested audio"],
 };
 
 /** The clip types that play at a ramped speed (render.ts reads keyframes.speed only for a video clip; an audio clip with a ramp would drop out of the mix). */
@@ -263,7 +285,7 @@ export const TRACK_FIELDS: F = {
   magnetic: [T("boolean"), "clips play back-to-back in list order; starts are computed (Final Cut primary storyline)"],
   role: [T("string"), "dialogue|voice|music|sfx|titles|other (ducking/mixing)"],
   duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -20)"],
-  volume: [T("number"), "track gain"], muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
+  volume: ranged("volume", "track gain"), muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
   clips: [T("array"), "clips (later ones draw on top within the track)"],
   ...Object.fromEntries(Object.entries(AUDIO_FX_FIELDS).map(([k, [t, d]]) => [k, [t, `${d} (${(PER_CLIP_KEYS as readonly string[]).includes(k) ? "applied to each clip without its own" : "applied to the track mix"})`]])),
 };
@@ -290,10 +312,31 @@ export function suggest(word: unknown, options: Iterable<string>): string | unde
   const w = String(word ?? "").toLowerCase();
   let best: string | undefined, bestScore = 0;
   for (const o of options) {
-    const s = similarity(w, o.toLowerCase());
+    const lo = o.toLowerCase(), s = swapped(w, lo) ? 0.9 : Math.max(similarity(w, lo), abbreviation(w, lo) ? 0.6 : 0);
     if (s > bestScore) { bestScore = s; best = o; }
   }
   return bestScore >= 0.55 ? best : undefined;
+}
+/** The letters of `a` (3 or more) appear in `b` in order (idx/index): the bigram score misses these too. */
+function abbreviation(a: string, b: string) {
+  let i = 0;
+  for (const ch of b) if (a[i] === ch) i++;
+  return a.length >= 3 && i === a.length && a.length < b.length;
+}
+/** Two words that differ by one swap of neighbouring letters (scr/src): the bigram score misses them. */
+function swapped(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  return i < a.length - 1 && a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2);
+}
+
+/** bad_arg for the first of `keys` that is not in `names`, with a did-you-mean hint. The message reads "unknown <where> <kind> '<key>'", so feedback.ts extractMisses logs the miss under the op (`where`) and not under a bare "argument" (among the names not given yet). A "_" key is a comment only where it is saved into the timeline (`stored`, as in checkFields); op arguments are not saved, so there it is refused like any other key. `list` replaces the allowed names in the hint when there are too many to print. */
+export function refuseUnknown(keys: Iterable<string>, names: readonly string[], where: string, o: { kind?: string; stored?: boolean; list?: string } = {}) {
+  const given = new Set(keys), key = [...given].find((k) => !names.includes(k) && !(o.stored && k.startsWith("_")));
+  if (key === undefined) return;
+  const s = suggest(key, names.filter((n) => !given.has(n)));
+  throw new EditError(`unknown ${where} ${o.kind ?? "argument"} '${key}'`, "bad_arg", s ? `did you mean '${s}'?` : o.list ?? `allowed: ${names.join(", ")}`, `.${key}`);
 }
 export function similarity(a: string, b: string) { // Ratcliff/Obershelp-like via LCS of bigrams + prefix bonus
   if (a === b) return 1;
@@ -621,6 +664,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   else (st.effects || []).forEach((f: any, fi: number) => {
     const ft = typeof f === "string" ? f : f?.type;
     if (!own(EFFECTS, ft)) issues.push({ level: "error", path: `$.settings.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
+    else if (f && typeof f === "object") checkFields(f, effectTable(ft), `$.settings.effects[${fi}]`, issues, `${ft} effect`);
   });
   for (const k of ["width", "height"]) {
     const v = st[k];
@@ -706,6 +750,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
     const tp = `${root}.tracks[${ti}]`;
     if (!tr || typeof tr !== "object" || !Array.isArray(tr.clips ?? [])) { issues.push({ level: "error", path: tp, message: "track must be an object with a clips list" }); return; }
     checkFields(tr, TRACK_FIELDS, tp, issues, "track");
+    rangeIssues(tr, tp, issues, ["volume"]);
     for (const x of audioFxIssues(tr, tp)) issues.push({ level: "error", ...x });
     if (!tr.id) issues.push({ level: "error", path: `${tp}.id`, message: "track needs an id" });
     else if (dup(tr.id)) issues.push({ level: "error", path: `${tp}.id`, message: `duplicate id '${tr.id}'` });
@@ -722,6 +767,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      rangeIssues(c, p, issues);
       if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
@@ -795,6 +841,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       (Array.isArray(c.effects) ? c.effects : []).forEach((f: any, fi: number) => { // a non-list is already a type error
         const ft = typeof f === "string" ? f : f?.type;
         if (!own(EFFECTS, ft)) { const s = suggest(ft, Object.keys(EFFECTS)); issues.push({ level: "error", path: `${p}.effects[${fi}]`, message: `unknown effect '${ft}'`, hint: s ? `did you mean '${s}'?` : `effects: ${Object.keys(EFFECTS).join(", ")}` }); }
+        else if (f && typeof f === "object") checkFields(f, effectTable(ft), `${p}.effects[${fi}]`, issues, `${ft} effect`);
       });
       for (const [prop, kfs] of Object.entries(c.keyframes || {})) {
         const n0 = issues.length;
@@ -808,7 +855,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           else if (prop === "speed") {
             const v = Number(kk[1]);
             if (!(v >= SPEED_MIN && v <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.keyframes.speed`, message: `speed keyframe ${JSON.stringify(kk[1])} must be ${SPEED_MIN}..${SPEED_MAX}` });
-          }
+          } else if (own(CLIP_RANGES, prop) && !(Number.isFinite(Number(kk[1])) && CLIP_RANGES[prop][0](Number(kk[1]))))
+            issues.push({ level: "error", path: `${p}.keyframes.${prop}`, message: `${prop} keyframe ${JSON.stringify(kk[1])} must be ${CLIP_RANGES[prop][1]}` });
         }
         const parsed = issues.length === n0; // every keyframe is well formed, so parseKfs reads them
         if (prop === "speed") {

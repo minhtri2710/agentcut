@@ -92,7 +92,13 @@ async function readOps(file: string | undefined, inline: string | undefined) {
   return Array.isArray(data) ? data : data.ops ?? [data];
 }
 
-const num = (v: any) => (v === undefined ? undefined : Number(v));
+/** A numeric flag or argument: a value that is not a number is a usage error (never NaN, which JSON writes as null). */
+function num(v: any, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n)) throw new EditError(`${name} must be a number, got ${JSON.stringify(v)}`, "usage", "pass a plain number, e.g. 30 or 0.5");
+  return n;
+}
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv[0] === "__segment") { const { runSegmentMain } = await import("./segment-worker.ts"); await runSegmentMain(argv[1]); return; }
@@ -111,41 +117,41 @@ export async function main(argv = process.argv.slice(2)) {
   let res: any;
   try {
     switch (cmd) {
-      case "init": res = api.create(pos[0] ?? ".", { preset: f.preset, width: num(f.width), height: num(f.height), fps: num(f.fps), name: f.name, empty: f.empty }); break;
+      case "init": res = api.create(pos[0] ?? ".", { preset: f.preset, width: num(f.width, "--width"), height: num(f.height, "--height"), fps: num(f.fps, "--fps"), name: f.name, empty: f.empty }); break;
       case "info": case "show": case "status":
         res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision) }); break;
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision) }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision) }); break;
-      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision) }); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision) }); break;
+      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision") }); break;
+      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision") }); break;
+      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision") }); break;
+      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision") }); break;
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision") }); break;
       case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
-      case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale), guides: f.guides }); break;
-      case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale) }); break;
-      case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every), count: num(f.count), cols: num(f.cols), out: f.output, tileWidth: num(f["tile-width"]), guides: f.guides }); break;
+      case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), guides: f.guides }); break;
+      case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale") }); break;
+      case "sheet": res = await api.sheet(P, { times: f.times, every: num(f.every, "--every"), count: num(f.count, "--count"), cols: num(f.cols, "--cols"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width"), guides: f.guides }); break;
       case "captions": case "export-captions": res = api.exportCaptions(P, { out: f.output, format: f.format, ids: f.ids ? String(f.ids).split(",") : undefined }); break;
-      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"]), maxShot: num(f["max-shot"]), cps: num(f.cps), black: !f["no-black"] }); break;
-      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width), minSilence: num(f["min-silence"]), out: f.output }); break;
-      case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames), pad: num(f.pad), out: f.output, tileWidth: num(f["tile-width"]) }); break;
+      case "review": res = await api.review(P, { beats: f.beats, minShot: num(f["min-shot"], "--min-shot"), maxShot: num(f["max-shot"], "--max-shot"), cps: num(f.cps, "--cps"), black: !f["no-black"] }); break;
+      case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width, "--width"), minSilence: num(f["min-silence"], "--min-silence"), out: f.output }); break;
+      case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames, "--frames"), pad: num(f.pad, "--pad"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width") }); break;
       case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
       case "render": case "export": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
         if (f.format === "srt" || f.format === "vtt") { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
         let last = 0;
         res = await api.render(P, {
-          out: f.output, start: f.start, end: f.end, scale: num(f.scale), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
-          workers: num(f.workers), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles,
+          out: f.output, start: f.start, end: f.end, scale: num(f.scale, "--scale"), quality: f.quality, draft: f.draft, sheet: !f["no-sheet"],
+          workers: num(f.workers, "--workers"), fast: f.fast, codec: f.codec, alpha: f.alpha, subtitles: f.subtitles,
           progress: f.quiet ? undefined : (d, n) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } },
         });
         break;
       }
-      case "undo": res = api.undo(P, num(pos[0]) ?? 1, num(f.revision)); break;
-      case "redo": res = api.redo(P, num(pos[0]) ?? 1, num(f.revision)); break;
+      case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision")); break;
+      case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision")); break;
       case "ui": {
         const { startUi } = await import("./ui.ts");
-        const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port) });
+        const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port, "--port") });
         process.stdout.write(JSON.stringify({ ok: true, ...r }) + "\n"); // server keeps running; Ctrl-C to stop
         return;
       }
@@ -157,14 +163,14 @@ export async function main(argv = process.argv.slice(2)) {
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }
-      case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold)); break;
-      case "silence": res = await api.analyze.silence(pos[0], num(f["noise-db"]), num(f["min-silence"])); break;
+      case "scenes": res = await api.analyze.scenes(pos[0], num(f.threshold, "--threshold")); break;
+      case "silence": res = await api.analyze.silence(pos[0], num(f["noise-db"], "--noise-db"), num(f["min-silence"], "--min-silence")); break;
       case "loudness": res = await api.analyze.loudness(pos[0]); break;
       case "transcribe": res = await api.analyze.transcribe(pos[0], f.language, f.model, f.start, f.end); break;
       case "subject": { // cached in the project: -p / $AGENTCUT_PROJECT must name one (else no_project); with neither, the nearest project.json, else the user cache
         let root: string | undefined;
         try { root = api.openProject(P).root; } catch (e: any) { if (e.code !== "no_project" || P || process.env.AGENTCUT_PROJECT) throw e; }
-        res = await api.analyze.subject(pos[0], num(f.fps), f["allow-download"], root); break;
+        res = await api.analyze.subject(pos[0], num(f.fps, "--fps"), f["allow-download"], root); break;
       }
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
@@ -175,11 +181,11 @@ export async function main(argv = process.argv.slice(2)) {
       case "cache": {
         const sub = pos.shift() ?? "info";
         if (sub === "info") res = api.cache.info(P);
-        else if (sub === "prune") res = api.cache.prune(P, { maxMb: num(f["max-mb"]), olderThan: f["older-than"] });
+        else if (sub === "prune") res = api.cache.prune(P, { maxMb: num(f["max-mb"], "--max-mb"), olderThan: f["older-than"] });
         else return emit({ ok: false, error: { code: "usage", message: `unknown cache command '${sub}'`, hint: "cache info | cache prune [--max-mb N] [--older-than 7d]" } }, 2);
         break;
       }
-      case "tts": res = await api.analyze.tts(pos[0], f.output, f.voice, num(f.rate), f.project); break;
+      case "tts": res = await api.analyze.tts(pos[0], f.output, f.voice, num(f.rate, "--rate"), f.project); break;
       case "voices": res = api.voices(f.lang); break;
       case "fonts": res = await api.fonts(pos[0] ?? ""); break;
       case "schema": res = api.schema(); break;
@@ -190,8 +196,8 @@ export async function main(argv = process.argv.slice(2)) {
         if (sub === "add") res = api.feedback.add({ ...kv(pos), ...Object.fromEntries(["kind", "title", "details", "area", "severity", "suggestion"].filter((k) => f[k] !== undefined).map((k) => [k, f[k]])), source: "cli" });
         else if (sub === "list") res = api.feedback.list(f.status ?? "open", f.kind);
         else if (sub === "summary" || sub === "report") {
-          if (f.md !== undefined || sub === "report") { const r = api.feedback.report(typeof f.md === "string" ? f.md : undefined, num(f.days)); if (r.markdown && !f.pretty) { console.log(r.markdown); return; } res = r; }
-          else res = api.feedback.summary(num(f.days), num(f.limit));
+          if (f.md !== undefined || sub === "report") { const r = api.feedback.report(typeof f.md === "string" ? f.md : undefined, num(f.days, "--days")); if (r.markdown && !f.pretty) { console.log(r.markdown); return; } res = r; }
+          else res = api.feedback.summary(num(f.days, "--days"), num(f.limit, "--limit"));
         } else if (sub === "resolve") res = api.feedback.resolve(pos[0], f.status, f.note);
         else return emit({ ok: false, error: { code: "usage", message: `unknown feedback command '${sub}'`, hint: "feedback add|list|summary|resolve" } }, 2);
         break;

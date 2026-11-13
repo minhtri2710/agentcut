@@ -68,7 +68,7 @@ const CSS_FX: Record<string, (f: Dict) => string> = {
   blur: (f) => `blur(${Number(f.radius ?? 8) * (f._k ?? 1)}px)`,
   bw: () => "grayscale(1)",
   invert: () => "invert(1)",
-  hue: (f) => `hue-rotate(${Number(f.degrees ?? f.amount ?? 90)}deg)`,
+  hue: (f) => `hue-rotate(${Number(f.degrees ?? 90)}deg)`,
   brightness: (f) => `brightness(${Number(f.amount ?? 1.2)})`,
   contrast: (f) => `contrast(${Number(f.amount ?? 1.2)})`,
   saturate: (f) => `saturate(${Number(f.amount ?? 1.4)})`,

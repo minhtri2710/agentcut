@@ -1273,6 +1273,57 @@ console.log("templates and beats");
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
 }
 
+console.log("op arguments, documented ranges, undo steps");
+{
+  const Q = join(tmp, "args-proj");
+  api.create(Q, { preset: "720p" });
+  await api.apply(Q, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "c1" }, { op: "add_clip", track: "main", type: "color", color: "#404040", duration: 3, id: "c2" }]);
+  const err = (o: any, dryRun = true): Promise<any> => api.apply(Q, [o], { dryRun }).then(() => ({}), (e: any) => e);
+  // [label, op with the misspelled key, the misspelled key, the name the hint must give]
+  const typos: [string, any, string, string][] = [
+    ["add_marker", { op: "add_marker", t: 2, lable: "x" }, "lable", "label"], ["trim_clip", { op: "trim_clip", id: "c1", trim_strt: 0.5 }, "trim_strt", "trim_start"],
+    ["freeze_frame", { op: "freeze_frame", id: "c1", at: 1, duraton: 1 }, "duraton", "duration"], ["set_settings", { op: "set_settings", preset: "reels", fsp: 24 }, "fsp", "fps"],
+    ["add_effect", { op: "add_effect", type: "grain", intesity: 0.9 }, "intesity", "intensity"], ["snap_to_beats", { op: "snap_to_beats", track: "main", beats: [0, 1, 2], evry: 2 }, "evry", "every"],
+    ["move_clip", { op: "move_clip", id: "c2", idx: 0 }, "idx", "index"], ["add_sequence", { op: "add_sequence", items: [], defualts: {} }, "defualts", "defaults"],
+    ["add_clip, type inferred", { op: "add_clip", track: "main", scr: "x.mp4" }, "scr", "src"], ["add_clip, type given", { op: "add_clip", type: "video", track: "main", scr: "x.mp4" }, "scr", "src"],
+    ["update_clip", { op: "update_clip", id: "c1", opacty: 0.5 }, "opacty", "opacity"], ["split_clip", { op: "split_clip", id: "c1", att: 0.5 }, "att", "at"],
+    ["apply_template", { op: "apply_template", name: "quote", text: "hi", auther: "x" }, "auther", "author"],
+  ];
+  for (const [label, o, key, good] of typos) {
+    const e = await err(o);
+    check(`a misspelled argument is refused: ${label} ${key} -> ${good}`, e.code === "bad_arg" && e.message.includes(`'${key}'`) && e.hint === `did you mean '${good}'?` && e.path === `ops[0](${o.op}).${key}`, { code: e.code, message: e.message, hint: e.hint, path: e.path });
+  }
+  const gap = await err({ op: "split_clip", id: "c1", at: 2, gap: 1 });
+  check("an argument with no near name is refused and the allowed names are listed", gap.code === "bad_arg" && gap.hint === "allowed: id, at" && gap.path === "ops[0](split_clip).gap", gap);
+  const none = await err({ op: "add_clip", track: "main" });
+  check("add_clip with nothing to infer a type from says what it needs", none.code === "missing_type" && /src, asset, text/.test(none.message), none);
+  check("a declared alias form is accepted: move_clip index, after and before", (await Promise.all([{ index: 0 }, { after: "c1" }, { before: "c1" }].map((x) => err({ op: "move_clip", id: "c2", ...x })))).every((e) => e.code === undefined));
+  check("a clip's own effects entry is checked against the effect's params", (await err({ op: "update_clip", id: "c1", effects: [{ type: "grain", intesity: 1 }] })).details?.issues?.[0]?.hint === "did you mean 'intensity'?");
+
+  const ranges: [string, any][] = [["opacity 5", { opacity: 5 }], ["opacity -1", { opacity: -1 }], ["fade_in -2", { fade_in: -2 }], ["scale 0", { scale: 0 }], ["scale -1", { scale: -1 }], ["radius -5", { radius: -5 }],
+    ["an opacity keyframe 2", { keyframes: { opacity: [[0, 0], [1, 2]] } }]];
+  for (const [name, patch] of ranges) {
+    const e = await err({ op: "update_clip", id: "c1", set: patch });
+    check(`a value outside its documented range is refused at apply: ${name}`, e.code === "validation_failed" && /^\$\.tracks.*\.(opacity|fade_in|scale|radius|keyframes\.opacity)$/.test(e.details?.issues?.[0]?.path ?? ""), { code: e.code, issues: e.details?.issues });
+  }
+  const vol = await err({ op: "update_clip", id: "c1", set: { volume: 99 } });
+  check("volume 99 is refused at apply, before any render", vol.code === "validation_failed" && vol.details?.issues?.[0]?.message === "volume must be 0..4, got 99", { code: vol.code, issues: vol.details?.issues });
+  check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { scale_x: -1 }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined)
+    && (await err({ op: "update_clip", id: "c1", set: { volume: 4 } })).code === undefined);
+
+  const hist = join(tmp, "hist-proj");
+  api.create(hist, { preset: "720p" });
+  for (const label of ["a", "b"]) await api.apply(hist, [{ op: "add_marker", t: 1, label }]);
+  const bad = join(tmp, "steps-proj");
+  api.create(bad, { preset: "720p" });
+  await api.apply(bad, [{ op: "add_marker", t: 1, label: "a" }, { op: "add_marker", t: 2, label: "b" }]);
+  for (const n of [0, -1, 1.5, NaN]) check(`undo steps ${n} is bad_value`, (await Promise.resolve().then(() => api.undo(bad, n)).then(() => ({}), (e: any) => e)).code === "bad_value");
+  const u: any = await Promise.resolve().then(() => api.undo(hist, 5)).catch((e: any) => e);
+  check("undo 5 with 2 available reports 5 requested and 2 done", u.requested === 5 && u.done === 2 && u.undone.length === 2, u);
+  const r: any = await Promise.resolve().then(() => api.redo(hist, 1)).catch((e: any) => e);
+  check("redo reports the steps requested and done", r.requested === 1 && r.done === 1, r);
+}
+
 console.log("validity + render");
 const inf = (await api.info(P));
 check("timeline valid", inf.errors === 0, inf.issues);

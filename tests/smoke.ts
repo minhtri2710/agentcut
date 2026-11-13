@@ -178,8 +178,11 @@ console.log("feedback");
 const n1 = cli(["feedback", "add", "kind=friction", "title=had to guess the fade animation name", "area=enter"]);
 const n2 = cli(["feedback", "add", "kind=friction", "title=Had to guess the fade animation name!"]);
 check("feedback note merged", n2.merged && n2.id === n1.id && n2.count === 2, n2);
+for (const op of ["j_cut", "split_clip"]) cli(["op", op, "id=x", "by=1"], { cwd: q, ok: false });
+cli(["op", "add_effect", "type=grain", "intesity=1"], { cwd: q, ok: false });
 const fs = cli(["feedback", "summary"]);
 check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
+check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "by"], ["split_clip argument", "by"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => fs.naming_misses.some((m: any) => m.kind === k && m.guess === g)), fs.naming_misses);
 check("render speed logged", fs.render?.renders >= 1, fs.render);
 check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
 check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
@@ -240,8 +243,14 @@ console.log("cli surface: --start/--end, transcribe, tts");
   const S = join(tmp, "tts-proj");
   cli(["init", S, "--preset", "reels"]);
   const ts = (...a: string[]) => cli(["tts", ...a], { ok: false, cwd: S }).error.code;
-  check("tts: a rate that is not a positive number is bad_value, a missing text or output is missing_input, the project's own file is refused",
-    ts("hi", "-o", "x.wav", "--rate", "abc") === "bad_value" && ts("hi", "-o", "x.wav", "--rate", "0") === "bad_value" && ts("-o", "x.wav") === "missing_input" && ts("hi") === "missing_input" && ts("hi", "-o", "project.json") === "output_is_source");
+  check("tts: a rate that is not a number is a usage error, 0 is bad_value, a missing text or output is missing_input, the project's own file is refused",
+    ts("hi", "-o", "x.wav", "--rate", "abc") === "usage" && ts("hi", "-o", "x.wav", "--rate", "0") === "bad_value" && ts("-o", "x.wav") === "missing_input" && ts("hi") === "missing_input" && ts("hi", "-o", "project.json") === "output_is_source");
+  for (const [label, flags] of [["--width abc", ["--width", "abc"]], ["--fps 0", ["--fps", "0"]]] as const) {
+    const D = join(tmp, `init-${label.replace(/\W/g, "")}`), r = cli(["init", D, ...flags], { ok: false });
+    check(`init ${label} fails before writing anything`, r.ok === false && ["usage", "bad_value"].includes(r.error?.code) && !existsSync(D), r);
+  }
+  check("init --fps 0 is bad_value and --width abc is a usage error", cli(["init", join(tmp, "init-code"), "--fps", "0"], { ok: false }).error?.code === "bad_value" && cli(["init", join(tmp, "init-code"), "--width", "abc"], { ok: false }).error?.code === "usage");
+  check("another numeric flag: sheet --count abc is a usage error", cli(["sheet", "--count", "abc"], { ok: false, cwd: S }).error?.code === "usage");
 }
 
 console.log("schema version");

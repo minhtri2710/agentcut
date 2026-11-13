@@ -105,8 +105,8 @@ export function buildServer() {
       revision: REV },
   }, wrap((a, signal) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid, revision: a.revision, signal })));
   s.registerTool("validate", { description: "Check the timeline: issues with level, JSON path, message, hint.", inputSchema: { project: P } }, wrap((a) => api.validate(proj(a.project))));
-  s.registerTool("undo", { description: "Undo the last N edit batches.", inputSchema: { steps: z.number().int().default(1), project: P, revision: REV } }, wrap((a) => api.undo(proj(a.project), a.steps, a.revision)));
-  s.registerTool("redo", { description: "Redo N undone batches.", inputSchema: { steps: z.number().int().default(1), project: P, revision: REV } }, wrap((a) => api.redo(proj(a.project), a.steps, a.revision)));
+  s.registerTool("undo", { description: "Undo the last N edit batches (steps: a whole number >= 1; fewer are undone when the history holds fewer: result.requested and result.done say how many).", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.undo(proj(a.project), a.steps, a.revision)));
+  s.registerTool("redo", { description: "Redo N undone batches (steps: a whole number >= 1; fewer are redone when fewer are available: result.requested and result.done say how many).", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.redo(proj(a.project), a.steps, a.revision)));
 
   s.registerTool("preview_frame", {
     description: "Render ONE frame at time t (seconds) and return it as an image. guides=true overlays safe areas (red = social UI zones on 9:16).",

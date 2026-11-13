@@ -75,9 +75,8 @@ function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = 
   for (const [c, side, sg] of edges) extend(c, side, sg * by);
 }
 
-function amount(a: Dict, keys: string[], positive: boolean): number {
-  const k = keys.find((x) => a[x] !== undefined && a[x] !== null);
-  if (!k) throw new EditError(`missing '${keys[0]}'`, "missing_arg", positive ? `${keys[0]}: seconds > 0, e.g. 0.5` : `${keys[0]}: +/- seconds, e.g. 0.25 (later) or -0.5 (earlier)`);
+function amount(a: Dict, k: "seconds" | "by", positive: boolean): number {
+  if (a[k] === undefined || a[k] === null) throw new EditError(`missing '${k}'`, "missing_arg", positive ? `${k}: seconds > 0, e.g. 0.5` : `${k}: +/- seconds, e.g. 0.25 (later) or -0.5 (earlier)`);
   const v = parseTime(a[k], k);
   if (positive ? v <= 0 : Math.abs(v) < EPS) throw new EditError(`${k} must be ${positive ? "> 0" : "non-zero"} (got ${v})`, "bad_amount", positive ? "pass seconds > 0; use undo to revert an earlier cut" : "positive = later, negative = earlier");
   return v;
@@ -194,7 +193,7 @@ export function registerEditOps(h: OpHelpers) {
       { id: "video clip id or ref ('main#1'), or its detached audio clip", seconds: "s > 0", crossfade: `s: sets fade_${lead ? "in" : "out"} on the extended audio`, track: "audio track if detaching (default 'dialogue')" },
       (p, tl, a) => {
         const [, , c] = get(tl, a);
-        const req = amount(a, ["seconds", "by", "lead", "duration"], true);
+        const req = amount(a, "seconds", true);
         const [v, aud, detached] = audioOf(tl, c, lead ? "j_cut" : "l_cut", a.track);
         ownDuration(aud);
         resolve(tl);
@@ -225,7 +224,7 @@ export function registerEditOps(h: OpHelpers) {
     { id: "video/audio clip id or ref", by: "+/- seconds of source" }, (p, tl, a) => {
       const [, , c] = get(tl, a);
       if (!isAV(c)) throw new EditError(`slip_clip needs a video or audio clip; '${c.id}' is ${c.type}`, "bad_type", "images/text have no source in-point; use move_clip to move them");
-      const by = amount(a, ["by", "seconds", "shift"], false);
+      const by = amount(a, "by", false);
       const pieces = linkedAudio(tl, c).map(([, x]) => x), list = [c, ...pieces];
       let lo = -Infinity, hi = Infinity;
       for (const x of list) {
@@ -247,7 +246,7 @@ export function registerEditOps(h: OpHelpers) {
       const [tr, ci, l] = get(tl, a);
       const r = tr.clips[ci + 1];
       if (!r) throw new EditError(`'${l.id}' is the last clip on '${tr.id}'; there is no cut after it to roll`, "no_next", "pass the clip BEFORE the cut; to change only this clip's end use trim_clip");
-      const by = amount(a, ["by", "seconds", "shift"], false);
+      const by = amount(a, "by", false);
       resolve(tl);
       if (!tr.magnetic && (Math.abs(clipEnd(l) - clipStart(r)) > 1e-3 || r.attach_to))
         throw new EditError(`'${l.id}' and '${r.id}' do not touch (${clipEnd(l).toFixed(3)} vs ${clipStart(r).toFixed(3)})`, "not_adjacent", "roll_edit needs two adjacent clips; use trim_clip / move_clip for separate clips");
@@ -262,7 +261,7 @@ export function registerEditOps(h: OpHelpers) {
     "touching neighbours are adjusted (others are left alone; result.overlaps warns). Detached audio follows; refused (out_of_range) if it would move before timeline 0.",
     { id: "clip id or ref", by: "+/- seconds (positive = later)" }, (p, tl, a) => {
       const [tr, ci, c] = get(tl, a);
-      const by = amount(a, ["by", "seconds", "shift"], false);
+      const by = amount(a, "by", false);
       if (c.attach_to) throw new EditError(`'${c.id}' is attached to '${c.attach_to}'`, "attached", `change its offset instead: update_clip id=${c.id} offset=...`);
       resolve(tl);
       let prev: Clip | undefined = tr.clips[ci - 1], next: Clip | undefined = tr.clips[ci + 1];

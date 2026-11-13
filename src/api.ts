@@ -392,8 +392,8 @@ export async function render(project: string | undefined, o: {
   } finally { if (!o.out) p.releaseOutput(out); }
 }
 
-export const undo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.undo(steps, revision); return { undone: r.labels, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
-export const redo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.redo(steps, revision); return { redone: r.labels, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+export const undo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.undo(steps, revision); return { undone: r.labels, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+export const redo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.redo(steps, revision); return { redone: r.labels, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const history = (project?: string) => openProject(project).history();
 export const probe = (path: string) => probeMedia(presolve(path));
 export const fonts = async (q = "", limit = 60) => { await loadCanvas(); return { fonts: listFonts(q, limit) }; };

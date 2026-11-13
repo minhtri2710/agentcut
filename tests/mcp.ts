@@ -200,6 +200,7 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   for (const [name, args] of [["preview_frame", { t: 0, scale: 1e6 }], ["preview_frame", { t: 0, scale: 0 }], ["render", { scale: 1e6 }], ["contact_sheet", { count: 1e6 }], ["contact_sheet", { count: 0 }],
     ["contact_sheet", { times: Array.from({ length: 65 }, () => 0) }], ["contact_sheet", { times: [-1] }], ["contact_sheet", { every: 0 }]] as const)
     check(`${name} ${JSON.stringify(args).slice(0, 40)} is refused at the schema`, await rejected(name, args as Record<string, unknown>), args);
+  for (const steps of [0, -1, 1.5]) check(`undo steps ${steps} is bad_value over MCP`, (await call5("undo", { steps }).catch(() => ({ json: undefined }))).json?.error?.code === "bad_value", steps);
   await call5("apply_ops", { ops: [{ op: "add_clip", track: "main", type: "color", color: "#222222", duration: 2 }] }); // a sheet needs a timeline with a duration
   const cs = await call5("contact_sheet", { count: 4, times: [0, 0.5] });
   check("contact_sheet within the bounds still works", cs.images.length === 1, cs.json ?? cs.r);

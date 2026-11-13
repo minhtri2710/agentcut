@@ -188,4 +188,5 @@ your note adds the WHY. Maintainers read the ranked backlog with feedback_summar
 
 ## Errors
 {"ok":false,"error":{"code","message","hint","path","issues?"}} - hints usually contain the fix ("did you mean 'crossfade'?").
+An argument or field the op does not know is refused (bad_arg, or an invalid_timeline issue), never ignored. A number outside its documented range (opacity 0..1, volume 0..4, scale > 0, fade_in/fade_out/radius >= 0) is a validate error, not clamped.
 `;

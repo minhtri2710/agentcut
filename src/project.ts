@@ -153,12 +153,14 @@ export class Project {
       if (!dims) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
       [w, h] = dims;
     }
+    const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
+    if (o.empty) tl.tracks = [];
+    const bad = validate(tl).filter((i) => i.level === "error"); // the project is built and checked in memory: bad settings leave no folder behind
+    if (bad.length) throw new EditError(`${bad[0].path}: ${bad[0].message}`, "bad_value", bad[0].hint ?? "e.g. --width 1920 --height 1080 --fps 30, or --preset reels");
     const dirs = ["media", "renders", "previews", "fonts", ".agentcut/history/undo", ".agentcut/history/redo"].map((d) => join(root, d));
     for (const d of dirs) checkDir(root, d); // every chain is checked before anything is made: a refused one leaves nothing behind
     ensureRoot(root); // also proves the volume has hard links; on a volume without, nothing is left behind
     for (const d of dirs) ensureDir(root, d);
-    const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
-    if (o.empty) tl.tracks = [];
     if (!createExclusive(join(root, PROJECT_FILE), JSON.stringify(tl, null, 2))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
     return new Project(root);
   }
@@ -256,6 +258,7 @@ export class Project {
   }
   // restored snapshots get a fresh revision, so the revision only ever increases
   private step(from: string, to: string, steps: number, base?: number) {
+    if (!Number.isInteger(steps) || steps < 1) throw new EditError(`steps must be a whole number >= 1, got ${JSON.stringify(steps) ?? steps}`, "bad_value", `e.g. ${from} 1; asking for more than the history holds ${from}s what is there and reports it`);
     return this.locked(() => {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
@@ -281,7 +284,7 @@ export class Project {
         this.prune(to);
         cur = readFileSync(this.file, "utf8");
       }
-      return { labels: snaps.map((sn) => sn.label), revision: rev };
+      return { labels: snaps.map((sn) => sn.label), revision: rev, requested: steps, done: snaps.length };
     });
   }
   /** base: the revision the caller saw; a newer revision on disk is a conflict. */
