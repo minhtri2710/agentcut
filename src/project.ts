@@ -5,7 +5,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve, sep } from "node:path";
 import { FONT_FILE, fontCheck, registerFontDir } from "./fonts.ts";
 import {
-  allClips, clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
+  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
 import { checkDir, createExclusive, ensureDir, ensureRoot, lexists, writeFile } from "./safe-write.ts";
@@ -68,11 +68,14 @@ export function refuseSource(root: string, tl: Pick<Timeline, "assets" | "tracks
     const s = st?.isFile() ? stat(f, true) : undefined; // follows a symlinked asset to the file it reads
     return !!s && s.isFile() && s.ino === st!.ino && s.dev === st!.dev;
   };
-  const fontFiles = [...allClips(tl?.tracks ?? [])].map((c) => c.font).filter((f): f is string => typeof f === "string" && FONT_FILE.test(f)); // resolveFont opens these as given
+  // resolveFont opens these as given. tl may be an unvalidated project.json (tts): whatever is not a track list, track, clip or string cannot name a font file and is skipped
+  const fontsIn = (tracks: unknown): string[] => (Array.isArray(tracks) ? tracks : []).flatMap((tr) => (Array.isArray(tr?.clips) ? tr.clips : []).flatMap((c: any) =>
+    [...(typeof c?.font === "string" && FONT_FILE.test(c.font) ? [c.font] : []), ...fontsIn(c?.tracks)]));
+  const fontFiles = fontsIn(tl?.tracks);
   const what = inside(hist) ? "the project's history folder"
     : inside(fonts) ? "the project's fonts folder"
     : same(join(root, PROJECT_FILE)) ? "project.json"
-    : Object.values(tl?.assets ?? {}).some((a) => a.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses"
+    : Object.values(tl?.assets ?? {}).some((a) => a?.path && same(isAbsolute(a.path) ? a.path : join(root, a.path))) ? "a media file the timeline uses"
     : fontFiles.some(same) ? "a font file the timeline uses" : null;
   if (what) throw new EditError(`${out} is ${what}; writing there would replace it`, "output_is_source", "choose another output path, for example renders/<name>.mp4");
 }

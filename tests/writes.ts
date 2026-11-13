@@ -425,6 +425,25 @@ console.log("output paths through another spelling of the root, font files, and 
     const c = await code(() => api.analyze.tts("hi", out, undefined, undefined, p)); // tts checks the output before any validation
     check("an asset that is a symlink loop: the output is refused with unsafe_path, not a raw error", c === "unsafe_path" && readFileSync(out, "utf8") === "keep", c);
   }
+  // an asset below a looping directory, the output not made yet: only the realpath of the asset's parent can see it
+  {
+    const p = await project("loop-dir"), a = join(tmp, "loopdir-a"), b = join(tmp, "loopdir-b"), out = join(p, "renders", "n.wav");
+    symlinkSync(b, a); symlinkSync(a, b);
+    const tl = JSON.parse(readFileSync(join(p, "project.json"), "utf8"));
+    tl.assets.looped = { kind: "video", path: join(a, "x.mp4") };
+    writeFileSync(join(p, "project.json"), JSON.stringify(tl, null, 2));
+    const c = await code(() => api.analyze.tts("hi", out, undefined, undefined, p)); // tts checks the output before any validation
+    check("an asset below a looping directory: the output is refused with unsafe_path, nothing is written", c === "unsafe_path" && !S.lexists(out), c);
+  }
+  // a damaged project.json: the font scan skips what cannot name a font file, and tts (which does not validate) gets the usual refusal
+  for (const [name, tracks] of [["a null track", [null]], ["a null clip", [{ id: "t", clips: [null] }]], ["tracks that is not a list", {}], ["a clip with a non-string font", [{ id: "t", clips: [{ id: "c", font: 5 }] }]]] as const) {
+    const p = await project(`damaged-${name.replace(/\W+/g, "-")}`);
+    const tl = JSON.parse(readFileSync(join(p, "project.json"), "utf8"));
+    tl.tracks = tracks;
+    writeFileSync(join(p, "project.json"), JSON.stringify(tl, null, 2));
+    const c = await code(() => api.analyze.tts("hi", join(p, "project.json"), undefined, undefined, p));
+    check(`tts with project.json holding ${name}: output_is_source, not a raw error`, c === "output_is_source", c);
+  }
 }
 
 // ------------------------------------------------------------------ feedback store and font cache (outside the project tree)
