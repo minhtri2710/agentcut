@@ -1096,10 +1096,10 @@ console.log("the face model: descriptor, job, gate, download");
         symlink(outside, part(dead, "cccccccccccc")); // the right name, but a link
         writeFileSync(part(dead, "dd"), "a name partSibling never makes");
         writeFileSync(part(dead, "ffffffffffff", "test_model_ok", other), "another machine's part"); // a dead pid here means nothing there
-        writeFileSync(join(dir, `test_model_ok.part-${dead}-gggggggggggg.onnx`), "an untagged name");
+        writeFileSync(join(dir, `test_model_ok.part-${dead}-abababababab.onnx`), "an untagged name");
         writeFileSync(part(dead, "eeeeeeeeeeee", "test_model_other"), "another model's part");
         const dl = await inCache(Z, () => caught(() => V.downloadModel(desc("test_model_ok", "/ok"))));
-        const kept = readdirSync(dir).sort(), want = ["test_model_ok.onnx", name(dead, "cccccccccccc"), name(dead, "dd"), name(dead, "ffffffffffff", "test_model_ok", other), `test_model_ok.part-${dead}-gggggggggggg.onnx`, name(process.pid, "bbbbbbbbbbbb"), name(dead, "eeeeeeeeeeee", "test_model_other")].sort();
+        const kept = readdirSync(dir).sort(), want = ["test_model_ok.onnx", name(dead, "cccccccccccc"), name(dead, "dd"), name(dead, "ffffffffffff", "test_model_ok", other), `test_model_ok.part-${dead}-abababababab.onnx`, name(process.pid, "bbbbbbbbbbbb"), name(dead, "eeeeeeeeeeee", "test_model_other")].sort();
         check("downloadModel: the part file of a dead process is removed by the next download of that model, and the download itself succeeds", dl === null && !existsSync(part(dead, "aaaaaaaaaaaa")) && readFileSync(join(dir, "test_model_ok.onnx")).equals(good), { dl: dl?.message, kept });
         check("downloadModel: a live process's part file is kept, with its content", kept.includes(name(process.pid, "bbbbbbbbbbbb")) && readFileSync(part(process.pid, "bbbbbbbbbbbb"), "utf8") === "live process", { kept });
         check("downloadModel: a link with the matching name, a name partSibling never makes, an untagged name, another machine's tag and another model's part are left alone, and the link's target is not touched",
