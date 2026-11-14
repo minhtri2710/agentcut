@@ -391,7 +391,7 @@ console.log("review: the black-frame scan remembers each source frame and reads 
 {
   const { Project } = await import("../src/project.ts");
   const { Renderer } = await import("../src/render.ts");
-  const { resolve, totalDuration, clipStart, normAnim } = await import("../src/model.ts");
+  const { allClips, resolve, totalDuration, clipStart, normAnim, TEXTY } = await import("../src/model.ts");
   const A = join(m, "av.mp4"), dark = join(m, "dark.mp4"), edge = join(m, "edge25.mp4"), long = join(m, "long.mp4"), swap = join(m, "swap.mp4");
   ff("-f", "lavfi", "-i", "color=c=0x050505:s=320x240:r=24:d=6", "-pix_fmt", "yuv420p", dark);
   // 25 fps (the timelines run at 24): bright until 2.0 s, then dark
@@ -409,6 +409,7 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   // the scan as it was before the memo: the renderer draws every sample, runs are two or more dark samples in a row
   const renderOnly = async (d: string) => {
     const pj = new Project(d), t = pj.absolutized(resolve(pj.load())), T = totalDuration(t), step = 0.2, fps = Number(t.settings.fps);
+    for (const c of allClips(t.tracks)) if (TEXTY.has(c.type)) c.type = "gap"; // the scan judges the picture under text: a gap keeps the clip's place and ends its track's run, as a skipped layer does
     const R = new Renderer(structuredClone(t), pj.root, Math.min(1, 64 / t.settings.width));
     const dips: [number, number][] = [], low: number[] = [];
     for (const tr of t.tracks) if (!tr.hidden && (tr.kind ?? "video") !== "audio") tr.clips.forEach((c: any, i: number) => {
@@ -523,8 +524,57 @@ console.log("review: the black-frame scan remembers each source frame and reads 
 
   const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
   const mx = await scan(mixed.d);
-  check("clips off the fast path (a speed change, a title above) are drawn by the renderer, the rest from the memo, and the findings are the renderer's",
-    mx.stats.memo + mx.stats.read === 5 && mx.stats.rendered === 15 && same(mx.black, await renderOnly(mixed.d)), mx.stats);
+  check("clips off the fast path (a speed change) are drawn by the renderer, the rest from the memo even under a title, and the findings are the renderer's",
+    mx.stats.memo + mx.stats.read === 10 && mx.stats.rendered === 10 && same(mx.black, await renderOnly(mixed.d)), mx.stats);
+
+  // the black check judges the picture under text and captions: their layers are left out of the scan
+  const blackOf = async (d: string) => {
+    const stats: any = {}, rv: any = await api.review(d, { stats } as any);
+    return { stats, found: rv.findings.filter((f: any) => f.type === "black_frames") as any[] };
+  };
+  const txt = (extra: object = {}) => ({ op: "add_clip", track: "text", text: "TITLE", font_size: 150, at: 0, duration: 3, ...extra });
+  const under = (f: any) => /^the footage under the text is black from ~/.test(f.message) && /title card on black/.test(f.hint);
+
+  const cap = await build("cap_dark", [vid({ in: 0, duration: 6 }, dark), { op: "add_captions", preset: "tiktok", at: 0, words: Array.from({ length: 10 }, (_, i) => ({ text: "HELLO", start: i * 0.5, end: i * 0.5 + 0.5 })) }]);
+  const cb = await blackOf(cap.d), cb2 = await blackOf(cap.d);
+  check("black footage under big captions is reported whole, with the footage wording and the captions id",
+    same(cb.found.map((f: any) => [f.t, f.end]), [[0, 6]], await renderOnly(cap.d)) && under(cb.found[0]) && same(cb.found[0].text_ids, [cap.ids[1]]), cb.found);
+  check("footage under captions comes from the memo and the read: no sample is drawn, and a second review decodes nothing",
+    cb.stats.memo + cb.stats.read === 30 && cb.stats.rendered === 0 && cb2.stats.frames === 0 && cb2.stats.memo === 30 && cb2.stats.rendered === 0, { first: cb.stats, again: cb2.stats });
+
+  const card = await build("title_card", [{ op: "add_clip", track: "main", color: "#000000", duration: 4 }, txt({ duration: 4 })]);
+  const cd = await blackOf(card.d);
+  check("a title card of text on black is reported, with the footage wording and the text id",
+    same(cd.found.map((f: any) => [f.t, f.end]), [[0, 4]]) && under(cd.found[0]) && same(cd.found[0].text_ids, [card.ids[1]]), cd.found);
+
+  const past = await build("text_past", [vid({ duration: 2 }), txt({ duration: 4 })]);
+  const ps = await blackOf(past.d);
+  check("text running past the end of the footage: the stretch after the footage is reported as black, with the text id",
+    ps.found.length === 1 && ps.found[0].t >= 1.9 && ps.found[0].end === 4 && under(ps.found[0]) && same(ps.found[0].text_ids, [past.ids[1]]), ps.found);
+
+  const boxed = await build("dark_box", [vid({ duration: 3 }), txt({ duration: 3, text: "x", font_size: 40, color: "white", background: { color: "#000000", padding: 2000, radius: 0 } })]);
+  const bx = await blackOf(boxed.d);
+  check("a dark text box that fills the frame over bright footage is not black", !bx.found.length, bx.found);
+
+  const lay = await build("layout", [vid({ duration: 2 }), { op: "add_clip", track: "main", text: "T", duration: 1 }, vid({ in: 0, duration: 5 }, edge)]);
+  const ly = await blackOf(lay.d);
+  check("a text clip on a magnetic track keeps the layout: the later clip's dark stretch is found at its real time, and the text's own slot is black",
+    same(ly.found.map((f: any) => [f.t, f.end]), [[2, 3], [5, 8]], await renderOnly(lay.d)) && under(ly.found[0]) && same(ly.found[0].text_ids, [lay.ids[1]]) && !ly.found[1].text_ids, ly.found);
+
+  const nest = await build("nested", [vid({ in: 0, duration: 4 }, dark), txt({ duration: 3 })]);
+  await api.apply(nest.d, [{ op: "make_compound", ids: nest.ids }]);
+  const ns = await blackOf(nest.d);
+  check("a compound holding text over black footage reports black, with the nested text id",
+    same(ns.found.map((f: any) => [f.t, f.end]), [[0, 4]], await renderOnly(nest.d)) && under(ns.found[0]) && same(ns.found[0].text_ids, [nest.ids[1]]), ns.found);
+
+  const tx = await build("after_text", [vid({ duration: 3 }), { op: "add_clip", track: "main", text: "T", duration: 1 }, vid({ duration: 3, transition: "crossfade" })]);
+  const tr = await scan(tx.d);
+  check("a clip after a text clip on its track shows alone through its transition: only the 3 samples before it starts (nothing below the text) are drawn, the rest come from the memo and the read, and the findings are the renderer's with the text left out",
+    tr.stats.rendered === 3 && tr.black.length === 1 && same(tr.black, await renderOnly(tx.d)), { black: tr.black, stats: tr.stats });
+
+  const plainTl = await build("no_text", [vid({ duration: 3 }), gap(2), vid({ duration: 3 })]);
+  const pt = (await blackOf(plainTl.d)).found;
+  check("guard: without text the finding keeps its wording and has no text_ids", pt.length === 1 && /^the picture is black from ~3\.0s to ~5\.0s$/.test(pt[0].message) && !("text_ids" in pt[0]), pt);
 }
 
 console.log("templates: the text of every template stays inside the safe area at every preset size");

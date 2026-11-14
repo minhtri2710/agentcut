@@ -32,6 +32,8 @@ export function presetSize(name: unknown): [number, number] {
 
 export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color", "audio", "lottie", "compound", "gap"];
 export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]);
+/** The clips that are words on screen; a preset's box or bar behind the words is part of the clip. */
+export const TEXTY = new Set(["text", "captions"]);
 export const MEDIA_TYPES = new Set(["video", "image", "audio", "lottie"]);
 export const ENTER_EXIT = ["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop", "zoom_in", "zoom_out",
   "wipe_left", "wipe_right", "wipe_up", "wipe_down", "blur", "drop", "spin", "typewriter", "words", "bounce", "flip"];

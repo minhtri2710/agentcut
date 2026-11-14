@@ -9,7 +9,7 @@ import { coverOffset, FrameSource } from "./media.ts";
 import { safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
-  type Track, VISUAL_TYPES,
+  TEXTY, type Track, VISUAL_TYPES,
 } from "./model.ts";
 import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
 
@@ -112,7 +112,7 @@ export class Layer {
     if (!this.child) {
       const r = this.r, { effects, ...st } = r.tl.settings;
       const ch = new Renderer({ version: r.tl.version, revision: r.tl.revision, name: this.c.id, settings: { ...st, background: "#00000000", duration: null },
-        assets: r.tl.assets, tracks: this.c.tracks ?? [], markers: [] }, r.root, r.k);
+        assets: r.tl.assets, tracks: this.c.tracks ?? [], markers: [] }, r.root, r.k, r.skipText);
       ch.path = (p) => r.path(p);
       this.child = ch;
     }
@@ -320,7 +320,9 @@ export class Renderer {
   layers: Layer[] = [];
   canvas: Canvas; ctx: SKRSContext2D; bg: string; transparent: boolean;
   private layerCanvases = new Map<Layer, Canvas>();
-  constructor(public tl: Timeline, public root: string, scale = 1) {
+  /** skipText: text and captions clips get no layer (the black-frame scan judges the picture under them). Layout is still resolved on the whole timeline.
+   *  A skipped clip ends its track's run like a gap, so the clip after it has no transition partner: the scan shows that clip alone, with no blend. */
+  constructor(public tl: Timeline, public root: string, scale = 1, public readonly skipText = false) {
     resolve(tl);
     const st = tl.settings;
     this.W0 = st.width; this.H0 = st.height;
@@ -336,7 +338,7 @@ export class Renderer {
       if (tr.hidden || (tr.kind ?? "video") === "audio") continue;
       let prev: Layer | null = null;
       for (const c of tr.clips) {
-        if (c.enabled === false || c.type === "gap" || !VISUAL_TYPES.has(c.type)) { prev = null; continue; }
+        if (c.enabled === false || c.type === "gap" || !VISUAL_TYPES.has(c.type) || skipText && TEXTY.has(c.type)) { prev = null; continue; }
         const L = new Layer(this, tr, c);
         if (prev) { L.prev = prev; prev.next = L; }
         this.layers.push(L);

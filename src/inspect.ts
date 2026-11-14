@@ -5,7 +5,7 @@ import * as AN from "./analyze.ts";
 import { loadDarkMemo, saveDarkMemo } from "./cache.ts";
 import type { FrameSource } from "./media.ts";
 import {
-  type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, type Timeline, totalDuration,
+  type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
 } from "./model.ts";
 import { type Layer, refuseJpegSize, Renderer, renderTiles, tileSize } from "./render.ts";
 import { safeZones } from "./safe.ts";
@@ -62,9 +62,7 @@ export interface ReviewOpts {
   progress?: (done: number, total: number) => void; // black-frame samples taken of all to take
   stats?: ScanStats; // filled with how the black-frame samples were answered
 }
-export interface Finding { type: string; t: number; end?: number; id?: string; message: string; hint?: string }
-
-const TEXTY = new Set(["text", "captions"]);
+export interface Finding { type: string; t: number; end?: number; id?: string; text_ids?: string[]; message: string; hint?: string } // text_ids: black_frames only, the text and captions clips over the stretch
 
 /** Beat times on the timeline: explicit list, "music" (analyse the music-role tracks' clips), else markers named beat*. */
 async function timelineBeats(tl: Timeline, b: ReviewOpts["beats"], signal?: AbortSignal): Promise<{ beats: number[]; from: string }> {
@@ -196,11 +194,28 @@ function plainOf(L: Layer, r: Renderer): Plain | null {
   return { src, base, file: path, mtime: st.mtimeMs, size: st.size, key: JSON.stringify([path, st.size, st.mtimeMs, src.pixelKey, r.W, r.H, phase.toFixed(5)]) };
 }
 
+/** [id, start, end] of the text and captions clips that are drawn on the timeline. A compound's nested clips are mapped through its in-point and speed (as Layer.subT) and cut to the compound's own span. */
+function textSpans(tracks: Track[], map: (u: number) => number, lo: number, hi: number): [string, number, number][] {
+  const out: [string, number, number][] = [];
+  for (const tr of tracks) if (!tr.hidden && (tr.kind ?? "video") !== "audio") for (const c of tr.clips) {
+    if (c.enabled === false) continue;
+    const s = clipStart(c), e = clipEnd(c);
+    if (TEXTY.has(c.type)) out.push([c.id, Math.max(lo, map(s)), Math.min(hi, map(e))]);
+    else if (c.type === "compound" && Array.isArray(c.tracks)) {
+      const i = parseTime(c.in ?? 0), v = Number(c.speed ?? 1) || 1;
+      out.push(...textSpans(c.tracks, (u) => map(s + (u - i) / v), Math.max(lo, map(s)), Math.min(hi, map(e))));
+    }
+  }
+  return out;
+}
+
 /** Seconds from the layer's start during which its own transition runs. */
 const transitionLen = (L: Layer) => { const s = L.prev ? normAnim(L.c.transition, 0.5) : null; return s ? Math.min(s.duration, L.dur, L.prev!.dur) : 0; };
 
 /**
  * Black stretches: the composite is sampled every 0.2 s at 64 px; a sample is dark when under 3% of its pixels are bright.
+ * Text and captions layers are left out of the composite (Renderer skipText), so a stretch is judged on the picture under them; a stretch a text
+ * clip overlaps is reported as the footage under the text, with the clips' ids. A clip after a text clip on its track shows alone through its transition.
  * A sample whose top layer is a plain clip is that clip's source frame, so its brightness comes from the frame number under the key of
  * `plainOf`: it is remembered in the project cache (cache.ts, one file per key), and the frames a scan still needs are read once per
  * source in source order, whatever the clips that show them. Every other sample is drawn by the renderer as before.
@@ -211,7 +226,7 @@ const transitionLen = (L: Layer) => { const s = L.prev ? normAnim(L.c.transition
  * a memo hit equals a fresh read; then drop this note.
  */
 async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: ReviewOpts): Promise<Finding[]> {
-  const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width));
+  const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width), true);
   const dips: [number, number][] = [];
   for (const tr of visual(tl)) tr.clips.forEach((c, i) => {
     const s = i > 0 ? normAnim(c.transition, 0.5) : null;
@@ -261,13 +276,18 @@ async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: 
     }
   } finally { r.close(); }
   const black = tts.filter((tt, n) => dark[n] && !dips.some(([a, b]) => tt >= a - 1e-6 && tt <= b + 1e-6));
-  const out: Finding[] = [];
+  const out: Finding[] = [], texts = textSpans(tl.tracks, (u) => u, 0, T);
   for (let i = 0; i < black.length; i++) {
     let j = i;
     while (j + 1 < black.length && black[j + 1] - black[j] < step * 1.5) j++;
     // shortcut: needs >= 2 consecutive dark samples (>= ~0.2-0.4 s); a single one is usually a fade's darkest frame
-    if (j > i)
-      out.push({ type: "black_frames", t: r3(black[i]), end: r3(Math.min(T, black[j] + step)), message: `the picture is black from ~${black[i].toFixed(1)}s to ~${Math.min(T, black[j] + step).toFixed(1)}s`, hint: "a gap with nothing below it, a clip past its media, or a dark source: fill it or check the clip there" });
+    if (j > i) {
+      const a = black[i], b = Math.min(T, black[j] + step), over = texts.filter(([, s, e]) => s < b - 1e-6 && e > a + 1e-6).map(([id]) => id);
+      const hint = "a gap with nothing below it, a clip past its media, or a dark source: fill it or check the clip there";
+      out.push(over.length
+        ? { type: "black_frames", t: r3(a), end: r3(b), text_ids: over, message: `the footage under the text is black from ~${a.toFixed(1)}s to ~${b.toFixed(1)}s`, hint: `${hint}, or a title card on black, which is fine as it is` }
+        : { type: "black_frames", t: r3(a), end: r3(b), message: `the picture is black from ~${a.toFixed(1)}s to ~${b.toFixed(1)}s`, hint });
+    }
     i = j;
   }
   return out;
