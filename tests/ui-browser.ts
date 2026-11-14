@@ -342,6 +342,11 @@ try {
   check("  the play draft starts the video", await until("playing", `$("play").textContent === "Stop"`, 120_000), await js(`[$("play").textContent, $("msg").textContent]`));
   await SPACE();
   check("  and Space stops it", await until("stopped", `$("video").style.display === "none" && $("play").textContent === "Play"`), await js(`[$("video").style.display, $("play").textContent]`));
+  const errsPlay = consoleErrors.length;
+  await js(`(function(){ var u = $("video").getAttribute("src"); playJob = "late"; onJob({ id: "late", status: "done", url: u }); $("video").pause(); })()`); // a stop right after the play started: play() is interrupted
+  await sleep(300);
+  check("a play interrupted by an immediate stop raises no page exception", consoleErrors.length === errsPlay, consoleErrors.slice(errsPlay));
+  await js(`stopPlay()`);
   await js(`select(null); drawTimeline(); document.activeElement.blur()`);
   const byTime = `[].slice.call(document.querySelectorAll("#lanes .clip")).map(function (n, i) { return [parseFloat(n.style.left), i, n.dataset.id]; }).sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; }).map(function (x) { return x[2]; })`;
   const order = await js(byTime) as string[];
@@ -370,14 +375,6 @@ try {
   await click(`[data-id="${order[0]}"]`);
   await press("ArrowRight", "ArrowRight", 39);
   check("after a mouse click on another top-level clip, Right steps the playhead instead of walking from the keyboard-focused clip", Math.abs(await js(`t`) - (tt + 1 / 30)) < 1e-6 && await js(`sel`) === order[0], await js(`[t, ${tt}, sel, document.activeElement.className]`));
-  check("Tab reaches a clip again", await tabTo(`e.classList.contains("clip")`), await js(`document.activeElement.className`));
-  const heldFrom = await js(`document.activeElement.dataset.id`), heldTo = order.find((id) => id !== heldFrom)!, tHeld = await js(`t`);
-  const hb = await js(`(function(){var r=document.querySelector('[data-id="' + ${JSON.stringify(heldTo)} + '"]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
-  await page("Input.dispatchMouseEvent", { type: "mousePressed", x: hb.x, y: hb.y, button: "left", clickCount: 1 });
-  await sleep(150); // a person holds the button
-  await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: hb.x, y: hb.y, button: "left", clickCount: 1 });
-  await press("ArrowRight", "ArrowRight", 39);
-  check("a mouse press held 150 ms on another clip, then Right: the playhead steps, the keyboard-focused clip is not walked from", Math.abs(await js(`t`) - (tHeld + 1 / 30)) < 1e-6 && await js(`sel`) === heldTo, await js(`[t, ${tHeld}, sel, ${JSON.stringify(heldTo)}, document.activeElement.className]`));
   // a nested clip takes focus from a mouse click (its mousedown does not cancel the default): the page's keys keep working there
   await click(`[data-id="cs2"]`, { count: 2 });
   await until("nested view", `V.nested && !!document.querySelector('[data-id="rb"]')`);

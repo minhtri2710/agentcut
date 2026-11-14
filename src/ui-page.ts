@@ -521,7 +521,7 @@ function onJob(j) {
   } else if (j.id === playJob) {
     if (j.status === "running") $("play").textContent = "Preparing " + Math.round(j.progress * 100) + "%";
     else if (j.status === "failed" || j.status === "cancelled") { playJob = null; $("play").textContent = "Play"; fail(j.error); }
-    else { playJob = null; var v = $("video"); v.src = j.url; v.style.display = ""; $("frame").style.display = "none"; $("play").textContent = "Stop"; v.play(); }
+    else { playJob = null; var v = $("video"); v.src = j.url; v.style.display = ""; $("frame").style.display = "none"; $("play").textContent = "Stop"; v.play().catch(function (e) { if (e.name !== "AbortError") fail(e); }); } // a stop right after the start interrupts play()
   } else if (j.id === renderJob) {
     var p = $("prog"); if (p) p.value = j.progress;
     if (j.status === "failed" || j.status === "cancelled") { renderJob = null; $("render").disabled = false; $("out").innerHTML = ""; fail(j.error); }
