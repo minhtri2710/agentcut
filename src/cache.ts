@@ -100,7 +100,13 @@ export function sweepStale(p: Project) {
   const soft = <T,>(f: () => T, otherwise: T): T => { try { return f(); } catch (e: any) { if (typeof e?.code === "string") return otherwise; throw e; } };
   const list = (dir: string) => soft(() => readdirSync(dir, { withFileTypes: true }), []);
   const plain = (dir: string) => soft(() => areaRoot(p, dir), null);
-  const rm = (e: Pick<Entry, "root" | "path">, recursive: boolean) => soft(() => { if (contained(e)) rmSync(e.path, { recursive, force: true }); }, undefined);
+  const swept: { bytes: number }[] = []; // one per file removed, counted before the delete
+  const rm = (e: Pick<Entry, "root" | "path">, recursive: boolean) => soft(() => {
+    if (!contained(e)) return;
+    const gone = (recursive ? files(e.path) : [e.path]).map((f) => ({ bytes: lstatSync(f, { throwIfNoEntry: false })?.size ?? 0 }));
+    rmSync(e.path, { recursive, force: true });
+    swept.push(...gone);
+  }, undefined);
   const cache = cacheDir(p.root), cacheRoot = plain(cache);
   if (cacheRoot) for (const d of list(cache)) { // the cache dir is flat: direct children only, regular files only
     const m = PART_FILE.exec(d.name);
@@ -111,6 +117,7 @@ export function sweepStale(p: Project) {
     const m = RENDER_TMP.exec(d.name);
     if (d.isDirectory() && m && !alive(Number(m[1]))) rm({ root: tmpRoot, path: join(tmp, d.name) }, true);
   }
+  return sum(swept);
 }
 
 /** Delete cache/preview files. Only files older than olderThan (if given) are eligible. Without maxMb: every eligible

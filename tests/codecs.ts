@@ -642,6 +642,22 @@ console.log("decode and render failures");
     const [f05, f29, f35, f95] = [await at(0.5), await at(2.9), await at(3.5), await at(9.5)];
     check("a looped video clip of a file with longer sound wraps at the picture's length (3.5 s and 9.5 s show the picture of 0.5 s), so no cycle holds a frozen frame", f35.equals(f05) && f95.equals(f05) && !f35.equals(f29), [f05.length, f29.length]);
   }
+  {
+    // a record without video_duration (written by hand) on a 2 s picture with 4 s of sound: the early end is decode_failed, and its hint names the action that works
+    ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-pix_fmt", "yuv420p", join(m, "p2s4.mp4"));
+    const H = join(tmp, "hint-early");
+    api.create(H, { width: 64, height: 64, fps: 24 });
+    await api.apply(H, [{ op: "add_clip", track: "main", src: join(m, "p2s4.mp4"), duration: 4, id: "v" }]);
+    const pj = JSON.parse(readFileSync(join(H, "project.json"), "utf8"));
+    const aid = Object.keys(pj.assets)[0], had = pj.assets[aid].video_duration;
+    delete pj.assets[aid].video_duration;
+    writeFileSync(join(H, "project.json"), JSON.stringify(pj, null, 2));
+    const early: any = await api.frameImage(H, 3, { scale: 1 }).catch((e: any) => e);
+    check("a source that ends early names relink_asset with the same path, trim_clip's alternative, and not re-import", early.code === "decode_failed" && /relink_asset/.test(early.hint) && /same path/.test(early.hint) && !/re-import/.test(early.hint), { had, code: early.code, hint: early.hint });
+    await api.apply(H, [{ op: "relink_asset", id: aid, path: join(m, "p2s4.mp4") }]);
+    const after: any = await api.frameImage(H, 3, { scale: 1 }).catch((e: any) => e);
+    check("relink_asset with the same path records the picture's length, and the frame past it is then held", after?.data?.length > 100, after?.code ?? after?.message);
+  }
   // N3/N4: the picture's last frame is decoded once per source, however often a jump past the end repeats, and nothing asks ffprobe
   if (process.platform !== "win32") {
     const bin = join(tmp, "shim-bin"), log = join(tmp, "shim.log");

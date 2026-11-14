@@ -868,7 +868,8 @@ console.log("sweep of a dead process's leftovers");
   check("cache info counts .agentcut/tmp (its files, apart from total)", info1.tmp.dir === tmpD && info1.tmp.files === info0.tmp.files + 2 && info1.total.files === info0.total.files && info1.total.mb === info0.total.mb, { info0: info0.tmp, info1: info1.tmp });
   plant([...gone, ...kept]);
   symlinkSync(join(outside, "d"), join(tmpD, `render-${dead}-lnk123`)); // a symlink with a dead pid in its name: never followed, never removed
-  api.cache.prune(P6);
+  const pruned: any = api.cache.prune(P6);
+  check("cache prune reports what the sweep removed (the 2 .part files and the render dir's file), apart from what it removed itself", pruned.swept?.files === 3 && typeof pruned.swept.mb === "number", pruned.swept);
   check("cache prune sweeps the dead pid's render dir like render and prepare do, and keeps a live pid's, impossible pids, near-miss names and symlinks",
     !existsSync(gone[2]) && kept.filter((f) => f.startsWith(tmpD)).every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), { gone: existsSync(gone[2]), kept: kept.filter((f) => f.startsWith(tmpD) && !existsSync(f)) });
   plant([...gone, ...kept]); // the prune above also took the unreferenced cache and preview files among them
