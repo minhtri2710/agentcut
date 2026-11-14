@@ -227,7 +227,7 @@ export class Project {
         rmSync(pushed, { force: true });
         throw e;
       }
-      if (aside) try { rmSync(aside, { recursive: true, force: true }); } catch { /* inert: no stack reads this name */ }
+      try { rmSync(aside, { recursive: true, force: true }); } catch { /* inert: no stack reads this name */ }
       this.prune("undo");
       return tl.revision;
     });
