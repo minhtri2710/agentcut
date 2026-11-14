@@ -414,9 +414,12 @@ try {
   }
 
   console.log("not_prepared");
-  const fake = join(tmp, "fake-uv.mjs");
+  const fake = join(tmp, "fake-uv.mjs"), holdFile = join(tmp, "helper-hold");
+  // the helper starts only once `holdFile` is gone (a row creates it to look at the page while the helper has not reported a frame)
   writeFileSync(fake, `#!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+while (existsSync(${JSON.stringify(holdFile)})) await new Promise((r) => setTimeout(r, 20));
 const job = JSON.parse(process.argv.at(-1));
 const vf = "scale=" + job.w + ":" + job.h + ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,W/2),0,255)'";
 const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", job.path, "-an", "-vf", vf, "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov", job.out], { encoding: "utf8" });
@@ -501,13 +504,16 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       asked.push(String(u));
       return new Response(new ReadableStream({ async start(c) { c.enqueue(body.subarray(0, 20)); await released; c.enqueue(body.subarray(20)); c.close(); } }));
     }) as typeof fetch;
+    writeFileSync(holdFile, "1"); // the helper waits, so the page is looked at between the end of the download and the helper's first frame
     try {
       await click("#cgo");
       check("while the model downloads, the Prepare button reads 'Downloading <model> <done>/<total> MB'", await until("download text", `/^Downloading u2net_human_seg [0-9.]+\\/[0-9.]+ MB$/.test($("prepare").textContent)`), await js(`$("prepare").textContent`));
       release();
+      check("once the download has ended and the helper has not reported a frame, the button no longer reads Downloading", await until("download text gone", `$("prepare").textContent.indexOf("Downloading") !== 0 && $("prepare").disabled`), await js(`$("prepare").textContent`));
+      rmSync(holdFile, { force: true });
       check("Confirm sends exactly one request with the flag, the model is fetched once from its pinned URL, and the prepare completes",
         await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]' && asked.join() === pinned.url, { bodies: await bodies(), asked });
-    } finally { release(); globalThis.fetch = realFetch; Object.assign(pin, pinned); }
+    } finally { release(); rmSync(holdFile, { force: true }); globalThis.fetch = realFetch; Object.assign(pin, pinned); }
   }
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
