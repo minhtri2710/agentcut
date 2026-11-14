@@ -179,7 +179,7 @@ export async function main(argv = process.argv.slice(2)) {
         res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "apply": { const author = who(); res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), author, signal }); break; }
       case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision"), author: who(), signal }); break;
       case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
       case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
@@ -215,8 +215,9 @@ export async function main(argv = process.argv.slice(2)) {
       case "history": res = api.history(P); break;
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {
+        const author = f.markers ? who() : undefined; // before the analysis: a refused author costs nothing
         res = await api.analyze.beats(pos[0], signal);
-        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` })), { author: who() }); res.markers_added = res.beats.length; }
+        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` })), { author }); res.markers_added = res.beats.length; }
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }

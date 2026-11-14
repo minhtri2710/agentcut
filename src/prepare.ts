@@ -4,7 +4,7 @@
 import { type Clip, allClips, type Dict, EditError, type Timeline } from "./model.ts";
 import { applyOps } from "./ops.ts";
 import { collectMissing, mattesFor } from "./ops-vision.ts";
-import { checkAuthor, type Project } from "./project.ts";
+import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
 
 // pending vision ops in dependency order (track_to maps its box through the target's reframed focus)
@@ -49,9 +49,8 @@ function requireModels(jobs: V.Derived[]) {
   if (need.length) throw V.modelNotCached(need);
 }
 
-/** author: who the pending requests are applied for (required: the history entry records it; checked before any computing). */
+/** author: who the pending requests are applied for; the history entry records it (api.prepare checks it before anything runs, Project.save again). */
 export async function prepare(p: Project, o: { progress?: (done: number, total: number, download?: DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean; author?: string } = {}) {
-  checkAuthor(o.author);
   const computed: Dict[] = [];
   let applied: Dict[] = [], revision = p.load().revision;
   // a round computes what is missing now; a pending track_to on a pending reframe only shows its job in the next round

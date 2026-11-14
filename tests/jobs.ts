@@ -325,8 +325,10 @@ console.log("prepare vs concurrent edits");
   api.create(P4, { preset: "reels" });
   await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "auto_reframe", id: "vid1" }], { author: "alice" });
   const calls0 = nCalls(), rev0 = ((await api.info(P4)) as any).revision;
-  const none: any = await real.prepare(P4).catch((e) => e);
+  const none: any = await Promise.resolve().then(() => real.prepare(P4)).catch((e) => e);
   check("prepare with no author is missing_author, computes nothing and saves nothing", none.code === "missing_author" && nCalls() === calls0 && ((await api.info(P4)) as any).revision === rev0, { code: none.code, calls: nCalls() - calls0 });
+  const nowhere: any = await Promise.resolve().then(() => real.prepare(join(tmp, "no-such-project"))).catch((e) => e);
+  check("prepare checks the author before it opens the project or sweeps anything", nowhere.code === "missing_author", { code: nowhere.code });
   const done: any = await api.prepare(P4, { author: "prep-bot" });
   check("prepare saves its pending requests under the author it was given", done.ready === true && JSON.stringify(api.history(P4).undo.map((e) => [e.label, e.author])) === JSON.stringify([["add_clip, auto_reframe", "alice"], ["prepare", "prep-bot"]]), api.history(P4));
 }

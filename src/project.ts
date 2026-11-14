@@ -48,13 +48,13 @@ export function checkRevision(base: number, current: number) {
 
 /** Who made a history change. Self-declared text, not a security boundary: it only has to be one short plain line, since it reaches JSON and the page. */
 export const AUTHOR_MAX = 64;
-const AUTHOR_TEXT = /^(?! )[\p{L}\p{N} ._:@/+-]+(?<! )$/u;
+const AUTHOR_TEXT = /^(?! )[\p{L}\p{M}\p{N} ._:@/+-]+(?<! )$/u;
 /** the page's own word for itself (it is stored as is); an entry written before the field existed reads as UNKNOWN_AUTHOR */
 export const UI_AUTHOR = "you";
 export const UNKNOWN_AUTHOR = "unknown";
 /** What history, undo and redo report per entry: who made the edit, and (once it was undone or redone) who last moved it between the stacks. */
 export interface HistoryEntry { label: string; author: string; movedBy?: string }
-const authorRule = `1 to ${AUTHOR_MAX} characters: letters, digits, spaces and . _ - : @ / + (no leading or trailing space)`;
+const authorRule = `1 to ${AUTHOR_MAX} characters: letters (accented ones too), digits, spaces and . _ - : @ / + (no leading or trailing space)`;
 /** Every history write goes through this: no caller identity is missing_author, a value that is not plain text of at most AUTHOR_MAX characters is bad_author. */
 export function checkAuthor(v: unknown): string {
   if (v === undefined || v === null) throw new EditError("no author: every history entry records who made the change", "missing_author", "pass the caller's name as the author (CLI --author NAME or $AGENTCUT_AUTHOR; MCP and the page declare one themselves)");
@@ -203,31 +203,32 @@ export class Project {
   load(): Timeline { return parse(readFileSync(this.file, "utf8")); }
 
   /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. `author` is who made the change: the history
-   *  entry records it (missing_author / bad_author otherwise); with snapshot=false no entry is written and none is needed. */
-  save(tl: Timeline, label: string, author: string | undefined, snapshot = true): number {
+   *  entry records it (missing_author / bad_author otherwise). */
+  save(tl: Timeline, label: string, author: string | undefined): number {
     checkVersion(tl, "the timeline to save", "save only a timeline loaded from the project");
-    if (snapshot) checkAuthor(author);
+    const by = checkAuthor(author);
     resolve(tl);
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
       const disk = revisionOf(parse(cur));
       checkRevision(revisionOf(tl), disk);
-      let pushed: string | undefined;
-      if (snapshot) { this.entries("undo"); this.entries("redo"); pushed = this.push("undo", cur, label, author!); } // both stacks verified before the first write
+      this.entries("undo"); this.entries("redo"); // both stacks verified before the first write
+      const pushed = this.push("undo", cur, label, by);
       tl.revision = disk + 1;
       // invariant: after a save the redo stack is empty, or the save did not happen. The stack is moved aside before the write (a failure there throws with nothing
       // written), put back if the write fails (history stays as it was), and removed afterwards; a removal that fails leaves an unread dir, never a replayable stack.
       let aside: string | undefined;
       try {
-        if (snapshot) { const redo = this.stack("redo"), to = join(dirname(redo), `.redo-${randomBytes(8).toString("hex")}`); renameSync(redo, to); aside = to; }
+        const redo = this.stack("redo"), to = join(dirname(redo), `.redo-${randomBytes(8).toString("hex")}`);
+        renameSync(redo, to); aside = to;
         this.write(tl);
       } catch (e) {
         if (aside) try { renameSync(aside, join(dirname(aside), "redo")); } catch { /* redo stays gone: empty, never stale */ }
-        if (pushed) rmSync(pushed, { force: true });
+        rmSync(pushed, { force: true });
         throw e;
       }
       if (aside) try { rmSync(aside, { recursive: true, force: true }); } catch { /* inert: no stack reads this name */ }
-      if (pushed) this.prune("undo");
+      this.prune("undo");
       return tl.revision;
     });
   }

@@ -486,6 +486,7 @@ export const feedback = {
 /** Compute the derived assets the timeline needs (mattes, vision analyses) and apply the pending vision requests. Slow:
  *  MCP runs it as a background job (render_status); preview/render fail with not_prepared until it ran. */
 export const prepare = (project?: string, o: { progress?: (done: number, total: number, download?: PREP.DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean; author?: string } = {}) => {
+  checkAuthor(o.author); // before the sweep and any computing: a call with no identity does nothing
   const p = openProject(project);
   CACHE.sweepStale(p);
   return PREP.prepare(p, o);

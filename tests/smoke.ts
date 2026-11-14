@@ -126,6 +126,8 @@ console.log("history authors");
     const r = mark(5, o);
     check(`${what} is bad_author and saves nothing`, r.ok === false && r.error.code === "bad_author" && cli(["history"], HC).undo.length === n0, r);
   }
+  const bm = cli(["beats", join(tmp, "no-such-file.wav"), "--markers", "--author", "you"], { ...HC, ok: false });
+  check("beats --markers with a refused author fails on the author, before the analysis", bm.ok === false && bm.error.code === "bad_author", bm);
   const u = cli(["undo", "--author", "dave"], HC);
   check("undo records the edit's author and who undid it", u.undone[0].author === "cli" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
   const r = cli(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });

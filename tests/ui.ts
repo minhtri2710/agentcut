@@ -14,7 +14,8 @@ const check = (name: string, cond: unknown, info?: unknown) => {
   else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
 };
 const cliAsync = (args: (string | number)[]) => new Promise<any>((ok) => {
-  const ch = spawn(CLI[0], [...CLI.slice(1), ...args.map(String)]);
+  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by
+  const ch = spawn(CLI[0], [...CLI.slice(1), ...args.map(String)], { env: inherited });
   let out = "";
   ch.stdout.on("data", (c) => (out += c));
   ch.on("close", () => { try { ok(JSON.parse(out)); } catch { ok({ ok: false, raw: out }); } });

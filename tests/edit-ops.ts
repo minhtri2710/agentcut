@@ -1369,6 +1369,9 @@ console.log("op arguments, documented ranges, undo steps");
   writeFileSync(newest, JSON.stringify({ ...moved, author: "<b>x</b>" }));
   const hb: any = await Promise.resolve().then(() => api.history(ha)).then(() => ({}), (x: any) => x);
   check("a stored author that is not plain text is a named error, never shown", hb.code === "bad_json" && /invalid author/.test(hb.message) && !!hb.hint, { code: hb.code, message: hb.message });
+  const nfd = "Trí Nguyễn"; // Vietnamese with combining marks (NFD)
+  const nfdRun: any = await api.apply(ha, mark, { author: nfd }).catch((e: any) => e);
+  check("an author with combining marks is accepted and kept as given", nfdRun.ok === true && api.history(ha).undo.at(-1)?.author === nfd, { code: nfdRun.code, message: nfdRun.message });
 }
 
 console.log("validity + render");

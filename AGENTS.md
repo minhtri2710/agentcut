@@ -195,7 +195,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
   Without a revision the batch is applied to the latest state. A replace_timeline whose timeline carries a "revision" other than the project's is refused the same way.
   Every apply result names the project root it applied to ("project"): the one a saved batch changed, or the one a dry run checked without saving.
-- Every undo-history entry records its author, self-declared and not a security boundary: 1-64 characters (letters, digits, space . _ - : @ / +).
+- Every undo-history entry records its author, self-declared and not a security boundary: 1-64 characters (letters, accented ones too, digits, space . _ - : @ / +).
   CLI: --author NAME, else $AGENTCUT_AUTHOR, else "cli"; MCP: the client name you declared when you connected (else "mcp"); the page: "you".
   "you" and "unknown" are reserved: a CLI --author or $AGENTCUT_AUTHOR of either is bad_author. history, undo and redo list {label, author}
   per entry; undo and redo also set movedBy (the author who undid or redid it), so you can see whose edit was undone and by whom.
