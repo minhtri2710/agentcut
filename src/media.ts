@@ -321,7 +321,7 @@ export class FrameSource {
   }
 
   private gone(why: string, at: number) {
-    return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "relink_asset with the same path probes the file again (a sound that outlasts the picture is then recorded as the picture's length); or trim the clip to the picture's length. The file may be truncated or have changed");
+    return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "relink_asset with the same path probes the file again, which records a shorter picture when the file reports one; otherwise trim the clip to the picture's length. The file may be truncated or have changed");
   }
 
   /** The frame a freeze holds: the one at the in-point (wrapped into the source for a loop clip); at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */

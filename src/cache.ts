@@ -87,7 +87,7 @@ const PART_FILE = /\.part-(\d+)-/;                // safe-write.ts tmpSibling: <
 const RENDER_TMP = /^render-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp: render-<pid>-<mkdtemp suffix>
 
 /** Remove what a dead process left behind (SIGKILL, crash, power loss; catchable stops clean up after themselves), run at the
- *  start of prepare and of render. Deletes only (a) `.part-<pid>-` files in the project cache dir and (b) `render-<pid>-xxxxxx`
+ *  start of prepare, of render and of cache prune. Deletes only (a) `.part-<pid>-` files in the project cache dir and (b) `render-<pid>-xxxxxx`
  *  directories in <project>/.agentcut/tmp, only when `alive(pid)` is false (ESRCH only). Every target is a direct child of a
  *  directory that realpath-resolves to where it claims to be under the project (symlinked areas are skipped, never followed),
  *  is re-checked with `contained` right before the delete, and is never a symlink. A pid that was reused by an unrelated live
