@@ -20,6 +20,16 @@ export function needFfmpeg() {
   ffChecked = true;
 }
 
+let ffVersion: string | undefined;
+/** The first line of `ffmpeg -version` (version and build), read once per process: a different FFmpeg may decode other pixels. */
+export function ffmpegVersion(): string {
+  if (ffVersion === undefined) {
+    needFfmpeg();
+    ffVersion = (spawnSync("ffmpeg", ["-version"], { encoding: "utf8" }).stdout ?? "").split("\n")[0].trim();
+  }
+  return ffVersion;
+}
+
 /** FFmpeg's native vp8/vp9 decoders drop the alpha plane of a webm; the libvpx decoders keep it. */
 const VPX_DECODER = new Map([["vp8", "libvpx"], ["vp9", "libvpx-vp9"]]);
 
@@ -213,6 +223,7 @@ export class FrameSource {
   private tail: { frame: Buffer | null } | undefined; // tailFrame's answer, constant for the source: back-seeks into a held region do not decode again
   private hw = HWACCEL;
   private input: string[];
+  private dec: string | null;
   constructor(private o: SourceOpts) {
     if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
     const crop = o.crop || {};
@@ -235,8 +246,13 @@ export class FrameSource {
     // an alpha vp8/vp9 source needs libvpx, which hwaccel does not replace
     const dec = alphaDecoder(o.codec, o.alpha, o.path);
     if (dec) this.hw = false;
+    this.dec = dec;
     this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path)];
   }
+
+  /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
+   *  the output rate, the source's own length and rate (they pick the held last frame), and the FFmpeg that decodes. Equal keys decode equal pixels. */
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, ffmpegVersion()]); }
 
   private args(k: number, single: boolean): string[] {
     const o = this.o;

@@ -387,6 +387,114 @@ console.log("review: a cancelled review stops, progress is reported, findings do
   check("a review cancelled before it starts, with a text layer to measure, fails with aborted", (await api.review(RP, { signal: pre.signal }).catch((x) => x))?.code === "aborted");
 }
 
+console.log("review: the black-frame scan remembers each source frame and reads each source once, in order");
+{
+  const { Project } = await import("../src/project.ts");
+  const { Renderer } = await import("../src/render.ts");
+  const { resolve, totalDuration, clipStart, normAnim } = await import("../src/model.ts");
+  const A = join(m, "av.mp4"), dark = join(m, "dark.mp4"), edge = join(m, "edge25.mp4"), long = join(m, "long.mp4"), swap = join(m, "swap.mp4");
+  ff("-f", "lavfi", "-i", "color=c=0x050505:s=320x240:r=24:d=6", "-pix_fmt", "yuv420p", dark);
+  // 25 fps (the timelines run at 24): bright until 2.0 s, then dark
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5,format=yuv420p,geq=lum='if(gte(T,2),5,lum(X,Y))':cb='if(gte(T,2),128,cb(X,Y))':cr='if(gte(T,2),128,cr(X,Y))'", "-pix_fmt", "yuv420p", edge);
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=12", "-pix_fmt", "yuv420p", long);
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=4", "-pix_fmt", "yuv420p", swap);
+  const build = async (name: string, ops: object[]) => {
+    const d = join(tmp, `bm-${name}`);
+    api.create(d, { width: 320, height: 240, fps: 24 });
+    const r: any = await api.apply(d, ops);
+    return { d, ids: r.results.map((x: any) => x.id as string) };
+  };
+  const vid = (extra: object = {}, src = A) => ({ op: "add_clip", track: "main", src, ...extra });
+  const gap = (duration: number) => ({ op: "add_clip", track: "main", type: "gap", duration });
+  // the scan as it was before the memo: the renderer draws every sample, runs are two or more dark samples in a row
+  const renderOnly = async (d: string) => {
+    const pj = new Project(d), t = pj.absolutized(resolve(pj.load())), T = totalDuration(t), step = 0.2, fps = Number(t.settings.fps);
+    const R = new Renderer(structuredClone(t), pj.root, Math.min(1, 64 / t.settings.width));
+    const dips: [number, number][] = [], low: number[] = [];
+    for (const tr of t.tracks) if (!tr.hidden && (tr.kind ?? "video") !== "audio") tr.clips.forEach((c: any, i: number) => {
+      const s = i > 0 ? normAnim(c.transition, 0.5) : null;
+      if (s?.type === "dip_black") dips.push([clipStart(c), clipStart(c) + s.duration]);
+    });
+    try {
+      for (let x = 0; x < T - 1e-6; x += step) {
+        const tt = Math.min(x, T - 1 / fps);
+        await R.frame(tt);
+        const px = R.pixels();
+        let bright = 0;
+        for (let i = 0; i < px.length; i += 4) if (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2] > 24) bright++;
+        if (bright / (px.length / 4) < 0.03 && !dips.some(([a, b]) => tt >= a - 1e-6 && tt <= b + 1e-6)) low.push(tt);
+      }
+    } finally { R.close(); }
+    const runs: number[][] = [];
+    for (let i = 0; i < low.length; i++) {
+      let j = i;
+      while (j + 1 < low.length && low[j + 1] - low[j] < step * 1.5) j++;
+      if (j > i) runs.push([+low[i].toFixed(3), +Math.min(T, low[j] + step).toFixed(3)]);
+      i = j;
+    }
+    return runs;
+  };
+  const scan = async (d: string) => {
+    const stats: any = {}, rv: any = await api.review(d, { stats } as any);
+    return { stats, black: rv.findings.filter((f: any) => f.type === "black_frames").map((f: any) => [f.t, f.end]) as number[][] };
+  };
+  const same = (...x: unknown[]) => x.every((v) => JSON.stringify(v) === JSON.stringify(x[0]));
+
+  // guards: the six cases keep the findings the scan gave before the memo
+  const truth: [string, object[], number[][], object[]?][] = [
+    ["tr_clean", [vid(), vid(), vid()], [], [{ op: "add_transition", to: "vid2", type: "crossfade", duration: 0.5 }]],
+    ["tr_gap", [vid({ duration: 3 }), gap(2), vid({ duration: 3 })], [[3, 5]]],
+    ["tr_gap_short", [vid({ duration: 3 }), gap(0.3), vid({ duration: 3 })], [[3, 3.4]]],
+    ["tr_dark", [vid({ duration: 3 }), vid({}, dark), vid({ duration: 3 })], [[3, 9]]],
+    ["tr_fade", [vid({ exit: { type: "fade", duration: 1.5 } }), vid({ enter: { type: "fade", duration: 1.5 } })], []],
+    ["tr_dip", [vid(), vid()], [], [{ op: "add_transition", to: "vid2", type: "dip_black", duration: 1.2 }]],
+  ];
+  for (const [name, ops, want, after] of truth) {
+    const { d } = await build(name, ops);
+    if (after) await api.apply(d, after);
+    const fresh = await scan(d), again = await scan(d);
+    check(`${name}: black ${want.map(([a, b]) => `${a}-${b}`).join(", ") || "none"} on a first scan, from the memo, and as the renderer alone draws it`,
+      same(fresh.black, want, again.black, await renderOnly(d)) && again.stats.frames === 0, { fresh: fresh.black, again: again.black, stats: again.stats });
+  }
+
+  // new rows
+  const reuse = await build("reuse", [1, 2, 3, 4].map(() => vid({ in: 0, duration: 2 })));
+  const rs = await scan(reuse.d);
+  check("four clips over the same two seconds of source: each frame is decoded once and every sample comes from the plain path",
+    rs.stats.frames > 0 && rs.stats.frames <= 2 * 24 && rs.stats.rendered === 0 && rs.stats.memo + rs.stats.read === 40 && !rs.black.length, rs.stats);
+
+  const off = await build("offgrid", [vid({ in: 1.013, duration: 2 }, edge), vid({ in: 0.5, duration: 2.5 }, edge)]);
+  const os = await scan(off.d), ref = await renderOnly(off.d);
+  check("an in-point between frames of a 25 fps source at a bright-to-dark edge: the black runs are the renderer's own, not one frame off",
+    ref.length === 2 && same(os.black, ref) && os.stats.rendered === 0, { memo: os.black, renderer: ref, stats: os.stats });
+
+  const ed = await build("edit", [0, 3, 6, 9].map((s) => vid({ in: s, duration: 1 }, long)));
+  const e1 = await scan(ed.d);
+  await api.apply(ed.d, [{ op: "update_clip", id: ed.ids[3], set: { in: 11 } }]);
+  const e2 = await scan(ed.d);
+  check("a second review after one clip changed decodes only that clip's frames and takes the other three clips' samples from the memo",
+    e1.stats.read === 20 && e2.stats.frames > 0 && e2.stats.frames <= 24 && e2.stats.read === 5 && e2.stats.memo === 15 && e2.stats.rendered === 0 && !e2.black.length, { first: e1.stats, second: e2.stats });
+
+  const sw = await build("swap", [vid({ duration: 3 }, swap)]);
+  const s1 = await scan(sw.d);
+  ff("-f", "lavfi", "-i", "color=c=0x050505:s=320x240:r=24:d=4", "-pix_fmt", "yuv420p", swap);
+  const s2 = await scan(sw.d);
+  check("the memo is not used for a source file that changed: the new file is read and its black stretch found",
+    !s1.black.length && same(s2.black, [[0, 3]], await renderOnly(sw.d)) && s2.stats.memo === 0 && s2.stats.frames > 0, { before: s1.black, after: s2.black, stats: s2.stats });
+
+  const names = () => readdirSync(join(reuse.d, ".agentcut", "cache")).filter((f) => /^dark-.*\.json$/.test(f));
+  const had = names(), counted = (api.cache.info(reuse.d) as any).cache.files;
+  const pruned: any = api.cache.prune(reuse.d);
+  const rebuilt = await scan(reuse.d);
+  check("the memo is a cache file: cache info counts it, prune removes it, the next review rebuilds it",
+    had.length === 1 && counted >= 1 && pruned.files.some((f: string) => f.includes(had[0])) && rebuilt.stats.memo === 0 && rebuilt.stats.frames > 0 && names().length === 1, { had, counted, pruned: pruned.files, stats: rebuilt.stats });
+
+  const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
+  const mx = await scan(mixed.d);
+  check("clips off the fast path (a speed change, a title above) are drawn by the renderer, the rest from the memo, and the findings are the renderer's",
+    mx.stats.memo + mx.stats.read === 5 && mx.stats.rendered === 15 && same(mx.black, await renderOnly(mixed.d)), mx.stats);
+}
+
 console.log("templates: the text of every template stays inside the safe area at every preset size");
 {
   const { TEMPLATES } = await import("../src/presets.ts");
