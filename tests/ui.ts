@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CONTAINED_FLAGS, EXEC_DENY, SANDBOX_EXEC, SINGLETON_ALLOW, bundledUpdaterHelpers, containmentProblem, profileText, resolveChrome, spawnsChromeDirectly, writeProfile } from "./chrome.ts";
+import { CONTAINED_FLAGS, SANDBOX_EXEC, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -619,21 +619,17 @@ console.log("browser gate");
 // ---------------------------------------------------------------- every Chrome launch of the suite is contained (none of these rows starts Chrome)
 console.log("chrome containment");
 {
-  const noProfile = (cmd: string) => spawnSync(cmd, { encoding: "utf8", timeout: 20000 });
-  const standIns = ["GoogleUpdater.app/Contents/MacOS/GoogleUpdater", "Keystone/ksadmin", "bin/launchctl"].map((p) => join(tmp, "standin", p));
-  const okProbe = join(tmp, "standin", "bin", "probe");
-  for (const p of [...standIns, okProbe]) { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, "#!/bin/sh\nexit 0\n"); chmodSync(p, 0o755); } // scripts: a copied system binary inside an app folder is killed by the code-signing check
-  const profile = writeProfile(tmp);
-  const contained = (cmd: string) => spawnSync(SANDBOX_EXEC, ["-f", profile, cmd], { encoding: "utf8", timeout: 20000 });
-  check("the containment profile applies on this host, and an executable that is not an update helper runs under it", containmentProblem() === null && contained(okProbe).status === 0, { problem: containmentProblem(), r: contained(okProbe) });
-  const free = standIns.map((p) => noProfile(p).status), held = standIns.map((p) => contained(p));
-  check("stand-ins for the update helper, its admin tool and launchctl run when no profile is applied (so the refusal below is the profile's)", free.every((s) => s === 0), free);
-  check("  and every one of them is refused under the profile", held.every((r) => r.status !== 0 && /not permitted/i.test(r.stderr)), held.map((r) => [r.status, r.stderr.slice(0, 120)]));
-  const helpers = bundledUpdaterHelpers(resolveChrome() ?? "");
-  check("the update helper that ships inside the installed Chrome is found, and the profile's exec pattern matches its path", helpers.length > 0 && helpers.every((h) => EXEC_DENY.some((r) => new RegExp(r).test(h))), helpers);
-  check("the browser's own executable is not matched by the pattern", !!resolveChrome() && !EXEC_DENY.some((r) => new RegExp(r).test(resolveChrome()!)));
-  check("the profile allows only loopback and Chrome's own profile-lock socket beyond the default", JSON.stringify(profileText().split("\n").filter((l) => l.startsWith("(allow "))) === JSON.stringify([
-    "(allow default)", '(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))', SINGLETON_ALLOW]), profileText());
+  // (the rows that need this host's sandbox-exec and installed Chrome are in ui-browser.ts, next to the launch)
+  const home = "/home/pinned", text = profileText(home), lines = (t: string, kind: string) => t.split("\n").filter((l) => l.startsWith(`(${kind} `));
+  check("the profile allows only loopback and Chrome's own profile-lock socket beyond the default", JSON.stringify(lines(text, "allow")) === JSON.stringify([
+    "(allow default)", '(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))', SINGLETON_ALLOW]), text);
+  const denies = [
+    String.raw`(deny process-exec (regex #"[Gg]oogle[Uu]pdater") (regex #"[Kk]eystone") (regex #"[Kk]sadmin") (regex #"launchctl"))`,
+    String.raw`(deny mach-lookup (global-name-regex #"^com\.google\.([Gg]oogle[Uu]pdater|[Kk]eystone)"))`,
+    "(deny lsopen)",
+    `(deny file-write* (subpath "${home}/Library/Google") (subpath "${home}/Library/Application Support/Google/GoogleUpdater") (subpath "${home}/Library/LaunchAgents") (subpath "/Library/Google") (subpath "/Library/LaunchAgents") (subpath "/Library/LaunchDaemons"))`,
+    "(deny network*)"];
+  check("the profile denies exec of the update helpers, their mach names, lsopen, writes to the update directories, and the network, in that order", JSON.stringify(lines(text, "deny")) === JSON.stringify(denies), lines(text, "deny"));
   const noSandbox = "--no-" + "sandbox"; // written apart so this file does not name the flag the row looks for
   check("Chrome's own sandbox is switched off only in tests/chrome.ts, next to the profile: the flag list is pinned and no other test file names the flag",
     JSON.stringify(CONTAINED_FLAGS) === JSON.stringify(["--disable-background-networking", "--disable-component-update", noSandbox])

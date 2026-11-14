@@ -8,8 +8,8 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromeHint, containOrExit, launchChrome, refusedAtOnce, resolveChrome } from "./chrome.ts";
+import { join, resolve } from "node:path";
+import { EXEC_DENY, SANDBOX_EXEC, accountHome, bundledUpdaterHelpers, chromeHint, containOrExit, launchChrome, refusedAtOnce, resolveChrome } from "./chrome.ts";
 
 const CHROME = resolveChrome();
 if (!CHROME || !existsSync(CHROME)) {
@@ -51,6 +51,27 @@ const cmpId = load().tracks.find((t: any) => t.id === "main").clips[1].id as str
 // ---------------------------------------------------------------- browser
 const ui = await startUi(dir, { port: 0 });
 const profile = containOrExit(tmp, "ui-browser");
+console.log("containment profile");
+{
+  // Stand-ins are scripts, not copies of a system binary (one inside an app folder is killed by the code-signing check). Each path matches exactly one exec pattern.
+  const root = join(tmp, "standin"), at = (p: string) => { const f = join(root, p); mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(f, "#!/bin/sh\nexit 0\n"); chmodSync(f, 0o755); return f; };
+  const updaters = ["GoogleUpdater.app/Contents/MacOS/GoogleUpdater", "Keystone/payload", "Helpers/ksadmin", "bin/launchctl"].map(at), plain = at("bin/probe");
+  const free = (f: string) => spawnSync(f, { encoding: "utf8", timeout: 20_000 }), held = (f: string) => spawnSync(SANDBOX_EXEC, ["-f", profile, f], { encoding: "utf8", timeout: 20_000 });
+  check("an executable that is not an update helper runs under the profile", held(plain).status === 0, held(plain));
+  check("stand-ins for the update helper, the update service, its admin tool and launchctl run when no profile is applied (so the refusal below is the profile's)", updaters.every((f) => free(f).status === 0), updaters.map((f) => free(f).status));
+  const refused = updaters.map(held);
+  check("  and every one of them is refused under the profile", refused.every((r) => r.status !== 0 && /not permitted/i.test(r.stderr)), refused.map((r) => [r.status, r.stderr.slice(0, 120)]));
+  const helpers = bundledUpdaterHelpers(CHROME);
+  check("the update helper that ships inside this Chrome is found, and the profile's exec pattern matches its path",
+    helpers.length > 0 && helpers.every((h) => EXEC_DENY.some((r) => new RegExp(r).test(h))), helpers.length ? helpers : "this Chrome has no bundled update helper: there is nothing for the pattern to be checked against, so the suite stays red instead of passing without that check");
+  check("the browser's own executable is not matched by the exec pattern", !EXEC_DENY.some((r) => new RegExp(r).test(CHROME)), CHROME);
+  // a child with HOME set at spawn (this suite itself may run under a fake HOME): the write denies still name the account's home
+  const fakeHome = join(tmp, "not-the-home"), script = join(tmp, "profile-probe.ts"), real = accountHome();
+  writeFileSync(script, `import { profileText } from ${JSON.stringify(resolve(import.meta.dir, "chrome.ts"))};\nprocess.stdout.write(profileText());\n`);
+  const child = spawnSync(process.execPath, ["--no-install", script], { env: { ...process.env, HOME: fakeHome }, encoding: "utf8", timeout: 30_000 });
+  check("the write denies name the account's home even when HOME is something else", child.status === 0 && fakeHome !== real && child.stdout.includes(`(subpath "${real}/Library/Google")`) && child.stdout.includes(`(subpath "${real}/Library/LaunchAgents")`) && !child.stdout.includes(fakeHome),
+    { status: child.status, real, err: child.stderr.slice(0, 200) });
+}
 const chrome = launchChrome(CHROME, profile, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run", "--use-mock-keychain", "--password-store=basic",
   "--no-default-browser-check", "--disable-gpu", "--window-size=1440,900", "about:blank"]);
 const exited = new Promise<void>((ok) => chrome.once("close", () => ok()));
@@ -682,6 +703,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   const reachable = await probe(ui.url), outside = await probe("http://192.0.2.1/");
   check("the browser reaches the suite's own loopback page, and the check does not call that refused", reachable.outcome === "ok" && !refusedAtOnce(reachable), reachable);
   check("a fetch to an address outside the host is refused at once by the network layer", refusedAtOnce(outside), outside);
+  console.log(`    the browser reported ${outside.errorText} after ${Math.round(outside.ms)} ms`); // recorded, so a lane log shows which error the refusal is
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

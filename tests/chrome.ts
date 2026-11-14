@@ -3,10 +3,9 @@
 // macOS `sandbox-exec` with a profile that denies executing those helpers and the update service's mach names, denies writes to the
 // update service's directories, and denies the network except loopback. There is no uncontained path and no switch for one:
 // a host without sandbox-exec (or a seat that is itself sandboxed) fails the suite instead of launching Chrome.
-// The mach-lookup deny has no row of its own (no safe probe exists): it is covered by the profile parsing and by the denial count of a run.
+// The mach-lookup deny is not proven by a row: the profile parsing shows its syntax only, and no installed tool looks up a mach name.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -32,7 +31,15 @@ export const bundledUpdaterHelpers = (chrome: string): string[] => {
 // This is the only allow beyond loopback: that one file name, nothing outbound.
 export const SINGLETON_ALLOW = '(allow network-bind (local unix-socket (regex #"^/(private/)?var/folders/[^/]+/[^/]+/T/com\\.google\\.Chrome\\.[^/]+/SingletonSocket$")))';
 const q = (s: string) => `"${s.replace(/[\\"]/g, "\\$&")}"`;
-export const profileText = (home = homedir()): string => `(version 1)
+// The account's home from the user database, never $HOME: a run under a fake HOME must still deny writes to the real update directories.
+// (Bun's os.userInfo().homedir follows $HOME, so `id -P` is read: name:pw:uid:gid:class:change:expire:gecos:home:shell.)
+export const accountHome = (): string => {
+  const r = spawnSync("/usr/bin/id", ["-P"], { encoding: "utf8", timeout: 10_000 });
+  const home = r.stdout?.trim().split(":")[8];
+  if (r.status !== 0 || !home?.startsWith("/")) throw new Error(`cannot read the account's home directory (id -P exit ${r.status})`);
+  return home;
+};
+export const profileText = (home = accountHome()): string => `(version 1)
 (allow default)
 (deny process-exec ${EXEC_DENY.map((r) => `(regex #"${r}")`).join(" ")})
 (deny mach-lookup (global-name-regex #"${MACH_DENY}"))
@@ -71,9 +78,9 @@ export const CONTAINED_FLAGS = ["--disable-background-networking", "--disable-co
 export const launchChrome = (chrome: string, profile: string, args: string[]): ChildProcess =>
   spawn(SANDBOX_EXEC, ["-f", profile, chrome, ...CONTAINED_FLAGS, ...args], { stdio: ["ignore", "ignore", "pipe"] });
 
-/** A test file that starts Chrome itself instead of going through launchChrome. */
+/** A test file that starts Chrome itself instead of going through launchChrome. A tripwire against accidents, not a guarantee (it misses an alias or Bun.spawn): the structural guarantee is that the suite imports launchChrome. */
 export const spawnsChromeDirectly = (text: string): boolean => /\b(spawn|spawnSync|execFile|execFileSync|exec|execSync)\s*\(\s*(CHROME|MAC_CHROME|chrome)\b|Google Chrome\.app/.test(text);
 
-/** A page fetch outcome that shows the network layer refused the address at once (not a timeout, not a response). */
+/** A page fetch outcome that shows the sandbox refused the address at once: the error the profile's denied connect gives (observed in a contained run), not a timeout, a missing route or a response. */
 export const refusedAtOnce = (r: { outcome: string; ms: number; errorText?: string }): boolean =>
-  r.outcome === "failed" && r.ms < 3000 && /^net::ERR_/.test(r.errorText ?? "") && !/TIMED_OUT/.test(r.errorText ?? "");
+  r.outcome === "failed" && r.ms < 3000 && r.errorText === "net::ERR_ACCESS_DENIED";
