@@ -9,7 +9,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./proc.ts";
 import { alive } from "./project.ts";
 import { type Dict, EditError, MATTE_MB, MATTE_MODELS, MATTE_PINS, type ModelPin, ORT_ENV, sizeText } from "./model.ts";
-import { commit, createFile, ensureDir, notWritable, tmpSibling, writeFile } from "./safe-write.ts";
+import { commit, createFile, ensureDir, HOST_TAG, notWritable, partSibling, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";
 import { VISION_PY } from "./vision-py.ts";
 
@@ -54,11 +54,12 @@ export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new
 
 /** No bytes for this long ends a download: a 176 MB model may take as long as it needs while data keeps arriving. */
 const DOWNLOAD_IDLE_MS = 60_000;
-/** Remove the `<name>.part-<pid>-<12 hex>.onnx` files a dead process left beside `file` (a kill, a crash or a second signal skips downloadModel's cleanup).
- *  Only the exact names tmpSibling makes for this model, as direct regular-file children of the model dir (links are not files here), whose pid is
- *  provably gone (`alive`, as cache.ts sweepStale judges it); housekeeping never fails the download. */
+/** Remove the `<name>.part-<pid>-<HOST_TAG>-<12 hex>.onnx` files a dead process of this machine left beside `file` (a kill, a crash or a second signal skips
+ *  downloadModel's cleanup). Only the exact names partSibling makes for this model (untagged names and other machines' tags stay: a user cache on a shared
+ *  disk may hold their live downloads), as direct regular-file children of the model dir (links are not files here), whose pid is provably gone
+ *  (`alive`, as cache.ts sweepStale judges it); housekeeping never fails the download. */
 function sweepModelParts(file: string) {
-  const dir = dirname(file), re = new RegExp(`^${basename(file, ".onnx").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.part-(\\d+)-[0-9a-f]{12}\\.onnx$`);
+  const dir = dirname(file), re = new RegExp(`^${basename(file, ".onnx").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.part-(\\d+)-${HOST_TAG}-[0-9a-f]{12}\\.onnx$`);
   try {
     for (const d of readdirSync(dir, { withFileTypes: true })) {
       const m = re.exec(d.name);
@@ -91,7 +92,7 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
       arm();
       if ((n += c.length) > m.bytes) throw fail(`the download is larger than the expected ${m.bytes} bytes`);
       hash.update(c);
-      if (fd === undefined) { const t = tmpSibling(file, base); try { fd = openSync(t, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } tmp = t; } // tmp is set only once the name is ours
+      if (fd === undefined) { const t = partSibling(file, base); try { fd = openSync(t, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } tmp = t; } // tmp is set only once the name is ours
       for (let at = 0; at < c.length;) at += writeSync(fd, c, at);
     }
     if (fd !== undefined) { closeSync(fd); fd = undefined; }

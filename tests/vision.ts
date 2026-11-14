@@ -1086,19 +1086,23 @@ console.log("the face model: descriptor, job, gate, download");
         const Z = fresh("download-parts"), dir = join(Z, "models", "test_model_ok");
         mkdirSync(dir, { recursive: true });
         const dead = Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout);
-        const part = (pid: number, tag: string, name = "test_model_ok") => join(dir, `${name}.part-${pid}-${tag}.onnx`);
+        const { HOST_TAG } = await import("../src/safe-write.ts"), other = HOST_TAG === "00000000" ? "11111111" : "00000000"; // another machine's tag
+        const name = (pid: number, tag: string, model = "test_model_ok", host = HOST_TAG) => `${model}.part-${pid}-${host}-${tag}.onnx`;
+        const part = (pid: number, tag: string, model = "test_model_ok", host = HOST_TAG) => join(dir, name(pid, tag, model, host));
         const outside = join(Z, "outside.bin");
         writeFileSync(outside, "outside");
         writeFileSync(part(dead, "aaaaaaaaaaaa"), "dead process");
         writeFileSync(part(process.pid, "bbbbbbbbbbbb"), "live process");
         symlink(outside, part(dead, "cccccccccccc")); // the right name, but a link
-        writeFileSync(part(dead, "dd"), "a name tmpSibling never makes");
+        writeFileSync(part(dead, "dd"), "a name partSibling never makes");
+        writeFileSync(part(dead, "ffffffffffff", "test_model_ok", other), "another machine's part"); // a dead pid here means nothing there
+        writeFileSync(join(dir, `test_model_ok.part-${dead}-gggggggggggg.onnx`), "an untagged name");
         writeFileSync(part(dead, "eeeeeeeeeeee", "test_model_other"), "another model's part");
         const dl = await inCache(Z, () => caught(() => V.downloadModel(desc("test_model_ok", "/ok"))));
-        const kept = readdirSync(dir).sort(), want = [`test_model_ok.onnx`, `test_model_ok.part-${dead}-cccccccccccc.onnx`, `test_model_ok.part-${dead}-dd.onnx`, `test_model_ok.part-${process.pid}-bbbbbbbbbbbb.onnx`, `test_model_other.part-${dead}-eeeeeeeeeeee.onnx`].sort();
+        const kept = readdirSync(dir).sort(), want = ["test_model_ok.onnx", name(dead, "cccccccccccc"), name(dead, "dd"), name(dead, "ffffffffffff", "test_model_ok", other), `test_model_ok.part-${dead}-gggggggggggg.onnx`, name(process.pid, "bbbbbbbbbbbb"), name(dead, "eeeeeeeeeeee", "test_model_other")].sort();
         check("downloadModel: the part file of a dead process is removed by the next download of that model, and the download itself succeeds", dl === null && !existsSync(part(dead, "aaaaaaaaaaaa")) && readFileSync(join(dir, "test_model_ok.onnx")).equals(good), { dl: dl?.message, kept });
-        check("downloadModel: a live process's part file is kept, with its content", kept.includes(`test_model_ok.part-${process.pid}-bbbbbbbbbbbb.onnx`) && readFileSync(part(process.pid, "bbbbbbbbbbbb"), "utf8") === "live process", { kept });
-        check("downloadModel: a link with the matching name, a name tmpSibling never makes and another model's part are left alone, and the link's target is not touched",
+        check("downloadModel: a live process's part file is kept, with its content", kept.includes(name(process.pid, "bbbbbbbbbbbb")) && readFileSync(part(process.pid, "bbbbbbbbbbbb"), "utf8") === "live process", { kept });
+        check("downloadModel: a link with the matching name, a name partSibling never makes, an untagged name, another machine's tag and another model's part are left alone, and the link's target is not touched",
           JSON.stringify(kept) === JSON.stringify(want) && lstat(part(dead, "cccccccccccc")).isSymbolicLink() && readFileSync(outside, "utf8") === "outside", { kept, want });
       }
     } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); }
