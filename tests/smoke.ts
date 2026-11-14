@@ -320,6 +320,9 @@ console.log("cli surface: --start/--end, transcribe, tts");
     asr(`printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." >&2\nexit 0\n`);
     const lang = fail(talk, "--model", model, "--language", "xx");
     check("transcribe: the engine exits 0 with no output for an unknown language: bad_value naming it", lang.code === "bad_value" && lang.message.includes("xx") && !/usage/.test(lang.message), lang);
+    asr(`printf '%s\\n' "ggml_metal_init: error: something" "error: unknown language 'xx'" >&2\nexit 0\n`);
+    const logged = fail(talk, "--model", model, "--language", "xx");
+    check("transcribe: the engine's own error line wins over a library's `<name>: error:` log line printed before it", logged.code === "bad_value" && logged.message === "unknown language 'xx'", logged);
     asr(`echo "error: failed to read the audio" >&2\nexit 0\n`);
     const quiet = fail(talk, "--model", model, "--language", "xx");
     check("transcribe: the engine exits 0 with no output and no language line: asr_failed with its error line", quiet.code === "asr_failed" && quiet.message.includes("failed to read the audio"), quiet);
@@ -328,12 +331,16 @@ console.log("cli surface: --start/--end, transcribe, tts");
     check("transcribe: an engine failure shows its exit status, never its usage text", usageOnly.code === "asr_failed" && usageOnly.message.includes("3") && !/usage|--help/.test(usageOnly.message), usageOnly);
     // the other engine (no model named, so no whisper.cpp) reports an argument error as "whisper: error: ..." after its usage line
     const argError = (arg: string) => writeFileSync(join(bin, "whisper"), `#!/bin/sh\necho "usage: whisper [-h] [--model MODEL] audio [audio ...]" >&2\necho "whisper: error: argument ${arg}: invalid choice: 'xx' (choose from 'af', 'am', 'ar')" >&2\nexit 2\n`, { mode: 0o755 });
+    const modelNow = process.env.AGENTCUT_WHISPER_MODEL;
+    delete process.env.AGENTCUT_WHISPER_MODEL;
+    try {
     argError("--language");
     const pyLang = fail(talk, "--language", "xx");
     check("transcribe: the other engine's invalid --language is bad_value naming the language, without its list of choices", pyLang.code === "bad_value" && pyLang.message === "unknown language 'xx'" && !/choose from/.test(`${pyLang.message} ${pyLang.hint}`), pyLang);
     argError("--model");
     const pyModel = fail(talk, "--language", "vi");
     check("transcribe: another argument error of the other engine is asr_failed in the engine's own words, without its list of choices", pyModel.code === "asr_failed" && pyModel.message === "argument --model: invalid choice: 'xx'" && !/choose from|exited/.test(pyModel.message), pyModel);
+    } finally { if (modelNow !== undefined) process.env.AGENTCUT_WHISPER_MODEL = modelNow; }
   } finally { process.env.PATH = PATH; }
   }
   const S = join(tmp, "tts-proj");

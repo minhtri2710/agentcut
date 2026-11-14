@@ -337,11 +337,11 @@ export function transcribeEngine() {
   };
 }
 
-/** A failed engine run, by the engine's own words: its first `error:` or `<name>: error:` line (an argument parser's), else (python) its last exception line, else its exit status; never its usage text or its list of choices. A language it does not know is bad_value. */
+/** A failed engine run, by the engine's own words: its first `error:` line, else its first `<name>: error:` line (an argument parser's), else (python) its last exception line, else its exit status; never its usage text or its list of choices. A language it does not know is bad_value. */
 function asrError(name: string, r: { status: number | null; stderr: string }, language?: string) {
   const lines = r.stderr.split("\n").map((l) => l.trim());
-  const line = (lines.find((l) => l.startsWith("error:") || /^[\w.-]+: error: /.test(l)) ?? lines.reverse().find((l) => /^\w+(Error|Exception):/.test(l)))
-    ?.replace(/^[\w.-]+: error: /, "").replace(/ \(choose from .*\)$/, "");
+  const line = (lines.find((l) => l.startsWith("error:")) ?? lines.find((l) => /^[\w.-]+: error: /.test(l))?.replace(/^[\w.-]+: error: /, "") ?? lines.reverse().find((l) => /^\w+(Error|Exception):/.test(l)))
+    ?.replace(/ \(choose from .*\)$/, "");
   if (line && (/(unknown|unsupported) language/i.test(line) || /^argument --language: invalid choice/.test(line))) return new EditError(`unknown language '${language ?? "auto"}'`, "bad_value", "a whisper language code such as vi or en, or leave language out to detect it");
   return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
