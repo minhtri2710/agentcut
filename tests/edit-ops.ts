@@ -1546,6 +1546,13 @@ console.log("asset ids from accented names, and one file reached by several path
   let ex: any;
   try { await api.apply(Q, [{ op: "import_media", path: join(link, "f.png"), id: "elsewhere" }]); } catch (e: any) { ex = e; }
   check("an explicit other id for a file already imported through another path is refused naming the existing asset", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${first}'`), ex && { code: ex.code, message: ex.message });
+  // copy:true of a file that is already in media/ (reached through a linked folder) is that file, not a -1 copy
+  const C = join(tmp, "proj-copy-link");
+  api.create(C, { preset: "720p" });
+  copyFileSync(join(m, "p.png"), join(C, "media", "f.png"));
+  symlinkSync(join(C, "media"), join(m, "media link"));
+  const cp = (await api.apply(C, [{ op: "import_media", path: join(m, "media link", "f.png"), copy: true }])).results[0].asset;
+  check("import_media copy:true of a file already in media/ through a linked folder makes no -1 copy", readdirSync(join(C, "media")).join() === "f.png" && cp === "f", { files: readdirSync(join(C, "media")), cp });
 }
 
 console.log("a video whose sound outlasts its picture");
@@ -1569,6 +1576,10 @@ console.log("a video whose sound outlasts its picture");
   const v = await api.validate(D);
   const w = v.issues.filter((i: any) => i.level === "warning" && /needs .* of source/.test(i.message));
   check("an explicit 8 s video clip warns that it needs 8 s of a 3 s source; the default clip and the audio clip do not", w.length === 1 && w[0].path.includes("<long>") && /8\.00s of source but 'al' is 3\.00s/.test(w[0].message), w);
+  // a picture that starts late is not short: it ends where the container does, so no field is recorded and the clip is as long as the file
+  ff("-itsoffset", "1", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=7", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", join(m, "late.mp4"));
+  const lt = (await api.apply(D, [{ op: "import_media", path: join(m, "late.mp4"), id: "late" }, { op: "add_clip", track: "overlay", asset: "late", at: 60, id: "latec" }])).results;
+  check("a video stream that starts late but ends with the container records no video_duration, and its clip runs the file's length", !("video_duration" in lt[0]) && near(lt[1].duration, 8), lt);
   // the room an edit may grow a video clip into ends with the picture: 1 s used of 3 s leaves 2 s, not 7 s
   const E = join(tmp, "proj-audiolong-roll");
   api.create(E, { width: 64, height: 64, fps: 24 });

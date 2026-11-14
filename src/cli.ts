@@ -119,13 +119,13 @@ async function readOps(file: string | undefined, inline: string | undefined) {
 }
 
 /** The report of a stop that did not wait for the command to clean up (a second signal, or the grace time): its temporary files may remain. */
-const leftovers = (reason: EditError) => new EditError(reason.message, "aborted", "the command was stopped before it finished; temporary files it had made are removed by the next render, prepare or `agentcut cache prune`");
+const leftovers = (reason: EditError) => new EditError(reason.message, "aborted", "the command was stopped before it finished, so what it had made may remain: a render's scratch in .agentcut/tmp is removed by the next render, prepare or `agentcut cache prune`; a reserved or partly written output file stays beside the output path until you delete it");
 const SIGNAL_WRITE_MS = 500; // how long a second signal lets a result in flight finish
 const SIGNAL_GRACE_MS = 4000; // render workers stop their children within 1.5 s (proc.ts); the run does not wait for more than this
 /** The first SIGINT/SIGTERM aborts `stop`, which the long api calls take, so they stop their children and remove their temp files and reserved
  *  output. Whatever the command then does, the one JSON object is its `aborted` error (a command that finishes cleanly still prints its result), and
  *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal prints an `aborted` object
- *  with one synchronous write and leaves at once, with no cleanup (the next render, prepare or `cache prune` removes what is left), except while the result is being written: then it waits for the write, at most SIGNAL_WRITE_MS. */
+ *  with one synchronous write and leaves at once, with no cleanup (the next render, prepare or `cache prune` removes only the scratch in .agentcut/tmp), except while the result is being written: then it waits for the write, at most SIGNAL_WRITE_MS. */
 function onSignals() {
   const stop = new AbortController();
   for (const [sig, n] of SIGNALS) process.on(sig, () => {

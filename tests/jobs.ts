@@ -657,13 +657,13 @@ console.log("cancel a render or prepare job");
   // mux so the cancel lands in that phase; every other call goes to the real one. The cancel is made once the stand-in has started: no sleeps.
   {
     const realFfmpeg = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
-    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark"), markMix = join(tmp, "stub-mix.mark");
+    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark"), markMix = join(tmp, "stub-mix.mark"), pidMix = join(tmp, "stub-mix.pid");
     mkdirSync(bin);
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh
 case "$*" in
   *ebur128*) : > ${JSON.stringify(markLoud)}; exec sleep 60 ;;
   *mov_text*) : > ${JSON.stringify(markMux)}; exec sleep 60 ;;
-  *mix.wav*) [ -n "$STUB_HOLD_MIX" ] && { : > ${JSON.stringify(markMix)}; trap '' INT TERM; sleep 30; exit 1; } ;;
+  *mix.wav*) [ -n "$STUB_HOLD_MIX" ] && { trap '' INT TERM; sleep 30 & echo $! > ${JSON.stringify(pidMix)}; : > ${JSON.stringify(markMix)}; wait; exit 1; } ;;
 esac
 exec ${JSON.stringify(realFfmpeg)} "$@"
 `);
@@ -706,16 +706,17 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
       rmSync(markMix, { force: true });
       const r = cli(P, ["render", "--draft", "--quiet"], { PATH: withBin, STUB_HOLD_MIX: "1" });
       const held = await until(() => existsSync(markMix), 60_000);
-      const procs = tree(r.pid);
+      const procs = [...new Set([...tree(r.pid), ...(existsSync(pidMix) ? readFileSync(pidMix, "utf8").split(/\s+/).filter(Boolean).map(Number) : [])])]; // the stand-in's sleep is recorded by the stand-in itself
       process.kill(r.pid, "SIGTERM");
       await sleep(300);
       try { process.kill(r.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
       await until(() => r.exit, 20_000);
       const lines = r.out.trim().split("\n"), j = (() => { try { return lines.length === 1 ? JSON.parse(lines[0]) : null; } catch { return null; } })();
-      const left = renderTmpLeft(P);
+      const left = renderTmpLeft(P), R = join(P, "renders"), outs = stray(R);
       for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
-      check("a second signal during a CLI render: one JSON object with code aborted, a hint that names cache prune and does not say the temp files were removed, the process ends by the second signal",
-        held && j?.ok === false && j.error.code === "aborted" && /cache prune/.test(j.error.hint) && !/were removed/.test(j.error.hint) && r.exit?.signal === "SIGINT" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
+      check("a second signal during a CLI render: one JSON object with code aborted, a hint that names cache prune and says a reserved or partly written output file may remain, the process ends by the second signal",
+        held && j?.ok === false && j.error.code === "aborted" && /cache prune/.test(j.error.hint) && /output path/.test(j.error.hint) && !/were removed/.test(j.error.hint) && r.exit?.signal === "SIGINT" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
+      check("  renders/ holds what the hint says may remain: the reserved 0-byte output and part files, and no finished output", outs.some((f) => !f.includes(".part-") && statSync(join(R, f)).size === 0) && outs.every((f) => f.includes(".part-") || statSync(join(R, f)).size === 0), outs);
       check("  the render's temp dir is left behind, and cache prune removes it", left.length === 1 && (api.cache.prune(P), !renderTmpLeft(P).length), { left, after: renderTmpLeft(P) });
     }
     // MCP: cancel_job while the subtitle mux runs: the job is cancelled, the error names the output, which stays (committed) without a subtitle stream

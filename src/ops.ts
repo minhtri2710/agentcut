@@ -56,8 +56,8 @@ function mediaRecord(p: Project, src: string, copy: boolean): Asset {
   const info = probe(src);
   if (copy) {
     let dst = join(p.root, "media", basename(src));
-    for (let i = 1; lexists(dst) && presolve(dst) !== src; i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
-    if (presolve(dst) !== src) { copyFile(src, dst, p.root); p.stage(dst); }
+    for (let i = 1; lexists(dst) && !sameFile(dst, src); i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
+    if (!sameFile(dst, src)) { copyFile(src, dst, p.root); p.stage(dst); }
     src = dst;
   }
   info.path = p.rel(src);

@@ -85,9 +85,11 @@ export function probe(path: string): any {
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
       if (!still) info.duration = +dur.toFixed(3);
-      // The picture ends before the container when the sound is longer. A container without a per-stream duration leaves the field out, and the container length stands for the picture.
-      const vd = Number(v.duration);
-      if (!still && vd > 0 && vd < dur - VIDEO_END_SLACK) info.video_duration = +vd.toFixed(3);
+      // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
+      // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. A container without a per-stream duration leaves the field out,
+      // and the container length stands for the picture.
+      const vd = Number(v.duration), cStart = Number(j.format?.start_time) || 0, vEnd = (Number(v.start_time) || 0) + vd - cStart;
+      if (!still && vd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = +vEnd.toFixed(3);
     } else if (a || AUDIO_EXT.has(ext)) {
       Object.assign(info, { kind: "audio", duration: +dur.toFixed(3), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
