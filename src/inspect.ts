@@ -239,7 +239,7 @@ async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: 
     for (const g of groups.values()) {
       if (!g.want.size) continue;
       const { src, base, file, size, mtime } = g.owner, js = [...g.want.keys()].sort((a, b) => a - b), pk = src.pixelKey;
-      const gap = Math.max(4, 5 * r.fps); // frames: a gap up to this is read through; a longer one is seeked over (a heuristic near the cost of a seek with its pre-roll, measured 0.1-0.35 s at 1080p against ~1 ms a frame)
+      const gap = Math.max(4, 5 * r.fps); // frames: a gap up to this is read through; a longer one is seeked over (a heuristic; measured: 45-frame reads at 1080p, seek included, at 0.11-0.35 s, and about 1.3 ms a frame once streaming)
       for (let i = 0, hi = 0; i < js.length; i = hi + 1) {
         for (hi = i; hi + 1 < js.length && js[hi + 1] - js[hi] <= gap; hi++);
         for (let j = js[i]; j <= js[hi]; j++) {

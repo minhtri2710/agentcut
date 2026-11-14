@@ -147,10 +147,10 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
 // One file per `key` (the caller's string: source file path, size and mtime, decode options, scan size, frame phase): frame number ->
 // bright pixels of the scan picture. A count is what the first read under that key decoded for the frame; a later read of the same frame
 // may pick a neighbouring source frame (a bound, see inspect.ts blackRuns). A changed file or option is another key, hence another file,
-// so nothing of an old file or setting is reused. Rebuildable, so prune takes it before anything referenced.
+// so nothing of an old file or setting is reused; a file counts as changed only if its size or mtime did. Rebuildable, so prune takes it before anything referenced.
 const darkFile = (root: string, key: string) => join(cacheDir(root), `dark-${createHash("sha1").update(key).digest("hex").slice(0, 24)}.json`);
 
-/** The memo for `key`: empty when there is none, when it cannot be read, or when the file is not a memo of exactly this key (all read as a miss; the next save rewrites it). A review never fails on its cache. */
+/** The memo for `key`: empty when there is none, when it cannot be read, or when the file is not a memo of exactly this key (all read as a miss; the next save rewrites it). A read never fails the review. */
 export function loadDarkMemo(root: string, key: string): Map<number, number> {
   const frames = new Map<number, number>(), f = darkFile(root, key);
   let text: string;
