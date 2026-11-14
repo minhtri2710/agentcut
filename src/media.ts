@@ -237,7 +237,8 @@ export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, for
  *  The shift is made in microseconds (`settb=1/1000000`), so two clips cut from one source differ by at most 1 us of rounding (1e-6 x rate slots), never by a tick of the container (1 ms in mkv/webm).
  *  The value is off the grids where frames land on the boundary: 0.001 slot (29.97 on 30, a millisecond container at most rates) and rate/1000 slot. For frame times on a millisecond,
  *  an exact NTSC tick or a whole fps, and in-points in whole milliseconds, a frame stays at least 1e-4 slot (24 fps), 2e-4 (25-60), 7e-4 (120) from the boundary, 3.3 times the rounding
- *  or more, at the timeline rates 24, 25, 30, 50, 60, 120 and NTSC 23.976, 29.97, 59.94. A rate on a finer grid than that (119 fps) has no margin to give. */
+ *  or more, at the timeline rates 24, 25, 30, 50, 60, 120 and the exact NTSC rates 24000/1001, 30000/1001, 60000/1001. A rate on a finer grid than that (119 fps) has no margin to give,
+ *  and neither has a decimal NTSC rate as a project stores it (settings.fps 29.97 is 2997/100: a millisecond in-point steps the phase by 1e-5 slot, so a frame can sit on the boundary). */
 export const TIE_BIAS = 0.0327;
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
@@ -300,17 +301,18 @@ export class FrameSource {
    *  clip's clock (container start and in-point subtracted, TIE_BIAS added, a loop's finished passes added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
    *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
    *  from a whole number of slots before the slot, which keeps the grid's phase. */
-  private args(k: number, mode: "stream" | "still" | "tail"): string[] {
+  private args(k: number, mode: "stream" | "still" | "tail" | "reach"): string[] {
     // still: the first frame only, as a forward clip (a freeze holds the frame the clip's first slot shows). tail: the clip read to the end of the picture without looping,
-    // from at most two slots before it, whose last frame is the one a running clip holds there.
-    const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && !reverse;
-    const srcIn = mode === "tail" && D ? this.tailIn(D) : (o.srcIn ?? 0);
+    // from at most two slots before it, whose last frame is the one a running clip holds there. reach: the still of a loop clip's in-point inside one pass, with no wrap, to see
+    // whether the file really holds that stretch.
+    const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && mode !== "reach" && !reverse;
+    const srcIn = mode === "tail" && D ? this.tailIn(D) : mode === "reach" && D ? (o.srcIn ?? 0) % D : (o.srcIn ?? 0);
     const a = ["-v", "error", "-nostdin"];
     if (mode === "stream" && this.hw) a.push("-hwaccel", "videotoolbox");
     const tk = srcIn + k / r - this.pre; // the source time the seek aims at
     let n0 = 0, ss = Math.max(0, tk); // n0: passes of a loop finished before the seek point
     if (loop && D) { n0 = Math.floor(tk / D); ss = tk - n0 * D; }
-    if (loop && mode === "stream") a.push("-stream_loop", "-1"); // a still reads inside one pass, so a source that ends before its probed length shows (decode_failed) instead of wrapping
+    if (loop) a.push("-stream_loop", "-1"); // a still wraps like the clip does: its slot 0 may sit in the pre-roll of the pass before, or within half a source frame of the pass end
     const shift = n0 * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
     const fill = ss <= f.video_start || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
@@ -320,7 +322,7 @@ export class FrameSource {
       "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
     a.push("-fps_mode", "passthrough");
-    if (mode === "still") a.push("-frames:v", "1");
+    if (mode === "still" || mode === "reach") a.push("-frames:v", "1");
     return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
   }
 
@@ -345,9 +347,9 @@ export class FrameSource {
   }
 
   /** One frame: an image, or the clip's first slot (the frame its first slot shows when it plays). endOk: a clean ffmpeg exit with no frame (the in-point is at or past the video's end) answers null instead of an error. */
-  private async decodeStill(endOk = false): Promise<Buffer | null> {
+  private async decodeStill(endOk = false, mode: "still" | "reach" = "still"): Promise<Buffer | null> {
     const o = this.o;
-    const a = o.kind === "image" ? ["-v", "error", "-nostdin", ...this.input, "-frames:v", "1", "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"] : this.args(0, "still");
+    const a = o.kind === "image" ? ["-v", "error", "-nostdin", ...this.input, "-frames:v", "1", "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"] : this.args(0, mode);
     const n = this.w * this.h * 4;
     // async so several layers / contact-sheet tiles decode concurrently
     const r = await new Promise<{ status: number | null; out: Buffer; err: string }>((res) => {
@@ -397,6 +399,8 @@ export class FrameSource {
     const o = this.o;
     let at = o.srcIn ?? 0;
     if (o.loop && o.srcDuration) at %= o.srcDuration;
+    // the wrapped read below hides a source that ends well inside its probed length, so a loop first reads its in-point inside one pass
+    if (o.loop && o.srcDuration && !(await this.decodeStill(true, "reach")) && this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
     const f = await this.decodeStill(true);
     if (f) return f;
     if (this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);

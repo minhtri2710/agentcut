@@ -254,7 +254,7 @@ export const MEDIA_FIELDS: F = {
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
-  loop: [T("boolean"), "loop the source when the clip is longer (not on .ts/.m2ts/.mpg: remux to mp4 or mkv)"],
+  loop: [T("boolean"), "loop the source when the clip is longer (only mp4/mov, mkv/webm, flv, avi, gif; any other format, e.g. .ts/.m2ts/.mpg: remux to mp4 or mkv)"],
   reverse: [T("boolean"), "play backwards (video+audio)"],
   freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
 };
@@ -843,7 +843,7 @@ function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
 
 /** The warning for a clip that needs `need` s of a source that is shorter (`ends`: what happens at the end). */
 export function pastEnd(issues: Issue[], p: string, aid: string, len: number, need: number, ends: string) {
-  if (need > len + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${len.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
+  if (need > len + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${len.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true (mp4/mov, mkv/webm, flv, avi, gif only)" });
 }
 
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */

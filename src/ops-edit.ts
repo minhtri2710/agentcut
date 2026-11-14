@@ -234,7 +234,7 @@ export function registerEditOps(h: OpHelpers) {
         hi = Math.min(hi, (srcLen(tl, x) - cin(x) - (x.freeze ? 0 : clipDur(x) * spd(x))) / spd(x));
       }
       if (by < lo - EPS || by > hi + EPS) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
-        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source; or set loop: true)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source; or set loop: true, mp4/mov, mkv/webm, flv, avi, gif only)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };

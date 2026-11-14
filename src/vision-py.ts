@@ -135,6 +135,7 @@ def matte(j):
         f = next(frames(j["path"], None, None, None, w, h, "rgb24"))
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset
         return {"out": j["out"], "frames": 1}
+    # MATTE_FACTS in media.ts assumes this writer: an intra-only prores_ks mov that starts at 0
     enc = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "%dx%d" % (w, h),
            "-framerate", "%.6f" % float(j["fps"]), "-protocol_whitelist", "file,pipe", "-i", "pipe:0", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
            "-alpha_bits", "16", "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "mov", j["out"]]

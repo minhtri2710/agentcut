@@ -207,6 +207,21 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   return bad; });
   row("a freeze holds the frame slot 0 of the same clip shows", bad);
 }
+{ // a frozen loop clip: in-points just after a pass start (inside the pre-roll), in a later pass, and just before a pass end (the next pass's first frame is the nearest)
+  const bad = await attempt(async () => {
+  const bad: string[] = [];
+  for (const [f, tl] of [[loop2, 24], [loop2a, 30]] as const) {
+    const info = api.probe(f), D = info.video_duration ?? info.duration;
+    for (const srcIn of [0, 0.1, D + 0.1, D - 0.01]) {
+      const stream = source(f, tl, srcIn, { loop: true }), still = source(f, tl, srcIn, { loop: true, freeze: true });
+      const first = await read(stream, 0, tl), held = await still.readAt(0).then((b) => num(b, W, H), (e) => e?.code ?? "threw");
+      stream.close(); still.close();
+      if (first !== held || first !== rule(f, srcIn, tl, 0, D)) bad.push(`${f.split("/").pop()} ${tl} in=${srcIn.toFixed(3)}: slot 0 ${first} still ${held} rule ${rule(f, srcIn, tl, 0, D)}`);
+    }
+  }
+  return bad; });
+  row("a frozen loop clip holds the frame slot 0 of the same clip shows, at in 0, in the second pass and just before a pass end", bad);
+}
 {
   const bad = await attempt(async () => {
   const bad: string[] = [];

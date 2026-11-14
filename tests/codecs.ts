@@ -588,7 +588,12 @@ console.log("decode and render failures");
     check(`a freeze with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
     fz.close();
   }
-  for (const [name, mode, at] of [["loop", { loop: true }, 1.99], ["reverse", { reverse: true }, 2], ["reverse", { reverse: true }, 6]] as const) {
+  { // in 1.99 of a 2 s loop is within half a source frame of the pass end: the nearest frame is the next pass's first (the old contract held this pass's last frame)
+    const nx = frz(1.99, 2, { loop: true }), zero = frz(0), got = await nx.readAt(0).catch((e) => e?.code), first = await zero.readAt(0);
+    check("a frozen loop clip with in 1.99 (source 2 s) holds the next pass's first frame, not the last", Buffer.isBuffer(got) && got.equals(first) && !got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
+    nx.close(); zero.close();
+  }
+  for (const [name, mode, at] of [["reverse", { reverse: true }, 2], ["reverse", { reverse: true }, 6]] as const) {
     const fz = frz(at, 2, mode);
     const got = await fz.readAt(0).catch((e) => e?.code);
     check(`a frozen ${name} clip with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
