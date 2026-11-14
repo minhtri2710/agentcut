@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CONTAINED_FLAGS, SANDBOX_EXEC, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
+import { CONTAINED_FLAGS, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -635,7 +635,7 @@ console.log("chrome containment");
     JSON.stringify(CONTAINED_FLAGS) === JSON.stringify(["--disable-background-networking", "--disable-component-update", noSandbox])
     && readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts" && readFileSync(resolve(import.meta.dir, f), "utf8").includes(noSandbox)).length === 0, CONTAINED_FLAGS);
   check("without sandbox-exec, or off macOS, there is no containment (the suite fails; there is no uncontained path)",
-    containmentProblem("linux") === "no Chrome containment on linux" && /is missing/.test(containmentProblem("darwin", join(tmp, "no-sandbox-exec")) ?? "") && containmentProblem("darwin", SANDBOX_EXEC) === null);
+    containmentProblem("linux") === "no Chrome containment on linux" && /is missing/.test(containmentProblem("darwin", join(tmp, "no-sandbox-exec")) ?? "") && containmentProblem("darwin", process.execPath) === null);
   const own = readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts");
   const direct = own.filter((f) => spawnsChromeDirectly(readFileSync(resolve(import.meta.dir, f), "utf8")));
   check("no test file but tests/chrome.ts starts Chrome (the detector flags a direct spawn, and none of the files has one)",
