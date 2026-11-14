@@ -48,7 +48,6 @@ const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
 
 type Size = { width: number; height: number };
 type Template = { doc: string; args: Dict; build: (a: Dict, size: Size) => Dict[] };
-/** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). `size` is the project's width and height: text placed against an edge takes its margin from the safe area. */
 /** Placement fields for text set in `preset`: its own position, with a margin that keeps the box inside the safe area of a W x H canvas (never less than the preset's own margin).
  * A preset with no position stays where it is, centred, except on a canvas with UI zones, where a wide centred box would cover the side buttons: it goes to the top.
  * Text anchored on the left also gets the widest `max_width` that ends before the side zones; the box ring (stroke + background padding) is counted, a shadow or glow is not. */
@@ -61,6 +60,7 @@ function placed(preset: string, text: string, W: number, H: number): Dict {
   return { position, margin, ...(left === undefined ? {} : { max_width: safeWidth(W, H, left, 2 * (2 + Number(base.stroke?.width ?? 0) + Number(base.background?.padding ?? 0)) + 2) }) };
 }
 
+/** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). `size` is the project's width and height: text placed against an edge takes its margin from the safe area. */
 const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }, size: Size) => Dict[] }): Template => t;
 
 export const TEMPLATES: Record<string, Template> = {

@@ -138,9 +138,9 @@ const CLIP_RANGES: Record<string, readonly [(n: number) => boolean, string]> = {
   radius: [(n) => n >= 0, ">= 0"],
   weight: [(n) => n >= 100 && n <= 900, "100..900"],
 };
-/** Where the values of a keyframe list may differ from the field's own range: a scale of 0 is a pop-in's first value, while a still scale of 0 draws nothing. */
 /** A margin string: one length, or two ("x y"); each a number with an optional % or px. */
 const MARGIN = /^-?\d+(?:\.\d+)?(?:%|px)?(?:\s+-?\d+(?:\.\d+)?(?:%|px)?)?$/;
+/** Where the values of a keyframe list may differ from the field's own range: a scale of 0 is a pop-in's first value, while a still scale of 0 draws nothing. */
 const KEYFRAME_RANGES: Record<string, readonly [(n: number) => boolean, string]> = { scale: [(n) => n >= 0, ">= 0"] };
 const keyframeRange = (k: string) => KEYFRAME_RANGES[k] ?? CLIP_RANGES[k];
 const ranged = (k: string, doc: string, ...types: string[]): [string[], string] =>
