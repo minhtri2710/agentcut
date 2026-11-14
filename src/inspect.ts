@@ -167,7 +167,7 @@ function probeTimes(L: Layer): number[] {
  *  is its source frame as decoded. Any other field (a new one included) sends the clip through the renderer. */
 const PLAIN_KEYS = new Set(["id", "type", "name", "start", "duration", "enabled", "note", "group", "preset", "until_end", "attach_to", "offset", "match_duration", "end_offset",
   "asset", "src", "in", "transition", "volume", "muted", "fade_in", "fade_out", "denoise", "eq", "compressor", "pan", "pitch", "normalize", "fit", "focus", "crop", "filters", "color", "speed", "keyframes"]);
-/** Filters that give a frame the same pixels wherever the decode starts (the others look at earlier frames, at a file, or key out alpha). */
+/** Filters that look at one frame alone (the others look at earlier frames, at a file, or key out alpha). */
 const PLAIN_FILTERS = new Set(["eq", "blur", "sharpen", "grayscale", "vignette", "hflip", "vflip"]);
 const BRIGHT = 24, DARK = 0.03; // a pixel is bright above this luma; a picture is dark when fewer than this fraction is
 
@@ -201,13 +201,14 @@ const transitionLen = (L: Layer) => { const s = L.prev ? normAnim(L.c.transition
 
 /**
  * Black stretches: the composite is sampled every 0.2 s at 64 px; a sample is dark when under 3% of its pixels are bright.
- * A sample whose top layer is a plain clip is that clip's source frame, so its brightness depends only on the key of `plainOf` and the
- * frame number: it is remembered in the project cache (cache.ts, one file per key), and the frames a scan still needs are read once
- * per source in source order, whatever the clips that show them. Every other sample is drawn by the renderer as before.
- * shortcut: a clip read mid-stream (opened by an earlier clip of the same key) can get a source frame other than the one its own fresh
- * seek gives: FrameSource's frame choice depends on where its stream starts and on whether the file has an audio track. Measured at most
- * 2 timeline frames apart (D-A67, granted), so a finding's edge moves by at most one 0.2 s step and a stretch near the 0.4 s minimum can
- * appear or vanish. Removal: once FrameSource's frame choice no longer depends on the stream start, the memo is exact; tighten this.
+ * A sample whose top layer is a plain clip is that clip's source frame, so its brightness comes from the frame number under the key of
+ * `plainOf`: it is remembered in the project cache (cache.ts, one file per key), and the frames a scan still needs are read once per
+ * source in source order, whatever the clips that show them. Every other sample is drawn by the renderer as before.
+ * shortcut: the memo keeps the frame its first reader decoded. A clip read mid-stream (opened by an earlier clip of the same key) can get
+ * a source frame other than the one its own fresh seek gives: FrameSource's frame choice depends on where its stream starts and on
+ * whether the file has an audio track. Measured at most 2 timeline frames apart, so a finding's edge moves by at most one 0.2 s step and
+ * a stretch near the 0.4 s minimum can appear or vanish. Removal: once FrameSource's frame choice no longer depends on the stream start,
+ * a memo hit equals a fresh read; then drop this note.
  */
 async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: ReviewOpts): Promise<Finding[]> {
   const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width));
@@ -238,7 +239,7 @@ async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: 
     for (const g of groups.values()) {
       if (!g.want.size) continue;
       const { src, base, file, size, mtime } = g.owner, js = [...g.want.keys()].sort((a, b) => a - b), pk = src.pixelKey;
-      const gap = Math.max(4, 5 * r.fps); // frames: a source is read through a gap shorter than this, a longer one costs less to seek over
+      const gap = Math.max(4, 5 * r.fps); // frames: a gap up to this is read through; a longer one is seeked over (a heuristic near the cost of a seek with its pre-roll, measured 0.1-0.35 s at 1080p against ~1 ms a frame)
       for (let i = 0, hi = 0; i < js.length; i = hi + 1) {
         for (hi = i; hi + 1 < js.length && js[hi + 1] - js[hi] <= gap; hi++);
         for (let j = js[i]; j <= js[hi]; j++) {

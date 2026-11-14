@@ -251,7 +251,8 @@ export class FrameSource {
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
-   *  the output rate, the source's own length and rate (they pick the held last frame), and the FFmpeg that decodes. Equal keys decode equal pixels. */
+   *  the output rate, the source's own length and rate (they pick the held last frame), and the FFmpeg that decodes. Which source
+   *  frame a slot gets is not part of the key: it also depends on where the stream started (see inspect.ts blackRuns). */
   get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, ffmpegVersion()]); }
 
   private args(k: number, single: boolean): string[] {
