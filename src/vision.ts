@@ -3,10 +3,11 @@
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./proc.ts";
+import { alive } from "./project.ts";
 import { type Dict, EditError, MATTE_MB, MATTE_MODELS, MATTE_PINS, type ModelPin, ORT_ENV, sizeText } from "./model.ts";
 import { commit, createFile, ensureDir, notWritable, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";
@@ -53,13 +54,27 @@ export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new
 
 /** No bytes for this long ends a download: a 176 MB model may take as long as it needs while data keeps arriving. */
 const DOWNLOAD_IDLE_MS = 60_000;
+/** Remove the `<name>.part-<pid>-<12 hex>.onnx` files a dead process left beside `file` (a kill, a crash or a second signal skips downloadModel's cleanup).
+ *  Only the exact names tmpSibling makes for this model, as direct regular-file children of the model dir (links are not files here), whose pid is
+ *  provably gone (`alive`, as cache.ts sweepStale judges it); housekeeping never fails the download. */
+function sweepModelParts(file: string) {
+  const dir = dirname(file), re = new RegExp(`^${basename(file, ".onnx").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.part-(\\d+)-[0-9a-f]{12}\\.onnx$`);
+  try {
+    for (const d of readdirSync(dir, { withFileTypes: true })) {
+      const m = re.exec(d.name);
+      if (d.isFile() && m && !alive(Number(m[1]))) rmSync(join(dir, d.name), { force: true });
+    }
+  } catch { /* no model dir yet, or busy: the next download sweeps */ }
+}
 /** Fetch `m` into the models dir. The body is streamed to a temp name beside the target while its size is counted and its sha256 taken; only a body
- *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. Any failure removes the temp file (empty directories may remain).
+ *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. A failure the process survives leaves no model or temp file (empty
+ *  directories may remain); a killed download's part file is removed by the next download of that model.
  *  A bad status, a network failure, a stall (no data for `idleMs`, 60 s) and a mismatch are `model_download_failed`;
  *  an abort rethrows its reason. `idleMs` is for tests; callers leave it. */
 export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = DOWNLOAD_IDLE_MS) {
   signal?.throwIfAborted();
   const file = modelFile(m.name), base = userCache();
+  sweepModelParts(file);
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
   // one controller for the idle timer and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
   const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);

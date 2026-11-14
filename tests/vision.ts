@@ -1082,6 +1082,25 @@ console.log("the face model: descriptor, job, gate, download");
       const L = fresh("download-slow"), tl = Date.now(), slow = await inCache(L, () => caught(() => V.downloadModel(desc("test_model_slow", "/slow"), undefined, 400))), tookSlow = Date.now() - tl;
       const slowFile = join(L, "models", "test_model_slow", "test_model_slow.onnx");
       check("downloadModel: a body that keeps sending succeeds although the whole transfer takes longer than the idle limit", slow === null && tookSlow > 400 && existsSync(slowFile) && readFileSync(slowFile).equals(good) && listing(L).length === 2, { slow: slow?.message, tookSlow, after: listing(L) });
+      { // a killed download leaves its part file; the next download of that model removes only a dead process's exact part names
+        const Z = fresh("download-parts"), dir = join(Z, "models", "test_model_ok");
+        mkdirSync(dir, { recursive: true });
+        const dead = Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout);
+        const part = (pid: number, tag: string, name = "test_model_ok") => join(dir, `${name}.part-${pid}-${tag}.onnx`);
+        const outside = join(Z, "outside.bin");
+        writeFileSync(outside, "outside");
+        writeFileSync(part(dead, "aaaaaaaaaaaa"), "dead process");
+        writeFileSync(part(process.pid, "bbbbbbbbbbbb"), "live process");
+        symlink(outside, part(dead, "cccccccccccc")); // the right name, but a link
+        writeFileSync(part(dead, "dd"), "a name tmpSibling never makes");
+        writeFileSync(part(dead, "eeeeeeeeeeee", "test_model_other"), "another model's part");
+        const dl = await inCache(Z, () => caught(() => V.downloadModel(desc("test_model_ok", "/ok"))));
+        const kept = readdirSync(dir).sort(), want = [`test_model_ok.onnx`, `test_model_ok.part-${dead}-cccccccccccc.onnx`, `test_model_ok.part-${dead}-dd.onnx`, `test_model_ok.part-${process.pid}-bbbbbbbbbbbb.onnx`, `test_model_other.part-${dead}-eeeeeeeeeeee.onnx`].sort();
+        check("downloadModel: the part file of a dead process is removed by the next download of that model, and the download itself succeeds", dl === null && !existsSync(part(dead, "aaaaaaaaaaaa")) && readFileSync(join(dir, "test_model_ok.onnx")).equals(good), { dl: dl?.message, kept });
+        check("downloadModel: a live process's part file is kept, with its content", kept.includes(`test_model_ok.part-${process.pid}-bbbbbbbbbbbb.onnx`) && readFileSync(part(process.pid, "bbbbbbbbbbbb"), "utf8") === "live process", { kept });
+        check("downloadModel: a link with the matching name, a name tmpSibling never makes and another model's part are left alone, and the link's target is not touched",
+          JSON.stringify(kept) === JSON.stringify(want) && lstat(part(dead, "cccccccccccc")).isSymbolicLink() && readFileSync(outside, "utf8") === "outside", { kept, want });
+      }
     } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); }
     const refused = await inCache(fresh("download-closed"), () => caught(() => V.downloadModel(desc("test_model_closed", "/ok"))));
     check("downloadModel: a server that is gone -> model_download_failed", refused?.code === "model_download_failed", { code: refused?.code, message: refused?.message });
