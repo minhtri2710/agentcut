@@ -53,8 +53,8 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24"):
     p.stdout.close(); p.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
     if p.returncode != 0: raise SystemExit("ffmpeg exited %s: %s" % (p.returncode, err.strip()[:400]))  # a decoder that died silently still means a short result
 
-def _verify(path, sha):  # a pinned model is hashed right before it is loaded; no sha in the job (an unpinned model) loads as before
-    if not sha: return
+def _verify(path, sha):  # every model is hashed right before it is loaded; a job with no sha256 is refused
+    if not sha: raise SystemExit("the job has no sha256 for the model file: " + path)
     import hashlib
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -119,9 +119,9 @@ def track(j):
     return {"samples": out, "init_index": i0}
 
 def matte(j):
-    if not j.get("allow_download"):  # no model fetch without consent: rembg's downloads go through these proxies, so a missing or corrupt model file fails instead
-        for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
-        for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
+    # AgentCut fetches and verifies every model first, and rembg 2.0.86 neither re-checks nor fetches a file that is present: the helper never fetches, so a missing or corrupt file fails
+    for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
+    for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
     import numpy as np
     from rembg import new_session, remove
     from PIL import Image

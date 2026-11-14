@@ -112,15 +112,26 @@ const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
   duration: [(n) => n >= 0, "a number >= 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
 };
-// Download size in MB, one source per number; null = not known offline. u2net_human_seg: 175,997,641 B, measured; silueta: 43 MB, rembg 2.0.86 README;
-// u2netp: 4,574,861 B (vision.ts U2NETP_MODEL, pinned by sha256; model.ts cannot import vision.ts, which imports model.ts, so the 5 below is a second source). u2net and isnet-general-use have no local source.
-// shortcut: u2net, u2net_human_seg, isnet-general-use and silueta are not pinned; rembg downloads and md5-checks them itself. Remove when each is fetched once,
-// md5-matched to rembg's pin, and its sha256 and size are recorded in vision.ts, so every matte model goes through downloadModel.
-export const MATTE_MB: Record<string, number | null> = { u2netp: 5, u2net: null, u2net_human_seg: 176, "isnet-general-use": null, silueta: 43 };
-export const MATTE_MODELS = Object.keys(MATTE_MB);
+/** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
+export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
+const rembgAsset = (name: string, sha256: string, bytes: number): ModelPin => ({ name, url: `https://github.com/danielgatis/rembg/releases/download/v0.0.0/${name}.onnx`, sha256, bytes });
+/** The matte models, one source for the names, the sizes and the checks: rembg 2.0.86's release assets, each fetched once and matched to
+ *  that release's md5 pin (u2netp 8e83ca70e441ab06c318d82300c84806, u2net 60024c5c889badc19c04ad937298a77b, u2net_human_seg c09ddc2e0104f800e3e1bb4652583d1f,
+ *  isnet-general-use fc16ebd8b0c10d971d3513d564d01e29, silueta 55e59e0d8062d2f5d013f4725ee84782); sha256 and bytes are what that fetch measured.
+ *  `downloadModel` verifies every one, and the vision helper hashes the file again where it loads it. */
+export const MATTE_PINS: Record<string, ModelPin> = Object.fromEntries([
+  rembgAsset("u2netp", "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8", 4574861),
+  rembgAsset("u2net", "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491", 175997641),
+  rembgAsset("u2net_human_seg", "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c", 175997641),
+  rembgAsset("isnet-general-use", "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a", 178648008),
+  rembgAsset("silueta", "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb", 44173029),
+].map((p) => [p.name, p]));
+export const MATTE_MODELS = Object.keys(MATTE_PINS);
+/** Download size of each matte model in whole MB, rounded. */
+export const MATTE_MB: Record<string, number> = Object.fromEntries(MATTE_MODELS.map((n) => [n, Math.round(MATTE_PINS[n].bytes / 1e6)]));
 /** Environment for every child that runs onnxruntime (the vision helper, piper); it wins over an inherited value. */
 export const ORT_ENV = { ORT_DISABLE_TELEMETRY: "1" };
-export const sizeText = (mb: number | null | undefined) => (mb == null ? "size unknown" : `~${mb} MB`);
+export const sizeText = (mb: number) => `~${mb} MB`;
 export const matteSize = (model: string) => sizeText(MATTE_MB[model]);
 export const MATTE_SIZES = MATTE_MODELS.map((m) => `${m} ${matteSize(m)}`).join(", ");
 export const ANIMATABLE = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "blur", "speed", "focus_x", "focus_y"];

@@ -287,9 +287,11 @@ process.exit(1);
   check("a malformed body is refused and nothing runs", bad.status === 400 && runs().length === 0, bad);
   const xo2 = await jget("/api/prepare", { method: "POST", port: uc.port, text: '{"allow_download":true}', origin: "http://evil.example" });
   check("cross-origin prepare with the flag -> 403, nothing runs", xo2.status === 403 && runs().length === 0, xo2);
-  const yes = await prep({ text: '{"allow_download":true}' });
-  const seen = runs();
-  check("allow_download true reaches the helper once, as allow_download", seen.length === 1 && seen[0].allow_download === true && yes.j.status === "failed" && yes.j.error?.code !== "model_not_cached", { seen, yes });
+  // the download is stubbed (no network): it records the URL and answers 404
+  const realFetch = globalThis.fetch, asked: string[] = [];
+  globalThis.fetch = (async (u: any) => { asked.push(String(u)); return new Response("no", { status: 404 }); }) as typeof fetch;
+  const yes = await prep({ text: '{"allow_download":true}' }).finally(() => { globalThis.fetch = realFetch; });
+  check("allow_download true reaches the model download once (the pinned URL), and the helper is not started", asked.join() === (await import("../src/model.ts")).MATTE_PINS.u2net_human_seg.url && yes.j.status === "failed" && yes.j.error?.code === "model_download_failed" && runs().length === 0, { asked, runs: runs(), yes });
   uc.server.closeAllConnections?.();
   await new Promise((ok) => uc.server.close(ok));
 }

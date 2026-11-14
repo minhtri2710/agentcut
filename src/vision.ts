@@ -3,12 +3,12 @@
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmdirSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./proc.ts";
-import { type Dict, EditError, MATTE_MB, MATTE_MODELS, ORT_ENV, sizeText } from "./model.ts";
-import { commit, createFile, ensureDir, tmpSibling, writeFile } from "./safe-write.ts";
+import { type Dict, EditError, MATTE_MB, MATTE_MODELS, MATTE_PINS, type ModelPin, ORT_ENV, sizeText } from "./model.ts";
+import { commit, createFile, ensureDir, notWritable, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";
 import { VISION_PY } from "./vision-py.ts";
 
@@ -32,23 +32,15 @@ export const FACE_MODEL = {
   sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
   bytes: 232589,
 };
-/** The u2netp matte model (rembg 2.0.86's release asset; its md5 pin there is 8e83ca70e441ab06c318d82300c84806). Fetched by `downloadModel` and
- *  verified before the helper loads it from the models dir (U2NET_HOME = the user cache), so rembg finds it and downloads nothing; the helper hashes it again where it loads it. */
-export const U2NETP_MODEL = {
-  name: "u2netp",
-  url: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
-  sha256: "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
-  bytes: 4574861,
-};
-/** Models that AgentCut fetches and verifies itself, by name. */
-const PINNED_MODELS: Record<string, typeof FACE_MODEL> = { [FACE_MODEL.name]: FACE_MODEL, [U2NETP_MODEL.name]: U2NETP_MODEL };
+/** Models that AgentCut fetches and verifies itself, by name: the face model and every matte model (MATTE_PINS). */
+const PINNED_MODELS: Record<string, ModelPin> = { [FACE_MODEL.name]: FACE_MODEL, ...MATTE_PINS };
 /** A face counts from this detector score up; below FACE_SURE a result warns that it may not be a face. Fixed, not tuned. */
 export const FACE_MIN = 0.6, FACE_SURE = 0.9;
 const mbOf = (bytes: number) => +(bytes / 1e6).toFixed(2);
 
 /** The models these jobs need that are not in the models dir yet: a matte model for each matte job, the face model for any subject job. */
 export function modelsToDownload(jobs: Derived[]) {
-  const need = new Map<string, { model: string; approx_mb: number | null; path: string }>();
+  const need = new Map<string, { model: string; approx_mb: number; path: string }>();
   for (const d of jobs) {
     const model = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
     if (model && !modelCached(model)) need.set(model, { model, approx_mb: d.kind === "matte" ? MATTE_MB[model] : mbOf(FACE_MODEL.bytes), path: modelFile(model) });
@@ -59,37 +51,49 @@ export function modelsToDownload(jobs: Derived[]) {
 export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new EditError(`a vision model is not downloaded: ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)})`).join(", ")}`, "model_not_cached",
   `nothing was downloaded or run; models are fetched only on request: run with allow_download=true (CLI: prepare --allow-download, subject --allow-download; MCP: allow_download=true on prepare or analyze_subject) to download ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)}) to ${n.path}`).join("; ")}, or put the file there`, undefined, { models: need });
 
-/** Fetch `m` into the models dir. The whole body is read and checked (size, then sha256) before anything is written, so a failure leaves
- *  nothing behind; the file then lands under a temp name and is renamed into place. Network failures, a bad status, a timeout (60 s)
- *  and a mismatch are `model_download_failed`; an abort rethrows its reason. */
-export async function downloadModel(m: { name: string; url: string; sha256: string; bytes: number }, signal?: AbortSignal) {
+/** No bytes for this long ends a download: a 176 MB model may take as long as it needs while data keeps arriving. */
+const DOWNLOAD_IDLE_MS = 60_000;
+/** Fetch `m` into the models dir. The body is streamed to a temp name beside the target while its size is counted and its sha256 taken; only a body
+ *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. Any failure removes the temp file and any directory this call made,
+ *  so nothing is left behind. A bad status, a network failure, a stall (no data for `idleMs`, 60 s) and a mismatch are `model_download_failed`;
+ *  an abort rethrows its reason. `idleMs` is for tests; callers leave it. */
+export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = DOWNLOAD_IDLE_MS) {
   signal?.throwIfAborted();
-  const file = modelFile(m.name);
+  const file = modelFile(m.name), base = userCache();
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
-  // one controller for the timeout and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
+  const madeDirs = [dirname(file), dirname(dirname(file))].filter((d) => !existsSync(d)); // child first: removed in this order if the download fails
+  // one controller for the idle timer and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
   const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);
-  let timedOut = false, body: Buffer;
-  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 60_000);
-  timer.unref?.();
+  let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined, done = false;
+  const arm = () => { clearTimeout(timer); timer = setTimeout(() => { idle = true; ctl.abort(); }, idleMs); timer.unref?.(); };
   signal?.addEventListener("abort", stop, { once: true });
   try {
+    arm();
     const res = await fetch(m.url, { signal: ctl.signal });
     if (!res.ok) throw fail(`HTTP ${res.status}`);
-    const chunks: Buffer[] = [];
+    const hash = createHash("sha256");
     let n = 0;
     for await (const c of res.body as unknown as AsyncIterable<Uint8Array>) {
+      arm();
       if ((n += c.length) > m.bytes) throw fail(`the download is larger than the expected ${m.bytes} bytes`);
-      chunks.push(Buffer.from(c));
+      hash.update(c);
+      if (fd === undefined) { tmp = tmpSibling(file, base); try { fd = openSync(tmp, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } }
+      for (let at = 0; at < c.length;) at += writeSync(fd, c, at);
     }
-    body = Buffer.concat(chunks);
+    if (fd !== undefined) { closeSync(fd); fd = undefined; }
+    if (n !== m.bytes) throw fail(`got ${n} bytes, expected ${m.bytes}`);
+    if (hash.digest("hex") !== m.sha256) throw fail("the sha256 does not match");
+    commit(tmp!, file);
+    done = true;
   } catch (e: any) {
     if (signal?.aborted) throw signal.reason;
-    throw e instanceof EditError ? e : fail(timedOut ? "timed out after 60 s" : String(e?.message ?? e));
-  } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); }
-  if (body.length !== m.bytes) throw fail(`got ${body.length} bytes, expected ${m.bytes}`);
-  if (createHash("sha256").update(body).digest("hex") !== m.sha256) throw fail("the sha256 does not match");
-  const tmp = tmpSibling(file, userCache());
-  try { createFile(tmp, body, 0o644); commit(tmp, file); } finally { rmSync(tmp, { force: true }); }
+    throw e instanceof EditError ? e : fail(idle ? `no data for ${idleMs / 1000} s` : String(e?.message ?? e));
+  } finally {
+    clearTimeout(timer); signal?.removeEventListener("abort", stop);
+    if (fd !== undefined) closeSync(fd);
+    if (tmp) rmSync(tmp, { force: true });
+    if (!done) for (const d of madeDirs) try { rmdirSync(d); } catch { /* not empty: someone else uses it */ }
+  }
 }
 export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
 
@@ -193,7 +197,7 @@ export function visionEngine() {
  *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
 async function runHelper(root: string, d: Derived, out: string, allowDownload: boolean, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   const uv = uvCommand();
-  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out, allow_download: allowDownload } : d.job;
+  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
   const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {
     const script = join(dir, "helper.py");
@@ -224,7 +228,7 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
         const name = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
-        const model = name && modelCached(name) ? modelFile(name) : null; // named only when the file exists; the helper hashes a pinned one, an unpinned one loads unchecked
+        const model = name && modelCached(name) ? modelFile(name) : null; // named only when the file exists; the helper hashes it before it loads it
         const detail = `vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`;
         if (model && /does not match its pinned sha256/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the model file ${model} is not the pinned file (its sha256 differs): delete it and run with allow_download=true to fetch it again`));
         if (/No interpreter found/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the vision helper needs a Python ${PYTHON}; install one with \`uv python install 3.12\` (or put one on PATH), or run with allow_download=true so uv may fetch one, and retry`));
@@ -241,8 +245,8 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
 const baseOf = (d: Derived) => d.root ?? userCache();
 
 /** Produce d.file unless it is cached. Writes go to a unique temp name + rename, so concurrent computes never tear a file.
- *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then a pinned model (the face model, u2netp) is
- *  fetched and verified here (`downloadModel`) and any other matte model by the helper. The helper dir and uv are checked first, so an unsafe cache or a missing uv
+ *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then it is fetched and verified here
+ *  (`downloadModel`): the helper never downloads. The helper dir and uv are checked first, so an unsafe cache or a missing uv
  *  is refused before a download. */
 export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
@@ -251,7 +255,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   requireUv([d]);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
-  for (const n of need) if (PINNED_MODELS[n.model]) await downloadModel(PINNED_MODELS[n.model], signal);
+  for (const n of need) await downloadModel(PINNED_MODELS[n.model], signal);
   const tmp = tmpSibling(d.file, baseOf(d));
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
@@ -336,7 +340,7 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   const params = { cmd: "matte", kind: o.kind, fps, w, h, model };
   const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
   d.job.model_file = modelFile(model);
-  if (PINNED_MODELS[model]) d.job.model_sha256 = PINNED_MODELS[model].sha256; // an unpinned model carries none and loads unchecked
+  d.job.model_sha256 = MATTE_PINS[model].sha256; // the helper hashes the file it loads
   return d;
 }
 

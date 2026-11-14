@@ -344,7 +344,7 @@ $("prepare").addEventListener("click", function () { startPrepare(false); });
 var consentErr = null;
 function askDownload(err) {
   consentErr = err; var d = $("consent"), l = $("clist"); l.innerHTML = "";
-  err.models.forEach(function (m) { var li = document.createElement("li"); li.textContent = m.model + " (" + (m.approx_mb == null ? "size unknown" : "~" + m.approx_mb + " MB") + ")"; l.appendChild(li); });
+  err.models.forEach(function (m) { var li = document.createElement("li"); li.textContent = m.model + " (~" + m.approx_mb + " MB)"; l.appendChild(li); });
   d.returnValue = ""; d.showModal(); $("cgo").focus();
 }
 $("cgo").addEventListener("click", function () { $("consent").close("go"); });

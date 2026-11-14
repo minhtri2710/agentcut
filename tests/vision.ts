@@ -14,6 +14,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("../src/api.ts");
 const V = await import("../src/vision.ts");
+const M = await import("../src/model.ts");
 const A = await import("../src/anim.ts");
 
 let failures = 0;
@@ -666,17 +667,17 @@ console.log("asset record");
 console.log("matte models: prepare refuses an uncached model unless allow_download is set");
 {
   const gateLog = join(tmp, "gate-runs.jsonl"), gateUv = join(tmp, "gate-uv.mjs");
-  // records the job's allow_download and the U2NET_HOME variable only, then hands over to the fake above
+  // records whether the job holds allow_download, its model_sha256 and the U2NET_HOME variable only, then hands over to the fake above
   writeFileSync(gateUv, `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const job = JSON.parse(process.argv.at(-1));
-appendFileSync(${JSON.stringify(gateLog)}, JSON.stringify({ cmd: job.cmd, allow: job.allow_download, home: process.env.U2NET_HOME ?? null, ort: process.env.ORT_DISABLE_TELEMETRY ?? null }) + "\\n");
+appendFileSync(${JSON.stringify(gateLog)}, JSON.stringify({ cmd: job.cmd, hasAllow: "allow_download" in job, sha: job.model_sha256 ?? null, home: process.env.U2NET_HOME ?? null, ort: process.env.ORT_DISABLE_TELEMETRY ?? null }) + "\\n");
 const r = spawnSync(${JSON.stringify(fake)}, process.argv.slice(2), { encoding: "utf8" });
 process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.status ?? 1);
 `);
   chmodSync(gateUv, 0o755);
-  const gateRuns = () => (existsSync(gateLog) ? readFileSync(gateLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as { cmd: string; allow: unknown; home: string | null; ort: string | null }[];
+  const gateRuns = () => (existsSync(gateLog) ? readFileSync(gateLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as { cmd: string; hasAllow: boolean; sha: string | null; home: string | null; ort: string | null }[];
   const MODEL = "u2net_human_seg", cacheRoot = process.env.AGENTCUT_CACHE!, modelDir = join(cacheRoot, "models");
   const G = join(tmp, "gate");
   api.create(G, { preset: "720p" });
@@ -684,7 +685,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   process.env.AGENTCUT_UV = gateUv;
   try {
     const caps = () => (api.capabilities() as any).matte_models as { name: string; approx_mb: number; cached: boolean }[];
-    check("capabilities lists the 5 matte models with a size and cached flags", caps()?.length === 5 && caps().every((x) => x.approx_mb === null || x.approx_mb > 0) && caps().filter((x) => x.approx_mb === null).map((x) => x.name).join() === "u2net,isnet-general-use"
+    check("capabilities lists the 5 matte models with their size in whole MB and cached flags", caps()?.map((x) => `${x.name}:${x.approx_mb}`).join() === "u2netp:5,u2net:176,u2net_human_seg:176,isnet-general-use:179,silueta:44"
       && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false, caps());
     const st: any = api.prepareStatus(G);
     check("prepare status lists the model that would be downloaded", st.models_to_download?.length === 1 && st.models_to_download[0].model === MODEL && st.models_to_download[0].approx_mb === 176
@@ -693,14 +694,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     check("uncached model -> model_not_cached naming the model", nf.code === "model_not_cached" && nf.message.includes(MODEL), { code: nf.code, message: nf.message });
     check("  the hint has the size, the cache path and allow_download", nf.hint?.includes("176") && nf.hint.includes(modelFile(MODEL)) && nf.hint.includes("allow_download"), nf.hint);
     check("  the helper never ran and nothing was written to the models dir", gateRuns().length === 0 && !existsSync(join(modelDir, MODEL)), { runs: gateRuns(), listing: existsSync(modelDir) ? readdirSync(modelDir) : null });
-    { // a model whose size is not known offline: the text says so and never prints a placeholder
-      const U = join(tmp, "gate-unknown");
+    { // every matte model has a size: the text is whole MB, never a placeholder
+      const U = join(tmp, "gate-size");
       api.create(U, { preset: "720p" });
       await apply(U, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "isnet-general-use" }]);
       const un: any = await api.prepare(U).catch((e) => e), us: any = api.prepareStatus(U);
-      check("uncached model of unknown size: model_not_cached says 'size unknown', never null or undefined, status size is null",
-        un.code === "model_not_cached" && un.message.includes("isnet-general-use (size unknown)") && un.hint.includes("size unknown") && !/null|undefined|NaN/.test(un.message + un.hint)
-        && us.models_to_download[0]?.approx_mb === null && gateRuns().length === 0, { code: un.code, message: un.message, hint: un.hint, us: us.models_to_download });
+      check("uncached isnet-general-use: model_not_cached says '~179 MB', the status size is 179", un.code === "model_not_cached" && un.message.includes("isnet-general-use (~179 MB)") && un.hint.includes("~179 MB")
+        && !/null|undefined|NaN/.test(un.message + un.hint) && us.models_to_download[0]?.approx_mb === 179 && gateRuns().length === 0, { code: un.code, message: un.message, hint: un.hint, us: us.models_to_download });
     }
     seedModel(MODEL);
     check("cached model: capabilities say so and prepare status lists nothing to download", caps().find((x) => x.name === MODEL)?.cached === true && (api.prepareStatus(G) as any).models_to_download.length === 0);
@@ -708,23 +708,33 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     let ok: any;
     try { ok = await api.prepare(G); } finally { delete process.env.ORT_DISABLE_TELEMETRY; }
     const run = gateRuns();
-    check("cached model: the gate passes, the helper ran with allow_download false and U2NET_HOME = the user cache (models live in <cache>/models)",
-      ok.computed[0]?.kind === "matte" && run.length === 1 && run[0].allow === false && run[0].home === cacheRoot, { ok: ok.ready, run });
+    check("cached model: the gate passes, the helper ran with the model's sha256, no allow_download, and U2NET_HOME = the user cache (models live in <cache>/models)",
+      ok.computed[0]?.kind === "matte" && run.length === 1 && run[0].hasAllow === false && run[0].sha === M.MATTE_PINS[MODEL].sha256 && run[0].home === cacheRoot, { ok: ok.ready, run });
     check("the helper is spawned with ORT_DISABLE_TELEMETRY=1, whatever the inherited value", run[0].ort === "1", run);
     rmSync(modelFile(MODEL)); rmSync(join(G, ".agentcut", "cache"), { recursive: true });
-    const al: any = await api.prepare(G, { allowDownload: true });
-    check("allow_download with the model missing: the gate passes and the helper is told allow_download true", al.computed[0]?.kind === "matte" && gateRuns().length === 2 && gateRuns()[1].allow === true, { al: al.ready, run: gateRuns() });
+    // the download is stubbed (no network): this row's pin is a small body, restored below
+    const pin = M.MATTE_PINS[MODEL], pinned = { ...pin }, body = Buffer.from("not a real model: a small body for the allow_download row"), realFetch = globalThis.fetch, asked: string[] = [];
+    Object.assign(pin, { sha256: (await import("node:crypto")).createHash("sha256").update(body).digest("hex"), bytes: body.length });
+    globalThis.fetch = (async (u: any) => { asked.push(String(u)); return new Response(body); }) as typeof fetch;
+    let al: any;
+    try { al = await api.prepare(G, { allowDownload: true }); } finally { globalThis.fetch = realFetch; }
+    check("allow_download with the model missing: AgentCut fetches and verifies it, then the helper runs on the verified file with its sha256 and no allow_download",
+      al.computed[0]?.kind === "matte" && asked.join() === pin.url && readFileSync(modelFile(MODEL)).equals(body) && gateRuns().length === 2 && gateRuns()[1].hasAllow === false && gateRuns()[1].sha === pin.sha256, { al: al.ready, asked, run: gateRuns() });
+    Object.assign(pin, pinned);
     check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
-    // the CLI and MCP spellings reach the same gate
-    rmSync(join(G, ".agentcut", "cache"), { recursive: true });
-    const cli = (...a: string[]) => spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, "--quiet", ...a], { encoding: "utf8", env: { ...process.env } });
+    // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404
+    rmSync(join(G, ".agentcut", "cache"), { recursive: true }); rmSync(modelFile(MODEL));
+    const cliFetchLog = join(tmp, "gate-cli-fetch.log"), cliFetchStub = join(tmp, "gate-cli-fetch-stub.ts");
+    writeFileSync(cliFetchStub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(cliFetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
+    const cli = (...a: string[]) => spawnSync(process.execPath, ["--no-install", "--preload", cliFetchStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, "--quiet", ...a], { encoding: "utf8", env: { ...process.env } });
     const c1 = cli(), c1j = JSON.parse(c1.stdout || "{}");
     check("CLI prepare without --allow-download: model_not_cached, non-zero exit", c1.status !== 0 && c1j.error?.code === "model_not_cached", { status: c1.status, out: c1.stdout.slice(0, 300) });
     const c2 = cli("--allow-download"), c2j = JSON.parse(c2.stdout || "{}");
-    check("CLI prepare --allow-download passes the gate", c2.status === 0 && c2j.ready === true && gateRuns().at(-1)?.allow === true, { status: c2.status, out: c2.stdout.slice(0, 300) });
+    check("CLI prepare --allow-download passes the gate and reaches the model download (stub answers 404 -> model_download_failed), the helper not started",
+      c2.status !== 0 && c2j.error?.code === "model_download_failed" && existsSync(cliFetchLog) && readFileSync(cliFetchLog, "utf8").trim() === pinned.url && gateRuns().length === 2, { status: c2.status, out: c2.stdout.slice(0, 300), runs: gateRuns().length });
 
-    // a matte helper that fails: the hint names the model file only when that file exists (rembg does not re-check an existing file)
+    // a matte helper that fails with the model file present: the hint names it
     {
       const failUv = join(tmp, "fail-uv.mjs");
       writeFileSync(failUv, `#!/usr/bin/env node\nprocess.stderr.write("stub load failure\\n"); process.exit(1);\n`);
@@ -733,9 +743,6 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       api.create(F, { preset: "720p" });
       await apply(F, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: MODEL }]);
       process.env.AGENTCUT_UV = failUv;
-      rmSync(modelFile(MODEL), { force: true });
-      const gone: any = await api.prepare(F, { allowDownload: true }).catch((e) => e);
-      check("matte helper fails with the model file absent: vision_failed, the hint does not name a damaged file", gone.code === "vision_failed" && !/damaged/.test(gone.hint) && !gone.hint.includes(modelFile(MODEL)), { code: gone.code, hint: gone.hint });
       seedModel(MODEL);
       const bad: any = await api.prepare(F).catch((e) => e);
       check("matte helper fails with the model file present: vision_failed, the hint names the file and allow_download", bad.code === "vision_failed" && bad.hint.includes(modelFile(MODEL)) && bad.hint.includes("if the error is about loading the model, the model file " + modelFile(MODEL) + " may be damaged") && bad.hint.includes("allow_download=true"), { code: bad.code, hint: bad.hint });
@@ -766,9 +773,9 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       // HOME is set at spawn into the test tmp; the environment is spelled out key by key.
       const boot = "import sys, runpy; sys.path.insert(0, sys.argv[1]); s = sys.argv[2]; sys.argv = sys.argv[2:]; runpy.run_path(s, run_name='__main__')";
       const childEnv = (extra: Record<string, string>) => ({ PATH: process.env.PATH ?? "", HOME: join(run, "home"), ...extra });
-      const guarded = (allow: boolean) => {
-        const out = join(run, `seen-${allow}.json`);
-        const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: allow });
+      const guarded = () => {
+        const out = join(run, "seen-proxy.json");
+        const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png") });
         const r = spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
           env: childEnv({ STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" }) });
         return { status: r.status, seen: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, stderr: r.stderr.slice(-200) };
@@ -776,11 +783,10 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       mkdirSync(join(run, "home"));
       const noStubs = spawnSync("python3", ["-I", "-S", "-B", "-c", "import importlib.util as u; print(u.find_spec('onnxruntime'), u.find_spec('rembg'))"], { cwd: run, encoding: "utf8", env: childEnv({}) });
       check("the helper child cannot find the real onnxruntime or rembg without the stub dir", noStubs.status === 0 && noStubs.stdout.trim() === "None None", { out: noStubs.stdout, err: noStubs.stderr });
-      const closed = guarded(false), open = guarded(true);
+      const closed = guarded();
       const dead = (v: string | null) => typeof v === "string" && /^http:\/\/127\.0\.0\.1:9\/?$/.test(v);
-      check("helper, allow_download false: the proxy variables point at an unreachable address and NO_PROXY is cleared when rembg is imported",
+      check("helper: the proxy variables point at an unreachable address and NO_PROXY is cleared when rembg is imported, whatever the environment says",
         !!closed.seen && ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].every((k) => dead(closed.seen[k])) && !closed.seen.NO_PROXY && !closed.seen.no_proxy, closed);
-      check("helper, allow_download true: the proxy variables are left as they were", open.seen?.HTTPS_PROXY === "http://allowed.example:3128" && open.seen?.NO_PROXY === "*", open);
 
       { // a pinned model is hashed where the helper loads it: the right bytes reach the stub loader, other bytes are refused before it
         const { createHash } = await import("node:crypto");
@@ -788,13 +794,14 @@ def remove(*a, **k): raise SystemExit("stub rembg")
         const fixture = join(run, "fixture.onnx"), sha = (b: string) => createHash("sha256").update(b).digest("hex");
         writeFileSync(fixture, "small model fixture");
         const load = (job: Record<string, unknown>) => spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, JSON.stringify(job)], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: childEnv({ STUB_OUT: join(run, "seen-load.json") }) });
-        const matteJob = (extra: Record<string, unknown>) => ({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: true, model_file: fixture, ...extra });
+        const matteJob = (extra: Record<string, unknown>) => ({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), model_file: fixture, ...extra });
         const subjectJob = (extra: Record<string, unknown>) => ({ cmd: "subject", w: 2, h: 2, fps: 1, face_min: 0.6, path: "x", face_model: fixture, ...extra });
         const refused = (r: { status: number | null; stderr: string }, stub: string) => r.status !== 0 && /does not match its pinned sha256/.test(r.stderr) && !r.stderr.includes(stub);
         const reached = (r: { stderr: string }, stub: string) => r.stderr.includes(stub) && !/does not match/.test(r.stderr);
         const okSha = sha("small model fixture"), badSha = sha("other bytes");
         check("helper, matte: a model file with the job's sha256 reaches the loader; other bytes are refused before it", reached(load(matteJob({ model_sha256: okSha })), "stub rembg: u2netp") && refused(load(matteJob({ model_sha256: badSha })), "stub rembg"));
-        check("helper, matte: a job with no sha256 (an unpinned model) reaches the loader unchecked", reached(load(matteJob({})), "stub rembg: u2netp"));
+        const noSha = [load(matteJob({})), load(subjectJob({}))];
+        check("helper: a matte job and a subject job with no sha256 are refused before the loader", noSha.every((r) => r.status !== 0 && /no sha256/.test(r.stderr) && !/stub (rembg|yunet)/.test(r.stderr)), noSha.map((r) => r.stderr.slice(-200)));
         check("helper, subject: the face model with the job's sha256 reaches the detector; other bytes are refused before it", reached(load(subjectJob({ model_sha256: okSha })), "stub yunet") && refused(load(subjectJob({ model_sha256: badSha })), "stub yunet"));
         writeFileSync(join(stubs, "cv2.py"), "");
       }
@@ -825,7 +832,9 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       writeFileSync(join(stubs, "rembg.py"), "def new_session(model): return None\ndef remove(*a, **k): raise SystemExit('stub rembg')\n");
       const pids = join(run, "children.pids"), late = join(run, "late.mov");
       fakeFfmpeg(`echo $$ >> ${JSON.stringify(pids)}\ncase " $* " in *" pipe:0 "*) cat >/dev/null; sleep 1; for a; do o=$a; done; echo late > "$o";; *) exec sleep 30;; esac`);
-      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, allow_download: true, model_file: join(run, "unused.onnx") });
+      const unused = join(run, "unused.onnx");
+      writeFileSync(unused, "small model fixture");
+      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, model_file: unused, model_sha256: (await import("node:crypto")).createHash("sha256").update("small model fixture").digest("hex") });
       const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const kids = () => (existsSync(pids) ? readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
       const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -1022,6 +1031,13 @@ console.log("the face model: descriptor, job, gate, download");
     const server = createServer((req, res) => {
       const send = (code: number, body: Buffer) => { res.writeHead(code, { "content-length": body.length }); res.end(body); };
       if (req.url === "/hold") { res.writeHead(200, { "content-length": good.length }); res.write(good.subarray(0, 5)); return; } // never finishes
+      if (req.url === "/slow") { // keeps sending, in small pieces, for longer than the idle limit the rows below use
+        res.writeHead(200, { "content-length": good.length });
+        let at = 0;
+        const t = setInterval(() => { if (at >= good.length) { clearInterval(t); res.end(); } else res.write(good.subarray(at, (at += 6))); }, 100);
+        res.on("close", () => clearInterval(t));
+        return;
+      }
       if (req.url === "/ok") send(200, good);
       else if (req.url === "/other") send(200, other);
       else if (req.url === "/short") send(200, good.subarray(0, 10));
@@ -1049,10 +1065,21 @@ console.log("the face model: descriptor, job, gate, download");
         check("downloadModel: the right bytes are written, and only that file (without AbortSignal.any)", ok === null && existsSync(file) && readFileSync(file).equals(good) && readdirSync(join(D, "models", "test_model_ok")).join() === "test_model_ok.onnx" && V.modelCached("test_model_ok") && V.modelFile("test_model_ok") === file, { ok, listing: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
       });
       const H = fresh("download-abort"), ac = new AbortController(), reason = new Error("stopped by the caller");
-      setTimeout(() => ac.abort(reason), 100);
+      const listing = (cache: string) => (existsSync(join(cache, "models")) ? readdirSync(join(cache, "models"), { recursive: true }).map(String) : []);
+      let during: string[] = [];
+      void (async () => { // the body is streamed: once the first bytes are in, they sit in a temp file beside the target; then the caller aborts
+        for (let i = 0; i < 250 && !during.some((f) => f.includes(".part-")); i++) { await new Promise((r) => setTimeout(r, 20)); during = listing(H); }
+        ac.abort(reason);
+      })();
       const t0 = Date.now(), ab = await inCache(H, () => caught(() => V.downloadModel(desc("test_model_hold", "/hold"), ac.signal))), took = Date.now() - t0;
-      // well under the 60 s download timeout: the caller's abort itself stopped the transfer
-      check("downloadModel: a caller abort mid-body rejects at once with the caller's reason, nothing left", ab === reason && took < 10_000 && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), took, models: existsSync(join(H, "models")) });
+      // well under the 60 s idle limit: the caller's abort itself stopped the transfer
+      check("downloadModel: the body goes to a temp file as it arrives; a caller abort mid-body rejects at once with the caller's reason, nothing left", ab === reason && took < 10_000 && during.some((f) => f.includes(".part-")) && listing(H).length === 0 && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), took, during, after: listing(H) });
+      // the idle limit is shortened for these two rows (the third argument of downloadModel, which callers leave at 60 s)
+      const S = fresh("download-stall"), ts = Date.now(), stalled = await inCache(S, () => caught(() => V.downloadModel(desc("test_model_stall", "/hold"), undefined, 300))), tookStall = Date.now() - ts;
+      check("downloadModel: a body that stops sending fails after the idle limit, model_download_failed 'no data for', nothing left", stalled?.code === "model_download_failed" && /no data for/.test(stalled.message) && tookStall < 10_000 && listing(S).length === 0 && !existsSync(join(S, "models")), { code: stalled?.code, message: stalled?.message, tookStall, after: listing(S) });
+      const L = fresh("download-slow"), tl = Date.now(), slow = await inCache(L, () => caught(() => V.downloadModel(desc("test_model_slow", "/slow"), undefined, 400))), tookSlow = Date.now() - tl;
+      const slowFile = join(L, "models", "test_model_slow", "test_model_slow.onnx");
+      check("downloadModel: a body that keeps sending succeeds although the whole transfer takes longer than the idle limit", slow === null && tookSlow > 400 && existsSync(slowFile) && readFileSync(slowFile).equals(good) && listing(L).length === 2, { slow: slow?.message, tookSlow, after: listing(L) });
     } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); }
     const refused = await inCache(fresh("download-closed"), () => caught(() => V.downloadModel(desc("test_model_closed", "/ok"))));
     check("downloadModel: a server that is gone -> model_download_failed", refused?.code === "model_download_failed", { code: refused?.code, message: refused?.message });
@@ -1100,11 +1127,14 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       check("uv gets --python with the pinned range", at >= 0 && off.run.argv[at + 1] === ">=3.12,<3.14" && on.run?.argv[on.run.argv.indexOf("--python") + 1] === ">=3.12,<3.14", { off: off.run?.argv, on: on.run?.argv });
       check("--no-python-downloads is passed without allow_download and left out with it", off.run?.argv.includes("--no-python-downloads") === true && on.run?.argv.includes("--no-python-downloads") === false, { off: off.run?.argv, on: on.run?.argv });
     }
-    { // the job of a pinned model carries the pin's sha256 and the model file; an unpinned model carries no sha256
+    { // every matte job carries its model's sha256 and file, and the helper job holds no download switch; the face job carries the face model's
       const jobOf = (r: PyRun) => JSON.parse(r.argv.at(-1)!);
-      const u2netp = jobOf((await go(jobs.matte(), false)).run), u2net = jobOf((await go(V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, model: "u2net", root: root() }), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
-      check("the matte job for u2netp carries its sha256 and model file; the job for u2net carries a model file and no sha256",
-        u2netp.model_sha256 === V.U2NETP_MODEL.sha256 && u2netp.model_file === V.modelFile("u2netp") && u2net.model_sha256 === undefined && u2net.model_file === V.modelFile("u2net"), { u2netp, u2net });
+      const u2netp = jobOf((await go(jobs.matte(), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
+      check("the matte job reaching the helper carries the model's sha256 and file, and no allow_download", u2netp.model_sha256 === M.MATTE_PINS.u2netp.sha256 && u2netp.model_file === V.modelFile("u2netp") && !("allow_download" in u2netp), u2netp);
+      check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
+      check("every matte model has a pin: its own name, an https url ending /<name>.onnx, 64 hex sha256, bytes > 0, and a size in whole MB",
+        M.MATTE_MODELS.length === 5 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(`/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
+        && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 5);
       check("the subject job carries the face model's sha256", face.model_sha256 === V.FACE_MODEL.sha256 && face.face_model === V.modelFile(V.FACE_MODEL.name), face);
       process.env.FAKE_PY_ERR = "model file does not match its pinned sha256: " + V.modelFile("u2netp");
       const mm = await go(jobs.matte(), false);
@@ -1120,7 +1150,7 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
     check("any other helper failure keeps the network and decode hint", other.e?.code === "vision_failed" && /network access/.test(other.e.hint) && !/uv python install/.test(other.e.hint), { hint: other.e?.hint });
 
     // u2netp: AgentCut fetches it, checks sha256 and size, and only then lets the helper load it
-    const U = V.U2NETP_MODEL;
+    const U = M.MATTE_PINS.u2netp;
     const realFetch = globalThis.fetch, fetched: string[] = [];
     const serve = (body: Buffer) => { globalThis.fetch = (async (u: any) => { fetched.push(String(u)); return new Response(body); }) as typeof fetch; };
     const fresh = (name: string) => { const d = join(tmp, `u2-${name}`); mkdirSync(d, { recursive: true }); return d; };

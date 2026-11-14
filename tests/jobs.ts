@@ -143,11 +143,13 @@ const nCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n"
 // ---------------------------------------------------------------- prepare as an MCP job
 console.log("prepare (MCP background job)");
 const P = join(tmp, "proj");
-let extraCalls = 0; // helper runs of the model-gate project below, not of P
 {
   const env = { ...(process.env as Record<string, string>), AGENTCUT_UV: fake };
+  // the server runs with a stub fetch loaded by --preload (the test's own file): every download attempt is recorded and answered 404, so nothing touches the network
+  const fetchLog = join(tmp, "jobs-fetch.log"), fetchStub = join(tmp, "jobs-fetch-stub.ts");
+  writeFileSync(fetchStub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
   const client = new Client({ name: "jobs-test", version: "1" });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [resolve(import.meta.dir, "../src/mcp.ts")], env }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: ["--no-install", "--preload", fetchStub, resolve(import.meta.dir, "../src/mcp.ts")], env }));
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r: any = await client.callTool({ name, arguments: args });
     return JSON.parse(r.content.find((c: any) => c.type === "text").text);
@@ -176,17 +178,18 @@ let extraCalls = 0; // helper runs of the model-gate project below, not of P
   check("preview works after prepare", pv2.ok, pv2);
   const again = await call("prepare", {});
   check("second prepare: nothing to compute", again.status === "done" && again.result.computed.length === 0 && nCalls() === 1, again);
-  // a model that is not cached: the MCP prepare tool refuses it, and allow_download lets the job through
+  // a model that is not cached: the MCP prepare tool refuses it, and allow_download lets the job reach the model download
   const Q = join(tmp, "proj-model");
   await call("create_project", { path: Q, preset: "720p" });
   await call("apply_ops", { project: Q, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "silueta" }] });
   const qs = await call("prepare", { project: Q, status_only: true }), calls0 = nCalls();
-  check("MCP prepare status_only lists the model to download", qs.ok && qs.models_to_download?.[0]?.model === "silueta" && qs.models_to_download[0].approx_mb === 43, qs);
+  check("MCP prepare status_only lists the model to download", qs.ok && qs.models_to_download?.[0]?.model === "silueta" && qs.models_to_download[0].approx_mb === 44, qs);
   const q1 = await call("prepare", { project: Q, wait_seconds: 10 });
   check("MCP prepare without allow_download: model_not_cached, the helper never runs", q1.status === "failed" && q1.error?.code === "model_not_cached" && nCalls() === calls0, q1);
   const q2 = await call("prepare", { project: Q, allow_download: true, wait_seconds: 10 });
-  check("MCP prepare allow_download=true passes the gate", q2.status === "done" && q2.result?.computed?.[0]?.kind === "matte" && nCalls() === calls0 + 1, q2);
-  extraCalls = 1;
+  const fetched = existsSync(fetchLog) ? readFileSync(fetchLog, "utf8").split("\n").filter(Boolean) : [];
+  check("MCP prepare allow_download=true passes the gate and reaches the pinned download (stub 404 -> model_download_failed), the helper never runs",
+    q2.status === "failed" && q2.error?.code === "model_download_failed" && fetched.join() === (await import("../src/model.ts")).MATTE_PINS.silueta.url && nCalls() === calls0, { q2, fetched });
   await client.close();
 }
 
@@ -196,7 +199,7 @@ process.env.AGENTCUT_UV = fake;
 const api = await import("../src/api.ts");
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
-check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() - extraCalls === 1, rr);
+check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() === 1, rr);
 const png = join(tmp, "f.png");
 await api.frame(P, 1, { out: png, scale: 0.5 });
 const pix = (x: number) => [...spawnSync("ffmpeg", ["-v", "error", "-i", png, "-vf", `crop=1:1:${x}:180`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout];
@@ -216,7 +219,7 @@ check("prune max_mb=0 removes referenced files too, with a prepare hint", !exist
 const nf: any = await api.frame(P, 1, { out: png }).catch((e) => e);
 check("after pruning the matte, preview asks for prepare again", nf.code === "not_prepared", nf);
 await api.prepare(P);
-check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() - extraCalls === 2);
+check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() === 2);
 const bad = (() => { try { api.cache.prune(P, { olderThan: "soon" }); } catch (e: any) { return e.code; } })();
 check("bad older_than -> bad_value", bad === "bad_value");
 
