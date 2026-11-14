@@ -484,10 +484,9 @@ function hist(kind) { api("/api/" + kind, { revision: S.revision }).then(functio
 $("undo").addEventListener("click", function () { hist("undo"); });
 $("redo").addEventListener("click", function () { hist("redo"); });
 /** the control holds focus from the keyboard: :focus-visible, and no mouse press since the last Tab (a key press after a click makes the clicked control :focus-visible too) */
-var mouseFocus = false, pressing = false;
-document.addEventListener("mousedown", function () { pressing = true; setTimeout(function () { pressing = false; }); }, true);
-document.addEventListener("focusin", function () { if (pressing) mouseFocus = true; }); // the press moved the focus
-document.addEventListener("keydown", function (e) { if (e.key === "Tab") mouseFocus = pressing = false; }, true);
+var mouseFocus = false; // which came last: a mouse press (true) or Tab (false)
+document.addEventListener("mousedown", function () { mouseFocus = true; }, true);
+document.addEventListener("keydown", function (e) { if (e.key === "Tab") mouseFocus = false; }, true);
 function kbFocus(n) { return !mouseFocus && n.matches(":focus-visible"); }
 /** Left / Right walk the clips in time order, Enter or Space selects the focused one (a click does the same) */
 function clipKey(e, n) {
@@ -503,7 +502,7 @@ document.addEventListener("keydown", function (e) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); return; }
   if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === " ") && kbFocus(g)) return clipKey(e, g);
   // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays
-  if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button" || g.isContentEditable) && kbFocus(g)) return;
+  if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button") && kbFocus(g)) return;
   if (e.key === " ") { e.preventDefault(); $("play").click(); }
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { var f = 1 / S.timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(t + (e.key === "ArrowLeft" ? -f : f)); }
 });

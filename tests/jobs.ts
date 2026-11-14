@@ -466,7 +466,7 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 for (const shift of [-30, -2, 0, 2, 30]) {
   const proj = join(tmp, `proj-late${shift}`);
   rmSync(uvLog, { force: true });
-  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: the prepare jobs below end failed (aborted by the stop)
+  const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: read after the loop
   await srv.init();
   await srv.call("create_project", { path: proj, preset: "720p" });
   await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
@@ -488,6 +488,10 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
     working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
   if (shift >= 2) check(`DL-02: a cancel_job ${shift} ms after SIGTERM leaves the job failed with code aborted, not cancelled`, cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { cancelled });
+}
+{
+  const logged = readFileSync(join(tmp, "home-late", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  check("jobs stopped by a server shutdown (failed, code aborted) are not logged as job errors", logged.some((e) => e.type === "call") && !logged.some((e) => e.type === "job"), logged.filter((e) => e.type === "job"));
 }
 
 // DM-01: a reply bigger than the pipe buffer, read late by a client that is paused when SIGTERM arrives, still arrives whole (the shutdown waits

@@ -166,7 +166,7 @@ export function buildServer() {
       .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => {
         job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) };
         job.status = cancelled.has(job) && job.error.code === "aborted" ? "cancelled" : "failed";
-        if (job.status === "failed") recordCall("mcp", kind, Date.now() - job.started, { ok: false, error: job.error }, {}, "job");
+        if (job.status === "failed" && job.error.code !== "aborted") recordCall("mcp", kind, Date.now() - job.started, { ok: false, error: job.error }, {}, "job");
       })
       .finally(() => { job.finished = Date.now(); });
     return id;
