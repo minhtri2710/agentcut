@@ -219,7 +219,7 @@ try {
 
   const revView = load().revision, leftOf = (id: string) => js(`parseFloat(clipNodes.get(${JSON.stringify(id)}).style.left)`) as Promise<number>;
   await js(`(function(){var z=$("zoom"); z.value="200"; z.dispatchEvent(new Event("input"));})()`);
-  check("the zoom slider rescales the timeline: a clip is drawn at its start times the new scale", await js(`pps`) === 200 && await leftOf("gm") === 200 * 1, await js(`[pps, clipNodes.get("gm").style.left]`));
+  check("the zoom slider rescales the timeline: a clip is drawn at its start times the new scale", await js(`pps`) === 200 && await leftOf("gm") === 200 * Number(clipOf(load(), "gm").start),await js(`[pps, clipNodes.get("gm").style.left]`));
   const sb = await js(`(function(){var r=$("scroll").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
   check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `pps > 200 && Math.abs(+$("zoom").value - pps) < 1`), await js(`[pps, $("zoom").value]`));
@@ -231,7 +231,7 @@ try {
   const rb = await js(`(function(){var r=$("ruler").getBoundingClientRect();return {x:r.left,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mousePressed", x: rb.x + 2.5 * 80, y: rb.y, button: "left", clickCount: 1 });
   await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: rb.x + 2.5 * 80, y: rb.y, button: "left", clickCount: 1 });
-  check("clicking the ruler seeks the playhead to that time", Math.abs(await js(`t`) - 2.5) < 0.02 && await js(`$("ph").style.left`) === `${90 + (await js(`t`)) * 80}px`, await js(`[t, $("ph").style.left]`));
+  check("clicking the ruler seeks the playhead to that time", Math.abs(await js(`t`) - 2.5) < 0.02 && await js(`$("ph").style.left === (LABEL + t * pps) + "px"`),await js(`[t, $("ph").style.left]`));
 
   // the Apply-ops box: real clicks on the button, batches from the textarea
   const opsBox = async (text: string) => {
