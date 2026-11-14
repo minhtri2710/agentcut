@@ -621,18 +621,28 @@ console.log("decode and render failures");
     const fr = await api.frameImage(F, 2.5, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame at the end of a clip that runs to the end of its file renders", fr?.data?.length > 100, fr?.code ?? fr?.message);
   }
-  // audio longer than video: the container length is not the video's end
+  // audio longer than video: srcDuration is the picture's length (the asset's video_duration), not the container's
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
-  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
   await la.readAt(0.5);
-  check("a video shorter than its audio holds its last frame at the container's length", (await code(la.readAt(2))) === "ok");
-  // a fresh source (later render segment, preview) read past the video's end of the same file: the held frame comes from the video's end, not the container's
-  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+  check("a video clip that runs past its picture holds the last frame while the sound goes on", (await code(la.readAt(2))) === "ok");
+  // a fresh source (later render segment, preview) read past the picture's end of the same file holds the picture's last frame
+  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
   const lh = await la2.readAt(2).catch(() => Buffer.alloc(0));
   check("a fresh read past the video's end of a file with longer audio holds the last frame", lh.length === 64 * 64 * 4 && lh.some((x) => x !== 0), lh.length);
   la2.close();
   la.close();
-  // N3/N4: the video's end and its last frame are asked once per source, however often a jump past the end repeats
+  {
+    // a looped clip of a file with longer sound wraps at the picture's length, not the container's
+    ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", join(m, "loop-al.mp4"));
+    const LP = join(tmp, "loop-al");
+    api.create(LP, { width: 64, height: 64, fps: 24 });
+    await api.apply(LP, [{ op: "add_clip", track: "main", src: join(m, "loop-al.mp4"), loop: true, duration: 12 }]);
+    const at = async (t: number) => Buffer.from((await api.frameImage(LP, t, { scale: 1 })).data);
+    const [f05, f29, f35, f95] = [await at(0.5), await at(2.9), await at(3.5), await at(9.5)];
+    check("a looped video clip of a file with longer sound wraps at the picture's length (3.5 s and 9.5 s show the picture of 0.5 s), so no cycle holds a frozen frame", f35.equals(f05) && f95.equals(f05) && !f35.equals(f29), [f05.length, f29.length]);
+  }
+  // N3/N4: the picture's last frame is decoded once per source, however often a jump past the end repeats, and nothing asks ffprobe
   if (process.platform !== "win32") {
     const bin = join(tmp, "shim-bin"), log = join(tmp, "shim.log");
     mkdirSync(bin);
@@ -642,15 +652,15 @@ console.log("decode and render failures");
     }
     const PATH1 = process.env.PATH;
     process.env.PATH = `${bin}:${PATH1}`;
-    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 3 });
+    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
     const first = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
     await rs.readAt(0.5);
     const again = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
     process.env.PATH = PATH1;
     rs.close();
     const lines = readFileSync(log, "utf8").split("\n");
-    check("a back-seek and a second jump past the end asks the video's end and decodes its last frame once",
-      lines.filter((l) => l.startsWith("ffprobe ")).length === 1 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.000000 ")).length === 1 && first.length === 64 * 64 * 4 && again.equals(first), lines);
+    check("a back-seek and a second jump past the end decodes the picture's last frame once and asks ffprobe nothing",
+      lines.filter((l) => l.startsWith("ffprobe ")).length === 0 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.000000 ")).length === 1 && first.length === 64 * 64 * 4 && again.equals(first), lines);
   }
   b.close();
   const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });

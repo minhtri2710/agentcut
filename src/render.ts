@@ -8,7 +8,7 @@ import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource } from "./media.ts";
 import { safeZones } from "./safe.ts";
 import {
-  type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, type Timeline, totalDuration,
+  type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
   type Track, VISUAL_TYPES,
 } from "./model.ts";
 import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
@@ -100,7 +100,7 @@ export class Layer {
         srcIn: parseTime(c.in ?? 0), segLen: this.dur * speed,
         rate: this.ramp ? (a.fps || r.fps) : r.fps / speed,
         fit, box: [this.box[0] * this.q, this.box[1] * this.q], focus: c.focus, crop: c.crop, filters: c.filters, color: c.color, pan: this.pan,
-        loop: !!c.loop, srcDuration: a.duration, reverse: !!c.reverse, freeze: !!c.freeze,
+        loop: !!c.loop, srcDuration: sourceLen(a, c.type), reverse: !!c.reverse, freeze: !!c.freeze,
         ...(mt ? {} : { codec: a.codec, alpha: a.alpha }),
       });
     }

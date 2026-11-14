@@ -1,7 +1,7 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip (numbers, errors, audio render).
 // Run: bun tests/edit-ops.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1517,6 +1517,66 @@ console.log("relink_asset");
   check("relink to a shorter source: a speed-ramped clip that runs past the end is warned", warns(w3, /<r1>\.duration$/).length === 1, w3.issues);
   const w4 = (await rb([{ op: "relink_asset", id: "im", path: join(m, "p2.png") }])).results[0];
   check("an image clip with a static focus is listed for recheck, the one without is not", JSON.stringify(w4.recheck.map((x: any) => x.id)) === JSON.stringify(["i1"]), w4.recheck);
+}
+
+console.log("asset ids from accented names, and one file reached by several paths");
+{
+  const Q = join(tmp, "proj-ids");
+  api.create(Q, { preset: "720p" });
+  const imp = async (path: string, id?: string) => (await api.apply(Q, [{ op: "import_media", path, ...(id ? { id } : {}) }])).results[0].asset;
+  const names = ["cảnh quay 1", "đám cưới", "Đường", "złoty ø ß æ œ", "日本語"];
+  for (const n of names) copyFileSync(join(m, "p.png"), join(m, `${n}.png`));
+  const got: string[] = [];
+  for (const n of names) got.push(await imp(join(m, `${n}.png`)));
+  check("an accented name keeps its letters in the asset id (đ, ł, ø, ß, æ, œ mapped; other scripts fall back to the plain rule)", JSON.stringify(got) === JSON.stringify(["canh_quay_1", "dam_cuoi", "duong", "zloty_o_ss_ae_oe", "asset"]), got);
+  copyFileSync(join(m, "p.png"), join(m, "canh quay 1.png")); copyFileSync(join(m, "p.png"), join(m, "cạnh quay 1.png"));
+  const [a1, a2] = [await imp(join(m, "canh quay 1.png")), await imp(join(m, "cạnh quay 1.png"))];
+  check("names that differ only by accents get distinct ids through the _2 suffix", a1 === "canh_quay_1_2" && a2 === "canh_quay_1_3", { a1, a2 });
+
+  const real = join(m, "real dir"), link = join(m, "linked dir"), hard = join(m, "hard.png");
+  mkdirSync(real);
+  copyFileSync(join(m, "p.png"), join(real, "f.png"));
+  symlinkSync(real, link);
+  linkSync(join(real, "f.png"), hard);
+  copyFileSync(join(m, "p.png"), join(real, "other.png"));
+  const first = await imp(join(real, "f.png"));
+  const [viaLink, viaHard, other] = [await imp(join(link, "f.png")), await imp(hard), await imp(join(real, "other.png"))];
+  const assets = (await api.info(Q, "json")).timeline.assets;
+  check("the same file through a symlinked folder, or a hard link, is the existing asset; a different file is a new one", viaLink === first && viaHard === first && other !== first && Object.keys(assets).filter((k) => /^f(_|$)/.test(k)).length === 1, { first, viaLink, viaHard, other, ids: Object.keys(assets) });
+  let ex: any;
+  try { await api.apply(Q, [{ op: "import_media", path: join(link, "f.png"), id: "elsewhere" }]); } catch (e: any) { ex = e; }
+  check("an explicit other id for a file already imported through another path is refused naming the existing asset", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${first}'`), ex && { code: ex.code, message: ex.message });
+}
+
+console.log("a video whose sound outlasts its picture");
+{
+  const al = join(m, "audiolong.mp4");
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", al);
+  const D = join(tmp, "proj-audiolong");
+  api.create(D, { width: 64, height: 64, fps: 24 });
+  const r = (await api.apply(D, [
+    { op: "import_media", path: al, id: "al" },
+    { op: "import_media", path: join(m, "a.mp4"), id: "even" },
+    { op: "add_clip", track: "main", asset: "al", id: "dflt" },
+    { op: "add_clip", track: "voice", asset: "al", type: "audio", id: "snd" },
+    { op: "add_clip", track: "overlay", asset: "al", duration: 8, at: 20, id: "long" },
+    { op: "add_clip", track: "overlay", asset: "even", at: 40, id: "same" },
+  ])).results;
+  const T = (await api.info(D, "json")).timeline;
+  check("probe records the picture's length on the asset, only when the sound is longer", near(T.assets.al.video_duration, 3) && near(T.assets.al.duration, 8) && near(r[0].video_duration, 3) && !("video_duration" in T.assets.even), { al: T.assets.al, even: T.assets.even });
+  check("a video clip of it is 3 s by default, an audio clip of the same file 8 s", near(r[2].duration, 3) && near(r[3].duration, 8), [r[2].duration, r[3].duration]);
+  check("a file whose picture and sound are as long keeps its container length", near(r[5].duration, 6), r[5].duration);
+  const v = await api.validate(D);
+  const w = v.issues.filter((i: any) => i.level === "warning" && /needs .* of source/.test(i.message));
+  check("an explicit 8 s video clip warns that it needs 8 s of a 3 s source; the default clip and the audio clip do not", w.length === 1 && w[0].path.includes("<long>") && /8\.00s of source but 'al' is 3\.00s/.test(w[0].message), w);
+  // the room an edit may grow a video clip into ends with the picture: 1 s used of 3 s leaves 2 s, not 7 s
+  const E = join(tmp, "proj-audiolong-roll");
+  api.create(E, { width: 64, height: 64, fps: 24 });
+  await api.apply(E, [{ op: "add_clip", track: "main", src: al, duration: 1, id: "lhs" }, { op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "rhs" }]);
+  let rc = "ok";
+  try { await api.apply(E, [{ op: "roll_edit", id: "lhs", by: 2.5 }]); } catch (e: any) { rc = e.code; }
+  const okRoll = await api.apply(E, [{ op: "roll_edit", id: "lhs", by: 1.5 }]);
+  check("roll_edit cannot grow a video clip past its picture (2.5 s of 2 s spare: out_of_range), and 1.5 s is fine", rc === "out_of_range" && okRoll.ok !== false && near(okRoll.results[0].left.duration, 2.5), { rc, okRoll });
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);

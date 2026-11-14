@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `agentcut` CLI. Prints exactly one JSON object on stdout; progress goes to stderr.
 // Exit codes: 0 ok · 1 edit/validation error · 2 usage error · 3 internal error.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
 import { recordCall } from "./feedback.ts";
 import { EditError, setDotted } from "./model.ts";
 import { VERSION } from "./version.ts";
@@ -73,11 +73,18 @@ const call = { cmd: "", t0: performance.now(), ops: undefined as string[] | unde
 let printed = false;
 // exits from the write callback: a pipe may take the bytes after write() returns, and process.exit() would cut them; callers `return emit(...)`.
 // One object per run: the first emit wins (a signal's report and the command's own result can race).
-function emit(obj: unknown, code = 0) {
+// `second`: a second signal arrived before anything was printed: one synchronous write, then out at once by that signal.
+function emit(obj: unknown, code = 0, second?: { sig: NodeJS.Signals; n: number }) {
   if (printed) return;
   printed = true;
+  const text = JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n";
+  if (second) {
+    try { writeSync(1, text); } catch { /* the reader is gone */ }
+    try { recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {}); } catch { /* the report is out; leaving is what counts */ }
+    return leave(128 + second.n, second.sig);
+  }
   recordCall("cli", call.cmd, performance.now() - call.t0, obj, call.ops ? { ops: call.ops } : {});
-  process.stdout.write(JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n", () => leave(signalled ? 128 + signalled.n : code, signalled?.sig));
+  process.stdout.write(text, () => leave(signalled ? 128 + signalled.n : code, signalled?.sig));
 }
 // SIGHUP is left alone: a closed terminal ends the process as it always did, and `nohup agentcut render &` keeps working
 const SIGNALS = [["SIGINT", 2], ["SIGTERM", 15]] as const;
@@ -111,22 +118,25 @@ async function readOps(file: string | undefined, inline: string | undefined) {
   return Array.isArray(data) ? data : data.ops ?? [data];
 }
 
+/** The report of a stop that did not wait for the command to clean up (a second signal, or the grace time): its temporary files may remain. */
+const leftovers = (reason: EditError) => new EditError(reason.message, "aborted", "the command was stopped before it finished; temporary files it had made are removed by the next render, prepare or `agentcut cache prune`");
 const SIGNAL_WRITE_MS = 500; // how long a second signal lets a result in flight finish
 const SIGNAL_GRACE_MS = 4000; // render workers stop their children within 1.5 s (proc.ts); the run does not wait for more than this
 /** The first SIGINT/SIGTERM aborts `stop`, which the long api calls take, so they stop their children and remove their temp files and reserved
  *  output. Whatever the command then does, the one JSON object is its `aborted` error (a command that finishes cleanly still prints its result), and
- *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal leaves at once, except while the result is being written: then it waits for the write, at most SIGNAL_WRITE_MS. */
+ *  the process ends by the signal (see leave). A command that has not ended after the grace time is reported the same way. A second signal prints an `aborted` object
+ *  with one synchronous write and leaves at once, with no cleanup (the next render, prepare or `cache prune` removes what is left), except while the result is being written: then it waits for the write, at most SIGNAL_WRITE_MS. */
 function onSignals() {
   const stop = new AbortController();
   for (const [sig, n] of SIGNALS) process.on(sig, () => {
     if (signalled) { // the result is already being written: leave when the write is done (emit's callback), or after SIGNAL_WRITE_MS; a reader that has stopped reading still gets a cut object then, and SIGKILL cannot be helped
       if (printed) return void setTimeout(() => leave(128 + n, sig), SIGNAL_WRITE_MS);
-      return leave(128 + n, sig);
+      return emit({ ok: false, error: leftovers(signalled.reason).toJSON() }, 128 + n, { sig, n });
     }
-    const reason = new EditError(`interrupted by ${sig}`, "aborted", "the command was stopped; its temporary files were removed");
+    const reason = new EditError(`interrupted by ${sig}`, "aborted", "the command was stopped; its temporary files were removed"); // said only by a command that ended and cleaned up
     signalled = { sig, n, reason };
     stop.abort(reason);
-    setTimeout(() => fail(reason), SIGNAL_GRACE_MS);
+    setTimeout(() => fail(leftovers(reason)), SIGNAL_GRACE_MS);
   });
   process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code !== "EPIPE" && e.code !== "ERR_STREAM_DESTROYED") throw e; });
   return stop.signal;

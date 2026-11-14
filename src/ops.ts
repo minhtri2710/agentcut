@@ -1,5 +1,5 @@
 // Edit operations. Every op is {"op": name, ...args}; batches are atomic (applied to a copy).
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, parseTime, PRESETS, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
+  normAnim, parseTime, PRESETS, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import { checkRevision, type Project } from "./project.ts";
@@ -64,16 +64,26 @@ function mediaRecord(p: Project, src: string, copy: boolean): Asset {
   return info;
 }
 
+/** The same file: one path, or one device and inode (a linked folder, a hard link, a case-insensitive volume). A file that cannot be read is compared by path alone. */
+function sameFile(x: string, y: string): boolean {
+  if (x === y) return true;
+  try { const a = statSync(x, { bigint: true }), b = statSync(y, { bigint: true }); return a.ino !== 0n && a.ino === b.ino && a.dev === b.dev; } catch { return false; }
+}
+
+/** Lowercase letters NFD does not split into a base and a mark; any other character outside a-z0-9 becomes `_`. */
+const SLUG_LETTERS: Record<string, string> = { đ: "d", ł: "l", ø: "o", ß: "ss", æ: "ae", œ: "oe" };
+const slug = (name: string) => name.toLowerCase().replace(/[đłøßæœ]/g, (c) => SLUG_LETTERS[c]).normalize("NFD").replace(/\p{M}+/gu, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24);
+
 export function importAsset(p: Project, tl: Timeline, path: string, id?: string, copy = false): string {
   if (id) plainKey(id);
   const src = mediaSource(p, path);
-  for (const [k, a] of Object.entries(tl.assets)) if (presolve(p.abs(a.path)) === src) {
+  for (const [k, a] of Object.entries(tl.assets)) if (sameFile(presolve(p.abs(a.path)), src)) {
     if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
     return k;
   }
   const info = mediaRecord(p, src, copy);
   if (!id) {
-    const base = basename(src, extname(src)).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "asset";
+    const base = slug(basename(src, extname(src))) || "asset";
     id = base;
     for (let n = 2; isProtoKey(id) || Object.hasOwn(tl.assets, id); n++) id = `${base}_${n}`; // a file named prototype.* must not give a key a timeline refuses
   } else if (Object.hasOwn(tl.assets, id)) throw new EditError(`asset id '${id}' already exists`, "exists");
@@ -90,7 +100,7 @@ op("relink_asset", "Point an asset at another file (it moved, or was replaced) a
   (p, tl, a) => {
     if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");
     const src = mediaSource(p, a.path);
-    for (const [k, x] of Object.entries(tl.assets)) if (k !== a.id && presolve(p.abs(x.path)) === src) throw new EditError(`${a.path} is already imported as asset '${k}'`, "exists", `use id '${k}' on the clips, or remove_asset id=${k} first`);
+    for (const [k, x] of Object.entries(tl.assets)) if (k !== a.id && sameFile(presolve(p.abs(x.path)), src)) throw new EditError(`${a.path} is already imported as asset '${k}'`, "exists", `use id '${k}' on the clips, or remove_asset id=${k} first`);
     const old = tl.assets[a.id], info = mediaRecord(p, src, !!a.copy);
     if (info.kind !== old.kind) throw new EditError(`asset '${a.id}' is ${old.kind}, the new file is ${info.kind}`, "bad_type", "import_media the new file, then update_clip each clip");
     tl.assets[a.id] = info;
@@ -128,11 +138,7 @@ op("set_settings", "Change canvas/output settings. effects: whole-frame effects 
   { preset: Object.keys(PRESETS).join("|"), width: "px", height: "px", fps: "n", background: "colour", duration: "s|null", loudness: "LUFS|null", sample_rate: "Hz (48000)", effects: "list", name: "project name" },
   (p, tl, a) => {
     const st = tl.settings;
-    if (a.preset) {
-      const dims = own(PRESETS, a.preset);
-      if (!dims) { const s = suggest(a.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${a.preset}'`, "bad_preset", s ? `did you mean '${s}'?` : Object.keys(PRESETS).join(", ")); }
-      [st.width, st.height] = dims;
-    }
+    if (a.preset) [st.width, st.height] = presetSize(a.preset); // width and height given with it are set below and win
     for (const k of ["width", "height", "fps", "background", "duration", "loudness", "sample_rate", "effects"]) if (k in a) st[k] = a[k];
     if (a.name) tl.name = a.name;
     return { settings: st };
@@ -215,7 +221,7 @@ function defaultDuration(tl: Timeline, c: Clip): number {
     const a = tl.assets[c.asset];
     if (a.kind === "image") return 3;
     if (c.freeze) return 2;
-    const avail = Number(a.duration ?? 3) - parseTime(c.in ?? 0);
+    const avail = (a.duration === undefined ? 3 : sourceLen(a, c.type)) - parseTime(c.in ?? 0);
     return round6(Math.max(0.1, avail / (Number(c.speed ?? 1) || 1)));
   }
   if (c.type === "captions") { const w = captionWords(c); return w.length ? holdEnd(w) : 3; }

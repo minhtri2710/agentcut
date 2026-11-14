@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, attach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, type Timeline, type Track } from "./model.ts";
+import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, sourceLen, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -19,7 +19,7 @@ const MOVE_KEYS = ["volume", "fade_in", "fade_out", ...AUDIO_FX_KEYS] as const;
 
 /** source seconds available (Infinity when looping / unknown / speed-ramped) */
 function srcLen(tl: Timeline, c: Clip): number {
-  const d = Number(tl.assets[c.asset]?.duration);
+  const a = tl.assets[c.asset], d = a ? Number(sourceLen(a, c.type)) : NaN; // a video clip ends with the picture
   return isAV(c) && d > 0 && !c.loop && !c.keyframes?.speed ? d : Infinity;
 }
 /** timeline seconds a side can grow before running out of source media */

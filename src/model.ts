@@ -11,7 +11,9 @@ export type Json = null | boolean | number | string | Json[] | { [k: string]: Js
 export type Dict = Record<string, any>;
 export interface Clip extends Dict { id: string; type: string; start?: number | string; duration: number | string }
 export interface Track extends Dict { id: string; kind?: "video" | "audio"; magnetic?: boolean; clips: Clip[] }
-export interface Asset extends Dict { path: string; kind: "video" | "image" | "audio" | "lottie"; duration?: number; width?: number; height?: number }
+export interface Asset extends Dict { path: string; kind: "video" | "image" | "audio" | "lottie"; duration?: number; video_duration?: number; width?: number; height?: number }
+/** The seconds of source a clip of `type` can play: a video clip ends with the picture (video_duration, set when the sound outlasts it), any other clip with the file. */
+export const sourceLen = (a: Pick<Asset, "duration" | "video_duration">, type: string) => (type === "video" && a.video_duration ? a.video_duration : a.duration!);
 export interface Timeline { version: number; revision: number; name: string; settings: Dict; assets: Record<string, Asset>; tracks: Track[]; markers: Dict[]; meta?: Dict }
 export interface Issue { level: "error" | "warning" | "info"; path: string; message: string; hint?: string }
 
@@ -20,6 +22,13 @@ export const PRESETS: Record<string, [number, number]> = {
   youtube: [1920, 1080], landscape: [1920, 1080], "720p": [1280, 720], "4k": [3840, 2160],
   square: [1080, 1080], portrait: [1080, 1350],
 };
+/** The canvas size of preset `name`; an unknown name is bad_preset with the nearest name. */
+export function presetSize(name: unknown): [number, number] {
+  const dims = own(PRESETS, name);
+  if (dims) return dims;
+  const s = suggest(name, Object.keys(PRESETS));
+  throw new EditError(`unknown preset '${name}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`);
+}
 
 export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color", "audio", "lottie", "compound", "gap"];
 export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]);
@@ -104,13 +113,13 @@ export const ASSET_KINDS = ["video", "image", "audio", "lottie"];
 /** The asset record (filled by import_media). Every field some code path reads is typed here; fps, width, height and the rest reach ffmpeg or its helper, so validate checks them. */
 export const ASSET_FIELDS: Record<string, [string[], string]> = {
   path: [["string"], "file path"], kind: [["string"], ASSET_KINDS.join("|")],
-  duration: [["number"], "seconds, a number >= 0"], width: [["number"], "px, a positive integer"], height: [["number"], "px, a positive integer"],
+  duration: [["number"], "seconds, a number >= 0"], video_duration: [["number"], "seconds the picture lasts when the sound is longer (absent: the file's duration)"], width: [["number"], "px, a positive integer"], height: [["number"], "px, a positive integer"],
   fps: [["number"], "a number > 0 (null: a still or unknown)"], has_audio: [["boolean"], "has an audio stream"], alpha: [["boolean"], "has an alpha channel"],
   codec: [["string"], "video codec name"], sample_rate: [["number"], "Hz, a positive integer"], channels: [["number"], "audio channels, a positive integer"],
 };
 const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
-  duration: [(n) => n >= 0, "a number >= 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
+  duration: [(n) => n >= 0, "a number >= 0"], video_duration: [(n) => n > 0, "a number > 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
 };
 /** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
 export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
@@ -800,8 +809,8 @@ function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
 }
 
 /** The warning for a clip that needs `need` s of a source that is shorter (`ends`: what happens at the end). */
-export function pastEnd(issues: Issue[], p: string, aid: string, a: Asset, need: number, ends: string) {
-  if (need > a.duration! + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${a.duration!.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
+export function pastEnd(issues: Issue[], p: string, aid: string, len: number, need: number, ends: string) {
+  if (need > len + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${len.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true" });
 }
 
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
@@ -861,7 +870,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           const a = assets[aid];
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
             const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
-            pastEnd(issues, p, aid, a, inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
+            pastEnd(issues, p, aid, sourceLen(a, c.type), inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
           }
           if (c.type === "audio" && a.kind === "video" && !a.has_audio) issues.push({ level: "warning", path: `${p}.asset`, message: `asset '${aid}' has no audio track: the clip is silent`, hint: "point the clip at a file with sound (relink_asset, or update_clip asset=<id>), or remove it" });
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
@@ -939,7 +948,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
               : `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
           if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
           const ra = own(assets, c.asset) && assets[c.asset];
-          if (parsed && ra && c.type === "video" && typeof ra.duration === "number" && ra.duration > 0 && !c.loop && !c.freeze) pastEnd(issues, p, c.asset, ra, parseTime(c.in ?? 0) + speedIntegral(kfs as any[], dur), "the last frame is held");
+          if (parsed && ra && c.type === "video" && typeof ra.duration === "number" && ra.duration > 0 && !c.loop && !c.freeze) pastEnd(issues, p, c.asset, sourceLen(ra, c.type), parseTime(c.in ?? 0) + speedIntegral(kfs as any[], dur), "the last frame is held");
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {
@@ -1010,7 +1019,7 @@ export function schemaDoc() {
     timeline: {
       version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
       settings: f(SETTINGS_FIELDS),
-      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, width, height, fps, has_audio, alpha}} - filled by import_media",
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha}} - filled by import_media",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
     },

@@ -491,5 +491,5 @@ export const prepare = (project?: string, o: { progress?: (done: number, total: 
 export const prepareStatus = (project?: string) => PREP.prepareStatus(openProject(project));
 export const cache = {
   info: (project?: string) => CACHE.cacheInfo(openProject(project)),
-  prune: (project?: string, o: { maxMb?: number; olderThan?: string | number } = {}) => CACHE.prune(openProject(project), o),
+  prune: (project?: string, o: { maxMb?: number; olderThan?: string | number } = {}) => { const p = openProject(project); CACHE.sweepStale(p); return CACHE.prune(p, o); },
 };

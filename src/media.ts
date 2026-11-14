@@ -44,6 +44,8 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
   return name;
 }
 
+/** A video stream shorter than the container by less than this (s) is the container's own rounding, not a longer sound. Same slack as the 'clip needs more source' warning. */
+const VIDEO_END_SLACK = 0.05;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -83,19 +85,15 @@ export function probe(path: string): any {
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
       if (!still) info.duration = +dur.toFixed(3);
+      // The picture ends before the container when the sound is longer. A container without a per-stream duration leaves the field out, and the container length stands for the picture.
+      const vd = Number(v.duration);
+      if (!still && vd > 0 && vd < dur - VIDEO_END_SLACK) info.video_duration = +vd.toFixed(3);
     } else if (a || AUDIO_EXT.has(ext)) {
       Object.assign(info, { kind: "audio", duration: +dur.toFixed(3), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
   }
   probeCache.set(path, { mtime, size, info });
   return { ...info };
-}
-
-/** Duration (s) of a file's first video stream, or null when the container does not say; only asked on the rare early-end path. */
-function videoStreamDuration(path: string): number | null {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8" });
-  const d = r.status === 0 ? Number(r.stdout.trim()) : NaN;
-  return d > 0 ? d : null;
 }
 
 /** A file path as a filter option value: escaped for the option level (\ ' : whitespace), then for the graph level (\ ' [ ] , ; whitespace). */
@@ -194,7 +192,7 @@ export interface SourceOpts {
   rate: number; // output frames per SOURCE second
   fit: string; box: [number, number]; focus?: [number, number]; crop?: any; filters?: any[]; color?: Grade;
   pan?: boolean; // animated focus: emit the whole cover-scaled frame (view = visible size), the caller crops per frame
-  loop?: boolean; srcDuration?: number; reverse?: boolean; freeze?: boolean;
+  loop?: boolean; srcDuration?: number; /* the picture's length (the asset's video_duration, else its duration) */ reverse?: boolean; freeze?: boolean;
   codec?: string; alpha?: boolean; // the asset's probe info: decides the decoder
 }
 
@@ -211,7 +209,6 @@ export class FrameSource {
   private ended: Promise<string> | null = null; // what the running ffmpeg reports once it is done: "" for a clean exit, else why it failed
   private still: Buffer | null = null;
   private tail: { frame: Buffer | null } | undefined; // tailFrame's answer, constant for the source: back-seeks into a held region do not decode again
-  private streamEnd: { d: number | null } | undefined; // videoStreamDuration's answer, likewise
   private hw = HWACCEL;
   private input: string[];
   constructor(private o: SourceOpts) {
@@ -300,12 +297,10 @@ export class FrameSource {
     return (this.tail ??= { frame: await this.decodeTail() }).frame;
   }
 
-  private videoEnd() { return (this.streamEnd ??= { d: videoStreamDuration(this.o.path) }).d; }
-
   private async decodeTail(): Promise<Buffer | null> {
     const o = this.o;
-    // seek from the video's own end (not the container's, which a longer audio stream extends), at least two source frames back
-    const end = this.videoEnd() ?? o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
+    // seek from the video's own end (srcDuration is the picture's length), at least two source frames back
+    const end = o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
     const seek = end ? ["-ss", Math.max(0, end - back).toFixed(6)] : ["-sseof", "-1"];
     const p = spawn("ffmpeg", ["-v", "error", "-nostdin", ...seek, ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","),
       "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "pipe"] });
@@ -317,11 +312,10 @@ export class FrameSource {
     return out;
   }
 
-  /** A source that ends well inside its probed length (at `at` source seconds) is damaged or was replaced, and holding its last frame would hide that.
-   *  The container length counts the longest stream: a clip may run past the video stream's own end (audio longer than video). */
+  /** A source that ends well inside its probed picture length (at `at` source seconds) is damaged or was replaced, and holding its last frame would hide that. */
   private endedEarly(at: number, absolute = false) { // absolute: `at` is a source time (a freeze), also for a loop or reverse clip
-    const o = this.o, inside = (d?: number) => (absolute || (!o.reverse && !o.loop)) && !!d && at < d - 0.5 - 1 / o.rate;
-    return inside(o.srcDuration) && inside(this.videoEnd() ?? o.srcDuration);
+    const o = this.o;
+    return (absolute || (!o.reverse && !o.loop)) && !!o.srcDuration && at < o.srcDuration - 0.5 - 1 / o.rate;
   }
 
   private gone(why: string, at: number) {

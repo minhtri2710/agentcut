@@ -5,10 +5,9 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve as presolve, sep } from "node:path";
 import { FONT_FILE, fontCheck, registerFontDir } from "./fonts.ts";
 import {
-  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, PRESETS, resolve, round6, SCHEMA_VERSION, suggest, type Timeline,
+  clipDur, clipStart, clone, EditError, type Issue, newTimeline, normAnim, parseTime, presetSize, resolve, round6, SCHEMA_VERSION, type Timeline,
   totalDuration, type Track, validate,
 } from "./model.ts";
-import { own } from "./own.ts";
 import { checkDir, createExclusive, createFile, ensureDir, ensureRoot, lexists, notWritable, writeFile } from "./safe-write.ts";
 
 export const PROJECT_FILE = "project.json";
@@ -148,11 +147,7 @@ export class Project {
     root = presolve(root);
     if (lexists(join(root, PROJECT_FILE))) throw new EditError(`project already exists at ${root}`, "exists", "open it instead, or choose another folder");
     let w = o.width ?? 1920, h = o.height ?? 1080;
-    if (o.preset) {
-      const dims = own(PRESETS, o.preset);
-      if (!dims) { const s = suggest(o.preset, Object.keys(PRESETS)); throw new EditError(`unknown preset '${o.preset}'`, "bad_preset", `${s ? `did you mean '${s}'? ` : ""}presets: ${Object.keys(PRESETS).join(", ")}`); }
-      [w, h] = dims;
-    }
+    if (o.preset) { const [pw, ph] = presetSize(o.preset); w = o.width ?? pw; h = o.height ?? ph; } // a preset fills only the size that is not given
     const tl = newTimeline(w, h, o.fps ?? 30, o.name ?? basename(root));
     if (o.empty) tl.tracks = [];
     const bad = validate(tl).filter((i) => i.level === "error"); // the project is built and checked in memory: bad settings leave no folder behind

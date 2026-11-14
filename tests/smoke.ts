@@ -204,6 +204,22 @@ cli(["init", q, "--preset", "square"]);
 check("quote template", cli(["op", "apply_template", "name=quote", "text=Stay hungry, stay foolish", "author=Steve Jobs"], { cwd: q }).errors === 0);
 check("template renders", cli(["render", "--draft", "--quiet"], { cwd: T }).frames > 0);
 
+console.log("preset and explicit size");
+{
+  const size = (r: any) => `${r.settings.width}x${r.settings.height}@${r.settings.fps}`;
+  const S1 = join(tmp, "size1"), S2 = join(tmp, "size2"), S3 = join(tmp, "size3");
+  check("init: a preset gives its size, fps as given", size(cli(["init", S1, "--preset", "reels", "--fps", "24"])) === "1080x1920@24");
+  check("init: width and height given with a preset win over it", size(cli(["init", S2, "--preset", "reels", "--width", "720", "--height", "1280", "--fps", "24"])) === "720x1280@24");
+  check("init: a preset fills only the size that is not given", size(cli(["init", S3, "--preset", "reels", "--width", "720"])) === "720x1920@30");
+  const set = (a: string[]) => size(cli(["op", "set_settings", ...a], { cwd: S1 }).results[0]);
+  check("set_settings: a preset gives its size", set(["preset=youtube"]) === "1920x1080@24");
+  check("set_settings: width and height given with a preset win over it", set(["preset=reels", "width=720", "height=1280"]) === "720x1280@24");
+  check("set_settings: a preset fills only the size that is not given", set(["preset=reels", "width=720"]) === "720x1920@24");
+  const bad = (a: string[]) => cli(a, { ok: false, cwd: S1 }).error;
+  const e1 = bad(["init", join(tmp, "size4"), "--preset", "reel"]), e2 = bad(["op", "set_settings", "preset=reel"]);
+  check("init and set_settings name an unknown preset the same way: bad_preset, the nearest name and the list", [e1, e2].every((e) => e.code === "bad_preset" && /did you mean 'reels'/.test(e.hint) && /presets: reels/.test(e.hint)), [e1, e2]);
+}
+
 console.log("feedback");
 const n1 = cli(["feedback", "add", "kind=friction", "title=had to guess the fade animation name", "area=enter"]);
 const n2 = cli(["feedback", "add", "kind=friction", "title=Had to guess the fade animation name!"]);

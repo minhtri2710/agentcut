@@ -57,13 +57,15 @@ function entries(p: Project, area?: "cache" | "previews"): Entry[] {
   return out;
 }
 
-const sum = (es: Entry[]) => ({ files: es.length, mb: +(es.reduce((n, e) => n + e.bytes, 0) / MB).toFixed(2) });
+const sum = (es: { bytes: number }[]) => ({ files: es.length, mb: +(es.reduce((n, e) => n + e.bytes, 0) / MB).toFixed(2) });
 
 export function cacheInfo(p: Project) {
   const es = entries(p), area = (a: string) => es.filter((e) => e.area === a);
   const detail = (a: string) => ({ ...sum(area(a)), referenced: sum(area(a).filter((e) => e.referenced)),
     oldest_days: area(a).length ? +((Date.now() - Math.min(...area(a).map((e) => e.mtime))) / 864e5).toFixed(2) : null });
-  return { project: p.root, total: sum(es), cache: { dir: cacheDir(p.root), ...detail("cache") }, previews: { dir: join(p.root, "previews"), max_mb: PREVIEWS_MAX_MB(), ...detail("previews") } };
+  // render scratch dirs: not pruned by size or age (a render may be using them); `cache prune` and each render or prepare remove those of a process that is gone (sweepStale), so they are counted apart from `total`
+  const tmpDir = join(p.root, ".agentcut", "tmp"), tmp = areaRoot(p, tmpDir) ? files(tmpDir).map((f) => ({ bytes: lstatSync(f, { throwIfNoEntry: false })?.size ?? 0 })) : [];
+  return { project: p.root, total: sum(es), cache: { dir: cacheDir(p.root), ...detail("cache") }, previews: { dir: join(p.root, "previews"), max_mb: PREVIEWS_MAX_MB(), ...detail("previews") }, tmp: { dir: tmpDir, ...sum(tmp) } };
 }
 
 /** "7d", "12h", "30m", "90s" or plain seconds -> ms */

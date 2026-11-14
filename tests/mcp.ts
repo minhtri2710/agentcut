@@ -222,7 +222,7 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   check("view_image still returns a picture", vp.images.length === 1, vp.json ?? vp.r);
 
   const H = join(tmp, "height-only"), ho = await call5("create_project", { path: H, preset: "reels", height: 500 });
-  check("create_project with only a height uses it, not the preset", ho.json.ok && ho.json.settings.height === 500 && ho.json.settings.width === 1920, ho.json.settings);
+  check("create_project with a preset and only a height keeps the preset's width", ho.json.ok && ho.json.settings.height === 500 && ho.json.settings.width === 1080, ho.json.settings);
 
   // only the SDK's own input validation counts (an error result or a protocol error, code -32602 "Input validation error"); an api bad_value answer would pass with the schema bound deleted
   const rejected = async (name: string, args: Record<string, unknown>) => {

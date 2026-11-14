@@ -96,7 +96,7 @@ export function buildServer() {
   s.registerTool("create_project", {
     description: "Create a project folder and make it current. preset: reels|tiktok|shorts (1080x1920), youtube (1920x1080), square, portrait, 4k, 720p.",
     inputSchema: { path: z.string(), preset: z.string().default("reels"), width: z.number().int().optional(), height: z.number().int().optional(), fps: z.number().default(30), name: z.string().optional() },
-  }, wrap((a) => { const r = api.create(a.path, { preset: a.width || a.height ? undefined : a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
+  }, wrap((a) => { const r = api.create(a.path, { preset: a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
   s.registerTool("open_project", { description: "Select an existing project folder and return its summary.", inputSchema: { path: z.string() } },
     wrap(async (a) => { const r = await api.info(a.path); state.project = r.project; return r; })); // a failed open keeps the remembered project
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
@@ -191,7 +191,7 @@ export function buildServer() {
     return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download })), a.wait_seconds, signal);
   });
   s.registerTool("cache", {
-    description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes; action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'). previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",
+    description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes (and the render scratch in .agentcut/tmp, apart from the total); action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'); it also removes render scratch a gone process left in .agentcut/tmp. previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",
     inputSchema: { project: P, action: z.enum(["info", "prune"]).default("info"), max_mb: z.number().optional(), older_than: z.string().optional() },
   }, wrap((a) => (a.action === "prune" ? api.cache.prune(proj(a.project), { maxMb: a.max_mb, olderThan: a.older_than }) : api.cache.info(proj(a.project)))));
   s.registerTool("export_timeline", {

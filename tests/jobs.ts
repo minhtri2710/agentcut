@@ -657,12 +657,13 @@ console.log("cancel a render or prepare job");
   // mux so the cancel lands in that phase; every other call goes to the real one. The cancel is made once the stand-in has started: no sleeps.
   {
     const realFfmpeg = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
-    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark");
+    const bin = join(tmp, "stub-bin"), markLoud = join(tmp, "stub-loud.mark"), markMux = join(tmp, "stub-mux.mark"), markMix = join(tmp, "stub-mix.mark");
     mkdirSync(bin);
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh
 case "$*" in
   *ebur128*) : > ${JSON.stringify(markLoud)}; exec sleep 60 ;;
   *mov_text*) : > ${JSON.stringify(markMux)}; exec sleep 60 ;;
+  *mix.wav*) [ -n "$STUB_HOLD_MIX" ] && { : > ${JSON.stringify(markMix)}; trap '' INT TERM; sleep 30; exit 1; } ;;
 esac
 exec ${JSON.stringify(realFfmpeg)} "$@"
 `);
@@ -697,6 +698,25 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
       await until(() => r.exit, 20_000);
       const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
       check("SIGTERM to a CLI render after its output was written: the ok:true result with the skip marks, the file stays, the process ends by SIGTERM", held && j?.ok === true && /skipped/.test(j.loudness_error ?? "") && existsSync(j.output) && statSync(j.output).size > 0 && stray(D).filter((f) => f.endsWith(".mp4")).length === 1 && r.exit?.signal === "SIGTERM" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
+    }
+    // a second signal during a CLI render, while the first one is still stopping it (the stand-in holds the audio mix and ignores signals): one JSON object, the
+    // process ends by the second signal at once and cleans nothing, so the render's temp dir stays; `cache prune` removes it once the process is gone
+    {
+      const P = await mkAudio("cancel-double");
+      rmSync(markMix, { force: true });
+      const r = cli(P, ["render", "--draft", "--quiet"], { PATH: withBin, STUB_HOLD_MIX: "1" });
+      const held = await until(() => existsSync(markMix), 60_000);
+      const procs = tree(r.pid);
+      process.kill(r.pid, "SIGTERM");
+      await sleep(300);
+      try { process.kill(r.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
+      await until(() => r.exit, 20_000);
+      const lines = r.out.trim().split("\n"), j = (() => { try { return lines.length === 1 ? JSON.parse(lines[0]) : null; } catch { return null; } })();
+      const left = renderTmpLeft(P);
+      for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
+      check("a second signal during a CLI render: one JSON object with code aborted, a hint that names cache prune and does not say the temp files were removed, the process ends by the second signal",
+        held && j?.ok === false && j.error.code === "aborted" && /cache prune/.test(j.error.hint) && !/were removed/.test(j.error.hint) && r.exit?.signal === "SIGINT" && r.exit.code === null, { held, out: r.out.slice(0, 400), exit: r.exit });
+      check("  the render's temp dir is left behind, and cache prune removes it", left.length === 1 && (api.cache.prune(P), !renderTmpLeft(P).length), { left, after: renderTmpLeft(P) });
     }
     // MCP: cancel_job while the subtitle mux runs: the job is cancelled, the error names the output, which stays (committed) without a subtitle stream
     {
@@ -749,7 +769,7 @@ while :; do sleep 0.05; done
     const j = (() => { try { return JSON.parse(r.out); } catch { return null; } })();
     check("SIGINT to the process group of a CLI frame whose decoder fails: one JSON object with code aborted, the process ends by SIGINT", decoding && j?.ok === false && j.error.code === "aborted" && r.exit?.signal === "SIGINT" && r.exit.code === null, { decoding, out: r.out.slice(0, 300), exit: r.exit });
   }
-  // a command that does not end after the first signal is reported after a bound; a second signal exits at once with nothing printed
+  // a command that does not end after the first signal is reported after a bound; a second signal prints the one JSON object and exits at once
   {
     const P = await mk("cancel-cli-stuck");
     // The ops never come (stdin stays open). More than a pipe holds is written to stdin, and the write callback fires only once the child has read it:
@@ -760,14 +780,15 @@ while :; do sleep 0.05; done
     process.kill(one.pid, "SIGTERM");
     await until(() => one.exit, 20_000);
     const j = (() => { try { return JSON.parse(one.out); } catch { return null; } })();
-    check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, the process ends by SIGTERM", j?.ok === false && j.error.code === "aborted" && one.exit?.signal === "SIGTERM" && one.exit.code === null, { out: one.out, exit: one.exit });
+    check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, a hint that does not say the temp files were removed, the process ends by SIGTERM", j?.ok === false && j.error.code === "aborted" && /cache prune/.test(j.error.hint) && !/were removed/.test(j.error.hint) && one.exit?.signal === "SIGTERM" && one.exit.code === null, { out: one.out, exit: one.exit });
     const two = cli(P, ["apply", "-"]);
     await started(two);
     process.kill(two.pid, "SIGTERM");
     await sleep(300); // nothing shows that the first signal was handled; two SIGTERMs sent together can merge into one
     try { process.kill(two.pid, "SIGINT"); } catch { /* already gone: the row fails below */ }
     await until(() => two.exit, 20_000);
-    check("a second signal ends the process at once, by that signal, and prints nothing", two.exit?.signal === "SIGINT" && two.exit.code === null && two.out === "", { out: two.out, exit: two.exit });
+    const j2 = (() => { try { return JSON.parse(two.out); } catch { return null; } })();
+    check("a second signal ends the process at once, by that signal, after one JSON object with code aborted", two.exit?.signal === "SIGINT" && two.exit.code === null && two.out.trim().split("\n").length === 1 && j2?.ok === false && j2.error.code === "aborted", { out: two.out, exit: two.exit });
   }
   // a second signal while the result is still being written: the object is not cut (the reader is slow, and takes the rest within the grace time);
   // a reader that never resumes does not hold the process longer than the bound
@@ -827,7 +848,7 @@ console.log("vision helper script (python3)");
   }
 }
 
-// a dead process's leftovers are swept at the next prepare and render; nothing else is touched
+// a dead process's leftovers are swept at the next prepare, render and cache prune; nothing else is touched
 console.log("sweep of a dead process's leftovers");
 {
   const P6 = join(tmp, "proj-atomic"), cacheD = join(P6, ".agentcut", "cache"), tmpD = join(P6, ".agentcut", "tmp");
@@ -843,9 +864,13 @@ console.log("sweep of a dead process's leftovers");
   const info0: any = api.cache.info(P6);
   plant([join(tmpD, `render-${me}-abc123`), join(tmpD, "other")]);
   const info1: any = api.cache.info(P6);
-  check("cache info does not count .agentcut/tmp", info1.total.files === info0.total.files && info1.total.mb === info0.total.mb, { info0: info0.total, info1: info1.total });
+  check("cache info counts .agentcut/tmp (its files, apart from total)", info1.tmp.dir === tmpD && info1.tmp.files === info0.tmp.files + 2 && info1.total.files === info0.total.files && info1.total.mb === info0.total.mb, { info0: info0.tmp, info1: info1.tmp });
   plant([...gone, ...kept]);
   symlinkSync(join(outside, "d"), join(tmpD, `render-${dead}-lnk123`)); // a symlink with a dead pid in its name: never followed, never removed
+  api.cache.prune(P6);
+  check("cache prune sweeps the dead pid's render dir like render and prepare do, and keeps a live pid's, impossible pids, near-miss names and symlinks",
+    !existsSync(gone[2]) && kept.filter((f) => f.startsWith(tmpD)).every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), { gone: existsSync(gone[2]), kept: kept.filter((f) => f.startsWith(tmpD) && !existsSync(f)) });
+  plant([...gone, ...kept]); // the prune above also took the unreferenced cache and preview files among them
   for (const [what, run] of [["prepare", () => api.prepare(P6)], ["render", () => api.render(P6, { out: join(tmp, "sweep-out.mp4"), quality: "draft", sheet: false, workers: 1, end: 0.5 })]] as const) {
     if (what === "render") plant(gone); // plant again for the second entry point
     await run();

@@ -12,7 +12,7 @@ import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import { basename, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { own } from "./own.ts";
-import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, type Issue, normAnim, parseColor, parseTime, pastEnd, type Timeline, type Track } from "./model.ts";
+import { allClips, clipDur, clipStart, type Clip, type Dict, EditError, type Issue, normAnim, parseColor, parseTime, pastEnd, sourceLen, type Timeline, type Track } from "./model.ts";
 import { refuseSource } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
@@ -238,8 +238,9 @@ function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {
     if (p.kind !== "media") continue;
     if (fmt === "otio" && p.audio && p.volume !== 1) approximated.push({ id: p.c.id, type: "volume", reason: `volume ${+p.volume.toFixed(4)} (${db(p.volume)}) is written only to metadata.agentcut: OTIO has no gain field, set it in the NLE` });
     const a = assets[p.c.asset], need = (p.srcIn + p.dur * p.speed) / rate.fps, over: Issue[] = [];
-    if (typeof a.duration === "number" && a.duration > 0) pastEnd(over, "", p.c.asset, a, need, "");
-    if (over.length) approximated.push({ id: p.c.id, type: "source_length", reason: `clip ${p.c.id} needs ${+need.toFixed(2)} s, source has ${+a.duration!.toFixed(2)} s` });
+    const len = sourceLen(a, p.c.type);
+    if (typeof a.duration === "number" && a.duration > 0) pastEnd(over, "", p.c.asset, len, need, "");
+    if (over.length) approximated.push({ id: p.c.id, type: "source_length", reason: `clip ${p.c.id} needs ${+need.toFixed(2)} s, source has ${+len.toFixed(2)} s` });
   }
   for (const c of allClips(tracks)) {
     const ops = Object.keys(c.pending ?? {});
