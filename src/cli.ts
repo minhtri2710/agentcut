@@ -17,7 +17,7 @@ Start here:  agentcut guide
 Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--text|--json] · validate · undo [n] · redo [n] · history
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
-             --author NAME (or $AGENTCUT_AUTHOR) is required on any edit/undo/redo/prepare, --dry-run too: who made the change, kept in the history
+             --author NAME (or $AGENTCUT_AUTHOR) is required, --dry-run too, on apply/op/add/set/rm/undo/redo/prepare (not --status)/beats --markers: who made the change, kept in the history
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black] [--quiet]
              audio [--source F] [--spectrogram] [--start S --end S] [-o a.png] · motion [--start S --end S] [--frames 10] [-o m.jpg]
