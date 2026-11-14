@@ -483,9 +483,18 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await js(`window.otherUrls = []; [{ key: "z", ctrlKey: true }, { key: "z", metaKey: true }, { key: " " }].forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ bubbles: true }, k))); })`);
   await sleep(300);
   check("while the dialog is open, the page's shortcuts (undo, play) do nothing", (await js(`window.otherUrls`)).length === 0 && await js(`$("consent").open`), await js(`window.otherUrls`));
-  await click("#cgo");
-  check("Confirm sends exactly one request with the flag, and the prepare completes",
-    await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]', await bodies());
+  { // Confirm reaches the model download: stubbed (no network), a small body under a temporarily patched pin
+    const { MATTE_PINS } = await import("../src/model.ts"), { createHash } = await import("node:crypto");
+    const pin = MATTE_PINS.u2net_human_seg, pinned = { ...pin }, body = Buffer.from("not a real model: a small body for the consent row");
+    const realFetch = globalThis.fetch, asked: string[] = [];
+    Object.assign(pin, { sha256: createHash("sha256").update(body).digest("hex"), bytes: body.length });
+    globalThis.fetch = (async (u: any, init?: any) => { if (String(u) !== pinned.url) return realFetch(u, init); asked.push(String(u)); return new Response(body); }) as typeof fetch;
+    try {
+      await click("#cgo");
+      check("Confirm sends exactly one request with the flag, the model is fetched once from its pinned URL, and the prepare completes",
+        await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]' && asked.join() === pinned.url, { bodies: await bodies(), asked });
+    } finally { globalThis.fetch = realFetch; Object.assign(pin, pinned); }
+  }
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

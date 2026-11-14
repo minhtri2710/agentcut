@@ -714,13 +714,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     rmSync(modelFile(MODEL)); rmSync(join(G, ".agentcut", "cache"), { recursive: true });
     // the download is stubbed (no network): this row's pin is a small body, restored below
     const pin = M.MATTE_PINS[MODEL], pinned = { ...pin }, body = Buffer.from("not a real model: a small body for the allow_download row"), realFetch = globalThis.fetch, asked: string[] = [];
-    Object.assign(pin, { sha256: (await import("node:crypto")).createHash("sha256").update(body).digest("hex"), bytes: body.length });
+    const bodySha = (await import("node:crypto")).createHash("sha256").update(body).digest("hex");
+    Object.assign(pin, { sha256: bodySha, bytes: body.length });
     globalThis.fetch = (async (u: any) => { asked.push(String(u)); return new Response(body); }) as typeof fetch;
     let al: any;
-    try { al = await api.prepare(G, { allowDownload: true }); } finally { globalThis.fetch = realFetch; }
+    try { al = await api.prepare(G, { allowDownload: true }); } finally { globalThis.fetch = realFetch; Object.assign(pin, pinned); }
     check("allow_download with the model missing: AgentCut fetches and verifies it, then the helper runs on the verified file with its sha256 and no allow_download",
-      al.computed[0]?.kind === "matte" && asked.join() === pin.url && readFileSync(modelFile(MODEL)).equals(body) && gateRuns().length === 2 && gateRuns()[1].hasAllow === false && gateRuns()[1].sha === pin.sha256, { al: al.ready, asked, run: gateRuns() });
-    Object.assign(pin, pinned);
+      al.computed[0]?.kind === "matte" && asked.join() === pinned.url && readFileSync(modelFile(MODEL)).equals(body) && gateRuns().length === 2 && gateRuns()[1].hasAllow === false && gateRuns()[1].sha === bodySha, { al: al.ready, asked, run: gateRuns() });
     check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
     // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404
@@ -750,7 +750,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       process.env.AGENTCUT_UV = gateUv;
     }
 
-    // the helper itself: with allow_download false it points the HTTP clients at an unreachable proxy before importing rembg.
+    // the helper itself: it points the HTTP clients at an unreachable proxy before importing rembg, whatever the job holds.
     // The real helper text runs under system python3 against stub numpy / PIL / rembg modules; the stub rembg records the proxy
     // variables it sees when it is imported, so nothing here reaches a network.
     const py = spawnSync("python3", ["-B", "-c", "pass"]);
@@ -775,7 +775,7 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       const childEnv = (extra: Record<string, string>) => ({ PATH: process.env.PATH ?? "", HOME: join(run, "home"), ...extra });
       const guarded = () => {
         const out = join(run, "seen-proxy.json");
-        const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png") });
+        const job = JSON.stringify({ cmd: "matte", kind: "image", model: "u2netp", w: 2, h: 2, path: "x", out: join(run, "o.png"), allow_download: true });
         const r = spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
           env: childEnv({ STUB_OUT: out, HTTPS_PROXY: "http://allowed.example:3128", HTTP_PROXY: "http://allowed.example:3128", NO_PROXY: "*" }) });
         return { status: r.status, seen: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null, stderr: r.stderr.slice(-200) };
@@ -1048,13 +1048,15 @@ console.log("the face model: descriptor, job, gate, download");
     const port = (server.address() as { port: number }).port;
     const desc = (name: string, path: string) => ({ name, url: `http://127.0.0.1:${port}${path}`, sha256: sha(good), bytes: good.length });
     const D = fresh("download");
+    // what a failed download may leave in a models dir: no model or temp file (empty directories may remain)
+    const left = (cache: string) => (existsSync(join(cache, "models")) ? readdirSync(join(cache, "models"), { recursive: true }).map(String).filter((f) => f.includes(".part-") || f.endsWith(".onnx")) : []);
     try {
       await inCache(D, async () => {
         const down = (name: string, path: string) => caught(() => V.downloadModel(desc(name, path)));
         for (const [what, path] of [["the right size with other bytes (sha256 differs)", "/other"], ["a body shorter than the size", "/short"], ["a body longer than the size", "/long"], ["an HTTP 404", "/missing"]] as const) {
           const e = await down("test_model_bad", path);
-          check(`downloadModel: ${what} -> model_download_failed, hint names the URL and the target path, nothing left`,
-            e?.code === "model_download_failed" && e.hint.includes(desc("x", path).url) && e.hint.includes(join(D, "models", "test_model_bad", "test_model_bad.onnx")) && !existsSync(join(D, "models")), { code: e?.code, message: e?.message, hint: e?.hint, models: existsSync(join(D, "models")) && readdirSync(join(D, "models"), { recursive: true }) });
+          check(`downloadModel: ${what} -> model_download_failed, hint names the URL and the target path, no file left`,
+            e?.code === "model_download_failed" && e.hint.includes(desc("x", path).url) && e.hint.includes(join(D, "models", "test_model_bad", "test_model_bad.onnx")) && left(D).length === 0, { code: e?.code, message: e?.message, hint: e?.hint, left: left(D) });
         }
         // runs without AbortSignal.any, which Node before 20.3 lacks (package.json engines: >=20)
         const any = AbortSignal.any;
@@ -1073,10 +1075,10 @@ console.log("the face model: descriptor, job, gate, download");
       })();
       const t0 = Date.now(), ab = await inCache(H, () => caught(() => V.downloadModel(desc("test_model_hold", "/hold"), ac.signal))), took = Date.now() - t0;
       // well under the 60 s idle limit: the caller's abort itself stopped the transfer
-      check("downloadModel: the body goes to a temp file as it arrives; a caller abort mid-body rejects at once with the caller's reason, nothing left", ab === reason && took < 10_000 && during.some((f) => f.includes(".part-")) && listing(H).length === 0 && !existsSync(join(H, "models")), { got: String(ab?.message ?? ab), took, during, after: listing(H) });
+      check("downloadModel: the body goes to a temp file as it arrives; a caller abort mid-body rejects at once with the caller's reason, no file left", ab === reason && took < 10_000 && during.some((f) => f.includes(".part-")) && left(H).length === 0, { got: String(ab?.message ?? ab), took, during, after: left(H) });
       // the idle limit is shortened for these two rows (the third argument of downloadModel, which callers leave at 60 s)
       const S = fresh("download-stall"), ts = Date.now(), stalled = await inCache(S, () => caught(() => V.downloadModel(desc("test_model_stall", "/hold"), undefined, 300))), tookStall = Date.now() - ts;
-      check("downloadModel: a body that stops sending fails after the idle limit, model_download_failed 'no data for', nothing left", stalled?.code === "model_download_failed" && /no data for/.test(stalled.message) && tookStall < 10_000 && listing(S).length === 0 && !existsSync(join(S, "models")), { code: stalled?.code, message: stalled?.message, tookStall, after: listing(S) });
+      check("downloadModel: a body that stops sending fails after the idle limit, model_download_failed 'no data for', no file left", stalled?.code === "model_download_failed" && /no data for/.test(stalled.message) && tookStall < 10_000 && left(S).length === 0, { code: stalled?.code, message: stalled?.message, tookStall, after: left(S) });
       const L = fresh("download-slow"), tl = Date.now(), slow = await inCache(L, () => caught(() => V.downloadModel(desc("test_model_slow", "/slow"), undefined, 400))), tookSlow = Date.now() - tl;
       const slowFile = join(L, "models", "test_model_slow", "test_model_slow.onnx");
       check("downloadModel: a body that keeps sending succeeds although the whole transfer takes longer than the idle limit", slow === null && tookSlow > 400 && existsSync(slowFile) && readFileSync(slowFile).equals(good) && listing(L).length === 2, { slow: slow?.message, tookSlow, after: listing(L) });
@@ -1160,8 +1162,8 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       const W = fresh("wrong"), runs0 = pyRuns().length;
       serve(Buffer.alloc(U.bytes, 1)); // the right size, other content
       const bad = await inCache(W, () => go(jobs.matte(), true));
-      check("a u2netp download with the wrong hash is refused: model_download_failed, nothing written, the helper never started",
-        bad.e?.code === "model_download_failed" && fetched.join() === U.url && pyRuns().length === runs0 && !existsSync(join(W, "models")), { code: bad.e?.code, fetched, runs: pyRuns().length - runs0 });
+      check("a u2netp download with the wrong hash is refused: model_download_failed, no file written, the helper never started",
+        bad.e?.code === "model_download_failed" && fetched.join() === U.url && pyRuns().length === runs0 && !(existsSync(join(W, "models")) && readdirSync(join(W, "models"), { recursive: true }).some((f) => String(f).endsWith(".onnx") || String(f).includes(".part-"))), { code: bad.e?.code, fetched, runs: pyRuns().length - runs0 });
 
       const good = Buffer.from("not a real model: some bytes for a local download test"), P = fresh("good");
       Object.assign(U, { sha256: sha(good), bytes: good.length }); // the pin of this row; restored below

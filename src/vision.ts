@@ -3,7 +3,7 @@
 // only computed by `prepare` (prepare.ts), never inside apply_ops.
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmdirSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./proc.ts";
@@ -54,17 +54,16 @@ export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new
 /** No bytes for this long ends a download: a 176 MB model may take as long as it needs while data keeps arriving. */
 const DOWNLOAD_IDLE_MS = 60_000;
 /** Fetch `m` into the models dir. The body is streamed to a temp name beside the target while its size is counted and its sha256 taken; only a body
- *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. Any failure removes the temp file and any directory this call made,
- *  so nothing is left behind. A bad status, a network failure, a stall (no data for `idleMs`, 60 s) and a mismatch are `model_download_failed`;
+ *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. Any failure removes the temp file (empty directories may remain).
+ *  A bad status, a network failure, a stall (no data for `idleMs`, 60 s) and a mismatch are `model_download_failed`;
  *  an abort rethrows its reason. `idleMs` is for tests; callers leave it. */
 export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = DOWNLOAD_IDLE_MS) {
   signal?.throwIfAborted();
   const file = modelFile(m.name), base = userCache();
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
-  const madeDirs = [dirname(file), dirname(dirname(file))].filter((d) => !existsSync(d)); // child first: removed in this order if the download fails
   // one controller for the idle timer and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
   const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);
-  let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined, done = false;
+  let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined;
   const arm = () => { clearTimeout(timer); timer = setTimeout(() => { idle = true; ctl.abort(); }, idleMs); timer.unref?.(); };
   signal?.addEventListener("abort", stop, { once: true });
   try {
@@ -77,14 +76,13 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
       arm();
       if ((n += c.length) > m.bytes) throw fail(`the download is larger than the expected ${m.bytes} bytes`);
       hash.update(c);
-      if (fd === undefined) { tmp = tmpSibling(file, base); try { fd = openSync(tmp, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } }
+      if (fd === undefined) { const t = tmpSibling(file, base); try { fd = openSync(t, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } tmp = t; } // tmp is set only once the name is ours
       for (let at = 0; at < c.length;) at += writeSync(fd, c, at);
     }
     if (fd !== undefined) { closeSync(fd); fd = undefined; }
     if (n !== m.bytes) throw fail(`got ${n} bytes, expected ${m.bytes}`);
     if (hash.digest("hex") !== m.sha256) throw fail("the sha256 does not match");
     commit(tmp!, file);
-    done = true;
   } catch (e: any) {
     if (signal?.aborted) throw signal.reason;
     throw e instanceof EditError ? e : fail(idle ? `no data for ${idleMs / 1000} s` : String(e?.message ?? e));
@@ -92,7 +90,6 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
     clearTimeout(timer); signal?.removeEventListener("abort", stop);
     if (fd !== undefined) closeSync(fd);
     if (tmp) rmSync(tmp, { force: true });
-    if (!done) for (const d of madeDirs) try { rmdirSync(d); } catch { /* not empty: someone else uses it */ }
   }
 }
 export const cacheDir = (root?: string) => (root ? join(root, ".agentcut", "cache") : join(userCache(), "vision"));
