@@ -128,10 +128,22 @@ console.log("history authors");
   }
   const bm = cli(["beats", join(tmp, "no-such-file.wav"), "--markers", "--author", "you"], { ...HC, ok: false });
   check("beats --markers with a refused author fails on the author, before the analysis", bm.ok === false && bm.error.code === "bad_author", bm);
+  // a value flag with no value of its own never takes the next flag (or nothing) as its value
+  const rev = () => cli(["info"], HC).revision, rev0 = rev(), n1 = cli(["history"], HC).undo.length;
+  const noValue: [string, string[], string][] = [["followed by another flag", ["op", "add_marker", "t=7", "label=a7", "--author", "--dry-run"], "--author"], ["at the end of the arguments", ["op", "add_marker", "t=7", "--author"], "--author"],
+    ["-o at the end", ["frame", "1", "-o"], "-o"], ["-p followed by a flag", ["info", "-p", "--text"], "-p"]];
+  for (const [what, args, named] of noValue) {
+    const r = cli(args, { ...HC, ok: false });
+    check(`a value flag ${what} is a usage error naming it, nothing saved`, r.ok === false && r.error.code === "usage" && r.error.message.includes(named) && /needs? a value/.test(r.error.message) && rev() === rev0 && cli(["history"], HC).undo.length === n1, r);
+  }
+  const eq = cli(["op", "add_marker", "t=8", "--author=zed"], HC);
+  check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
+  const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });
+  check("guard: a negative number is still a value (--revision -1 reaches the revision check)", neg.ok === false && neg.error.code === "bad_revision", neg);
   const u = cli(["undo", "--author", "dave"], HC);
-  check("undo records the edit's author and who undid it", u.undone[0].author === "cli" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
+  check("undo records the edit's author and who undid it", u.undone[0].author === "zed" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
   const r = cli(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });
-  check("redo by another author", r.redone[0].author === "cli" && r.redone[0].movedBy === "erin" && cli(["history"], HC).undo.at(-1).movedBy === "erin", r);
+  check("redo by another author", r.redone[0].author === "zed" && r.redone[0].movedBy === "erin" && cli(["history"], HC).undo.at(-1).movedBy === "erin", r);
   check("a read-only command does not read the author", cli(["info", "--author", "you"], HC).ok === true);
 }
 

@@ -39,12 +39,16 @@ Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|ide
              feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
 Global:      -p/--project DIR (or $AGENTCUT_PROJECT, or nearest folder with project.json) · --pretty`;
 
+/** `missing`: the value flags that were given no value: the end of the arguments, or another flag, came where the value should be (a value that is
+ *  a negative number, `--start -1`, is a value; one that starts with `--` is written `--flag=--value`). Such a flag takes nothing, so the flag after it still parses. */
 function parseArgs(argv: string[]) {
-  const flags: Record<string, any> = {}, pos: string[] = [];
+  const flags: Record<string, any> = {}, pos: string[] = [], missing: string[] = [];
+  const flagLike = (s: string | undefined) => s === undefined || s.startsWith("--") || s === "-o" || s === "-p" || s === "-h";
+  const take = (i: number, name: string) => (flagLike(argv[i + 1]) ? void missing.push(name) : argv[i + 1]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "-o") flags.output = argv[++i];
-    else if (a === "-p") flags.project = argv[++i];
+    if (a === "-o") { flags.output = take(i, "-o"); if (flags.output !== undefined) i++; }
+    else if (a === "-p") { flags.project = take(i, "-p"); if (flags.project !== undefined) i++; }
     else if (a === "-h") flags.help = true;
     else if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split(/=(.*)/s, 2);
@@ -52,10 +56,11 @@ function parseArgs(argv: string[]) {
       else if (BOOL.has(k) && !/^[[{]/.test(argv[i + 1] ?? "")) flags[k] = true;
       else if (OPT.has(k) && !(argv[i + 1] ?? "-").startsWith("-")) flags[k] = argv[++i];
       else if (OPT.has(k)) flags[k] = true;
-      else flags[k] = argv[++i];
+      else if (VALUE.has(k)) { flags[k] = take(i, a); if (flags[k] !== undefined) i++; }
+      else flags[k] = argv[++i]; // an unknown flag: refused by main, which names it
     } else pos.push(a);
   }
-  return { flags, pos };
+  return { flags, pos, missing };
 }
 
 const val = (s: string) => { try { return JSON.parse(s); } catch { return s; } };
@@ -153,7 +158,7 @@ function num(v: any, name: string): number | undefined {
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv[0] === "__segment") { const { runSegmentMain } = await import("./segment-worker.ts"); await runSegmentMain(argv[1]); return; }
-  const { flags: f, pos } = parseArgs(argv);
+  const { flags: f, pos, missing } = parseArgs(argv);
   pretty = !!f.pretty || !!process.stdout.isTTY;
   const cmd = pos.shift();
   call.cmd = cmd === "op" ? (pos[0] ?? "op") : cmd ?? "";
@@ -163,6 +168,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (cmd === "mcp") { const { startMcp } = await import("./mcp.ts"); await startMcp(); return; }
   const bad = Object.keys(f).filter((k) => !BOOL.has(k) && !OPT.has(k) && !VALUE.has(k));
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
+  if (missing.length) return emit({ ok: false, error: { code: "usage", message: `${missing.join(" ")} ${missing.length > 1 ? "need" : "needs"} a value`, hint: "write the value right after the flag (--author NAME), or join them with = (--author=NAME); a value that starts with -- needs the = form" } }, 2);
   const api = await import("./api.ts");
   const { declaredAuthor } = await import("./project.ts");
   const P = f.project;
