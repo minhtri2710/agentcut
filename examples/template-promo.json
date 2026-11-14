@@ -1,5 +1,5 @@
 {
-  "_comment": "One-op promo. agentcut init promo --preset reels && cd promo && agentcut apply ../examples/template-promo.json",
+  "_comment": "One-op promo. agentcut init promo --preset reels && cd promo && agentcut apply ../examples/template-promo.json --author my-agent",
   "ops": [
     {"op": "apply_template", "name": "promo",
      "media": ["/ABS/hero.mp4", "/ABS/detail.jpg", "/ABS/usage.mp4"],

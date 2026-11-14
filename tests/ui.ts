@@ -14,8 +14,8 @@ const check = (name: string, cond: unknown, info?: unknown) => {
   else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
 };
 const cliAsync = (args: (string | number)[]) => new Promise<any>((ok) => {
-  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by
-  const ch = spawn(CLI[0], [...CLI.slice(1), ...args.map(String)], { env: inherited });
+  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by; the test declares its own name
+  const ch = spawn(CLI[0], [...CLI.slice(1), ...args.map(String)], { env: { ...inherited, AGENTCUT_AUTHOR: "ui-test" } });
   let out = "";
   ch.stdout.on("data", (c) => (out += c));
   ch.on("close", () => { try { ok(JSON.parse(out)); } catch { ok({ ok: false, raw: out }); } });
@@ -176,11 +176,11 @@ const ext = await cliAsync(["-p", dir, "op", "add_marker", "t=2.5", "label=agent
 check("SSE pushed an edit made by another process", ext.ok && await waitRev(ext.revision), ext);
 const pushed = events.findLast((e) => e.event === "state").data;
 check("pushed state contains the agent's marker", pushed.timeline.markers.some((m: any) => m.label === "agent"));
-check("the pushed history names the other process's author (the CLI's own name)", pushed.history.undo.at(-1)?.author === "cli", pushed.history.undo.at(-1));
+check("the pushed history names the other process's declared author", pushed.history.undo.at(-1)?.author === "ui-test", pushed.history.undo.at(-1));
 
 const un = await jget("/api/undo", { method: "POST", body: { revision: ext.revision, author: "mallory" } });
 check("undo via HTTP", un.status === 200 && un.j.undone?.length === 1 && un.j.revision === ext.revision + 1, un.j);
-check("the page's undo reports the agent's author and 'you' as who undid it", un.j.undone[0].author === "cli" && un.j.undone[0].movedBy === "you", un.j.undone);
+check("the page's undo reports the agent's author and 'you' as who undid it", un.j.undone[0].author === "ui-test" && un.j.undone[0].movedBy === "you", un.j.undone);
 
 // ---------------------------------------------------------------- guards
 console.log("guards");

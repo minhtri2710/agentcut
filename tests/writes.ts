@@ -580,7 +580,7 @@ console.log("subtitle mux part file carries the host tag (the render sweep can r
 console.log("a folder that cannot be written is the named error not_writable, with a hint naming the folder");
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const run = (args: string[], cwd: string) => {
-    const r = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), ...args], { cwd, encoding: "utf8" });
+    const r = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), ...args], { cwd, encoding: "utf8", env: { ...process.env, AGENTCUT_AUTHOR: "writes-test" } });
     return { status: r.status, ...JSON.parse(r.stdout) };
   };
   const readOnly = <T,>(dir: string, f: () => T): T => { chmodSync(dir, 0o555); try { return f(); } finally { chmodSync(dir, 0o700); } }; // always writable again: the suite removes it

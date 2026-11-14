@@ -13,9 +13,9 @@ function ff(...args: string[]) {
   const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
 }
-function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: Record<string, string> } = {}): any {
-  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by
-  const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", cwd: o.cwd, env: { ...inherited, AGENTCUT_DEBUG: "1", ...o.env } });
+function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: Record<string, string>; anon?: boolean } = {}): any {
+  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by; the test declares its own name unless anon
+  const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", cwd: o.cwd, env: { ...inherited, ...(o.anon ? {} : { AGENTCUT_AUTHOR: "smoke" }), AGENTCUT_DEBUG: "1", ...o.env } });
   let out: any;
   try { out = JSON.parse(r.stdout); } catch { throw new Error(`non-JSON output for ${args.join(" ")}: ${r.stdout.slice(0, 300)} ${r.stderr.slice(-800)}`); }
   if ((o.ok ?? true) && !out.ok) throw new Error(`${args.join(" ")} failed: ${JSON.stringify(out).slice(0, 900)}`);
@@ -119,8 +119,23 @@ console.log("history authors");
   check("$AGENTCUT_AUTHOR names it when there is no flag", top().author === "bob", top());
   mark(3, { flag: ["--author", "carol"], env: { AGENTCUT_AUTHOR: "bob" } });
   check("the flag beats the variable", top().author === "carol", top());
-  mark(4);
-  check("with neither, the entry point's own name is the author", top().author === "cli", top());
+  {
+    // no name at all: every history-writing form (a dry run too) fails with missing_author and leaves project.json and the history byte-identical
+    const R = join(tmp, "author-required"), RC = { cwd: R, ok: false, anon: true };
+    cli(["init", R, "--preset", "reels"]);
+    cli(["op", "add_clip", "track=text", "id=t1", "text=x", "at=0", "duration=1"], { cwd: R });
+    cli(["op", "add_marker", "t=2"], { cwd: R });
+    cli(["undo"], { cwd: R }); // an entry on each stack, so undo and redo have something to move
+    const hist = join(R, ".agentcut", "history"), snap = () => [readFileSync(join(R, "project.json"), "utf8"), ...(readdirSync(hist, { recursive: true }) as string[]).sort().map((f) => (statSync(join(hist, f)).isFile() ? `${f}:${readFileSync(join(hist, f), "utf8")}` : f))].join("\0");
+    const before = snap();
+    const forms: [string, string[]][] = [["apply", ["apply", "--ops", JSON.stringify([{ op: "add_marker", t: 1 }])]], ["op", ["op", "add_marker", "t=1"]], ["op --dry-run", ["op", "add_marker", "t=1", "--dry-run"]],
+      ["add", ["add", "track=text", "text=y", "at=0", "duration=1"]], ["set", ["set", "t1", "text=y"]], ["rm", ["rm", "t1"]], ["undo", ["undo"]], ["redo", ["redo"]], ["prepare", ["prepare"]],
+      ["beats --markers (a missing file: the name is checked before the analysis)", ["beats", join(tmp, "no-such-file.wav"), "--markers"]]];
+    for (const [what, args] of forms) {
+      const r = cli(args, RC);
+      check(`${what} with no author is missing_author, the hint names --author and $AGENTCUT_AUTHOR, nothing changes`, r.ok === false && r.error.code === "missing_author" && r.error.hint.includes("--author") && r.error.hint.includes("AGENTCUT_AUTHOR") && snap() === before, r);
+    }
+  }
   const n0 = cli(["history"], HC).undo.length;
   for (const [what, o] of [["--author you", { flag: ["--author", "you"] }], ["$AGENTCUT_AUTHOR=Unknown", { env: { AGENTCUT_AUTHOR: "Unknown" } }], ["a markup name", { flag: ["--author", "<b>"] }], ["an empty variable", { env: { AGENTCUT_AUTHOR: "" } }]] as const) {
     const r = mark(5, o);
@@ -144,7 +159,7 @@ console.log("history authors");
   check("undo records the edit's author and who undid it", u.undone[0].author === "zed" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
   const r = cli(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });
   check("redo by another author", r.redone[0].author === "zed" && r.redone[0].movedBy === "erin" && cli(["history"], HC).undo.at(-1).movedBy === "erin", r);
-  check("a read-only command does not read the author", cli(["info", "--author", "you"], HC).ok === true);
+  check("guard: a read-only command needs no author and does not read one", cli(["info", "--author", "you"], { ...HC, anon: true }).ok === true);
 }
 
 console.log("look");

@@ -22,7 +22,7 @@ const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? 
 
 // launcher env: HOME at spawn; no AGENTCUT_HOME or AGENTCUT_CACHE (a set variable would win over .env), so both default under HOME
 const env = (): Record<string, string> => {
-  const e: Record<string, string> = { ...(process.env as Record<string, string>), HOME: home };
+  const e: Record<string, string> = { ...(process.env as Record<string, string>), HOME: home, AGENTCUT_AUTHOR: "launcher-test" };
   delete e.AGENTCUT_HOME; delete e.AGENTCUT_CACHE; delete e.AGENTCUT_PROJECT; delete e.NODE_ENV;
   return e;
 };
