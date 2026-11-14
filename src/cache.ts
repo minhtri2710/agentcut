@@ -146,7 +146,7 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
 // ------------------------------------------------------------------ darkness memo of the black-frame scan
 // One file per `key` (the caller's string: source file path, size and mtime, decode options, scan size, frame phase): frame number ->
 // bright pixels of the scan picture. A count is what the first read under that key decoded for the frame; a later read of the same frame
-// may pick a neighbouring source frame (a bound, see inspect.ts blackRuns). A changed file or option is another key, hence another file,
+// gets the same source frame (FrameSource's choice does not depend on where its stream started). A changed file or option is another key, hence another file,
 // so nothing of an old file or setting is reused; a file counts as changed only if its size or mtime did. Rebuildable, so prune takes it before anything referenced.
 const darkFile = (root: string, key: string) => join(cacheDir(root), `dark-${createHash("sha1").update(key).digest("hex").slice(0, 24)}.json`);
 

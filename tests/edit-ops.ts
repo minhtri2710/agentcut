@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VIDEO_FACTS as VF } from "./video-facts.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-editops-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
@@ -138,7 +139,7 @@ check("slide with no touching neighbours just shifts", near(n3.start, 5) && !n3.
 console.log("reverse / pure timeline");
 {
   const t = newTimeline(640, 360, 30);
-  t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+  t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
   t.tracks[0].clips = [{ id: "x1", type: "video", asset: "v", in: 0, duration: 2 }, { id: "x2", type: "video", asset: "v", in: 4, duration: 2, reverse: true, keyframes: { volume: [[0, 1], [1, 0.5]] } }];
   const [out, res] = applyOps(null as any, t, [{ op: "j_cut", id: "x2", seconds: 1 }, { op: "l_cut", id: "x2", seconds: 1 }]);
   const au = out.tracks.flatMap((tr) => tr.clips).find((c) => c.id === res[0].audio)!;
@@ -150,7 +151,7 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
 {
   const mk = () => {
     const t = newTimeline(640, 360, 30);
-    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
     t.assets.s = { path: "/none.wav", kind: "audio", duration: 20 };
     t.assets.i = { path: "/none.png", kind: "image" };
     t.assets.l = { path: "/none.json", kind: "lottie" };
@@ -465,7 +466,7 @@ console.log("match_duration by clip reference");
   const ramp = { speed: [[0, 1], [1, 2]] };
   // a video clip vd9 on the main track, with `extra` fields; its sound (au9) is detached when `detached`
   const vd = (extra: any, detached = false) => bx((x) => {
-    x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
     const main = x.tracks.find((t: any) => t.id === "main");
     main.clips.push({ id: "vd9", type: "video", asset: "vv", start: 6, duration: 2, ...extra });
     if (detached) main.clips.push({ id: "au9", type: "audio", asset: "vv", start: 6, duration: 2, attach_to: "vd9" });
@@ -486,7 +487,7 @@ console.log("match_duration by clip reference");
   const withText = (x: any) => { x.tracks.find((t: any) => t.id === "main").clips.push({ id: "tx9", type: "text", text: "hi", start: 6, duration: 1 }); return x; };
   check("validate: keyframes.speed on an image clip is an error", errAt(bx((x) => { at(x, "img2").keyframes = ramp; }), /<img2>\.keyframes\.speed$/));
   check("validate: keyframes.speed on a text clip is an error", errAt(bx((x) => { at(withText(x), "tx9").keyframes = ramp; }), /<tx9>\.keyframes\.speed$/));
-  check("validate: keyframes.speed on a video clip is clean", !errAt(bx((x) => { x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10 }; x.tracks.find((t: any) => t.id === "main").clips.push({ id: "vd9", type: "video", asset: "vv", start: 6, duration: 2, keyframes: ramp }); }), /keyframes\.speed$/));
+  check("validate: keyframes.speed on a video clip is clean", !errAt(bx((x) => { x.assets.vv = { path: "/none.mp4", kind: "video", duration: 10, ...VF }; x.tracks.find((t: any) => t.id === "main").clips.push({ id: "vd9", type: "video", asset: "vv", start: 6, duration: 2, keyframes: ramp }); }), /keyframes\.speed$/));
   check("validate: keyframes.speed on an audio clip is an error", errAt(bx((x) => { at(x, "vo1").keyframes = ramp; }), /<vo1>\.keyframes\.speed$/));
   check("validate: a transition object without a type is an error", errAt(bx((x) => { at(x, "img2").transition = { duration: 0.3 }; }), /<img2>\.transition\.type$/));
   check("validate: a transition object with a type is clean", !errAt(bx((x) => { at(x, "img2").transition = { type: "crossfade", duration: 0.3 }; }), /transition/));
@@ -527,7 +528,7 @@ console.log("match_duration by clip reference");
   }
   {
     const t0 = base();
-    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true };
+    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
     const [x1] = run(t0, [{ op: "add_clip", track: "main", asset: "v", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }]);
     const aud = x1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "vid1").id;
     const [x2] = run(x1, [{ op: "update_clip", id: aud, match_duration: "vo1" }]);
@@ -565,7 +566,7 @@ console.log("match_duration by clip reference");
   // freeze_frame and remove_silence: what they create from a follower is a plain clip
   {
     const t0 = base();
-    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false };
+    t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false, ...VF };
     const [x, rs] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
       { op: "freeze_frame", id: "vid1", at: 0, duration: 1.5 }]);
     const fz = rs[2];
@@ -758,8 +759,8 @@ console.log("pieces of an attached clip keep their place and length");
   const base = () => {
     const t = newTimeline(640, 360, 30);
     t.assets.i = { path: "/none.png", kind: "image" };
-    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false };
-    t.assets.av = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: true };
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false, ...VF };
+    t.assets.av = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
     return applyOps(null as any, t, [
       { op: "add_clip", track: "main", asset: "i", id: "img1", duration: 4 },
       { op: "add_clip", track: "main", asset: "i", id: "img2", duration: 2 },
@@ -1017,7 +1018,7 @@ console.log("pieces of an attached clip keep their place and length");
   }
   const rv = (() => {
     const t = newTimeline(640, 360, 30);
-    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
     const [t1] = applyOps(null as any, t, [{ op: "add_clip", track: "overlay", asset: "v", id: "pv", at: 0, duration: 3 }, { op: "detach_audio", id: "pv" }]);
     t1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").reverse = true;
     try { applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }]); return "no error"; } catch (e: any) { return e.code; }
@@ -1029,7 +1030,7 @@ console.log("clip copies: split, duplicate, freeze, remove");
 {
   const mk = () => {
     const t = newTimeline(640, 360, 30);
-    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true };
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
     t.assets.i = { path: "/none.png", kind: "image" };
     return t;
   };
@@ -1404,7 +1405,7 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   const stale = await api.apply(E, [], { revision: 0 }).then(() => ({}), (e: any) => e);
   check("an empty batch with a stale revision is a conflict", stale.code === "conflict", stale);
 
-  const base = () => { const t = newTimeline(640, 360, 30); t.assets = { au: { path: "x.wav", kind: "audio", duration: 2 }, vi: { path: "x.mp4", kind: "video", duration: 2 } } as any; return t; };
+  const base = () => { const t = newTimeline(640, 360, 30); t.assets = { au: { path: "x.wav", kind: "audio", duration: 2 }, vi: { path: "x.mp4", kind: "video", duration: 2, ...VF } } as any; return t; };
   const w = (t: any) => validate(t).filter((i: any) => i.level === "warning");
   const longer = base();
   longer.tracks = [{ id: "a", kind: "audio", clips: [{ id: "ac", type: "audio", asset: "au", start: 0, duration: 5, in: 0.5, speed: 1.5 }] }, { id: "v", kind: "video", clips: [{ id: "vc", type: "video", asset: "vi", start: 0, duration: 5 }] }] as any;

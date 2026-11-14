@@ -219,11 +219,6 @@ const transitionLen = (L: Layer) => { const s = L.prev ? normAnim(L.c.transition
  * A sample whose top layer is a plain clip is that clip's source frame, so its brightness comes from the frame number under the key of
  * `plainOf`: it is remembered in the project cache (cache.ts, one file per key), and the frames a scan still needs are read once per
  * source in source order, whatever the clips that show them. Every other sample is drawn by the renderer as before.
- * shortcut: the memo keeps the frame its first reader decoded. A clip read mid-stream (opened by an earlier clip of the same key) can get
- * a source frame other than the one its own fresh seek gives: FrameSource's frame choice depends on where its stream starts and on
- * whether the file has an audio track. Measured at most 2 timeline frames apart, so a finding's edge moves by at most one 0.2 s step and
- * a stretch near the 0.4 s minimum can appear or vanish. Removal: once FrameSource's frame choice no longer depends on the stream start,
- * a memo hit equals a fresh read; then drop this note.
  */
 async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: ReviewOpts): Promise<Finding[]> {
   const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width), true);

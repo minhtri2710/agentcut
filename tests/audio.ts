@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { VIDEO_FACTS as VF } from "./video-facts.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
@@ -324,7 +325,7 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const { newTimeline, resolve: res } = await import("../src/model.ts"), ND = 5, k2 = [[0, 2], [ND, 2]];
   const nestedRev = async (tag: string, srcIn: number, head: number, cdur: number) => {
     const t2 = newTimeline(320, 240, FPS);
-    t2.assets.v = { path: join(m, "clicks.mp4"), kind: "video", duration: 6, has_audio: true } as any;
+    t2.assets.v = { path: join(m, "clicks.mp4"), kind: "video", duration: 6, has_audio: true, ...VF } as any;
     t2.tracks.push({ id: "main", kind: "video", clips: [{ id: "RC", type: "compound", start: 0, duration: cdur, in: head, tracks: [{ id: "n", kind: "video", clips: [{ id: "rv", type: "video", asset: "v", start: 0, duration: ND, in: srcIn, reverse: true, keyframes: { speed: k2 } }] }] }] } as any);
     res(t2); t2.settings.loudness = null;
     const exp: number[] = [];

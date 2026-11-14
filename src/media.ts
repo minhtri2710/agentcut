@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
-import { EditError, FILTER_SPECS, filterParam } from "./model.ts";
+import { EditError, FILTER_SPECS, filterParam, missingFacts, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
@@ -59,6 +59,21 @@ const VIDEO_END_SLACK = 0.05;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
+/** The longest stretch between two keyframes of the first video stream, counting the one after the last keyframe (packets only, nothing is decoded). `whole` stands for a stream with no stretch to measure. */
+function keyGap(path: string, whole: number): number {
+  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+  if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+  const keys: number[] = []; let end = -Infinity;
+  for (const line of r.stdout.split("\n")) {
+    const [pts, dts, flags = ""] = line.split(","), t = Number.isFinite(Number(pts)) && pts !== "" ? Number(pts) : Number(dts); // a stream without pts (mpeg-ps) is timed by its dts
+    if (!Number.isFinite(t) || dts === undefined) continue;
+    end = Math.max(end, t);
+    if (flags.includes("K")) keys.push(t);
+  }
+  keys.sort((x, y) => x - y);
+  const gap = Math.max(0, ...keys.map((t, i) => (i + 1 < keys.length ? keys[i + 1] : end) - t));
+  return gap > 0 ? Math.ceil(gap * 1000) / 1000 : whole;
+}
 export function probe(path: string): any {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   const st = statSync(path), mtime = st.mtimeMs, size = st.size;
@@ -98,8 +113,13 @@ export function probe(path: string): any {
       // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
       // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. A container without a per-stream duration leaves the field out,
       // and the container length stands for the picture.
-      const vd = Number(v.duration), cStart = Number(j.format?.start_time) || 0, vEnd = (Number(v.start_time) || 0) + vd - cStart;
+      const vd = Number(v.duration), cStart = Number(j.format?.start_time) || 0, vStart = (Number(v.start_time) || 0) - cStart, vEnd = vStart + vd;
       if (!still && vd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = +vEnd.toFixed(3);
+      // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
+      if (!still) {
+        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0 });
+        if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
+      }
     } else if (a || AUDIO_EXT.has(ext)) {
       Object.assign(info, { kind: "audio", duration: +dur.toFixed(3), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
@@ -206,7 +226,19 @@ export interface SourceOpts {
   pan?: boolean; // animated focus: emit the whole cover-scaled frame (view = visible size), the caller crops per frame
   loop?: boolean; srcDuration?: number; /* the picture's length (the asset's video_duration, else its duration) */ reverse?: boolean; freeze?: boolean;
   codec?: string; alpha?: boolean; // the asset's probe info: decides the decoder
+  facts?: VideoFacts; // the asset's probe info: where the file's streams start, and how far a seek may miss; required for a video
 }
+
+/** The facts of a background-removal matte: AgentCut writes it as intra-only ProRes in a mov file that starts at 0 (vision-py.ts), so nothing is held back or starts late. */
+export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, format: "mov,mp4,m4a,3gp,3g2,mj2", reorder: 0 };
+
+/** The tie rule of the slot grid. The stream's timestamps are shifted by TIE_BIAS slots before `fps` rounds them to slots, so slot j shows the latest source frame at or
+ *  before the slot's time plus (0.5 - TIE_BIAS) slots: the nearest frame, and a frame exactly halfway between two slots belongs to the later slot (the slot before it keeps the older frame).
+ *  The shift is made in microseconds (`settb=1/1000000`), so two clips cut from one source differ by at most 1 us of rounding (1e-6 x rate slots), never by a tick of the container (1 ms in mkv/webm).
+ *  The value is off the grids where frames land on the boundary: 0.001 slot (29.97 on 30, a millisecond container at most rates) and rate/1000 slot. For frame times on a millisecond,
+ *  an exact NTSC tick or a whole fps, and in-points in whole milliseconds, a frame stays at least 1e-4 slot (24 fps), 2e-4 (25-60), 7e-4 (120) from the boundary, 3.3 times the rounding
+ *  or more, at the timeline rates 24, 25, 30, 50, 60, 120 and NTSC 23.976, 29.97, 59.94. A rate on a finer grid than that (119 fps) has no margin to give. */
+export const TIE_BIAS = 0.0327;
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
@@ -224,8 +256,17 @@ export class FrameSource {
   private hw = HWACCEL;
   private input: string[];
   private dec: string | null;
+  private pre = 0; // seconds of source decoded before a stream's first slot
   constructor(private o: SourceOpts) {
     if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
+    if (o.kind !== "image") {
+      const miss = missingFacts(o.facts ?? {});
+      if (miss.length) throw new EditError(`the probe record of ${o.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
+      // Decoding starts this far before the first slot, so the frames a slot depends on (the reorder delay and, after a seek, the open-GOP frames before its keyframe) are decoded:
+      // at least a quarter second and the frames held back, plus, in a format whose seek can land after the target, the longest keyframe gap, so a keyframe lies in the stretch.
+      const f = o.facts!;
+      this.pre = Math.max(0.25, o.srcFps ? (f.reorder + 1) / o.srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
+    }
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
@@ -251,32 +292,44 @@ export class FrameSource {
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
-   *  the output rate, the source's own length and rate (they pick the held last frame), and the FFmpeg that decodes. Which source
-   *  frame a slot gets is not part of the key: it also depends on where the stream started (see inspect.ts blackRuns). */
-  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, ffmpegVersion()]); }
+   *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS), and the FFmpeg that decodes. */
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, ffmpegVersion()]); }
 
-  private args(k: number, single: boolean): string[] {
-    const o = this.o;
+  /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
+   *  It seeks to the keyframe before `pre` seconds ahead of the slot (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
+   *  clip's clock (container start and in-point subtracted, TIE_BIAS added, a loop's finished passes added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
+   *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
+   *  from a whole number of slots before the slot, which keeps the grid's phase. */
+  private args(k: number, mode: "stream" | "still" | "tail"): string[] {
+    // still: the first frame only, as a forward clip (a freeze holds the frame the clip's first slot shows). tail: the clip read to the end of the picture without looping,
+    // from at most two slots before it, whose last frame is the one a running clip holds there.
+    const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && !reverse;
+    const srcIn = mode === "tail" && D ? this.tailIn(D) : (o.srcIn ?? 0);
     const a = ["-v", "error", "-nostdin"];
-    if (this.hw && !single) a.push("-hwaccel", "videotoolbox");
-    if (o.reverse) {
-      const len = o.segLen ?? 1;
-      // reverse buffers the whole segment, so it always streams from its start
-      a.push("-ss", (o.srcIn ?? 0).toFixed(6), "-t", len.toFixed(6), ...this.input, "-an", "-sn",
-        "-vf", [`fps=${o.rate}`, "reverse", ...this.vf].join(","));
-      return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
-    }
-    let t0 = (o.srcIn ?? 0) + k / o.rate;
-    if (o.loop && o.srcDuration) t0 %= o.srcDuration;
-    if (o.loop) a.push("-stream_loop", "-1");
-    a.push("-ss", t0.toFixed(6), ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","));
-    if (single) a.push("-frames:v", "1");
+    if (mode === "stream" && this.hw) a.push("-hwaccel", "videotoolbox");
+    const tk = srcIn + k / r - this.pre; // the source time the seek aims at
+    let n0 = 0, ss = Math.max(0, tk); // n0: passes of a loop finished before the seek point
+    if (loop && D) { n0 = Math.floor(tk / D); ss = tk - n0 * D; }
+    if (loop && mode === "stream") a.push("-stream_loop", "-1"); // a still reads inside one pass, so a source that ends before its probed length shows (decode_failed) instead of wrapping
+    const shift = n0 * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
+    const fill = ss <= f.video_start || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
+    const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
+      ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
+      : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
+    a.push("-noaccurate_seek", "-copyts", "-ss", ss.toFixed(6), ...this.input, "-an", "-sn",
+      "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${fill}`, ...slots, ...this.vf].join(","));
+    if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
+    a.push("-fps_mode", "passthrough");
+    if (mode === "still") a.push("-frames:v", "1");
     return [...a, "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
   }
 
+  /** The in-point the tail is read from: the clip's own, or two slots before the end of the picture when the clip starts later (its grid holds no slot of the picture then). */
+  private tailIn(end: number) { return Math.max(0, Math.min(this.o.srcIn ?? 0, end - 2 / this.o.rate)); }
+
   private spawnAt(k: number) {
     this.close();
-    this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, false), { stdio: ["ignore", "pipe", "pipe"] });
+    this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, "stream"), { stdio: ["ignore", "pipe", "pipe"] });
     const proc = this.proc;
     let err = "";
     proc.stderr?.on("data", (d) => { if (err.length < 2000) err += d; });
@@ -291,11 +344,10 @@ export class FrameSource {
     this.eof = false;
   }
 
-  /** One frame at `t`. endOk: a clean ffmpeg exit with no frame (the seek landed at or past the video's end) answers null instead of an error. */
-  private async decodeStill(t: number, endOk = false): Promise<Buffer | null> {
+  /** One frame: an image, or the clip's first slot (the frame its first slot shows when it plays). endOk: a clean ffmpeg exit with no frame (the in-point is at or past the video's end) answers null instead of an error. */
+  private async decodeStill(endOk = false): Promise<Buffer | null> {
     const o = this.o;
-    const a = ["-v", "error", "-nostdin", ...(o.kind === "image" ? [] : ["-ss", t.toFixed(6)]), ...this.input, "-frames:v", "1",
-      "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
+    const a = o.kind === "image" ? ["-v", "error", "-nostdin", ...this.input, "-frames:v", "1", "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"] : this.args(0, "still");
     const n = this.w * this.h * 4;
     // async so several layers / contact-sheet tiles decode concurrently
     const r = await new Promise<{ status: number | null; out: Buffer; err: string }>((res) => {
@@ -311,18 +363,17 @@ export class FrameSource {
     return r.out.subarray(0, n);
   }
 
-  /** The last frame of the source's video (null: none): decodes its final second (or two frames) and keeps the final frame. */
+  /** The last frame of the clip's own stream (null: none), the one a clip that plays to the end of the picture holds: the clip's command started two slots before the end, keeping the final frame. */
   private async tailFrame(): Promise<Buffer | null> {
     return (this.tail ??= { frame: await this.decodeTail() }).frame;
   }
 
   private async decodeTail(): Promise<Buffer | null> {
-    const o = this.o;
-    // seek from the video's own end (srcDuration is the picture's length), at least two source frames back
-    const end = o.srcDuration, back = Math.max(1, 2 / (o.srcFps || 1));
-    const seek = end ? ["-ss", Math.max(0, end - back).toFixed(6)] : ["-sseof", "-1"];
-    const p = spawn("ffmpeg", ["-v", "error", "-nostdin", ...seek, ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","),
-      "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "pipe"] });
+    const o = this.o, end = o.srcDuration;
+    // a source with no known length has no slot to start from: its last second, whichever frame the grid starts at
+    const a = end ? this.args(Math.max(0, Math.floor((end - this.tailIn(end)) * o.rate) - 2), "tail")
+      : ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
+    const p = spawn("ffmpeg", a, { stdio: ["ignore", "pipe", "pipe"] });
     p.stderr!.resume();
     const fs = new FrameStream(p, this.w * this.h * 4);
     let out: Buffer | null = null;
@@ -346,7 +397,7 @@ export class FrameSource {
     const o = this.o;
     let at = o.srcIn ?? 0;
     if (o.loop && o.srcDuration) at %= o.srcDuration;
-    const f = await this.decodeStill(at, true);
+    const f = await this.decodeStill(true);
     if (f) return f;
     if (this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
     const last = await this.tailFrame();
@@ -357,7 +408,7 @@ export class FrameSource {
   /** u: source seconds since the in-point (>= 0). */
   async readAt(u: number): Promise<Buffer> {
     const o = this.o;
-    if (o.kind === "image") return (this.still ??= (await this.decodeStill(o.srcIn ?? 0))!);
+    if (o.kind === "image") return (this.still ??= (await this.decodeStill())!);
     if (o.freeze) return (this.still ??= await this.frozenFrame());
     const k = Math.max(0, Math.round(u * o.rate));
     if (this.eof && k > this.pos) return this.last!;

@@ -118,11 +118,30 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   duration: [["number"], "seconds, a number >= 0"], video_duration: [["number"], "seconds the picture lasts when the sound is longer (absent: the file's duration)"], width: [["number"], "px, a positive integer"], height: [["number"], "px, a positive integer"],
   fps: [["number"], "a number > 0 (null: a still or unknown)"], has_audio: [["boolean"], "has an audio stream"], alpha: [["boolean"], "has an alpha channel"],
   codec: [["string"], "video codec name"], sample_rate: [["number"], "Hz, a positive integer"], channels: [["number"], "audio channels, a positive integer"],
+  container_start: [["number"], "video file: seconds the container starts at (ffprobe format start_time); `in` counts from it"],
+  video_start: [["number"], "video file: seconds from the container start to the first picture, a number >= 0"],
+  format: [["string"], "video file: the demuxer's format name (ffprobe format_name)"],
+  reorder: [["number"], "video file: frames the decoder holds back before output (has_b_frames), an integer >= 0"],
+  key_gap: [["number"], "video file in a format whose seek may land after the target: the longest stretch between keyframes, seconds, a number > 0"],
 };
 const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
   duration: [(n) => n >= 0, "a number >= 0"], video_duration: [(n) => n > 0, "a number > 0"], fps: [(n) => n > 0, "a number > 0"], width: posInt, height: posInt, sample_rate: posInt, channels: posInt,
+  video_start: [(n) => n >= 0, "a number >= 0"], reorder: [(n) => Number.isInteger(n) && n >= 0, "an integer >= 0"], key_gap: [(n) => n > 0, "a number > 0"],
 };
+
+/** The demuxers measured to put a seek at or before its target: a stream read from a seek then holds every frame the slot's own stream does, whatever the keyframe spacing.
+ *  A format off this list is read with the file's longest keyframe gap as pre-roll, and its clips cannot loop (`-stream_loop` restarts such a file past the target). */
+const SEEK_BEFORE_FORMATS = new Set(["mov", "matroska", "flv", "avi", "gif"]);
+export const seeksBefore = (format: string) => format.split(",").some((f) => SEEK_BEFORE_FORMATS.has(f));
+/** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
+export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; key_gap?: number }
+/** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
+export function missingFacts(a: Dict): string[] {
+  const miss = ["container_start", "video_start", "format", "reorder"].filter((k) => a[k] === undefined || a[k] === null);
+  if (typeof a.format === "string" && !seeksBefore(a.format) && (a.key_gap === undefined || a.key_gap === null)) miss.push("key_gap");
+  return miss;
+}
 /** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
 export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
 const rembgAsset = (name: string, sha256: string, bytes: number): ModelPin => ({ name, url: `https://github.com/danielgatis/rembg/releases/download/v0.0.0/${name}.onnx`, sha256, bytes });
@@ -235,7 +254,7 @@ export const MEDIA_FIELDS: F = {
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
-  loop: [T("boolean"), "loop the source when the clip is longer"],
+  loop: [T("boolean"), "loop the source when the clip is longer (not on .ts/.m2ts/.mpg: remux to mp4 or mkv)"],
   reverse: [T("boolean"), "play backwards (video+audio)"],
   freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
 };
@@ -764,6 +783,8 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
       if (typeof a[k] === "number" && !(Number.isFinite(a[k]) && ok(a[k]))) issues.push({ level: "error", path: `${ap}.${k}`, message: `${k} must be ${what}` });
     if (o.exists && typeof a.path === "string" && a.path && !o.exists(a.path)) issues.push({ level: "error", path: `${ap}.path`, message: `file not found: ${a.path}`, hint: `restore the file, or relink_asset id=${aid} path=<new path>` });
+    const miss = a.kind === "video" ? missingFacts(a) : [];
+    if (miss.length) issues.push({ level: "error", path: ap, message: `video asset '${aid}' has no ${miss.join(", ")}: the frame a clip shows depends on them`, hint: `relink_asset id=${aid} path=${a.path} probes the file again and records them` });
   }
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$", ROOT);
@@ -880,6 +901,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
         } else {
           const a = assets[aid];
+          if (c.type === "video" && c.loop && a.kind === "video" && typeof a.format === "string" && !seeksBefore(a.format))
+            issues.push({ level: "error", path: `${p}.loop`, message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" });
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
             const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
             pastEnd(issues, p, aid, sourceLen(a, c.type), inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
@@ -1031,7 +1054,7 @@ export function schemaDoc() {
     timeline: {
       version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
       settings: f(SETTINGS_FIELDS),
-      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha}} - filled by import_media",
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
     },

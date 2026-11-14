@@ -5,11 +5,11 @@ import { type Canvas, createCanvas, ImageData, LottieAnimation, type SKRSContext
 import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
 import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
-import { coverOffset, FrameSource } from "./media.ts";
+import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
 import { safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
-  TEXTY, type Track, VISUAL_TYPES,
+  TEXTY, type Track, type VideoFacts, VISUAL_TYPES,
 } from "./model.ts";
 import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
 
@@ -101,7 +101,7 @@ export class Layer {
         rate: this.ramp ? (a.fps || r.fps) : r.fps / speed,
         fit, box: [this.box[0] * this.q, this.box[1] * this.q], focus: c.focus, crop: c.crop, filters: c.filters, color: c.color, pan: this.pan,
         loop: !!c.loop, srcDuration: sourceLen(a, c.type), reverse: !!c.reverse, freeze: !!c.freeze,
-        ...(mt ? {} : { codec: a.codec, alpha: a.alpha }),
+        ...(mt ? { facts: MATTE_FACTS } : { codec: a.codec, alpha: a.alpha, facts: a as VideoFacts }),
       });
     }
     return this.src;

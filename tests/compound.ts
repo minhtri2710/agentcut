@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VIDEO_FACTS as VF } from "./video-facts.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-compound-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
@@ -407,7 +408,7 @@ console.log("retimed compound: what it drops is reported by validate");
 console.log("a ramped clip inside a compound whose window starts after its head: the sound continues the ramp where the picture does");
 {
   const kfs = [[0, 1], [1, 0.5], [2, 2]], tl = M.newTimeline(640, 360, 30);
-  tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true } as any;
+  tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF } as any;
   const nested = { id: "rv", type: "video", asset: "v", start: 0, duration: 3, in: 0.25, keyframes: { speed: kfs } };
   tl.tracks.push({ id: "main", kind: "video", clips: [{ id: "RC", type: "compound", start: 0, duration: 2, in: 1, tracks: [{ id: "n", kind: "video", clips: [nested] }] }] } as any);
   M.resolve(tl);
@@ -426,8 +427,8 @@ console.log("retimed compound: the warning names only what plays now but is not 
 {
   const warned = (tracks: any[]) => {
     const tl = M.newTimeline(640, 360, 30);
-    tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true } as any;
-    tl.assets.q = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: false } as any;
+    tl.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF } as any;
+    tl.assets.q = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: false, ...VF } as any;
     tl.tracks = tracks;
     return M.validate(tl).filter((i) => i.level === "warning" && i.path.endsWith(".speed")).map((i) => `${i.path.match(/.*<(\w+)>/)![1]}:${/audio/.test(i.message) ? "audio" : "captions"}`).sort();
   };

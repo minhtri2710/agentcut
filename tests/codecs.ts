@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { VIDEO_FACTS } from "./video-facts.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
@@ -371,7 +372,7 @@ console.log("alpha in vp8/vp9 webm sources");
     mkdirSync(bin);
     writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\nif [ "$2" = "-decoders" ]; then "${real}" "$@" | grep -v libvpx; exit 0; fi\nexec "${real}" "$@"\n`, { mode: 0o755 });
     const code = `const {FrameSource}=await import(${JSON.stringify(join(import.meta.dir, "../src/media.ts"))});` +
-      `const o={kind:"video",srcW:64,srcH:64,rate:24,fit:"fill",box:[64,64]};const t=(x)=>{try{new FrameSource({path:"a.webm",...o,...x});return "ok"}catch(e){return e.code+"|"+e.hint}};` +
+      `const o={kind:"video",srcW:64,srcH:64,rate:24,fit:"fill",box:[64,64],facts:${JSON.stringify({ ...VIDEO_FACTS, format: "matroska,webm" })}};const t=(x)=>{try{new FrameSource({path:"a.webm",...o,...x});return "ok"}catch(e){return e.code+"|"+e.hint}};` +
       `console.log(JSON.stringify([t({codec:"vp9",alpha:true}),t({codec:"vp8",alpha:true}),t({codec:"vp9",alpha:false}),t({codec:"h264",alpha:true}),t({codec:"constructor",alpha:true})]))`;
     const c = spawnSync(process.execPath, ["--no-install", "-e", code], { cwd: tmp, encoding: "utf8",
       env: { PATH: `${bin}:${process.env.PATH}`, HOME: tmp, AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") } });
@@ -426,7 +427,7 @@ console.log("ffmpeg reads only local files and pipes");
 
     check("beats refuses a non-file source", await refused(() => beats(url)));
     await loudness(url);
-    const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+    const fs = new FrameSource({ path: url, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: VIDEO_FACTS });
     check("decode refuses a non-file source", (await fs.readAt(0).catch((e) => e.code)) === "decode_failed");
     fs.close();
     const opened = await requests();
@@ -435,7 +436,7 @@ console.log("ffmpeg reads only local files and pipes");
     const list = join(m, "net.m3u8");
     writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
     check("probe refuses a playlist that names a network URL", await refused(() => probeMedia(list)));
-    const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64] });
+    const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: VIDEO_FACTS });
     check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
     dec.close();
     const total = await requests();
@@ -559,7 +560,7 @@ console.log("decode and render failures");
   const code = (pr: Promise<unknown>) => pr.then(() => "ok", (e) => e?.code);
   // A-19: a decoder that ends early or fails becomes decode_failed instead of a held or zero frame
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "short.ts"));
-  const short = (srcDuration?: number) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration });
+  const short = (srcDuration?: number) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration, facts: api.probe(join(m, "short.ts")) });
   const a = short(3);
   await a.readAt(0.5);
   check("a source that ends well inside its probed length is decode_failed, not a held frame", (await code(a.readAt(2))) === "decode_failed");
@@ -576,8 +577,8 @@ console.log("decode and render failures");
   fresh.close();
   // a freeze at or past the video's end holds its last frame, as a playing clip does (the seek of a still lands past the last frame's interval)
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "endclip.mp4"));
-  const frz = (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, ...mode });
-  const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2 });
+  const frz = (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, facts: api.probe(join(m, "endclip.mp4")), ...mode });
+  const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2, facts: api.probe(join(m, "endclip.mp4")) });
   const tailRef = await lastPlayed.readAt(5);
   const inside = frz(1.0), insideFrame = await inside.readAt(0);
   check("a freeze well inside the source still holds the frame at its in-point", insideFrame.length === 64 * 64 * 4 && !insideFrame.equals(tailRef));
@@ -605,7 +606,7 @@ console.log("decode and render failures");
     const fl = await api.frameImage(L, 2.7, { scale: 1 }).catch((e: any) => e), fp = await api.frameImage(P, 0.7, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame in the second pass of a looping clip holds the frame that was playing", fl?.data?.length > 100 && fp?.data?.length > 100 && Buffer.from(fl.data).equals(Buffer.from(fp.data)), fl?.code ?? fp?.code);
   }
-  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1.6, freeze: true, srcIn: 1, ...mode });
+  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1.6, freeze: true, srcIn: 1, facts: api.probe(join(m, "short.ts")), ...mode });
   const cut = cutOf({});
   check("a freeze in a source that ends well inside its probed length is decode_failed, not a held frame", (await code(cut.readAt(0))) === "decode_failed");
   for (const mode of [{ loop: true }, { reverse: true }]) {
@@ -623,11 +624,11 @@ console.log("decode and render failures");
   }
   // audio longer than video: srcDuration is the picture's length (the asset's video_duration), not the container's
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
-  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
+  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
   await la.readAt(0.5);
   check("a video clip that runs past its picture holds the last frame while the sound goes on", (await code(la.readAt(2))) === "ok");
   // a fresh source (later render segment, preview) read past the picture's end of the same file holds the picture's last frame
-  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
+  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
   const lh = await la2.readAt(2).catch(() => Buffer.alloc(0));
   check("a fresh read past the video's end of a file with longer audio holds the last frame", lh.length === 64 * 64 * 4 && lh.some((x) => x !== 0), lh.length);
   la2.close();
@@ -668,7 +669,7 @@ console.log("decode and render failures");
     }
     const PATH1 = process.env.PATH;
     process.env.PATH = `${bin}:${PATH1}`;
-    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1 });
+    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
     const first = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
     await rs.readAt(0.5);
     const again = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
@@ -676,10 +677,10 @@ console.log("decode and render failures");
     rs.close();
     const lines = readFileSync(log, "utf8").split("\n");
     check("a back-seek and a second jump past the end decodes the picture's last frame once and asks ffprobe nothing",
-      lines.filter((l) => l.startsWith("ffprobe ")).length === 0 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.000000 ")).length === 1 && first.length === 64 * 64 * 4 && again.equals(first), lines);
+      lines.filter((l) => l.startsWith("ffprobe ")).length === 0 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.666667 ")).length === 1 /* the tail: slot 22 of a 1 s picture at 24 fps, less the 0.25 s pre-roll */ && first.length === 64 * 64 * 4 && again.equals(first), lines);
   }
   b.close();
-  const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H] });
+  const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H], facts: api.probe(join(m, "v.mp4")) });
   await sk.readAt(0);
   const PATH0 = process.env.PATH;
   process.env.PATH = join(tmp, "no-such-bin"); // the re-seek cannot start ffmpeg
