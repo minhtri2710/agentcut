@@ -3,17 +3,17 @@
 // edit landed in project.json. Fails (exit 1) when Chrome is not found: there is no skip, so a lane without Chrome is red.
 // The page is a bundle with no globals: the rows read what a person sees (the DOM) and what is on disk, never the page's variables.
 // Run: bun tests/ui-browser.ts [--keep]   (needs ffmpeg; CHROME=/path/to/chrome is the only binary tried when set)
-import { spawn, spawnSync } from "node:child_process";
+// Chrome only ever starts through tests/chrome.ts, inside its sandbox-exec containment (no update helper, no network but loopback); on a host
+// that cannot give that containment this suite fails rather than starting Chrome uncontained.
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
+import { chromeHint, containOrExit, launchChrome, refusedAtOnce, resolveChrome } from "./chrome.ts";
 
-const MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const LINUX_CHROME = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
-// CHROME, when set, is the only binary tried: a wrong path fails instead of falling back to another browser
-const CHROME = process.env.CHROME || [MAC_CHROME, ...(process.env.PATH ?? "").split(delimiter).filter(Boolean).flatMap((d) => LINUX_CHROME.map((n) => join(d, n)))].find((p) => existsSync(p));
+const CHROME = resolveChrome();
 if (!CHROME || !existsSync(CHROME)) {
-  console.error(`FAILED: ui-browser: Chrome not found (${process.env.CHROME ? `CHROME=${process.env.CHROME} does not exist` : `looked at ${MAC_CHROME}, and ${LINUX_CHROME.join(", ")} on PATH; set CHROME=/path/to/chrome`})`);
+  console.error(`FAILED: ui-browser: Chrome not found (${chromeHint()})`);
   process.exit(1);
 }
 
@@ -50,15 +50,18 @@ const cmpId = load().tracks.find((t: any) => t.id === "main").clips[1].id as str
 
 // ---------------------------------------------------------------- browser
 const ui = await startUi(dir, { port: 0 });
-const chrome = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run", "--use-mock-keychain", "--password-store=basic",
-  "--no-default-browser-check", "--disable-gpu", "--window-size=1440,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+const profile = containOrExit(tmp, "ui-browser");
+const chrome = launchChrome(CHROME, profile, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${join(tmp, "chrome")}`, "--no-first-run", "--use-mock-keychain", "--password-store=basic",
+  "--no-default-browser-check", "--disable-gpu", "--window-size=1440,900", "about:blank"]);
 const exited = new Promise<void>((ok) => chrome.once("close", () => ok()));
 console.log(`chrome pid ${chrome.pid}`);
 let ws: WebSocket | undefined, sessionId = "", seq = 0;
 const pending = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
 const consoleErrors: string[] = [];
+const netUrl = new Map<string, string>(), netError = new Map<string, string>(); // request id -> url, and url -> the network error the browser reported
 const cdp = (method: string, params: object = {}, session?: string) => new Promise<any>((ok, fail) => {
-  const id = ++seq; pending.set(id, { ok, fail }); ws!.send(JSON.stringify({ id, method, params, sessionId: session }));
+  const id = ++seq, to = setTimeout(() => { pending.delete(id); fail(new Error(`${method}: no answer from Chrome in 60 s`)); }, 60_000); // a browser whose helpers died never answers
+  pending.set(id, { ok: (v) => { clearTimeout(to); ok(v); }, fail: (e) => { clearTimeout(to); fail(e); } }); ws!.send(JSON.stringify({ id, method, params, sessionId: session }));
 });
 const page = (method: string, params: object = {}) => cdp(method, params, sessionId);
 const js = async (expr: string) => {
@@ -138,6 +141,8 @@ try {
     const msg = JSON.parse(String(m.data));
     if (msg.id && pending.has(msg.id)) { const p = pending.get(msg.id)!; pending.delete(msg.id); msg.error ? p.fail(new Error(JSON.stringify(msg.error))) : p.ok(msg.result); }
     else if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails?.exception?.description ?? msg.params.exceptionDetails?.text);
+    else if (msg.method === "Network.requestWillBeSent") netUrl.set(msg.params.requestId, msg.params.request.url);
+    else if (msg.method === "Network.loadingFailed") netError.set(netUrl.get(msg.params.requestId) ?? "", msg.params.errorText);
   };
   const { targetId } = await cdp("Target.createTarget", { url: "about:blank" });
   sessionId = (await cdp("Target.attachToTarget", { targetId, flatten: true })).sessionId;
@@ -666,6 +671,17 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await new Promise((ok) => empty.server.close(ok));
     }
   }
+  console.log("containment");
+  // 192.0.2.1 is a documentation address: the contained browser must be refused at the network layer, before anything leaves the host
+  await page("Network.enable");
+  const probe = async (url: string) => {
+    const r = await js(`(async function(){var t=performance.now();try{await fetch(${JSON.stringify(url)},{mode:"no-cors",cache:"no-store",signal:AbortSignal.timeout(3500)});return {outcome:"ok",ms:performance.now()-t}}catch(e){return {outcome:"failed",ms:performance.now()-t}}})()`);
+    await sleep(100);
+    return { ...r, errorText: netError.get(url) };
+  };
+  const reachable = await probe(ui.url), outside = await probe("http://192.0.2.1/");
+  check("the browser reaches the suite's own loopback page, and the check does not call that refused", reachable.outcome === "ok" && !refusedAtOnce(reachable), reachable);
+  check("a fetch to an address outside the host is refused at once by the network layer", refusedAtOnce(outside), outside);
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");
 } finally {

@@ -6,6 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { CONTAINED_FLAGS, EXEC_DENY, SANDBOX_EXEC, SINGLETON_ALLOW, bundledUpdaterHelpers, containmentProblem, profileText, resolveChrome, spawnsChromeDirectly, writeProfile } from "./chrome.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -613,6 +614,36 @@ console.log("browser gate");
   const missing = join(tmp, "no-such-chrome");
   const r = spawnSync(process.execPath, ["--no-install", resolve(import.meta.dir, "ui-browser.ts")], { env: { ...process.env, CHROME: missing }, encoding: "utf8", timeout: 30000 });
   check("ui-browser fails, and names the path, when the Chrome it is given does not exist (it does not skip)", r.status === 1 && (r.stdout + r.stderr).includes(missing), { status: r.status, out: (r.stdout + r.stderr).slice(0, 300) });
+}
+
+// ---------------------------------------------------------------- every Chrome launch of the suite is contained (none of these rows starts Chrome)
+console.log("chrome containment");
+{
+  const noProfile = (cmd: string) => spawnSync(cmd, { encoding: "utf8", timeout: 20000 });
+  const standIns = ["GoogleUpdater.app/Contents/MacOS/GoogleUpdater", "Keystone/ksadmin", "bin/launchctl"].map((p) => join(tmp, "standin", p));
+  const okProbe = join(tmp, "standin", "bin", "probe");
+  for (const p of [...standIns, okProbe]) { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, "#!/bin/sh\nexit 0\n"); chmodSync(p, 0o755); } // scripts: a copied system binary inside an app folder is killed by the code-signing check
+  const profile = writeProfile(tmp);
+  const contained = (cmd: string) => spawnSync(SANDBOX_EXEC, ["-f", profile, cmd], { encoding: "utf8", timeout: 20000 });
+  check("the containment profile applies on this host, and an executable that is not an update helper runs under it", containmentProblem() === null && contained(okProbe).status === 0, { problem: containmentProblem(), r: contained(okProbe) });
+  const free = standIns.map((p) => noProfile(p).status), held = standIns.map((p) => contained(p));
+  check("stand-ins for the update helper, its admin tool and launchctl run when no profile is applied (so the refusal below is the profile's)", free.every((s) => s === 0), free);
+  check("  and every one of them is refused under the profile", held.every((r) => r.status !== 0 && /not permitted/i.test(r.stderr)), held.map((r) => [r.status, r.stderr.slice(0, 120)]));
+  const helpers = bundledUpdaterHelpers(resolveChrome() ?? "");
+  check("the update helper that ships inside the installed Chrome is found, and the profile's exec pattern matches its path", helpers.length > 0 && helpers.every((h) => EXEC_DENY.some((r) => new RegExp(r).test(h))), helpers);
+  check("the browser's own executable is not matched by the pattern", !!resolveChrome() && !EXEC_DENY.some((r) => new RegExp(r).test(resolveChrome()!)));
+  check("the profile allows only loopback and Chrome's own profile-lock socket beyond the default", JSON.stringify(profileText().split("\n").filter((l) => l.startsWith("(allow "))) === JSON.stringify([
+    "(allow default)", '(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))', SINGLETON_ALLOW]), profileText());
+  const noSandbox = "--no-" + "sandbox"; // written apart so this file does not name the flag the row looks for
+  check("Chrome's own sandbox is switched off only in tests/chrome.ts, next to the profile: the flag list is pinned and no other test file names the flag",
+    JSON.stringify(CONTAINED_FLAGS) === JSON.stringify(["--disable-background-networking", "--disable-component-update", noSandbox])
+    && readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts" && readFileSync(resolve(import.meta.dir, f), "utf8").includes(noSandbox)).length === 0, CONTAINED_FLAGS);
+  check("without sandbox-exec, or off macOS, there is no containment (the suite fails; there is no uncontained path)",
+    containmentProblem("linux") === "no Chrome containment on linux" && /is missing/.test(containmentProblem("darwin", join(tmp, "no-sandbox-exec")) ?? "") && containmentProblem("darwin", SANDBOX_EXEC) === null);
+  const own = readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts");
+  const direct = own.filter((f) => spawnsChromeDirectly(readFileSync(resolve(import.meta.dir, f), "utf8")));
+  check("no test file but tests/chrome.ts starts Chrome (the detector flags a direct spawn, and none of the files has one)",
+    spawnsChromeDirectly("const c = spawn(" + "CHROME, []);") && direct.length === 0, direct);
 }
 
 ctl.abort();
