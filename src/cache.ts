@@ -149,11 +149,11 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
 // change of file or option is another key, hence another file. Rebuildable, so prune takes it before anything referenced.
 const darkFile = (root: string, key: string) => join(cacheDir(root), `dark-${createHash("sha1").update(key).digest("hex").slice(0, 24)}.json`);
 
-/** The memo for `key`: empty when there is none, or when the file is not a memo of exactly this key (read as a miss, rewritten by the next save). */
+/** The memo for `key`: empty when there is none, when it cannot be read, or when the file is not a memo of exactly this key (all read as a miss; the next save rewrites it). A review never fails on its cache. */
 export function loadDarkMemo(root: string, key: string): Map<number, number> {
   const frames = new Map<number, number>(), f = darkFile(root, key);
   let text: string;
-  try { if (!lstatSync(f).isFile()) return frames; text = readFileSync(f, "utf8"); } catch (e: any) { if (e.code === "ENOENT") return frames; throw e; }
+  try { if (!lstatSync(f).isFile()) return frames; text = readFileSync(f, "utf8"); } catch { return frames; }
   let j: any;
   try { j = JSON.parse(text); } catch { return frames; }
   if (j?.key !== key || !Array.isArray(j.runs)) return frames;

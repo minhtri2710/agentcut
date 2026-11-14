@@ -465,8 +465,34 @@ console.log("review: the black-frame scan remembers each source frame and reads 
 
   const off = await build("offgrid", [vid({ in: 1.013, duration: 2 }, edge), vid({ in: 0.5, duration: 2.5 }, edge)]);
   const os = await scan(off.d), ref = await renderOnly(off.d);
-  check("an in-point between frames of a 25 fps source at a bright-to-dark edge: the black runs are the renderer's own, not one frame off",
+  check("two clips with different in-point phases over a 25 fps source at a bright-to-dark edge: each is read on its own and the black runs are the renderer's",
     ref.length === 2 && same(os.black, ref) && os.stats.rendered === 0, { memo: os.black, renderer: ref, stats: os.stats });
+
+  // The granted bound (inspect.ts blackRuns): a clip read mid-stream may get another source frame than its own fresh seek gives, up to
+  // 2 timeline frames apart. In findings: an edge is within one 0.2 s step of the renderer's, and a stretch appears or vanishes only
+  // when it is within one step of the 0.4 s minimum.
+  const within = (got: number[][], want: number[][]) => {
+    const near = (a: number[], b: number[]) => Math.abs(a[0] - b[0]) < 0.2 + 1e-6 && Math.abs(a[1] - b[1]) < 0.2 + 1e-6, short = (r: number[]) => r[1] - r[0] < 0.6 + 1e-6;
+    return got.every((g) => want.some((w) => near(g, w)) || short(g)) && want.every((w) => got.some((g) => near(g, w)) || short(w));
+  };
+  const edgeA = join(m, "edge25a.mp4"); // the same picture with an AAC track, as camera files have
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5,format=yuv420p,geq=lum='if(gte(T,2),5,lum(X,Y))':cb='if(gte(T,2),128,cb(X,Y))':cr='if(gte(T,2),128,cr(X,Y))'",
+    "-f", "lavfi", "-i", "sine=f=440:d=6", "-c:a", "aac", "-shortest", "-pix_fmt", "yuv420p", edgeA);
+
+  // one key, one stream: clip B (in 47.1/24 s) starts at the edge, between source frame 49 (1.96 s, bright) and 50 (2.00 s, dark), in the run that clip A (in 0.1/24 s) opened
+  for (const [what, src, want] of [["a video-only", edge, "same"], ["an AAC-carrying", edgeA, "within"]] as const) {
+    const mid = await build(`midrun-${want}`, [vid({ in: 0.1 / 24, duration: 2 }, src), vid({ in: 47.1 / 24, duration: 2 }, src)]);
+    const ms = await scan(mid.d), mref = await renderOnly(mid.d);
+    check(`a clip that starts mid-run of another clip with the same key, at a bright-to-dark edge of ${what} 25 fps source: the black runs are the renderer's, within the bound`,
+      mref.length === 1 && within(ms.black, mref) && (want === "within" || same(ms.black, mref)) && ms.stats.rendered === 0 && ms.stats.frames > 0, { memo: ms.black, renderer: mref, stats: ms.stats });
+  }
+
+  // a plain clip behind a leading transition: its stream starts after the transition's window, which the renderer draws
+  const lead = await build("leading", [vid({ in: 0.1 / 24, duration: 2 }, edgeA), vid({ in: 40.1 / 24, duration: 2.5 }, edgeA)]);
+  await api.apply(lead.d, [{ op: "add_transition", to: lead.ids[1], type: "crossfade", duration: 0.5 }]);
+  const ls = await scan(lead.d);
+  check("a plain clip behind a leading transition: the transition's samples are drawn, the rest come from the memo, and the black runs are the renderer's, within the bound",
+    ls.stats.rendered > 0 && ls.stats.memo + ls.stats.read > 0 && within(ls.black, await renderOnly(lead.d)), { memo: ls.black, renderer: await renderOnly(lead.d), stats: ls.stats });
 
   const ed = await build("edit", [0, 3, 6, 9].map((s) => vid({ in: s, duration: 1 }, long)));
   const e1 = await scan(ed.d);
@@ -488,6 +514,10 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   const rebuilt = await scan(reuse.d);
   check("the memo is a cache file: cache info counts it, prune removes it, the next review rebuilds it",
     had.length === 1 && counted >= 1 && pruned.files.some((f: string) => f.includes(had[0])) && rebuilt.stats.memo === 0 && rebuilt.stats.frames > 0 && names().length === 1, { had, counted, pruned: pruned.files, stats: rebuilt.stats });
+
+  chmodSync(join(reuse.d, ".agentcut", "cache", names()[0]), 0);
+  const unreadable = await scan(reuse.d);
+  check("a memo file that cannot be read is a miss: the review still runs and rewrites it", process.getuid?.() === 0 || unreadable.stats.memo === 0 && unreadable.stats.frames > 0 && !unreadable.black.length, unreadable.stats);
 
   const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
   const mx = await scan(mixed.d);

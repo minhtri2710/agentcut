@@ -203,9 +203,11 @@ const transitionLen = (L: Layer) => { const s = L.prev ? normAnim(L.c.transition
  * Black stretches: the composite is sampled every 0.2 s at 64 px; a sample is dark when under 3% of its pixels are bright.
  * A sample whose top layer is a plain clip is that clip's source frame, so its brightness depends only on the key of `plainOf` and the
  * frame number: it is remembered in the project cache (cache.ts, one file per key), and the frames a scan still needs are read once
- * per source in source order, whatever the clips that show them. The frame at a sample is the one today's per-clip stream picks: that
- * stream's frames lie on in-point + k / rate, and `phase` keeps that lattice, so the memo is exact for an in-point between frames too.
- * Every other sample is drawn by the renderer as before.
+ * per source in source order, whatever the clips that show them. Every other sample is drawn by the renderer as before.
+ * shortcut: a clip read mid-stream (opened by an earlier clip of the same key) can get a source frame other than the one its own fresh
+ * seek gives: FrameSource's frame choice depends on where its stream starts and on whether the file has an audio track. Measured at most
+ * 2 timeline frames apart (D-A67, granted), so a finding's edge moves by at most one 0.2 s step and a stretch near the 0.4 s minimum can
+ * appear or vanish. Removal: once FrameSource's frame choice no longer depends on the stream start, the memo is exact; tighten this.
  */
 async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: ReviewOpts): Promise<Finding[]> {
   const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width));
