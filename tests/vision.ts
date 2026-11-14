@@ -718,9 +718,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     Object.assign(pin, { sha256: bodySha, bytes: body.length });
     globalThis.fetch = (async (u: any) => { asked.push(String(u)); return new Response(body); }) as typeof fetch;
     let al: any;
-    try { al = await api.prepare(G, { allowDownload: true }); } finally { globalThis.fetch = realFetch; Object.assign(pin, pinned); }
+    const calls: { done: number; download?: { bytes: number; total_bytes: number }; ran: number }[] = [];
+    try { al = await api.prepare(G, { allowDownload: true, progress: (done, _total, download) => { calls.push({ done, download, ran: gateRuns().length }); } }); } finally { globalThis.fetch = realFetch; Object.assign(pin, pinned); }
     check("allow_download with the model missing: AgentCut fetches and verifies it, then the helper runs on the verified file with its sha256 and no allow_download",
       al.computed[0]?.kind === "matte" && asked.join() === pinned.url && readFileSync(modelFile(MODEL)).equals(body) && gateRuns().length === 2 && gateRuns()[1].hasAllow === false && gateRuns()[1].sha === bodySha, { al: al.ready, asked, run: gateRuns() });
+    const full = calls.findIndex((c) => c.download && c.download.bytes === c.download.total_bytes), nextCall = calls[full + 1];
+    check("prepare reports no download once the model is stored, before the helper runs: the call after the full-size one has no download, done 0, and the helper has not run yet",
+      full >= 0 && !!nextCall && nextCall.download === undefined && nextCall.done === 0 && nextCall.ran === calls[full].ran, { calls });
     check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
     // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404

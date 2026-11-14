@@ -275,6 +275,7 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
   for (const n of need) { const pin = PINNED_MODELS[n.model]; await downloadModel(pin, signal, undefined, (bytes) => onBytes?.(pin.name, bytes, pin.bytes)); }
+  if (need.length) onFrames?.(0); // the download is over: a progress report with no download field, before the helper's first frame (a first uv install can take minutes)
   const tmp = tmpSibling(d.file, baseOf(d));
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
