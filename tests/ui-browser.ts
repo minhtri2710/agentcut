@@ -189,6 +189,92 @@ try {
   check("delete a keyframe", await untilFile((tl) => clipOf(tl, "txt1")?.keyframes?.opacity?.length === 1), clipOf(load(), "txt1").keyframes);
   await shot("keyframes");
 
+  console.log("timeline gestures");
+  // two clips on a scratch track "g", removed with the track at the end of this section so the counts of the later rows are unchanged
+  const tStart = await js(`t`) as number;
+  await api.apply(dir, [
+    { op: "add_clip", track: "g", type: "color", color: "red", id: "gm", at: 0.5, duration: 1 },
+    { op: "add_clip", track: "g", type: "color", color: "green", id: "gt", at: 2, duration: 2 },
+  ]);
+  await until("gesture clips", `!!clipNodes.get("gm") && !!clipNodes.get("gt") && S.revision === ${load().revision}`);
+  /** real mouse drag from the centre of the element, horizontally by dx px, in two moves */
+  const dragBy = async (sel: string, dx: number) => {
+    const b = await js(`(function(){var r=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mousePressed", x: b.x, y: b.y, button: "left", clickCount: 1 });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x + dx / 2, y: b.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: b.x + dx, y: b.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x + dx, y: b.y, button: "left", clickCount: 1 });
+  };
+  const settled = () => until("redrawn", `S.revision === ${load().revision}`);
+  // pps is 80 here: 40 px = 0.5 s
+  await dragBy(`[data-id="gm"]`, 40);
+  check("dragging a clip moves it by the dragged time and keeps its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - 1) < 0.02 && clipOf(tl, "gm")?.duration === 1), clipOf(load(), "gm"));
+  await settled();
+  await dragBy(`[data-id="gt"] .h.r`, 40);
+  check("dragging a clip's right edge lengthens it and leaves its start", await untilFile((tl) => Math.abs(clipOf(tl, "gt")?.duration - 2.5) < 0.02 && Math.abs(Number(clipOf(tl, "gt")?.start) - 2) < 0.02), clipOf(load(), "gt"));
+  await settled();
+  await dragBy(`[data-id="gt"] .h.l`, 40);
+  check("dragging a clip's left edge cuts its head: later start, shorter by the same time", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gt")?.start) - 2.5) < 0.02 && Math.abs(clipOf(tl, "gt")?.duration - 2) < 0.02), clipOf(load(), "gt"));
+  await settled();
+
+  const revView = load().revision, leftOf = (id: string) => js(`parseFloat(clipNodes.get(${JSON.stringify(id)}).style.left)`) as Promise<number>;
+  await js(`(function(){var z=$("zoom"); z.value="200"; z.dispatchEvent(new Event("input"));})()`);
+  check("the zoom slider rescales the timeline: a clip is drawn at its start times the new scale", await js(`pps`) === 200 && await leftOf("gm") === 200 * 1, await js(`[pps, clipNodes.get("gm").style.left]`));
+  const sb = await js(`(function(){var r=$("scroll").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
+  check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `pps > 200 && Math.abs(+$("zoom").value - pps) < 1`), await js(`[pps, $("zoom").value]`));
+  await js(`(function(){var z=$("zoom"); z.value="80"; z.dispatchEvent(new Event("input"));})()`);
+  check("zooming changes the view only, not the project", await js(`pps`) === 80 && load().revision === revView, { rev: load().revision, revView });
+
+  // seek: a click on the ruler puts the playhead at the clicked time; the playhead before is elsewhere
+  await js(`seek(0)`);
+  const rb = await js(`(function(){var r=$("ruler").getBoundingClientRect();return {x:r.left,y:r.top+r.height/2}})()`);
+  await page("Input.dispatchMouseEvent", { type: "mousePressed", x: rb.x + 2.5 * 80, y: rb.y, button: "left", clickCount: 1 });
+  await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: rb.x + 2.5 * 80, y: rb.y, button: "left", clickCount: 1 });
+  check("clicking the ruler seeks the playhead to that time", Math.abs(await js(`t`) - 2.5) < 0.02 && await js(`$("ph").style.left`) === `${90 + (await js(`t`)) * 80}px`, await js(`[t, $("ph").style.left]`));
+
+  // the Apply-ops box: real clicks on the button, batches from the textarea
+  const opsBox = async (text: string) => {
+    await js(`(function(){$("msg").className = ""; $("msg").textContent = ""; $("ops").value = ${JSON.stringify(text)}; $("applyo").scrollIntoView({ block: "nearest" });})()`);
+    await click("#applyo");
+  };
+  await opsBox(JSON.stringify([{ op: "add_marker", t: 2, label: "beat" }]));
+  check("a marker added from the Apply-ops box lands in project.json", await untilFile((tl) => (tl.markers ?? []).length === 1 && tl.markers[0].t === 2 && tl.markers[0].label === "beat"), load().markers);
+  check("  and the ruler shows it at its time", await until("marker shown", `S.revision === ${load().revision} && document.querySelectorAll("#ruler .marker").length === 1 && parseFloat(document.querySelector("#ruler .marker").style.left) === 2 * pps`),
+    await js(`[document.querySelectorAll("#ruler .marker").length, S.revision]`));
+  const revOk = load().revision;
+  await opsBox(JSON.stringify([
+    { op: "add_clip", track: "g", type: "color", color: "blue", id: "gv", at: 0, duration: 0.4 },
+    { op: "update_clip", id: "gv", set: { opacity: 0.5 } },
+  ]));
+  check("a valid batch from the Apply-ops box lands whole", await untilFile((tl) => clipOf(tl, "gv")?.opacity === 0.5 && tl.revision > revOk), clipOf(load(), "gv"));
+  await settled();
+  const fileBefore = readFileSync(join(dir, "project.json"), "utf8"), revBefore = load().revision;
+  await opsBox(JSON.stringify([
+    { op: "add_clip", track: "g", type: "color", color: "green", id: "gx", at: 1, duration: 1 },
+    { op: "remove_clip", id: "no-such-clip" },
+  ]));
+  check("an invalid batch shows an error and project.json is unchanged (the valid op before the bad one is not applied)", await until("batch error", `$("msg").className === "err"`)
+    && readFileSync(join(dir, "project.json"), "utf8") === fileBefore && !clipOf(load(), "gx") && await js(`S.revision`) === revBefore, { msg: await js(`$("msg").textContent`), rev: load().revision, revBefore });
+  await opsBox("[{");
+  check("text that is not JSON shows an error and project.json is unchanged", await until("json error", `$("msg").className === "err"`) && readFileSync(join(dir, "project.json"), "utf8") === fileBefore, await js(`$("msg").textContent`));
+
+  // conflict: the page stops following the project (its event stream is closed), another writer edits, then the page edits on its stale revision
+  await js(`es.close()`);
+  const revStale = load().revision;
+  await api.apply(dir, [{ op: "add_marker", t: 2.8, label: "outside" }]);
+  await sleep(500); // the project file is polled every 150 ms: a live stream would have delivered the outside edit by now
+  check("precondition: the page still shows the revision from before the outside edit", await js(`S.revision`) === revStale && load().revision === revStale + 1, { page: await js(`S.revision`), file: load().revision, revStale });
+  await opsBox(JSON.stringify([{ op: "add_marker", t: 3.1, label: "from the page" }]));
+  check("an edit from a stale page reports a conflict", await until("conflict", `$("msg").className === "err" && $("msg").textContent.indexOf("[conflict]") === 0`), await js(`$("msg").textContent`));
+  check("  and project.json keeps the outside edit and has nothing from the page", load().revision === revStale + 1 && JSON.stringify((load().markers ?? []).map((m: any) => m.label)) === `["beat","outside"]`, { rev: load().revision, markers: load().markers });
+  await js(`location.reload()`);
+  check("a reloaded page shows the project as it is, outside edit included", await until("reloaded", `S && S.revision === ${load().revision} && document.querySelectorAll("#ruler .marker").length === 2`), await js(`S ? [S.revision, document.querySelectorAll("#ruler .marker").length] : "no state"`));
+
+  await api.apply(dir, [{ op: "remove_track", id: "g" }, { op: "clear_markers" }]);
+  await until("gesture clips gone", `!clipNodes.get("gm") && document.querySelectorAll("#ruler .marker").length === 0 && S.revision === ${load().revision}`);
+  await js(`seek(${tStart})`);
+
   console.log("compound");
   await click(`[data-id="${cmpId}"]`, { count: 2 });
   check("double-click opens the compound", await until("nested view", `document.querySelectorAll("#lanes .clip").length === 2 && $("crumbs").textContent.indexOf("${cmpId}") > 0`),
