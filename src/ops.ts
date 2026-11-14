@@ -1,5 +1,5 @@
 // Edit operations. Every op is {"op": name, ...args}; batches are atomic (applied to a copy).
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
@@ -56,8 +56,9 @@ function mediaRecord(p: Project, src: string, copy: boolean): Asset {
   const info = probe(src);
   if (copy) {
     let dst = join(p.root, "media", basename(src));
-    for (let i = 1; lexists(dst) && !sameFile(dst, src); i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
-    if (!sameFile(dst, src)) { copyFile(src, dst, p.root); p.stage(dst); }
+    const copied = (f: string) => lstatSync(f, { throwIfNoEntry: false })?.isFile() === true && sameFile(f, src); // a symlink at the destination is not a copy
+    for (let i = 1; lexists(dst) && !copied(dst); i++) dst = join(p.root, "media", `${basename(src, extname(src))}-${i}${extname(src)}`);
+    if (!copied(dst)) { copyFile(src, dst, p.root); p.stage(dst); }
     src = dst;
   }
   info.path = p.rel(src);

@@ -1,7 +1,7 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip (numbers, errors, audio render).
 // Run: bun tests/edit-ops.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1553,6 +1553,16 @@ console.log("asset ids from accented names, and one file reached by several path
   symlinkSync(join(C, "media"), join(m, "media link"));
   const cp = (await api.apply(C, [{ op: "import_media", path: join(m, "media link", "f.png"), copy: true }])).results[0].asset;
   check("import_media copy:true of a file already in media/ through a linked folder makes no -1 copy", readdirSync(join(C, "media")).join() === "f.png" && cp === "f", { files: readdirSync(join(C, "media")), cp });
+  // a symlink already at media/<name> that points at the source is not a copy: the file is copied under the next free name and the link stays
+  const L = join(tmp, "proj-copy-symlink"), srcDir = join(m, "outside src");
+  api.create(L, { preset: "720p" });
+  mkdirSync(srcDir);
+  copyFileSync(join(m, "p.png"), join(srcDir, "g.png"));
+  symlinkSync(join(srcDir, "g.png"), join(L, "media", "g.png"));
+  const sl = (await api.apply(L, [{ op: "import_media", path: join(srcDir, "g.png"), copy: true }])).results[0].asset;
+  const own = join(L, "media", "g-1.png");
+  check("import_media copy:true with a symlink to the source already at media/<name>: a real copy is made under the next name and the link stays",
+    existsSync(own) && !lstatSync(own).isSymbolicLink() && lstatSync(join(L, "media", "g.png")).isSymbolicLink() && (await api.info(L, "json")).timeline.assets[sl].path === "media/g-1.png", { files: readdirSync(join(L, "media")), sl });
 }
 
 console.log("a video whose sound outlasts its picture");
