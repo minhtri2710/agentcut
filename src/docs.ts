@@ -158,7 +158,7 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   -> AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry).
   uv runs with --no-config: set UV_* env vars (e.g. UV_INDEX_URL) for index settings.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
-  prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress, cancel_job to stop it): it computes the mattes /
+  prepare (CLI: agentcut prepare --author NAME, or agentcut prepare --status; MCP: prepare -> job_id, poll render_status for progress, cancel_job to stop it): it computes the mattes /
   tracks (seconds per clip; cached by file hash + params) and writes the keyframes. While a model downloads, the running job (MCP, UI) and the
   CLI's stderr progress lines (not with --quiet) carry download {model, bytes, total_bytes}; the field is gone once the job settles. Until then preview/video render fail fast with
   code not_prepared (details list what is missing; audio-only renders skip it) - they never compute. A repeated op on cached analysis applies at once.
@@ -200,7 +200,9 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   Without a revision the batch is applied to the latest state. A replace_timeline whose timeline carries a "revision" other than the project's is refused the same way.
   Every apply result names the project root it applied to ("project"): the one a saved batch changed, or the one a dry run checked without saving.
 - Every undo-history entry records its author, self-declared and not a security boundary: 1-64 characters (letters, accented ones too, digits, space . _ - : @ / +).
-  CLI: --author NAME, else $AGENTCUT_AUTHOR, else "cli"; MCP: the client name you declared when you connected (else "mcp"); the page: "you".
+  CLI: declare your own name with --author NAME or $AGENTCUT_AUTHOR (the flag wins; set the variable once per session) on every command that writes history:
+  apply, op, add, set, rm, undo, redo, prepare (not --status) and beats --markers, --dry-run too. With neither the command fails with missing_author and does nothing.
+  MCP: the client name you declared when you connected (else "mcp"); the page: "you".
   "you" and "unknown" are reserved: a CLI --author or $AGENTCUT_AUTHOR of either is bad_author. history, undo and redo list {label, author}
   per entry; undo and redo also set movedBy (the author who undid or redid it), so you can see whose edit was undone and by whom.
   An entry written before authors were recorded shows author "unknown".

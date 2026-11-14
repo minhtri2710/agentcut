@@ -17,7 +17,7 @@ Start here:  agentcut guide
 Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--text|--json] · validate · undo [n] · redo [n] · history
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
-             [--author NAME] on any edit/undo/redo: who made the change, kept in the history (default $AGENTCUT_AUTHOR, else "cli")
+             --author NAME (or $AGENTCUT_AUTHOR) is required, --dry-run too, on apply/op/add/set/rm/undo/redo/prepare (not --status)/beats --markers: who made the change, kept in the history
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black] [--quiet]
              audio [--source F] [--spectrogram] [--start S --end S] [-o a.png] · motion [--start S --end S] [--frames 10] [-o m.jpg]
@@ -172,8 +172,8 @@ export async function main(argv = process.argv.slice(2)) {
   const api = await import("./api.ts");
   const { declaredAuthor } = await import("./project.ts");
   const P = f.project;
-  // who is making the change: --author, else $AGENTCUT_AUTHOR, else the entry point's own name; a value that is given and refused is bad_author (read only by the commands that write history)
-  const who = () => declaredAuthor(f.author ?? process.env.AGENTCUT_AUTHOR ?? "cli");
+  // who is making the change: --author, else $AGENTCUT_AUTHOR; neither is missing_author, a value that is given and refused is bad_author (read only by the commands that write history, --dry-run included)
+  const who = () => declaredAuthor(f.author ?? process.env.AGENTCUT_AUTHOR);
   const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
   let last = 0;
   const progress = f.quiet ? undefined : (d: number, n: number, download?: { model: string; bytes: number; total_bytes: number }) => { const now = Date.now(); if (now - last > 400 || d === n || (download && download.bytes === download.total_bytes)) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n, ...(download && { download }) }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr

@@ -70,7 +70,7 @@ Nếu dùng binary thì đổi thành `{ "command": "/path/bin/agentcut", "args"
 
 ```bash
 agentcut init promo --preset reels && cd promo
-agentcut op apply_template name=promo --json '{
+agentcut op apply_template name=promo --author my-agent --json '{
   "media": ["/abs/hero.mp4", "/abs/detail.jpg", "/abs/usage.mp4"],
   "hook": "Ra mắt sản phẩm mới", "points": ["Nhẹ hơn 30%", "Pin 2 ngày"],
   "cta": "Mua ngay", "music": "/abs/song.mp3"}'

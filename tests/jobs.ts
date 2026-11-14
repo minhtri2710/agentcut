@@ -662,7 +662,7 @@ console.log("cancel a render or prepare job");
 
   // a CLI render stopped by SIGTERM: one JSON object (code aborted), exit 143, and nothing left in renders/ or the render temp
   const cli = (P: string, args: string[], env: Record<string, string> = {}, detached = false) => {
-    const child = spawn(process.execPath, [cmd, "-p", P, ...args], { env: { ...(process.env as Record<string, string>), TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"], detached });
+    const child = spawn(process.execPath, [cmd, "-p", P, ...args], { env: { ...(process.env as Record<string, string>), AGENTCUT_AUTHOR: "jobs-test", TMPDIR: osTmp, ...env }, stdio: ["pipe", "pipe", "inherit"], detached });
     let out = "", exit: { code: number | null; signal: string | null } | null = null;
     child.stdout.on("data", (d) => (out += d));
     child.on("close", (code, signal) => { exit = { code, signal }; });

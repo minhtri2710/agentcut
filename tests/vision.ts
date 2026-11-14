@@ -731,7 +731,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     rmSync(join(G, ".agentcut", "cache"), { recursive: true }); rmSync(modelFile(MODEL));
     const cliFetchLog = join(tmp, "gate-cli-fetch.log"), cliFetchStub = join(tmp, "gate-cli-fetch-stub.ts");
     writeFileSync(cliFetchStub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(cliFetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
-    const cli = (...a: string[]) => spawnSync(process.execPath, ["--no-install", "--preload", cliFetchStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, "--quiet", ...a], { encoding: "utf8", env: { ...process.env } });
+    const cli = (...a: string[]) => spawnSync(process.execPath, ["--no-install", "--preload", cliFetchStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, "--quiet", ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_AUTHOR: "vision-test" } });
     const c1 = cli(), c1j = JSON.parse(c1.stdout || "{}");
     check("CLI prepare without --allow-download: model_not_cached, non-zero exit", c1.status !== 0 && c1j.error?.code === "model_not_cached", { status: c1.status, out: c1.stdout.slice(0, 300) });
     const c2 = cli("--allow-download"), c2j = JSON.parse(c2.stdout || "{}");
@@ -748,7 +748,7 @@ globalThis.fetch = (async () => new Response(new ReadableStream({ async start(c)
 `);
     const progCli = (...a: string[]) => {
       rmSync(modelFile(MODEL), { force: true }); rmSync(join(G, ".agentcut", "cache"), { recursive: true, force: true });
-      return spawnSync(process.execPath, ["--no-install", "--preload", progStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, ...a], { encoding: "utf8", env: { ...process.env } });
+      return spawnSync(process.execPath, ["--no-install", "--preload", progStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, ...a], { encoding: "utf8", env: { ...process.env, AGENTCUT_AUTHOR: "vision-test" } });
     };
     const lines = (t: string) => t.split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const p1 = progCli("--allow-download"), dls = lines(p1.stderr).filter((l) => l.download);
