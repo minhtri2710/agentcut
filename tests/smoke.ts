@@ -326,6 +326,14 @@ console.log("cli surface: --start/--end, transcribe, tts");
     asr(`${usage}exit 3\n`);
     const usageOnly = fail(talk, "--model", model);
     check("transcribe: an engine failure shows its exit status, never its usage text", usageOnly.code === "asr_failed" && usageOnly.message.includes("3") && !/usage|--help/.test(usageOnly.message), usageOnly);
+    // the other engine (no model named, so no whisper.cpp) reports an argument error as "whisper: error: ..." after its usage line
+    const argError = (arg: string) => writeFileSync(join(bin, "whisper"), `#!/bin/sh\necho "usage: whisper [-h] [--model MODEL] audio [audio ...]" >&2\necho "whisper: error: argument ${arg}: invalid choice: 'xx' (choose from 'af', 'am', 'ar')" >&2\nexit 2\n`, { mode: 0o755 });
+    argError("--language");
+    const pyLang = fail(talk, "--language", "xx");
+    check("transcribe: the other engine's invalid --language is bad_value naming the language, without its list of choices", pyLang.code === "bad_value" && pyLang.message === "unknown language 'xx'" && !/choose from/.test(`${pyLang.message} ${pyLang.hint}`), pyLang);
+    argError("--model");
+    const pyModel = fail(talk, "--language", "vi");
+    check("transcribe: another argument error of the other engine is asr_failed in the engine's own words, without its list of choices", pyModel.code === "asr_failed" && pyModel.message === "argument --model: invalid choice: 'xx'" && !/choose from|exited/.test(pyModel.message), pyModel);
   } finally { process.env.PATH = PATH; }
   }
   const S = join(tmp, "tts-proj");
