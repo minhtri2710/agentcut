@@ -71,18 +71,22 @@ function sweepModelParts(file: string) {
  *  of exactly `m.bytes` bytes with the pinned sha256 is renamed into place. A failure the process survives leaves no model or temp file (empty
  *  directories may remain); a killed download's part file is removed by the next download of that model.
  *  A bad status, a network failure, a stall (no data for `idleMs`, 60 s) and a mismatch are `model_download_failed`;
- *  an abort rethrows its reason. `idleMs` is for tests; callers leave it. */
-export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = DOWNLOAD_IDLE_MS) {
+ *  an abort rethrows its reason. `idleMs` is for tests; callers leave it. `onBytes(done)` is called with 0 before the request is sent (a slow connect
+ *  still shows), then after every chunk with the bytes stored so far, so the last call is the pin's size; an error it throws passes through unchanged
+ *  (the part file is still removed). */
+export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = DOWNLOAD_IDLE_MS, onBytes?: (done: number) => void) {
   signal?.throwIfAborted();
   const file = modelFile(m.name), base = userCache();
   sweepModelParts(file);
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
   // one controller for the idle timer and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
   const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);
-  let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined;
+  let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined, fromCallback: { error: unknown } | undefined;
+  const report = (done: number) => { try { onBytes?.(done); } catch (e) { fromCallback = { error: e }; throw e; } };
   const arm = () => { clearTimeout(timer); timer = setTimeout(() => { idle = true; ctl.abort(); }, idleMs); timer.unref?.(); };
   signal?.addEventListener("abort", stop, { once: true });
   try {
+    report(0);
     arm();
     const res = await fetch(m.url, { signal: ctl.signal });
     if (!res.ok) throw fail(`HTTP ${res.status}`);
@@ -94,6 +98,7 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
       hash.update(c);
       if (fd === undefined) { const t = partSibling(file, base); try { fd = openSync(t, "wx", 0o644); } catch (e: any) { throw notWritable(e) ?? e; } tmp = t; } // tmp is set only once the name is ours
       for (let at = 0; at < c.length;) at += writeSync(fd, c, at);
+      report(n);
     }
     if (fd !== undefined) { closeSync(fd); fd = undefined; }
     if (n !== m.bytes) throw fail(`got ${n} bytes, expected ${m.bytes}`);
@@ -101,6 +106,7 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
     commit(tmp!, file);
   } catch (e: any) {
     if (signal?.aborted) throw signal.reason;
+    if (fromCallback) throw fromCallback.error;
     throw e instanceof EditError ? e : fail(idle ? `no data for ${idleMs / 1000} s` : String(e?.message ?? e));
   } finally {
     clearTimeout(timer); signal?.removeEventListener("abort", stop);
@@ -261,14 +267,14 @@ const baseOf = (d: Derived) => d.root ?? userCache();
  *  A model the job needs that is missing fails with model_not_cached unless `allowDownload`; then it is fetched and verified here
  *  (`downloadModel`): the helper never downloads. The helper dir and uv are checked first, so an unsafe cache or a missing uv
  *  is refused before a download. */
-export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false): Promise<{ cached: boolean }> {
+export async function compute(d: Derived, onFrames?: (n: number) => void, signal?: AbortSignal, allowDownload = false, onBytes?: (model: string, bytes: number, totalBytes: number) => void): Promise<{ cached: boolean }> {
   signal?.throwIfAborted();
   if (isReady(d)) return { cached: true };
   const root = helperRoot(); // refused before anything is written, the cache dir included
   requireUv([d]);
   const need = modelsToDownload([d]);
   if (need.length && !allowDownload) throw modelNotCached(need);
-  for (const n of need) await downloadModel(PINNED_MODELS[n.model], signal);
+  for (const n of need) { const pin = PINNED_MODELS[n.model]; await downloadModel(pin, signal, undefined, (bytes) => onBytes?.(pin.name, bytes, pin.bytes)); }
   const tmp = tmpSibling(d.file, baseOf(d));
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {

@@ -156,7 +156,7 @@ export async function main(argv = process.argv.slice(2)) {
   const P = f.project;
   const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
   let last = 0;
-  const progress = f.quiet ? undefined : (d: number, n: number) => { const now = Date.now(); if (now - last > 400 || d === n) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr
+  const progress = f.quiet ? undefined : (d: number, n: number, download?: { model: string; bytes: number; total_bytes: number }) => { const now = Date.now(); if (now - last > 400 || d === n || (download && download.bytes === download.total_bytes)) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n, ...(download && { download }) }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr
   let res: any;
   try {
     switch (cmd) {

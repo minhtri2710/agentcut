@@ -10,6 +10,7 @@ import { GUIDE } from "./docs.ts";
 import { FEEDBACK_GUIDE, KINDS, recordCall, SEVERITIES } from "./feedback.ts";
 import { EditError } from "./model.ts";
 import { own } from "./own.ts";
+import type { DownloadProgress } from "./prepare.ts";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `AgentCut: JSON-timeline video editor with CapCut/Final Cut features. Read \`guide\` once. Loop:
@@ -156,14 +157,15 @@ export function buildServer() {
     return jobReply(j);
   };
   /** background job (render, prepare): progress 0..1, polled with render_status; `ctl` aborts it (cancel_job, shutdown) */
-  const startJob = (kind: string, project: string, run: (progress: (d: number, n: number) => void, signal: AbortSignal) => Promise<unknown>) => {
+  const startJob = (kind: string, project: string, run: (progress: (d: number, n: number, download?: DownloadProgress) => void, signal: AbortSignal) => Promise<unknown>) => {
     const id = Math.random().toString(36).slice(2, 10);
     const ctl = new AbortController();
     const job: any = { job_id: id, kind, status: "running", progress: 0, started: Date.now(), project, ctl };
     jobs.set(id, job);
     if (stopping) ctl.abort(new EditError("the server is shutting down", "aborted")); // requested inside the shutdown window: nothing may start
-    job.promise = (async () => run((d, n) => { job.progress = +(d / n).toFixed(3); }, ctl.signal))() // a synchronous throw in `run` becomes a failed job, never a `running` one with no promise
-      .then((r) => { job.status = "done"; job.progress = 1; job.result = r; }, (e) => {
+    job.promise = (async () => run((d, n, download) => { job.progress = +(d / n).toFixed(3); if (download) job.download = download; else delete job.download; }, ctl.signal))() // a synchronous throw in `run` becomes a failed job, never a `running` one with no promise
+      .then((r) => { job.status = "done"; job.progress = 1; job.result = r; delete job.download; }, (e) => {
+        delete job.download; // only a running job shows a download
         job.error = e instanceof EditError ? e.toJSON() : { code: "internal", message: String(e?.message ?? e) };
         job.status = cancelled.has(job) && job.error.code === "aborted" ? "cancelled" : "failed";
         if (job.status === "failed" && job.error.code !== "aborted") recordCall("mcp", kind, Date.now() - job.started, { ok: false, error: job.error }, {}, "job");
@@ -200,7 +202,7 @@ export function buildServer() {
     description: "Write the captions clips as a subtitle file (.srt or .vtt) in timeline time, same pages as the burned-in captions. For a soft subtitle track inside the video use render subtitles=true.",
     inputSchema: { project: P, output: z.string().optional().describe(".srt or .vtt path"), format: z.enum(["srt", "vtt"]).optional(), ids: z.array(z.string()).optional().describe("only these captions clips") },
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
-  s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds; cancelling this call leaves the job running). status is running, done, failed or cancelled.", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
+  s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds; cancelling this call leaves the job running). status is running, done, failed or cancelled. A prepare that is downloading a model shows download {model, bytes, total_bytes} while it runs.", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("cancel_job", {
     description: "Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. A cancel takes effect until a render's output is written; after that the render is done (the output stays, the contact sheet and loudness are skipped and marked), except that a cancel which lands in the subtitle mux ends the job cancelled and leaves the output without its subtitle stream (error.hint names the file). Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged; an unknown job_id is not_found.",
     inputSchema: { job_id: z.string() },

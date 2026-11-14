@@ -143,11 +143,28 @@ const nCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n"
 // ---------------------------------------------------------------- prepare as an MCP job
 console.log("prepare (MCP background job)");
 const P = join(tmp, "proj");
+let extraCalls = 0; // helper runs of the model projects in the MCP block below, not of P
 {
   const env = { ...(process.env as Record<string, string>), AGENTCUT_UV: fake };
-  // the server runs with a stub fetch loaded by --preload (the test's own file): every download attempt is recorded and answered 404, so nothing touches the network
-  const fetchLog = join(tmp, "jobs-fetch.log"), fetchStub = join(tmp, "jobs-fetch-stub.ts");
-  writeFileSync(fetchStub, `import { appendFileSync } from "node:fs";\nglobalThis.fetch = (async (u: unknown) => { appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n"); return new Response("no", { status: 404 }); }) as typeof fetch;\n`);
+  // the server runs with a stub fetch loaded by --preload (the test's own file), so nothing touches the network. Every download attempt is recorded.
+  // Default: answered 404. While the file `slowFlag` exists: a 3000-byte body (every matte pin is patched to it in the server) whose first 1000 bytes arrive
+  // at once and the rest only when the file `releaseFlag` exists; an abort of the request ends the body.
+  const fetchLog = join(tmp, "jobs-fetch.log"), fetchStub = join(tmp, "jobs-fetch-stub.ts"), slowFlag = join(tmp, "jobs-fetch-slow"), releaseFlag = join(tmp, "jobs-fetch-release");
+  writeFileSync(fetchStub, `import { appendFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { MATTE_PINS } from ${JSON.stringify(resolve(import.meta.dir, "../src/model.ts"))};
+const parts = [97, 98, 99].map((b) => Buffer.alloc(1000, b)), body = Buffer.concat(parts);
+for (const pin of Object.values(MATTE_PINS)) Object.assign(pin, { sha256: createHash("sha256").update(body).digest("hex"), bytes: body.length });
+globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
+  appendFileSync(${JSON.stringify(fetchLog)}, String(u) + "\\n");
+  if (!existsSync(${JSON.stringify(slowFlag)})) return new Response("no", { status: 404 });
+  let i = 0;
+  return new Response(new ReadableStream({ async pull(c) {
+    if (i > 0) while (!existsSync(${JSON.stringify(releaseFlag)})) { if (init?.signal?.aborted) return c.error(init.signal.reason); await new Promise((r) => setTimeout(r, 20)); }
+    if (i < parts.length) c.enqueue(parts[i++]); else c.close();
+  } }));
+}) as typeof fetch;
+`);
   const client = new Client({ name: "jobs-test", version: "1" });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: ["--no-install", "--preload", fetchStub, resolve(import.meta.dir, "../src/mcp.ts")], env }));
   const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -190,6 +207,30 @@ const P = join(tmp, "proj");
   const fetched = existsSync(fetchLog) ? readFileSync(fetchLog, "utf8").split("\n").filter(Boolean) : [];
   check("MCP prepare allow_download=true passes the gate and reaches the pinned download (stub 404 -> model_download_failed), the helper never runs",
     q2.status === "failed" && q2.error?.code === "model_download_failed" && fetched.join() === (await import("../src/model.ts")).MATTE_PINS.silueta.url && nCalls() === calls0, { q2, fetched });
+  { // byte progress: a running prepare that downloads shows download {model, bytes, total_bytes}; a settled job (done or cancelled) shows none
+    const dlProject = async (dir: string, model: string) => {
+      await call("create_project", { path: dir, preset: "720p" });
+      await call("apply_ops", { project: dir, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model }] });
+    };
+    const poll = async (id: string, until: (r: any) => boolean) => { let r: any; for (let i = 0; i < 200; i++) { r = await call("render_status", { job_id: id, wait_seconds: 0 }); if (until(r)) break; await new Promise((ok) => setTimeout(ok, 50)); } return r; };
+    writeFileSync(slowFlag, "1");
+    const D1 = join(tmp, "proj-dl-done"), D2 = join(tmp, "proj-dl-cancel");
+    await dlProject(D1, "isnet-general-use");
+    const runs0 = nCalls(), started = await call("prepare", { project: D1, allow_download: true, wait_seconds: 0 });
+    const held = await poll(started.job_id, (r) => r.download?.bytes >= 1000);
+    check("render_status during a download: running, with download.model, total_bytes the pin's size and 0 <= bytes < total_bytes", held.status === "running" && held.download?.model === "isnet-general-use" && held.download.total_bytes === 3000 && held.download.bytes >= 0 && held.download.bytes < held.download.total_bytes, held);
+    writeFileSync(releaseFlag, "1");
+    const done = await call("render_status", { job_id: started.job_id, wait_seconds: 10 });
+    check("the done reply of a prepare that downloaded has no download field, and the helper ran once", done.status === "done" && !("download" in done) && done.result?.computed?.[0]?.kind === "matte" && nCalls() === runs0 + 1, done);
+    rmSync(releaseFlag, { force: true });
+    await dlProject(D2, "u2net_human_seg");
+    const s2 = await call("prepare", { project: D2, allow_download: true, wait_seconds: 0 });
+    await poll(s2.job_id, (r) => r.download?.bytes >= 1000);
+    const stopped = await call("cancel_job", { job_id: s2.job_id }), after = await call("render_status", { job_id: s2.job_id, wait_seconds: 0 });
+    check("a prepare cancelled mid-download is cancelled and shows no download field, in the cancel reply or later", stopped.status === "cancelled" && !("download" in stopped) && after.status === "cancelled" && !("download" in after) && nCalls() === runs0 + 1, { stopped, after });
+    rmSync(slowFlag, { force: true });
+    extraCalls = nCalls() - 1; // the one helper run of the download project (P ran it once)
+  }
   await client.close();
 }
 
@@ -199,7 +240,7 @@ process.env.AGENTCUT_UV = fake;
 const api = await import("../src/api.ts");
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
-check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() === 1, rr);
+check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() - extraCalls === 1, rr);
 const png = join(tmp, "f.png");
 await api.frame(P, 1, { out: png, scale: 0.5 });
 const pix = (x: number) => [...spawnSync("ffmpeg", ["-v", "error", "-i", png, "-vf", `crop=1:1:${x}:180`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout];
@@ -219,7 +260,7 @@ check("prune max_mb=0 removes referenced files too, with a prepare hint", !exist
 const nf: any = await api.frame(P, 1, { out: png }).catch((e) => e);
 check("after pruning the matte, preview asks for prepare again", nf.code === "not_prepared", nf);
 await api.prepare(P);
-check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() === 2);
+check("prepare rebuilds it", existsSync(join(cache, matte)) && nCalls() - extraCalls === 2);
 const bad = (() => { try { api.cache.prune(P, { olderThan: "soon" }); } catch (e: any) { return e.code; } })();
 check("bad older_than -> bad_value", bad === "bad_value");
 
@@ -550,10 +591,11 @@ console.log("cancel a render or prepare job");
     const job = await tc("render", { project: P, wait_seconds: 0 });
     const sawPart = await until(() => partsIn(R).length > 0, 30_000);
     const reserved = stray(R).some((f) => !f.includes(".part-") && statSync(join(R, f)).size === 0);
+    const cancelEvents = () => readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === "call" && e.cmd === "cancel_job"), cancels0 = cancelEvents().length; // earlier rows cancel a prepare
     const c = await tc("cancel_job", { job_id: job.job_id });
     check("cancel_job on a running render: status cancelled with code aborted; renders/ is empty and no render temp is left when it replies", sawPart && reserved && c.ok === true && c.status === "cancelled" && c.error?.code === "aborted" && !stray(R).length && !renderTmpLeft(P).length, { sawPart, reserved, c, left: stray(R), tmp: renderTmpLeft(P) });
     const fb = await tc("feedback_summary", {});
-    const calls = readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === "call" && e.cmd === "cancel_job");
+    const calls = cancelEvents().slice(cancels0);
     check("a cancel_job of a running render is logged as a call that did not fail, and the feedback summary lists no error for it", c.ok === true && fb.ok === true && calls.length === 1 && calls[0].ok === true && !fb.errors.some((e: any) => e.cmds.includes("cancel_job")), { calls, errors: fb.errors });
     const st = await tc("render_status", { job_id: job.job_id, wait_seconds: 0 });
     const again = await tc("cancel_job", { job_id: job.job_id });

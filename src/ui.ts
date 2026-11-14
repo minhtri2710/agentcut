@@ -153,10 +153,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     preparing = job;
     let last = 0;
     const ctl = new AbortController();
-    running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, signal: ctl.signal, progress: (d, n) => { job.progress = n ? +(d / n).toFixed(3) : 0; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
+    running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, signal: ctl.signal, progress: (d, n, download) => { job.progress = n ? +(d / n).toFixed(3) : 0; if (download) job.download = download; else delete job.download; const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
-      .finally(() => { preparing = null; running.delete(job.id); broadcast("job", job); }) });
+      .finally(() => { delete job.download; preparing = null; running.delete(job.id); broadcast("job", job); }) });
     return job;
   }
 

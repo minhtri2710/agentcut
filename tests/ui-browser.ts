@@ -489,17 +489,25 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await js(`window.otherUrls = []; [{ key: "z", ctrlKey: true }, { key: "z", metaKey: true }, { key: " " }].forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ bubbles: true }, k))); })`);
   await sleep(300);
   check("while the dialog is open, the page's shortcuts (undo, play) do nothing", (await js(`window.otherUrls`)).length === 0 && await js(`$("consent").open`), await js(`window.otherUrls`));
-  { // Confirm reaches the model download: stubbed (no network), a small body under a temporarily patched pin
+  { // Confirm reaches the model download: stubbed (no network), a small body under a temporarily patched pin; its second chunk is held until the button shows the download
     const { MATTE_PINS } = await import("../src/model.ts"), { createHash } = await import("node:crypto");
     const pin = MATTE_PINS.u2net_human_seg, pinned = { ...pin }, body = Buffer.from("not a real model: a small body for the consent row");
     const realFetch = globalThis.fetch, asked: string[] = [];
+    let release = () => {};
+    const released = new Promise<void>((r) => { release = r; });
     Object.assign(pin, { sha256: createHash("sha256").update(body).digest("hex"), bytes: body.length });
-    globalThis.fetch = (async (u: any, init?: any) => { if (String(u) !== pinned.url) return realFetch(u, init); asked.push(String(u)); return new Response(body); }) as typeof fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      if (String(u) !== pinned.url) return realFetch(u, init);
+      asked.push(String(u));
+      return new Response(new ReadableStream({ async start(c) { c.enqueue(body.subarray(0, 20)); await released; c.enqueue(body.subarray(20)); c.close(); } }));
+    }) as typeof fetch;
     try {
       await click("#cgo");
+      check("while the model downloads, the Prepare button reads 'Downloading <model> <done>/<total> MB'", await until("download text", `/^Downloading u2net_human_seg [0-9.]+\\/[0-9.]+ MB$/.test($("prepare").textContent)`), await js(`$("prepare").textContent`));
+      release();
       check("Confirm sends exactly one request with the flag, the model is fetched once from its pinned URL, and the prepare completes",
         await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]' && asked.join() === pinned.url, { bodies: await bodies(), asked });
-    } finally { globalThis.fetch = realFetch; Object.assign(pin, pinned); }
+    } finally { release(); globalThis.fetch = realFetch; Object.assign(pin, pinned); }
   }
   check("no page exceptions", consoleErrors.length === 0, consoleErrors);
   await shot("final");

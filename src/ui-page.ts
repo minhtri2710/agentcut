@@ -513,9 +513,11 @@ $("render").addEventListener("click", function () {
   $("render").disabled = true; $("out").innerHTML = "<progress id=prog max=1 value=0></progress>";
   api("/api/render", { draft: $("draft").checked }).then(function (j) { renderJob = j.id; settle(j); }, function (e) { $("render").disabled = false; $("out").innerHTML = ""; fail(e); });
 });
+/** whole MB, rounded as the matte sizes are; a model under 1 MB (the face model) shows two decimals so it never reads 0/0 */
+function mbOf(b, total) { return total < 1e6 ? (b / 1e6).toFixed(2) : String(Math.round(b / 1e6)); }
 function onJob(j) {
   if (j.id === prepJob) {
-    if (j.status === "running") { $("prepare").textContent = "Preparing " + Math.round(j.progress * 100) + "%"; return; }
+    if (j.status === "running") { $("prepare").textContent = j.download ? "Downloading " + j.download.model + " " + mbOf(j.download.bytes, j.download.total_bytes) + "/" + mbOf(j.download.total_bytes, j.download.total_bytes) + " MB" : "Preparing " + Math.round(j.progress * 100) + "%"; return; }
     prepJob = null; $("prepare").disabled = false; $("prepare").textContent = "Prepare";
     if (j.status === "failed" || j.status === "cancelled") { if (j.error.code === "model_not_cached" && j.error.models) askDownload(j.error); else fail(j.error); } else { $("prepare").style.display = "none"; show("ok", "prepared"); requestFrame(); }
   } else if (j.id === playJob) {

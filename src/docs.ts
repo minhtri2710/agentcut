@@ -156,7 +156,8 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
   uv runs with --no-config: set UV_* env vars (e.g. UV_INDEX_URL) for index settings.
 These ops are instant: they record the request (clip.pending; result pending=true, prepare_needed=true). Then run
   prepare (CLI: agentcut prepare [--status]; MCP: prepare -> job_id, poll render_status for progress, cancel_job to stop it): it computes the mattes /
-  tracks (seconds per clip; cached by file hash + params) and writes the keyframes. Until then preview/video render fail fast with
+  tracks (seconds per clip; cached by file hash + params) and writes the keyframes. While a model downloads, the running job (MCP, UI) and the
+  CLI's stderr progress lines (not with --quiet) carry download {model, bytes, total_bytes}; the field is gone once the job settles. Until then preview/video render fail fast with
   code not_prepared (details list what is missing; audio-only renders skip it) - they never compute. A repeated op on cached analysis applies at once.
 Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: cache) covers .agentcut/cache + previews/;
   prune deletes unreferenced files first (max_mb also referenced ones: prepare rebuilds them). previews/ is capped

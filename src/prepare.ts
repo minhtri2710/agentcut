@@ -30,12 +30,16 @@ export function missingFor(p: Project, tl: Timeline) {
   return { ops, jobs: [...mattes, ...analyses].filter((d) => !seen.has(d.file) && seen.add(d.file)) };
 }
 
+/** Byte progress of a model download inside a prepare: the model's name, the bytes stored so far, and the pin's size. */
+export interface DownloadProgress { model: string; bytes: number; total_bytes: number }
+
 // one computation per cache file per process, however many prepare calls ask for it
 const inflight = new Map<string, Promise<{ cached: boolean }>>();
 // (the first caller's abort signal governs a shared computation: the only abort is the server stopping, which stops every job)
-function computeOnce(d: V.Derived, onFrames: (n: number) => void, signal?: AbortSignal, allowDownload?: boolean) {
+// (a second caller gets no frame and no byte progress: only the first caller's callbacks are wired to the shared computation)
+function computeOnce(d: V.Derived, onFrames: (n: number) => void, signal?: AbortSignal, allowDownload?: boolean, onBytes?: (model: string, bytes: number, totalBytes: number) => void) {
   let job = inflight.get(d.file);
-  if (!job) { job = V.compute(d, onFrames, signal, allowDownload).finally(() => inflight.delete(d.file)); inflight.set(d.file, job); }
+  if (!job) { job = V.compute(d, onFrames, signal, allowDownload, onBytes).finally(() => inflight.delete(d.file)); inflight.set(d.file, job); }
   return job;
 }
 
@@ -45,7 +49,7 @@ function requireModels(jobs: V.Derived[]) {
   if (need.length) throw V.modelNotCached(need);
 }
 
-export async function prepare(p: Project, o: { progress?: (done: number, total: number) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) {
+export async function prepare(p: Project, o: { progress?: (done: number, total: number, download?: DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) {
   const computed: Dict[] = [];
   let applied: Dict[] = [], revision = p.load().revision;
   // a round computes what is missing now; a pending track_to on a pending reframe only shows its job in the next round
@@ -74,7 +78,8 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
     let base = 0;
     for (const d of jobs) {
       const t0 = performance.now();
-      const r = await computeOnce(d, (n) => o.progress?.(base + Math.min(n, d.frames), total), o.signal, o.allowDownload);
+      const r = await computeOnce(d, (n) => o.progress?.(base + Math.min(n, d.frames), total), o.signal, o.allowDownload,
+        (model, bytes, total_bytes) => o.progress?.(base, total, { model, bytes, total_bytes }));
       base += d.frames;
       o.progress?.(base, total);
       computed.push({ kind: d.kind, source: d.job.path, file: d.file, cached: r.cached, seconds: +((performance.now() - t0) / 1000).toFixed(2) });

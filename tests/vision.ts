@@ -734,6 +734,24 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     check("CLI prepare --allow-download passes the gate and reaches the model download (stub answers 404 -> model_download_failed), the helper not started",
       c2.status !== 0 && c2j.error?.code === "model_download_failed" && existsSync(cliFetchLog) && readFileSync(cliFetchLog, "utf8").trim() === pinned.url && gateRuns().length === 2, { status: c2.status, out: c2.stdout.slice(0, 300), runs: gateRuns().length });
 
+    // byte progress on the CLI: the child serves the model from a stub (small body in three chunks, this model's pin patched to it) and runs the fake uv helper
+    const progStub = join(tmp, "gate-cli-progress-stub.ts");
+    writeFileSync(progStub, `import { createHash } from "node:crypto";
+import { MATTE_PINS } from ${JSON.stringify(join(import.meta.dir, "../src/model.ts"))};
+const parts = ["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"].map((s) => Buffer.from(s)), body = Buffer.concat(parts);
+Object.assign(MATTE_PINS[${JSON.stringify(MODEL)}], { sha256: createHash("sha256").update(body).digest("hex"), bytes: body.length });
+globalThis.fetch = (async () => new Response(new ReadableStream({ async start(c) { for (const p of parts) { c.enqueue(p); await new Promise((r) => setTimeout(r, 30)); } c.close(); } }))) as typeof fetch;
+`);
+    const progCli = (...a: string[]) => {
+      rmSync(modelFile(MODEL), { force: true }); rmSync(join(G, ".agentcut", "cache"), { recursive: true, force: true });
+      return spawnSync(process.execPath, ["--no-install", "--preload", progStub, join(import.meta.dir, "../src/cli.ts"), "prepare", "-p", G, ...a], { encoding: "utf8", env: { ...process.env } });
+    };
+    const lines = (t: string) => t.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const p1 = progCli("--allow-download"), dls = lines(p1.stderr).filter((l) => l.download);
+    check("CLI prepare --allow-download: stderr has progress lines with download, the last one at the model's full size", p1.status === 0 && dls.length >= 1 && dls.every((l) => l.download.model === MODEL && l.download.total_bytes === 30) && dls.at(-1).download.bytes === 30, { status: p1.status, stderr: p1.stderr.slice(0, 400) });
+    const p2 = progCli("--allow-download", "--quiet");
+    check("CLI prepare --allow-download --quiet prints nothing on stderr and still downloads", p2.status === 0 && p2.stderr === "" && existsSync(modelFile(MODEL)), { status: p2.status, stderr: p2.stderr.slice(0, 200) });
+
     // a matte helper that fails with the model file present: the hint names it
     {
       const failUv = join(tmp, "fail-uv.mjs");
@@ -1082,6 +1100,14 @@ console.log("the face model: descriptor, job, gate, download");
       const L = fresh("download-slow"), tl = Date.now(), slow = await inCache(L, () => caught(() => V.downloadModel(desc("test_model_slow", "/slow"), undefined, 400))), tookSlow = Date.now() - tl;
       const slowFile = join(L, "models", "test_model_slow", "test_model_slow.onnx");
       check("downloadModel: a body that keeps sending succeeds although the whole transfer takes longer than the idle limit", slow === null && tookSlow > 400 && existsSync(slowFile) && readFileSync(slowFile).equals(good) && listing(L).length === 2, { slow: slow?.message, tookSlow, after: listing(L) });
+      { // byte progress: 0 before the request, then a rising sequence that ends at the pin's size; a throwing callback passes through
+        const seq: number[] = [];
+        const sq = await inCache(fresh("download-seq"), () => caught(() => V.downloadModel(desc("test_model_seq", "/slow"), undefined, 400, (b) => seq.push(b))));
+        check("downloadModel: onBytes reports 0 first, then a rising sequence that ends at exactly the pin's bytes", sq === null && seq[0] === 0 && seq.length > 2 && seq.slice(1).every((b, i) => b > seq[i]) && seq.at(-1) === good.length, { sq: sq?.message, seq });
+        const sentinel = new Error("callback stop"), C = fresh("download-callback");
+        const thrown = await inCache(C, () => caught(() => V.downloadModel(desc("test_model_cb", "/slow"), undefined, 400, (b) => { if (b > 0) throw sentinel; })));
+        check("downloadModel: an error thrown by onBytes passes through unchanged, not as model_download_failed, and no model or temp file is left", thrown === sentinel && left(C).length === 0, { thrown: String(thrown?.message ?? thrown), left: left(C) });
+      }
       { // a killed download leaves its part file; the next download of that model removes only a dead process's exact part names
         const Z = fresh("download-parts"), dir = join(Z, "models", "test_model_ok");
         mkdirSync(dir, { recursive: true });
