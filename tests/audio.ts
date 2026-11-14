@@ -43,6 +43,14 @@ function freq(f: string, a: number, b: number): number {
   for (let i = 1; i < x.length; i++) if ((x[i - 1] < 0) !== (x[i] < 0)) z++;
   return z / 2 / (x.length / 48000);
 }
+/** times of the first sample over 0.2 in each burst (bursts are >= 10 ms long and >= 0.1 s apart in output time) */
+function onsets(f: string): number[] {
+  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-af", "pan=mono|c0=c0", "-f", "f32le", "-ar", "48000", "-"], { maxBuffer: 1 << 26 });
+  const x = new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.length / 4), out: number[] = [];
+  let last = -1e9;
+  for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > 0.2) { if (i - last > 4800) out.push(i / 48000); last = i; }
+  return out;
+}
 async function rejects(f: () => Promise<unknown> | unknown, code: string) {
   try { await f(); return false; } catch (e: any) { return e.code === code; }
 }
@@ -272,13 +280,6 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   api.create(RP, { width: 320, height: 240, fps: FPS });
   await api.apply(RP, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
   const rmix = (tag: string, edit?: (tl: any) => void) => { const p = api.openProject(RP), tl = p.absolutized(p.load()); tl.settings.loudness = null; edit?.(tl); return buildAudio(tl, join(tmp, `${tag}.wav`)); };
-  const onsets = (f: string) => { // times of the first sample over 0.2 in each burst (bursts are >= 10 ms long and >= 0.1 s apart in output time)
-    const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-af", "pan=mono|c0=c0", "-f", "f32le", "-ar", "48000", "-"], { maxBuffer: 1 << 26 });
-    const x = new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.length / 4), out: number[] = [];
-    let last = -1e9;
-    for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > 0.2) { if (i - last > 4800) out.push(i / 48000); last = i; }
-    return out;
-  };
   const ramped = await rmix("ramp");
   // the output time at which the picture shows source time u: the inverse of speedIntegral
   const expected: number[] = [];
@@ -378,6 +379,35 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   check("an unramped mix over the platform bound is refused as too_complex with no clip named, the shorter-renders hint, and no mix file behind", plain?.code === "too_complex" && !/speed-ramped|p\d/.test(plain.message) && /shorter renders/.test(plain.hint) && !/speed keyframes/.test(plain.hint) && !existsSync(plainOut) && !existsSync(plainOut + ".raw.wav"), plain && { code: plain.code, message: plain.message.slice(0, 200), hint: plain.hint });
   const muted = await rmix("ramp-muted", (tl) => { tl.tracks.find((t: any) => t.id === "main").clips[0].muted = true; });
   check("muted: a ramped clip is silent", onsets(muted).length === 0, onsets(muted));
+}
+
+console.log("a looping clip's sound repeats at the picture's period; a plain audio clip keeps its container's");
+{
+  // PCM sound (no priming offset) with one 1 kHz burst at its start, under a 2 s picture
+  const burst = (name: string, secs: number) => ff("-f", "lavfi", "-i", `aevalsrc='if(lt(t,0.02),0.9*sin(2*PI*1000*t),0)':s=48000:d=${secs}`, "-ac", "2", "-c:a", "pcm_s16le", join(m, name));
+  burst("burst4.wav", 4);
+  burst("burst07.wav", 0.7);
+  burst("burst-odd.wav", 4 + 16 / 48000); // 16 samples past 4 s: the probe's millisecond duration cannot hold them
+  for (const n of ["4", "07"]) ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=2", "-i", join(m, `burst${n}.wav`), "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", join(m, `pic2-sound${n}.mov`));
+  const loopMix = async (name: string, ops: any[], edit?: (tl: any) => void) => {
+    const Q = join(tmp, `loop-${name}`);
+    api.create(Q, { width: 320, height: 240, fps: 24 });
+    await api.apply(Q, ops);
+    const p = api.openProject(Q), tl = p.absolutized(p.load());
+    tl.settings.loudness = null;
+    edit?.(tl);
+    return onsets(await buildAudio(tl, join(tmp, `loop-${name}.wav`)));
+  };
+  const near = (got: number[], exp: number[], tol: number) => got.length === exp.length && exp.every((e, k) => Math.abs(got[k] - e) < tol);
+  const clipOp = (file: string, track = "main") => ({ op: "add_clip", track, src: join(m, file), at: 0, duration: 6, loop: true });
+  for (const [name, file, what] of [["long", "pic2-sound4.mov", "4 s of sound under a 2 s picture"], ["short", "pic2-sound07.mov", "0.7 s of sound under a 2 s picture"]] as const) {
+    const got = await loopMix(name, [clipOp(file)]);
+    check(`a looping video clip with ${what}: the sound repeats every 2 s (${got.map((x) => x.toFixed(3))})`, near(got, [0, 2, 4], 0.002), got);
+  }
+  const detached = await loopMix("detached", [clipOp("pic2-sound4.mov"), { op: "detach_audio", id: "vid1" }]);
+  check(`the detached audio of a looping video clip repeats every 2 s (${detached.map((x) => x.toFixed(3))})`, near(detached, [0, 2, 4], 0.002), detached);
+  const plain = await loopMix("plain", [clipOp("burst-odd.wav", "voice")]);
+  check(`a looping audio clip repeats at its container's length (${plain.map((x) => x.toFixed(5))})`, plain.length === 2 && Math.abs(plain[1] - plain[0] - (4 + 16 / 48000)) < 0.5 / 48000, plain);
 }
 
 console.log("the mix leaves the event loop free and an abort stops its ffmpeg");

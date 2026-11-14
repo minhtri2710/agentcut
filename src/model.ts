@@ -499,6 +499,14 @@ export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip][] {
   return [...iterClips(tl)].filter(([, , , x]) => x.type === "audio" && x.attach_to === v.id && x.asset === v.asset).map(([tr, , , x]) => [tr, x]);
 }
 
+/** The seconds a looping clip's sound repeats at: the picture's length, for a video clip and for the detached audio of one. Null for any other audio, which keeps the demuxer loop (the container's own period, seamless for music). */
+export function soundPeriod(tl: Timeline, c: Clip): number | null {
+  const a = tl.assets[c.asset];
+  if (!a || (c.type !== "video" && c.type !== "audio")) return null;
+  if (c.type === "audio" && ![...iterClips(tl)].some(([, , , v]) => linkedAudio(tl, v).some(([, x]) => x.id === c.id))) return null;
+  return sourceLen(a, "video");
+}
+
 /** The one detached audio clip of a video; several pieces are refused, so that an op which edits "the" audio never picks one for the user. */
 export function soleAudio(tl: Timeline, v: Clip, op: string): [Track, Clip] | undefined {
   const la = linkedAudio(tl, v);

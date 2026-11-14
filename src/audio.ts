@@ -5,7 +5,7 @@ import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
 import { needFfmpeg } from "./media.ts";
 import { run } from "./proc.ts";
-import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
+import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, soundPeriod, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
 // The graph travels in one argv element (ffmpeg < 7 has no file form). What the OS caps, per platform: linux one argument (MAX_ARG_STRLEN 128 KiB, so the filter alone against 120000);
@@ -143,13 +143,17 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
   for (const [i, s] of srcs.entries()) {
     const c = s.clip, tr = s.track;
     const fx = (k: (typeof FX.PER_CLIP_KEYS)[number]) => c[k] ?? tr[k];
-    const input = [...(c.loop ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
+    const period = c.loop ? soundPeriod(tl, c) : null; // the picture's length for a video and its detached audio; null: the container loops in the demuxer
+    const input = [...(c.loop && period === null ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
     args.push(...input);
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
     // a ramped clip follows keyframes.speed alone (as render.ts does; `speed` is not read); the runs rebuild its time map before the chain below
     // reversed, the segment is duration*speed long whatever the ramp consumes: render.ts reads that segment backwards
     const runs = c.keyframes?.speed ? rampRuns(c.keyframes.speed, dur, fps, sr) : null, span = runs && !c.reverse ? runs[runs.length - 1].u1 : c._span ?? dur * speed;
-    const base = [`atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
+    // one period cut or padded to N samples, then looped in source time (before atempo); a clip that never wraps skips it. Memory follows the period, not the clip (10 min is ~130 MB)
+    const per = period === null ? 0 : Math.round(period * sr);
+    const wrap = per > 0 && cin + span > period! + 1e-6 ? [`aresample=${sr}`, `atrim=end_sample=${per}`, `apad=whole_len=${per}`, `aloop=loop=-1:size=${per}`, "asetpts=PTS-STARTPTS"] : [];
+    const base = [...wrap, `atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
     const head = [...base, ...(runs ? [] : atempo(speed)), `aresample=${sr}`, STEREO]; // the plain source span: what denoise and normalize measure (a ramp changes neither level nor noise floor)
     const ch = [...head];
     if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples
