@@ -387,6 +387,146 @@ console.log("review: a cancelled review stops, progress is reported, findings do
   check("a review cancelled before it starts, with a text layer to measure, fails with aborted", (await api.review(RP, { signal: pre.signal }).catch((x) => x))?.code === "aborted");
 }
 
+console.log("review: the black-frame scan remembers each source frame and reads each source once, in order");
+{
+  const { Project } = await import("../src/project.ts");
+  const { Renderer } = await import("../src/render.ts");
+  const { resolve, totalDuration, clipStart, normAnim } = await import("../src/model.ts");
+  const A = join(m, "av.mp4"), dark = join(m, "dark.mp4"), edge = join(m, "edge25.mp4"), long = join(m, "long.mp4"), swap = join(m, "swap.mp4");
+  ff("-f", "lavfi", "-i", "color=c=0x050505:s=320x240:r=24:d=6", "-pix_fmt", "yuv420p", dark);
+  // 25 fps (the timelines run at 24): bright until 2.0 s, then dark
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5,format=yuv420p,geq=lum='if(gte(T,2),5,lum(X,Y))':cb='if(gte(T,2),128,cb(X,Y))':cr='if(gte(T,2),128,cr(X,Y))'", "-pix_fmt", "yuv420p", edge);
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=12", "-pix_fmt", "yuv420p", long);
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=4", "-pix_fmt", "yuv420p", swap);
+  const build = async (name: string, ops: object[]) => {
+    const d = join(tmp, `bm-${name}`);
+    api.create(d, { width: 320, height: 240, fps: 24 });
+    const r: any = await api.apply(d, ops);
+    return { d, ids: r.results.map((x: any) => x.id as string) };
+  };
+  const vid = (extra: object = {}, src = A) => ({ op: "add_clip", track: "main", src, ...extra });
+  const gap = (duration: number) => ({ op: "add_clip", track: "main", type: "gap", duration });
+  // the scan as it was before the memo: the renderer draws every sample, runs are two or more dark samples in a row
+  const renderOnly = async (d: string) => {
+    const pj = new Project(d), t = pj.absolutized(resolve(pj.load())), T = totalDuration(t), step = 0.2, fps = Number(t.settings.fps);
+    const R = new Renderer(structuredClone(t), pj.root, Math.min(1, 64 / t.settings.width));
+    const dips: [number, number][] = [], low: number[] = [];
+    for (const tr of t.tracks) if (!tr.hidden && (tr.kind ?? "video") !== "audio") tr.clips.forEach((c: any, i: number) => {
+      const s = i > 0 ? normAnim(c.transition, 0.5) : null;
+      if (s?.type === "dip_black") dips.push([clipStart(c), clipStart(c) + s.duration]);
+    });
+    try {
+      for (let x = 0; x < T - 1e-6; x += step) {
+        const tt = Math.min(x, T - 1 / fps);
+        await R.frame(tt);
+        const px = R.pixels();
+        let bright = 0;
+        for (let i = 0; i < px.length; i += 4) if (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2] > 24) bright++;
+        if (bright / (px.length / 4) < 0.03 && !dips.some(([a, b]) => tt >= a - 1e-6 && tt <= b + 1e-6)) low.push(tt);
+      }
+    } finally { R.close(); }
+    const runs: number[][] = [];
+    for (let i = 0; i < low.length; i++) {
+      let j = i;
+      while (j + 1 < low.length && low[j + 1] - low[j] < step * 1.5) j++;
+      if (j > i) runs.push([+low[i].toFixed(3), +Math.min(T, low[j] + step).toFixed(3)]);
+      i = j;
+    }
+    return runs;
+  };
+  const scan = async (d: string) => {
+    const stats: any = {}, rv: any = await api.review(d, { stats } as any);
+    return { stats, black: rv.findings.filter((f: any) => f.type === "black_frames").map((f: any) => [f.t, f.end]) as number[][] };
+  };
+  const same = (...x: unknown[]) => x.every((v) => JSON.stringify(v) === JSON.stringify(x[0]));
+
+  // guards: the six cases keep the findings the scan gave before the memo
+  const truth: [string, object[], number[][], object[]?][] = [
+    ["tr_clean", [vid(), vid(), vid()], [], [{ op: "add_transition", to: "vid2", type: "crossfade", duration: 0.5 }]],
+    ["tr_gap", [vid({ duration: 3 }), gap(2), vid({ duration: 3 })], [[3, 5]]],
+    ["tr_gap_short", [vid({ duration: 3 }), gap(0.3), vid({ duration: 3 })], [[3, 3.4]]],
+    ["tr_dark", [vid({ duration: 3 }), vid({}, dark), vid({ duration: 3 })], [[3, 9]]],
+    ["tr_fade", [vid({ exit: { type: "fade", duration: 1.5 } }), vid({ enter: { type: "fade", duration: 1.5 } })], []],
+    ["tr_dip", [vid(), vid()], [], [{ op: "add_transition", to: "vid2", type: "dip_black", duration: 1.2 }]],
+  ];
+  for (const [name, ops, want, after] of truth) {
+    const { d } = await build(name, ops);
+    if (after) await api.apply(d, after);
+    const fresh = await scan(d), again = await scan(d);
+    check(`${name}: black ${want.map(([a, b]) => `${a}-${b}`).join(", ") || "none"} on a first scan, from the memo, and as the renderer alone draws it`,
+      same(fresh.black, want, again.black, await renderOnly(d)) && again.stats.frames === 0, { fresh: fresh.black, again: again.black, stats: again.stats });
+  }
+
+  // new rows
+  const reuse = await build("reuse", [1, 2, 3, 4].map(() => vid({ in: 0, duration: 2 })));
+  const rs = await scan(reuse.d);
+  check("four clips over the same two seconds of source: each frame is decoded once and every sample comes from the plain path",
+    rs.stats.frames > 0 && rs.stats.frames <= 2 * 24 && rs.stats.rendered === 0 && rs.stats.memo + rs.stats.read === 40 && !rs.black.length, rs.stats);
+
+  const off = await build("offgrid", [vid({ in: 1.013, duration: 2 }, edge), vid({ in: 0.5, duration: 2.5 }, edge)]);
+  const os = await scan(off.d), ref = await renderOnly(off.d);
+  check("two clips with different in-point phases over a 25 fps source at a bright-to-dark edge: each is read on its own and the black runs are the renderer's",
+    ref.length === 2 && same(os.black, ref) && os.stats.rendered === 0, { memo: os.black, renderer: ref, stats: os.stats });
+
+  // The granted bound (inspect.ts blackRuns): a clip read mid-stream may get another source frame than its own fresh seek gives, up to
+  // 2 timeline frames apart. In findings: an edge is within one 0.2 s step of the renderer's, and a stretch appears or vanishes only
+  // when it is within one step of the 0.4 s minimum.
+  const within = (got: number[][], want: number[][]) => {
+    const near = (a: number[], b: number[]) => Math.abs(a[0] - b[0]) < 0.2 + 1e-6 && Math.abs(a[1] - b[1]) < 0.2 + 1e-6, short = (r: number[]) => r[1] - r[0] < 0.6 + 1e-6;
+    return got.every((g) => want.some((w) => near(g, w)) || short(g)) && want.every((w) => got.some((g) => near(g, w)) || short(w));
+  };
+  const edgeA = join(m, "edge25a.mp4"); // the same picture with an AAC track, as camera files have
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5,format=yuv420p,geq=lum='if(gte(T,2),5,lum(X,Y))':cb='if(gte(T,2),128,cb(X,Y))':cr='if(gte(T,2),128,cr(X,Y))'",
+    "-f", "lavfi", "-i", "sine=f=440:d=6", "-c:a", "aac", "-shortest", "-pix_fmt", "yuv420p", edgeA);
+
+  // one key, one stream: clip B (in 47.1/24 s) starts at the edge, between source frame 49 (1.96 s, bright) and 50 (2.00 s, dark), in the run that clip A (in 0.1/24 s) opened
+  for (const [what, src, want] of [["a video-only", edge, "same"], ["an AAC-carrying", edgeA, "within"]] as const) {
+    const mid = await build(`midrun-${want}`, [vid({ in: 0.1 / 24, duration: 2 }, src), vid({ in: 47.1 / 24, duration: 2 }, src)]);
+    const ms = await scan(mid.d), mref = await renderOnly(mid.d);
+    check(`a clip that starts mid-run of another clip with the same key, at a bright-to-dark edge of ${what} 25 fps source: the black runs are the renderer's, within the bound`,
+      mref.length === 1 && within(ms.black, mref) && (want === "within" || same(ms.black, mref)) && ms.stats.rendered === 0 && ms.stats.frames > 0, { memo: ms.black, renderer: mref, stats: ms.stats });
+  }
+
+  // a plain clip behind a leading transition: its stream starts after the transition's window, which the renderer draws
+  const lead = await build("leading", [vid({ in: 0.1 / 24, duration: 2 }, edgeA), vid({ in: 40.1 / 24, duration: 2.5 }, edgeA)]);
+  await api.apply(lead.d, [{ op: "add_transition", to: lead.ids[1], type: "crossfade", duration: 0.5 }]);
+  const ls = await scan(lead.d), lref = await renderOnly(lead.d);
+  check("a plain clip behind a leading transition: the transition's samples are drawn, the rest come from the memo, and the black runs are the renderer's, within the bound",
+    lref.length === 1 && ls.stats.rendered > 0 && ls.stats.memo + ls.stats.read > 0 && within(ls.black, lref), { memo: ls.black, renderer: lref, stats: ls.stats });
+
+  const ed = await build("edit", [0, 3, 6, 9].map((s) => vid({ in: s, duration: 1 }, long)));
+  const e1 = await scan(ed.d);
+  await api.apply(ed.d, [{ op: "update_clip", id: ed.ids[3], set: { in: 11 } }]);
+  const e2 = await scan(ed.d);
+  check("a second review after one clip changed decodes only that clip's frames and takes the other three clips' samples from the memo",
+    e1.stats.read === 20 && e2.stats.frames > 0 && e2.stats.frames <= 24 && e2.stats.read === 5 && e2.stats.memo === 15 && e2.stats.rendered === 0 && !e2.black.length, { first: e1.stats, second: e2.stats });
+
+  const sw = await build("swap", [vid({ duration: 3 }, swap)]);
+  const s1 = await scan(sw.d);
+  ff("-f", "lavfi", "-i", "color=c=0x050505:s=320x240:r=24:d=4", "-pix_fmt", "yuv420p", swap);
+  const s2 = await scan(sw.d);
+  check("the memo is not used for a source file that changed: the new file is read and its black stretch found",
+    !s1.black.length && same(s2.black, [[0, 3]], await renderOnly(sw.d)) && s2.stats.memo === 0 && s2.stats.frames > 0, { before: s1.black, after: s2.black, stats: s2.stats });
+
+  const names = () => readdirSync(join(reuse.d, ".agentcut", "cache")).filter((f) => /^dark-.*\.json$/.test(f));
+  const had = names(), counted = (api.cache.info(reuse.d) as any).cache.files;
+  const pruned: any = api.cache.prune(reuse.d);
+  const rebuilt = await scan(reuse.d);
+  check("the memo is a cache file: cache info counts it, prune removes it, the next review rebuilds it",
+    had.length === 1 && counted >= 1 && pruned.files.some((f: string) => f.includes(had[0])) && rebuilt.stats.memo === 0 && rebuilt.stats.frames > 0 && names().length === 1, { had, counted, pruned: pruned.files, stats: rebuilt.stats });
+
+  const canBlock = process.platform !== "win32" && process.getuid?.() !== 0; // mode 0 stops no read on Windows or for root
+  if (canBlock) chmodSync(join(reuse.d, ".agentcut", "cache", names()[0]), 0);
+  const unreadable = await scan(reuse.d), rewritten = await scan(reuse.d);
+  check("a memo file that cannot be read is a miss: the review still runs and writes the memo again, which the next review uses",
+    !canBlock || unreadable.stats.memo === 0 && unreadable.stats.frames > 0 && !unreadable.black.length && rewritten.stats.memo > 0 && rewritten.stats.frames === 0, { unreadable: unreadable.stats, rewritten: rewritten.stats });
+
+  const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
+  const mx = await scan(mixed.d);
+  check("clips off the fast path (a speed change, a title above) are drawn by the renderer, the rest from the memo, and the findings are the renderer's",
+    mx.stats.memo + mx.stats.read === 5 && mx.stats.rendered === 15 && same(mx.black, await renderOnly(mixed.d)), mx.stats);
+}
+
 console.log("templates: the text of every template stays inside the safe area at every preset size");
 {
   const { TEMPLATES } = await import("../src/presets.ts");

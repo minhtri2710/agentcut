@@ -1,12 +1,14 @@
-// Project cache management: .agentcut/cache (vision analyses and mattes) and previews/ (frames, sheets, strips,
-// UI play drafts). "Referenced" = still needed by the current timeline (mattes of remove_background clips, analyses of
-// pending vision requests); everything else can be rebuilt and is pruned first.
-import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
+// Project cache management: .agentcut/cache (vision analyses and mattes, the black-frame scan's darkness memos) and
+// previews/ (frames, sheets, strips, UI play drafts). "Referenced" = still needed by the current timeline (mattes of
+// remove_background clips, analyses of pending vision requests); everything else can be rebuilt and is pruned first.
+import { createHash } from "node:crypto";
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { EditError, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
 import { collectAnalyses, mattesFor } from "./ops-vision.ts";
 import { alive, type Project } from "./project.ts";
+import { writeFile } from "./safe-write.ts";
 import { cacheDir } from "./vision.ts";
 
 const MB = 1 << 20;
@@ -139,6 +141,41 @@ export function prune(p: Project, o: { maxMb?: number; olderThan?: string | numb
   return { removed: sum(removed), removed_referenced: removed.filter((e) => e.referenced).length,
     files: removed.slice(0, 50).map((e) => relative(p.root, e.path).split(sep).join("/")), left: { files: es.length - removed.length, mb: +(total / MB).toFixed(2) },
     ...(removed.some((e) => e.referenced) ? { hint: "referenced files were removed: run prepare before the next preview/render" } : {}) };
+}
+
+// ------------------------------------------------------------------ darkness memo of the black-frame scan
+// One file per `key` (the caller's string: source file path, size and mtime, decode options, scan size, frame phase): frame number ->
+// bright pixels of the scan picture. A count is what the first read under that key decoded for the frame; a later read of the same frame
+// may pick a neighbouring source frame (a bound, see inspect.ts blackRuns). A changed file or option is another key, hence another file,
+// so nothing of an old file or setting is reused; a file counts as changed only if its size or mtime did. Rebuildable, so prune takes it before anything referenced.
+const darkFile = (root: string, key: string) => join(cacheDir(root), `dark-${createHash("sha1").update(key).digest("hex").slice(0, 24)}.json`);
+
+/** The memo for `key`: empty when there is none, when it cannot be read, or when the file is not a memo of exactly this key (all read as a miss; the next save rewrites it). A read never fails the review. */
+export function loadDarkMemo(root: string, key: string): Map<number, number> {
+  const frames = new Map<number, number>(), f = darkFile(root, key);
+  let text: string;
+  try { if (!lstatSync(f).isFile()) return frames; text = readFileSync(f, "utf8"); } catch { return frames; }
+  let j: any;
+  try { j = JSON.parse(text); } catch { return frames; }
+  if (j?.key !== key || !Array.isArray(j.runs)) return frames;
+  const ok = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
+  const out = new Map<number, number>();
+  for (const run of j.runs) {
+    if (!Array.isArray(run) || !ok(run[0]) || !Array.isArray(run[1]) || !run[1].every(ok)) return frames;
+    run[1].forEach((n: number, i: number) => out.set(run[0] + i, n));
+  }
+  return out;
+}
+
+/** Write the memo for `key`: runs of consecutive frames. A review only reads the project, so a cache folder it cannot write (read-only volume, a link) costs the speed-up, not the review. */
+export function saveDarkMemo(root: string, key: string, frames: Map<number, number>) {
+  const runs: [number, number[]][] = [];
+  for (const n of [...frames.keys()].sort((a, b) => a - b)) {
+    const last = runs.at(-1);
+    if (last && last[0] + last[1].length === n) last[1].push(frames.get(n)!); else runs.push([n, [frames.get(n)!]]);
+  }
+  try { writeFile(darkFile(root, key), JSON.stringify({ key, runs }), root); }
+  catch (e: any) { if (!(e instanceof EditError && ["not_writable", "unsafe_path", "unsupported_fs"].includes(e.code))) throw e; }
 }
 
 /** Automatic bound on previews/ after writing `written` (AGENTCUT_PREVIEWS_MAX_MB, default 200; 0 disables): oldest
