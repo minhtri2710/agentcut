@@ -187,6 +187,7 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   await call5("apply_ops", { ops: [{ op: "add_marker", t: 2 }] });
   check("a failed open_project keeps the remembered project", bo.json.ok === false && rev(A) === 2 && rev(B) === rb, { bo: bo.json, a: rev(A) });
 
+  const errsBefore: any[] = (await call5("feedback_summary", {})).json.errors; // other rows of this suite log errors into the same home: the row below counts the change
   const bad5 = await call5("render", { project: A, draft: true, output: join(tmp, "no-such-dir", "x.xyz"), wait_seconds: 30 });
   check("a failed job is an error result", bad5.json.status === "failed" && bad5.json.ok === false && bad5.r.isError === true, { json: bad5.json, isError: bad5.r.isError });
   // reading or cancelling a failed job describes it; the job's error is logged once, where the job ended, as a job event (the calls that
@@ -196,8 +197,9 @@ process.stdout.write(JSON.stringify({ samples: Array.from({ length: n }, (_, i) 
   const before = ofJob();
   for (let i = 0; i < 2; i++) { await call5("render_status", { job_id: bad5.json.job_id, wait_seconds: 0 }); await call5("cancel_job", { job_id: bad5.json.job_id }); }
   check("a failed job's error is logged once: the render call that waited on it, two render_status polls and two cancel_job calls add no second event", before.length === 1 && ofJob().length === 1, ofJob());
-  const sumJob = (await call5("feedback_summary", {})).json.errors.find((x: any) => x.code === bad5.json.error.code);
-  check("  that one event is a job event, not a second render call, and the feedback summary counts the error once", ofJob()[0].type === "job" && ofJob()[0].cmd === "render" && sumJob?.count === 1 && sumJob.cmds.join() === "render", { ev: ofJob(), sumJob });
+  const errCode = bad5.json.error.code, errNow = (await call5("feedback_summary", {})).json.errors.find((x: any) => x.code === errCode);
+  const sumJob = { added: (errNow?.count ?? 0) - (errsBefore.find((x) => x.code === errCode)?.count ?? 0), cmds: errNow?.cmds ?? [] };
+  check("  that one event is a job event, not a second render call, and the feedback summary counts the error once", ofJob()[0].type === "job" && ofJob()[0].cmd === "render" && sumJob.added === 1 && sumJob.cmds.includes("render"), { ev: ofJob(), sumJob });
   // a failed job is an error event for the summary's error rate and naming misses, though it is not a second call
   const calls0 = events().filter((e) => e.type === "call"), fails0 = calls0.filter((e) => !e.ok).length + events().filter((e) => e.type === "job").length;
   const rate0 = (await call5("feedback_summary", {})).json.error_rate;
