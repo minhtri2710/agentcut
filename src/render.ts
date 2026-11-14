@@ -567,13 +567,15 @@ export class Renderer {
 /** JPEG's limit on either side as Skia's encoder reports it: 65500 px encodes, 65501 fails ("Get jpeg data from surface failed"); pinned in tests/codecs.ts. PNG has no limit that can be reached. */
 export const JPEG_MAX_SIDE = 65500;
 
-/** Refuse, before anything is drawn, a JPEG whose side the encoder cannot write. `size(tileW)` is the image's [width, height] at that tile width; the hint names the largest tile_width that fits. */
-export function refuseJpegSize(what: string, tileW: number, size: (tileW: number) => [number, number], hint: string) {
+/** Refuse, before anything is drawn, a JPEG whose side the encoder cannot write. `size(tileW)` is the image's [width, height] at that tile width;
+ *  `advice` lists what helps for the side that overflows, and the hint adds the largest tile_width that fits. */
+export function refuseJpegSize(what: string, tileW: number, size: (tileW: number) => [number, number], advice: { width: string[]; height: string[] }) {
   const [w, h] = size(tileW);
   if (w <= JPEG_MAX_SIDE && h <= JPEG_MAX_SIDE) return;
   let fit = tileW - 1;
   while (fit >= 1 && size(fit).some((x) => x > JPEG_MAX_SIDE)) fit--;
-  throw new EditError(`${what} would be ${w}x${h} px; a JPEG holds at most ${JPEG_MAX_SIDE} on a side`, "bad_value", `${hint}${fit >= 1 ? ` (or a tile_width of ${fit} or below)` : ""}`);
+  const hint = [...(w > JPEG_MAX_SIDE ? advice.width : advice.height), ...(fit >= 1 ? [`a tile_width of ${fit} or below`] : [])].join(", or ");
+  throw new EditError(`${what} would be ${w}x${h} px; a JPEG holds at most ${JPEG_MAX_SIDE} on a side`, "bad_value", hint ? `use ${hint}` : undefined);
 }
 
 /** Encoded still: JPEG (fast, ~6x smaller - best for agents) unless a .png path/format is asked for. webp keeps alpha: lossy at 90, or lossless (quality 100 makes the encoder write VP8L). */
@@ -628,7 +630,7 @@ export async function contactSheet(tl: Timeline, root: string, times: number[], 
   const gap = 4, n = times.length;
   cols = Math.max(1, Math.min(cols, n));
   const rows = Math.ceil(n / cols);
-  if (fmt === "jpeg") refuseJpegSize("the sheet", tileW, (w) => { const t = tileSize(tl, w); return [cols * t.W + (cols - 1) * gap, rows * t.H + (rows - 1) * gap]; }, "use fewer cols or frames, or a .png output");
+  if (fmt === "jpeg") refuseJpegSize("the sheet", tileW, (w) => { const t = tileSize(tl, w); return [cols * t.W + (cols - 1) * gap, rows * t.H + (rows - 1) * gap]; }, { width: ["fewer cols", "fewer frames", "a .png output"], height: ["more cols", "fewer frames", "a .png output"] });
   const tiles = await renderTiles(tl, root, [...times].sort((a, b) => a - b), tileW, guides);
   const { width: tw, height: th } = tiles[0];
   const sheet = createCanvas(cols * tw + (cols - 1) * gap, rows * th + (rows - 1) * gap);

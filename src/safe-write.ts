@@ -148,7 +148,7 @@ export function writeFile(file: string, data: string | Uint8Array, base?: string
 /** Copy `src` to `file` the same way (the content lands under a new name first, then replaces `file`). */
 export function copyFile(src: string, file: string, base?: string) {
   const tmp = tmpSibling(file, base);
-  place(tmp, file, () => { try { copyFileSync(src, tmp, constants.COPYFILE_EXCL); } catch (e: any) { throw notWritable(e) ?? e; } });
+  place(tmp, file, () => copyFileSync(src, tmp, constants.COPYFILE_EXCL));
 }
 
 /** The link errors of a volume that has no hard links (exFAT, FAT, some network and FUSE mounts), as a named error; null for any other error. */

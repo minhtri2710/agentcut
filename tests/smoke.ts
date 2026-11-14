@@ -144,6 +144,8 @@ console.log("frame time and caption file format");
   {
     const e = cli(["sheet", "--count", 64, "--cols", 64, "--tile-width", 4096], { ok: false, cwd: P }).error;
     const fit = Number(/tile_width of (\d+) or below/.exec(e?.hint ?? "")?.[1]);
+    const tall = cli(["sheet", "--count", 64, "--cols", 1, "--tile-width", 1080], { ok: false, cwd: P }).error;
+    check("a sheet 64 tiles tall advises more cols, not fewer, and still a .png and a tile_width that fits", tall?.code === "bad_value" && tall.message.includes(`1080x${64 * 1080 + 63 * 4}`) && /more cols/.test(tall.hint) && !/fewer cols/.test(tall.hint) && tall.hint.includes(".png") && Number(/tile_width of (\d+) or below/.exec(tall.hint)?.[1]) > 0, tall);
     check("a sheet 64 tiles wide on a 1080 timeline is bad_value naming its size, with a .png and a tile_width that fits", e?.code === "bad_value" && e.message.includes(`${64 * 1080 + 63 * 4}x1080`) && e.hint.includes(".png") && fit > 0 && 64 * fit + 63 * 4 <= 65500, e);
     const W = join(tmp, "wide-short");
     cli(["init", W, "--width", 2800, "--height", 16]);

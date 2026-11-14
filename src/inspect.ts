@@ -33,7 +33,7 @@ export async function motionStrips(tl: Timeline, root: string, windows: Window[]
   if (!ws.length) throw new EditError("no time window to inspect", "empty", "the timeline has no transitions: pass start/end (or times) to inspect a range");
   const times = ws.map((w) => Array.from({ length: n }, (_, i) => +Math.min(w.start + ((w.end - w.start) * i) / (n - 1), T - 1 / fps).toFixed(3)));
   const tileW = o.tileWidth ?? Math.max(80, Math.min(320, Math.floor(1800 / n))), gap = 3, head = 20, per = Math.max(1, o.perImage ?? 6), rowsMax = Math.min(per, ws.length);
-  refuseJpegSize("a motion image", tileW, (w) => { const t = tileSize(tl, w); return [n * t.W + (n - 1) * gap, rowsMax * (head + t.H + gap)]; }, "use fewer frames");
+  refuseJpegSize("a motion image", tileW, (w) => { const t = tileSize(tl, w); return [n * t.W + (n - 1) * gap, rowsMax * (head + t.H + gap)]; }, { width: ["fewer frames"], height: [] });
   const tiles = await renderTiles(tl, root, times.flat(), tileW);
   const tw = tiles[0].width, th = tiles[0].height;
   const images: Buffer[] = [];
