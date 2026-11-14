@@ -20,7 +20,8 @@
     "build": "bun --no-install scripts/build.ts",
     "test": "bun --no-install scripts/test.ts",
     "docs": "bun --no-install -e \"import {GUIDE} from './src/docs.ts'; require('node:fs').writeFileSync('AGENTS.md', GUIDE.trim() + '\\n')\"",
-    "typecheck": "tsc --noEmit -p .",
+    "ui": "bun --no-install scripts/build-ui.ts",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p src/ui",
     "prepublishOnly": "bun --no-install scripts/build.ts"
   },
   "license": "MIT",

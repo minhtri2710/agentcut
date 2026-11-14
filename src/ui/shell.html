@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AgentCut</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+{{STYLE}}
+</style></head>
+<body>
+<header>
+  <b id="name">AgentCut</b><span class="mut" id="rev"></span>
+  <button id="undo" title="undo (Cmd/Ctrl+Z)">Undo</button><button id="redo" title="redo (Shift+Cmd/Ctrl+Z)">Redo</button>
+  <span style="flex:1"></span><span id="issues" class="mut"></span>
+  <label class="mut"><input type="checkbox" id="draft" checked> draft</label>
+  <button id="render">Render</button><button id="sheet">Contact sheet</button>
+</header>
+<div id="main">
+  <div id="viewer"><img id="frame" class="none" alt="preview"><video id="video" style="display:none" controls></video>
+    <div id="vbar"><button id="play">Play</button><button id="prepare" style="display:none">Prepare</button><span id="time">0.00 s</span></div><div class="mut" id="vstat"></div></div>
+  <div id="side">
+    <div class="mut" id="selinfo">Select a clip on the timeline.</div>
+    <textarea id="insp" spellcheck="false" placeholder="clip JSON"></textarea>
+    <div><button id="applyc" disabled>Apply clip</button> <button id="delc" disabled>Delete clip</button></div>
+    <div id="cbtns"><button id="openc" style="display:none">Open compound</button> <button id="expc" style="display:none">Expand</button>
+      <button id="group" style="display:none">Group</button> <span id="regroups"></span></div>
+    <div id="kfbox"></div>
+    <div id="msg"></div>
+    <div class="mut">Ops batch (JSON list), applied atomically:</div>
+    <textarea id="ops" spellcheck="false" placeholder='[{"op":"add_clip","track":"text","text":"Hi","at":0,"duration":2}]'></textarea>
+    <div><button id="applyo">Apply ops</button></div>
+    <div id="out"></div>
+  </div>
+</div>
+<dialog id="consent" aria-labelledby="ctitle"><p id="ctitle"><b>Download a vision model?</b></p><ul id="clist"></ul>
+  <p class="mut">Nothing is downloaded unless you confirm.</p><div><button id="cgo">Download and prepare</button> <button id="cno">Cancel</button></div></dialog>
+<div id="tl">
+  <div id="tbar"><span class="mut">zoom</span><input type="range" id="zoom" min="10" max="400" value="80"><span class="mut" id="dur"></span>
+    <span id="crumbs"></span>
+    <span class="mut">drag = move, edges = trim, shift-click = multi-select, double-click compound = open, click ruler = seek</span></div>
+  <div id="scroll"><div id="inner"><div id="ruler"></div><div id="lanes"></div><svg id="links"></svg><div id="ph"></div></div></div>
+</div>
+<script>
+{{SCRIPT}}
+</script></body></html>

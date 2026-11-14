@@ -9,7 +9,7 @@ import * as api from "./api.ts";
 import { inp } from "./ffinput.ts";
 import { EditError, type Dict } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
-import { PAGE } from "./ui-page.ts";
+import { PAGE } from "./ui/page.gen.ts";
 
 const MIME: Record<string, string> = {
   ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska", ".gif": "image/gif",

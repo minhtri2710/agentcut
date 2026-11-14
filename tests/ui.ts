@@ -6,6 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { CONTAINED_FLAGS, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
@@ -513,6 +514,132 @@ hold.close();
   check(`${N} clients that leave mid-stream: their file descriptors are released`, after - base < N / 2, { base, after });
   check("  and the server keeps serving", again.status === 200 && again.j.ok === true, again.status);
   rmSync(join(dir, "renders", "big.bin"));
+}
+
+// ---------------------------------------------------------------- page modules (src/ui): the ones with no DOM, checked under bun
+console.log("page modules");
+{
+  const { num } = await import("../src/ui/time.ts");
+  const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
+  const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
+  const { dragEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
+  const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+
+  check("num reads seconds from numbers, ms, s and clock strings", num(1.5) === 1.5 && num("500ms") === 0.5 && num("2s") === 2 && num("1:02") === 62 && num("0:00:01.5") === 1.5, [num("500ms"), num("1:02")]);
+
+  // render.ts subT: a nested time u plays at s + (u - in) / speed, level by level; the view is off + k * u
+  const inner = clip("ci", { type: "compound", start: 0, in: 1, speed: 2, duration: 1.5, tracks: [{ id: "n", clips: [clip("x1")] }] });
+  const outer = clip("co", { type: "compound", start: 1, in: 0.25, speed: 0.5, duration: 3, tracks: [{ id: "m", clips: [inner] }] });
+  const tops: any[] = [{ id: "main", clips: [outer] }];
+  const two = viewOf(tops, ["co", "ci"]);
+  const place = (u: number) => 1 + ((0 + (u - 1) / 2) - 0.25) / 0.5;
+  check("viewOf: two opened compounds place a nested time where render plays it, and bound the visible window", two.view.nested && two.path.length === 2
+    && [0, 1, 3].every((u) => near(two.view.off + two.view.k * u, place(u))) && near(two.view.lo, 1) && near(two.view.hi, 3.5), two.view);
+  check("viewOf: a path that no longer leads to compounds is cut at the first level that does not", JSON.stringify(viewOf(tops, ["co", "gone"]).path) === '["co"]'
+    && viewOf(tops, ["nope"]).path.length === 0 && !viewOf(tops, ["nope"]).view.nested && viewOf(tops, []).view.tracks === tops);
+
+  const lanes: any[] = [{ id: "a", clips: [clip("a0", { start: 2 }), clip("a1")] }, { id: "b", clips: [clip("b0")] }];
+  const order = clipOrder({ tracks: lanes, off: 0, k: 1, lo: -Infinity, hi: Infinity, nested: false }).map((c) => c.id);
+  check("clipOrder is time order with ties in lane order (top lane first); resolveRef takes ids, track#i and track#-i", JSON.stringify(order) === '["b0","a1","a0"]'
+    && resolveRef(lanes, "a#-1") === "a1" && resolveRef(lanes, "a#0") === "a0" && resolveRef(lanes, "a#5") === null && resolveRef(lanes, "zz#0") === null && resolveRef(lanes, "plain") === "plain", order);
+
+  const ks = pts([{ t: "500ms", v: 2, ease: "ease_out" }, [0, 1]]);
+  check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt interpolates, kfBase defaults",
+    JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === 1.5 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
+    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
+    && JSON.stringify(kfTimes(clip("c", { keyframes: { x: [[0, 1], [1, 2]], y: [[1, 5], [2, 6]] } }))) === "[0,1,2]", JSON.stringify(packKf(ks)));
+
+  const trk = (id: string, magnetic: boolean, clips: any[]): any => ({ id, magnetic, clips });
+  const from = trk("v", false, [clip("m", { start: 5, duration: 2 })]);
+  const mag = trk("mag", true, [clip("p", { start: 0, duration: 2 }), clip("q", { start: 2, duration: 2 })]);
+  const loose = trk("free", false, []);
+  const all = [from, mag, loose];
+  const m = from.clips[0];
+  check("dragEdit: trimming the head sends trim_start, the tail a duration that stays at least 0.04 s",
+    JSON.stringify(dragEdit("l", m, from, all, "v", 0.5, 5, 2)) === '{"ops":[{"op":"trim_clip","id":"m","trim_start":0.5}],"label":"trim_clip m"}'
+    && dragEdit("r", m, from, all, "v", 0.5, 5, 2).ops[0].duration === 2.5 && dragEdit("r", m, from, all, "v", -9, 5, 2).ops[0].duration === 0.04);
+  check("dragEdit: a move to a free lane sets the track and a start that is never negative; to a magnetic lane it sets the index by clip midpoints",
+    JSON.stringify(dragEdit("move", m, from, all, "free", -9, 5, 2).ops) === '[{"op":"move_clip","id":"m","track":"free","at":0}]'
+    && JSON.stringify(dragEdit("move", m, from, all, "mag", -3.5, 5, 2).ops) === '[{"op":"move_clip","id":"m","track":"mag","index":1}]'
+    && JSON.stringify(dragEdit("move", m, from, all, "v", 0.25, 5, 2).ops) === '[{"op":"move_clip","id":"m","at":5.25}]');
+  const att = clip("t", { attach_to: "m", offset: "0.5s" });
+  check("dragEdit: a connected clip moves by changing its offset, after the track change when the lane differs",
+    JSON.stringify(dragEdit("move", att, from, all, "free", 0.25, 0, 1)) === '{"ops":[{"op":"move_clip","id":"t","track":"free"},{"op":"update_clip","id":"t","set":{"offset":0.75}}],"label":"move t"}'
+    && JSON.stringify(dragEdit("move", att, from, all, "v", -0.25, 0, 1).ops) === '[{"op":"update_clip","id":"t","set":{"offset":0.25}}]');
+
+  const kc = clip("k", { duration: 3, keyframes: { opacity: [[0, 1], [1, 0.5]], scale: [[0.5, 1]] } });
+  check("kfMoveBatch: moves the points at the dragged time on every prop that has one, clamped to the clip",
+    JSON.stringify(kfMoveBatch(kc, 1, 0.5)) === '[{"op":"set_keyframes","id":"k","prop":"opacity","keyframes":[[0,1],[1.5,0.5]]}]'
+    && (kfMoveBatch(kc, 1, 10)[0].keyframes as number[][])[1][0] === 3);
+
+  const was = { id: "a", text: "x", color: { exposure: 0.2, contrast: 0.1 }, keyframes: { opacity: [[0, 1]] } };
+  const p1 = clipPatch(was, { id: "a", text: "y", color: { exposure: 0.2 }, keyframes: { opacity: [[0, 1]] } });
+  const p2 = clipPatch(was, { id: "a", text: "x", keyframes: { scale: [[0, 1]] } });
+  check("clipPatch: a key removed inside a nested field is sent as null, a removed field as null, keyframes replace whole, no change is zero keys",
+    JSON.stringify(p1) === '{"set":{"text":"y","color":{"exposure":0.2,"contrast":null}},"n":2}'
+    && JSON.stringify(p2) === '{"set":{"keyframes":{"scale":[[0,1]]},"color":null},"n":2}' && clipPatch(was, JSON.parse(JSON.stringify(was))).n === 0, [p1, p2]);
+
+  const gt: any[] = [{ id: "q", clips: [clip("g1", { group: { id: "ga" } }), clip("g2", { group: { id: "ga" } }), clip("g3", { group: { id: "gb" } }), clip("g4", { group: { id: "g1" } }),
+    clip("cm", { type: "compound", tracks: [{ id: "i", clips: [clip("gb")] }] })] }];
+  check("regroupIds: one id per stamped group, none when a clip, nested ones included, already has that id", JSON.stringify(regroupIds(gt)) === '["ga"]', regroupIds(gt));
+
+  check("errText shows [code] message, the hint and one line per issue; mbOf keeps two decimals under 1 MB; frameScale steps in quarters from 0.25 to 1",
+    errText({ code: "conflict", message: "stale", hint: "reload", issues: [{ path: "a.b", message: "bad", hint: "h" }] }) === "[conflict] stale\nhint: reload\n- a.b: bad (h)" && errText("plain") === "plain"
+    && mbOf(500000, 500000) === "0.50" && mbOf(176e6, 176e6) === "176" && frameScale(640, 360, 1080, 1080, 1) === 0.5 && frameScale(9999, 9999, 100, 100, 2) === 1 && frameScale(10, 10, 1000, 1000, 1) === 0.25
+    && prepareText({ id: "j", status: "running", progress: 0.456 }) === "Preparing 46%" && prepareText({ id: "j", status: "running", progress: 0, download: { model: "m", bytes: 5e6, total_bytes: 10e6 } }) === "Downloading m 5/10 MB");
+}
+
+// ---------------------------------------------------------------- the page bundle's assembly (scripts/build-ui.ts)
+console.log("page assembly");
+{
+  const { inlineScript, assemble, pageModule } = await import("../scripts/build-ui.ts");
+  const hostile = 'var a = "x</script><!-- y</SCRIPT>", b = `${1}`, c = "<!--", d = "$& $` {{STYLE}}"; // </script> <!--\n';
+  const safe = inlineScript(hostile);
+  check("inlineScript leaves no </script or <!-- in the text, and the script means the same", !/<\/script/i.test(safe) && !safe.includes("<!--")
+    && JSON.stringify(new Function(safe + "; return [a, b, c, d]")()) === JSON.stringify(new Function(hostile + "; return [a, b, c, d]")()), safe);
+  const page = assemble("<style>\n{{STYLE}}\n</style>\n<script>\n{{SCRIPT}}\n</script>\n", "p{}\n", hostile);
+  check("assemble puts the style and the script in once each, whatever `$` sequences or tokens the script holds", page.startsWith("<style>\np{}\n</style>") && page.includes('<script>\n"use strict";\nvar a = ')
+    && page.split("</script>").length === 2 && page.includes("{{STYLE}}") && page.includes("$& $`"), page);
+  const text = "a`b${c}</script><!--\n\\n   end\n";
+  const gen = join(tmp, "page-gen-probe.ts");
+  writeFileSync(gen, pageModule(text));
+  check("pageModule: the generated module exports the page text exactly, backticks, ${, </script> and line breaks included", (await import(gen)).PAGE === text);
+}
+
+// ---------------------------------------------------------------- the browser suite has no skip
+console.log("browser gate");
+{
+  const missing = join(tmp, "no-such-chrome");
+  const r = spawnSync(process.execPath, ["--no-install", resolve(import.meta.dir, "ui-browser.ts")], { env: { ...process.env, CHROME: missing }, encoding: "utf8", timeout: 30000 });
+  check("ui-browser fails, and names the path, when the Chrome it is given does not exist (it does not skip)", r.status === 1 && (r.stdout + r.stderr).includes(missing), { status: r.status, out: (r.stdout + r.stderr).slice(0, 300) });
+}
+
+// ---------------------------------------------------------------- every Chrome launch of the suite is contained (none of these rows starts Chrome)
+console.log("chrome containment");
+{
+  // (the rows that need this host's sandbox-exec and installed Chrome are in ui-browser.ts, next to the launch)
+  const home = "/home/pinned", text = profileText(home), lines = (t: string, kind: string) => t.split("\n").filter((l) => l.startsWith(`(${kind} `));
+  check("the profile allows only loopback and Chrome's own profile-lock socket beyond the default", JSON.stringify(lines(text, "allow")) === JSON.stringify([
+    "(allow default)", '(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))', SINGLETON_ALLOW]), text);
+  const denies = [
+    String.raw`(deny process-exec (regex #"[Gg]oogle[Uu]pdater") (regex #"[Kk]eystone") (regex #"[Kk]sadmin") (regex #"launchctl"))`,
+    String.raw`(deny mach-lookup (global-name-regex #"^com\.google\.([Gg]oogle[Uu]pdater|[Kk]eystone)"))`,
+    "(deny lsopen)",
+    `(deny file-write* (subpath "${home}/Library/Google") (subpath "${home}/Library/Application Support/Google/GoogleUpdater") (subpath "${home}/Library/LaunchAgents") (subpath "/Library/Google") (subpath "/Library/LaunchAgents") (subpath "/Library/LaunchDaemons"))`,
+    "(deny network*)"];
+  check("the profile denies exec of the update helpers, their mach names, lsopen, writes to the update directories, and the network, in that order", JSON.stringify(lines(text, "deny")) === JSON.stringify(denies), lines(text, "deny"));
+  const noSandbox = "--no-" + "sandbox"; // written apart so this file does not name the flag the row looks for
+  check("Chrome's own sandbox is switched off only in tests/chrome.ts, next to the profile: the flag list is pinned and no other test file names the flag",
+    JSON.stringify(CONTAINED_FLAGS) === JSON.stringify(["--disable-background-networking", "--disable-component-update", noSandbox])
+    && readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts" && readFileSync(resolve(import.meta.dir, f), "utf8").includes(noSandbox)).length === 0, CONTAINED_FLAGS);
+  check("without sandbox-exec, or off macOS, there is no containment (the suite fails; there is no uncontained path)",
+    containmentProblem("linux") === "no Chrome containment on linux" && /is missing/.test(containmentProblem("darwin", join(tmp, "no-sandbox-exec")) ?? "") && containmentProblem("darwin", process.execPath) === null);
+  const own = readdirSync(resolve(import.meta.dir)).filter((f) => f.endsWith(".ts") && f !== "chrome.ts");
+  const direct = own.filter((f) => spawnsChromeDirectly(readFileSync(resolve(import.meta.dir, f), "utf8")));
+  check("no test file but tests/chrome.ts starts Chrome (the detector flags a direct spawn, and none of the files has one)",
+    spawnsChromeDirectly("const c = spawn(" + "CHROME, []);") && direct.length === 0, direct);
 }
 
 ctl.abort();

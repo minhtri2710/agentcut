@@ -163,6 +163,15 @@ const bareBun = Object.entries(scripts).flatMap(([n, line]) => line.split("&&").
 const scriptsOk = bareBun.length === 0;
 check(`package.json scripts: every bun command passes --no-install${bareBun.length ? ` (missing in: ${[...new Set(bareBun.map((b) => b.split(":")[0]))].join(", ")})` : ""}`, scriptsOk, bareBun);
 
+// the page the server serves is src/ui/page.gen.ts, built from src/ui by `bun run ui`. A stale file (a source or a model enum changed, or the file edited by hand) fails here.
+// Bundler output can differ between Bun versions, so the file is the build of one reference version; it is run from another working dir to show the text does not depend on it.
+if (!bin) {
+  console.log("page bundle");
+  const { PINNED_BUN } = await import("../scripts/build-ui.ts");
+  const r = spawnSync("bun", ["--no-install", "--no-env-file", `--config=${join(root, "scripts/bunfig.empty.toml")}`, join(root, "scripts/build-ui.ts"), "--check"], { cwd: tmp, env: { ...env(), PATH: process.env.PATH }, encoding: "utf8", timeout: 120000 });
+  check(`src/ui/page.gen.ts is what a fresh bun run ui builds (reference build: Bun ${PINNED_BUN}; this run: Bun ${Bun.version})`, r.status === 0, [r.status, r.stderr.slice(-400)]);
+}
+
 // a source tree without node_modules, and a registry on 127.0.0.1 that records every request: no launch may ask it for a package
 if (bin) console.log("no registry request: skipped (a compiled binary resolves no packages)");
 else {
