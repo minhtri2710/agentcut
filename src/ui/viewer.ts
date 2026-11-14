@@ -4,6 +4,7 @@ import { settle } from "./jobs.ts";
 import { $, LABEL, st, total } from "./state.ts";
 import { frameFailText, frameScale } from "./text.ts";
 import { movePlayhead } from "./timeline.ts";
+import type { Job } from "./types.ts";
 
 let want: number | null = null, busy = false, deb = 0, playStart = 0;
 
@@ -44,7 +45,7 @@ export function initViewer() {
     if ($("video").style.display !== "none") { stopPlay(); return; }
     const sc = $("scroll"), end = Math.min(total(), Math.max(st.t + 1, (sc.scrollLeft + sc.clientWidth - LABEL) / st.pps));
     playStart = st.t; $("play").textContent = "Preparing…";
-    api("/api/render", { play: true, start: st.t, end }).then((j) => { st.playJob = j.id; settle(j as any); }, (e) => { $("play").textContent = "Play"; fail(e); });
+    api("/api/render", { play: true, start: st.t, end }).then((j) => { st.playJob = j.id; settle(j as Job); }, (e) => { $("play").textContent = "Play"; fail(e); });
   });
   const v = $<HTMLVideoElement>("video");
   v.addEventListener("timeupdate", () => { st.t = playStart + v.currentTime; movePlayhead(); });

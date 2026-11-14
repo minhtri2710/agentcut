@@ -10,7 +10,9 @@ import { ANIMATABLE, EASINGS } from "../src/model.ts";
 export const PINNED_BUN = "1.4.4";
 const ui = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "ui");
 
-/** script text safe to put between <script> and </script>: `</script` ends the element and `<!--` changes how the rest parses. `<\/` and `<\!` are the same characters in a string, template, regex or comment. */
+/** Script text to put between <script> and </script>: `</script` ends the element and `<!--` changes how the rest parses.
+ *  `<\/` means the same as `</` in a string, template, regex or comment, and `<\!` means the same as `<!` in a string, template, comment or a regex without the u or v flag.
+ *  It does not hold for `<!--` in code position or inside a u/v-flag regex; the page's own sources (src/ui, bundled unminified) have neither. */
 export const inlineScript = (js: string): string => js.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "<\\!--");
 
 /** the shell with its {{STYLE}} and {{SCRIPT}} replaced in one pass (a function replacement: the bundle holds `$` sequences) */

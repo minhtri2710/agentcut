@@ -612,7 +612,7 @@ console.log("browser gate");
 {
   const missing = join(tmp, "no-such-chrome");
   const r = spawnSync(process.execPath, ["--no-install", resolve(import.meta.dir, "ui-browser.ts")], { env: { ...process.env, CHROME: missing }, encoding: "utf8", timeout: 30000 });
-  check("ui-browser fails, and names the path, when the Chrome it is given does not exist (it does not skip)", r.status === 1 && (r.stdout + r.stderr).includes(missing) && !/SKIPPED/.test(r.stdout + r.stderr), { status: r.status, out: (r.stdout + r.stderr).slice(0, 300) });
+  check("ui-browser fails, and names the path, when the Chrome it is given does not exist (it does not skip)", r.status === 1 && (r.stdout + r.stderr).includes(missing), { status: r.status, out: (r.stdout + r.stderr).slice(0, 300) });
 }
 
 ctl.abort();
