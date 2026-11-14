@@ -11,5 +11,6 @@
     "types": ["node", "bun"],
     "lib": ["ES2023"]
   },
-  "include": ["src", "scripts", "tests"]
+  "include": ["src", "scripts", "tests"],
+  "exclude": ["src/ui"]
 }
