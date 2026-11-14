@@ -57,7 +57,7 @@ function parseArgs(argv: string[]) {
       else if (OPT.has(k) && !(argv[i + 1] ?? "-").startsWith("-")) flags[k] = argv[++i];
       else if (OPT.has(k)) flags[k] = true;
       else if (VALUE.has(k)) { flags[k] = take(i, a); if (flags[k] !== undefined) i++; }
-      else flags[k] = argv[++i]; // an unknown flag: refused by main, which names it
+      else flags[k] = argv[++i]; // an unknown flag (main refuses it by name), or a BOOL flag followed by JSON text, which is its value (op --json '{...}')
     } else pos.push(a);
   }
   return { flags, pos, missing };
@@ -168,7 +168,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (cmd === "mcp") { const { startMcp } = await import("./mcp.ts"); await startMcp(); return; }
   const bad = Object.keys(f).filter((k) => !BOOL.has(k) && !OPT.has(k) && !VALUE.has(k));
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
-  if (missing.length) return emit({ ok: false, error: { code: "usage", message: `${missing.join(" ")} ${missing.length > 1 ? "need" : "needs"} a value`, hint: "write the value right after the flag (--author NAME), or join them with = (--author=NAME); a value that starts with -- needs the = form" } }, 2);
+  if (missing.length) return emit({ ok: false, error: { code: "usage", message: `${missing.join(" ")} ${missing.length > 1 ? "need" : "needs"} a value`, hint: "write the value right after the flag (--author NAME), or join it with = (--author=NAME; for -o and -p the long forms --output=FILE and --project=DIR); a value that starts with -- needs the = form" } }, 2);
   const api = await import("./api.ts");
   const { declaredAuthor } = await import("./project.ts");
   const P = f.project;
