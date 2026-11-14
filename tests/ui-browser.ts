@@ -464,8 +464,14 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   })()`);
   await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb2" }, { op: "remove_background", id: "rb2", model: "u2net_human_seg" }]);
   const ask = async () => {
-    await js(`$("prepare").style.display = ""`);
-    await click("#prepare");
+    // a click is by coordinates: when the page redraws after an edit (it notices a project change by polling, then refetches the frame) the button may not be
+    // where it was read, and the click sends nothing. Such a click is repeated; one that sent a request and got no dialog still fails.
+    const sent = (await js(`window.prepBodies.length`)) as number;
+    for (let i = 0; i < 5; i++) {
+      await js(`$("prepare").style.display = ""`);
+      await click("#prepare");
+      if (await until("a prepare request or the dialog", `$("consent").open || window.prepBodies.length > ${sent}`, 2000)) break;
+    }
     return until("consent dialog", `$("consent").open`);
   };
   const bodies = () => js(`window.prepBodies`);
