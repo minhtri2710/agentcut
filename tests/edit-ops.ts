@@ -1,14 +1,14 @@
 // Pro trimming/audio ops: detach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip (numbers, errors, audio render).
 // Run: bun tests/edit-ops.ts [--keep]          (needs ffmpeg on PATH)
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-editops-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { applyOps } = await import("../src/ops.ts");
 const { newTimeline, validate, resolve } = await import("../src/model.ts");
 
@@ -1330,6 +1330,45 @@ console.log("op arguments, documented ranges, undo steps");
   check("undo 5 with 2 available reports 5 requested and 2 done", u.requested === 5 && u.done === 2 && u.undone.length === 2, u);
   const r: any = await Promise.resolve().then(() => api.redo(hist, 1)).catch((e: any) => e);
   check("redo reports the steps requested and done", r.requested === 1 && r.done === 1, r);
+
+  // who made each change: recorded by apply, kept when an entry moves between the stacks, and who moved it is recorded too
+  const real = await import("../src/api.ts"); // no default author here, unlike ./author-api.ts
+  const ha = join(tmp, "author-proj"), same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  api.create(ha, { preset: "720p" });
+  await api.apply(ha, [{ op: "add_marker", t: 1, label: "m1" }], { label: "one", author: "alice" });
+  await api.apply(ha, [{ op: "add_marker", t: 2, label: "m2" }], { label: "two", author: "bob" });
+  check("history lists each entry's label and author, oldest first", same(api.history(ha).undo, [{ label: "one", author: "alice" }, { label: "two", author: "bob" }]), api.history(ha));
+  const un2: any = api.undo(ha, 2, undefined, "carol");
+  check("undo reports each entry's author and who undid it", same(un2.undone, [{ label: "two", author: "bob", movedBy: "carol" }, { label: "one", author: "alice", movedBy: "carol" }]), un2);
+  check("the redo stack keeps the authors and the mover", same(api.history(ha), { undo: [], redo: [{ label: "two", author: "bob", movedBy: "carol" }, { label: "one", author: "alice", movedBy: "carol" }] }), api.history(ha));
+  const re2: any = api.redo(ha, 1, undefined, "dave");
+  check("redo reports the author and its own mover, and the entry moves back with both", same(re2.redone, [{ label: "one", author: "alice", movedBy: "dave" }])
+    && same(api.history(ha), { undo: [{ label: "one", author: "alice", movedBy: "dave" }], redo: [{ label: "two", author: "bob", movedBy: "carol" }] }), { re2, h: api.history(ha) });
+  const before = readFileSync(join(ha, "project.json"), "utf8"), count = () => readdirSync(join(ha, ".agentcut", "history", "undo")).length, n0 = count();
+  const refused = async (what: string, f: () => unknown, code: string) => {
+    const e: any = await Promise.resolve().then(f).then(() => ({}), (x: any) => x);
+    check(`${what} is ${code}, nothing is saved`, e.code === code && !!e.hint && readFileSync(join(ha, "project.json"), "utf8") === before && count() === n0 && same(api.history(ha).redo.map((x) => x.label), ["two"]), { code: e.code, message: e.message });
+  };
+  const mark = [{ op: "add_marker", t: 3, label: "m3" }];
+  await refused("the real api.apply with no author", () => real.apply(ha, mark), "missing_author");
+  await refused("the real api.undo with no author", () => real.undo(ha), "missing_author");
+  await refused("the real api.redo with no author", () => real.redo(ha), "missing_author");
+  await refused("an author of 65 characters", () => api.apply(ha, mark, { author: "x".repeat(65) }), "bad_author");
+  await refused("an author with markup characters", () => api.apply(ha, mark, { author: "<b>x</b>" }), "bad_author");
+  await refused("an author with a leading space", () => api.undo(ha, 1, undefined, " x"), "bad_author");
+  check("an author of exactly 64 characters is accepted", !!(await api.apply(ha, mark, { author: "x".repeat(64) })).ok);
+  // an entry written before the field existed
+  const undoDir = join(ha, ".agentcut", "history", "undo"), file = join(undoDir, readdirSync(undoDir).sort()[0]), raw = JSON.parse(readFileSync(file, "utf8"));
+  delete raw.author; delete raw.movedBy;
+  writeFileSync(file, JSON.stringify(raw));
+  check("an entry without an author field reads as unknown in history", api.history(ha).undo[0].author === "unknown" && api.history(ha).undo[0].label === "one", api.history(ha));
+  const old: any = api.undo(ha, 2, undefined, "erin");
+  check("undo of entries including one without an author reports it as unknown", same(old.undone.map((x: any) => x.author), ["x".repeat(64), "unknown"]) && old.undone.every((x: any) => x.movedBy === "erin"), old);
+  const redoDir = join(ha, ".agentcut", "history", "redo"), newest = join(redoDir, readdirSync(redoDir).sort().pop()!), moved = JSON.parse(readFileSync(newest, "utf8"));
+  check("the entry that was unknown keeps that word when it moves", moved.author === "unknown" && moved.movedBy === "erin", moved);
+  writeFileSync(newest, JSON.stringify({ ...moved, author: "<b>x</b>" }));
+  const hb: any = await Promise.resolve().then(() => api.history(ha)).then(() => ({}), (x: any) => x);
+  check("a stored author that is not plain text is a named error, never shown", hb.code === "bad_json" && /invalid author/.test(hb.message) && !!hb.hint, { code: hb.code, message: hb.message });
 }
 
 console.log("validity + render");

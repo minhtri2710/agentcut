@@ -8,7 +8,7 @@ import { delimiter, join } from "node:path";
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
 const { hasCodec } = await import("../src/media.ts");
 const { run } = await import("../src/proc.ts");

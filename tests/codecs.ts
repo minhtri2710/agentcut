@@ -8,7 +8,7 @@ import { basename, join } from "node:path";
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { renderVideo, workerFailure } = await import("../src/encode.ts");
 const { HOST_TAG } = await import("../src/safe-write.ts");
 const { openProject } = api;

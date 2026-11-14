@@ -24,7 +24,7 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-ui-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
@@ -147,8 +147,11 @@ const waitRev = (rev: number) => waitEvent((e) => e.event === "state" && e.data.
 const waitJob = (id: string) => waitEvent((e) => e.event === "job" && e.data.id === id && e.data.status === "done");
 check("SSE sends the current state on connect", await waitRev(r0 + N));
 
-const ap = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: 0.5 } }], revision: r0 + N } });
+const ap = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: 0.5 } }], revision: r0 + N, author: "mallory" } });
 check("op via HTTP applied", ap.status === 200 && ap.j.ok && ap.j.revision === r0 + N + 1, ap.j);
+{ const h = (await jget("/api/state")).j.history, top = h.undo.at(-1);
+  check("the page's edit is recorded as 'you' whatever the request body says", top?.label === "update_clip" && top.author === "you", top);
+  check("the page state's history is {undo, redo} lists of {label, author} entries", ["undo", "redo"].every((k) => Array.isArray(h[k]) && h[k].every((e: any) => typeof e.label === "string" && typeof e.author === "string")), h); }
 check("SSE pushed the HTTP edit", await waitRev(r0 + N + 1));
 const cf = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: 0.2 } }], revision: r0 } });
 check("stale page edit -> 409 conflict with hint", cf.status === 409 && cf.j.error.code === "conflict" && /reload/.test(cf.j.error.hint), cf.j);
@@ -172,9 +175,11 @@ const ext = await cliAsync(["-p", dir, "op", "add_marker", "t=2.5", "label=agent
 check("SSE pushed an edit made by another process", ext.ok && await waitRev(ext.revision), ext);
 const pushed = events.findLast((e) => e.event === "state").data;
 check("pushed state contains the agent's marker", pushed.timeline.markers.some((m: any) => m.label === "agent"));
+check("the pushed history names the other process's author (the CLI's own name)", pushed.history.undo.at(-1)?.author === "cli", pushed.history.undo.at(-1));
 
-const un = await jget("/api/undo", { method: "POST", body: { revision: ext.revision } });
+const un = await jget("/api/undo", { method: "POST", body: { revision: ext.revision, author: "mallory" } });
 check("undo via HTTP", un.status === 200 && un.j.undone?.length === 1 && un.j.revision === ext.revision + 1, un.j);
+check("the page's undo reports the agent's author and 'you' as who undid it", un.j.undone[0].author === "cli" && un.j.undone[0].movedBy === "you", un.j.undone);
 
 // ---------------------------------------------------------------- guards
 console.log("guards");

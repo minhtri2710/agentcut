@@ -13,8 +13,9 @@ function ff(...args: string[]) {
   const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
 }
-function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string } = {}): any {
-  const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", cwd: o.cwd, env: { ...process.env, AGENTCUT_DEBUG: "1" } });
+function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: Record<string, string> } = {}): any {
+  const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by
+  const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", cwd: o.cwd, env: { ...inherited, AGENTCUT_DEBUG: "1", ...o.env } });
   let out: any;
   try { out = JSON.parse(r.stdout); } catch { throw new Error(`non-JSON output for ${args.join(" ")}: ${r.stdout.slice(0, 300)} ${r.stderr.slice(-800)}`); }
   if ((o.ok ?? true) && !out.ok) throw new Error(`${args.join(" ")} failed: ${JSON.stringify(out).slice(0, 900)}`);
@@ -105,6 +106,32 @@ const d0 = info.duration;
 cli(["rm", "col1"], C); cli(["undo"], C);
 check("undo restores", cli(["info"], C).duration === d0);
 cli(["redo"], C); cli(["undo"], C);
+
+console.log("history authors");
+{
+  const H = join(tmp, "authors"), HC = { cwd: H };
+  cli(["init", H, "--preset", "reels"]);
+  const top = () => { const h = cli(["history"], HC).undo; return h[h.length - 1] ?? {}; };
+  const mark = (t: number, o: { env?: Record<string, string>; flag?: readonly string[] } = {}) => cli([...(o.flag ?? []), "op", "add_marker", `t=${t}`, `label=a${t}`], { ...HC, ok: false, env: o.env });
+  mark(1, { flag: ["--author", "alice"] });
+  check("--author names the entry's author", top().author === "alice" && top().label === "add_marker", top());
+  mark(2, { env: { AGENTCUT_AUTHOR: "bob" } });
+  check("$AGENTCUT_AUTHOR names it when there is no flag", top().author === "bob", top());
+  mark(3, { flag: ["--author", "carol"], env: { AGENTCUT_AUTHOR: "bob" } });
+  check("the flag beats the variable", top().author === "carol", top());
+  mark(4);
+  check("with neither, the entry point's own name is the author", top().author === "cli", top());
+  const n0 = cli(["history"], HC).undo.length;
+  for (const [what, o] of [["--author you", { flag: ["--author", "you"] }], ["$AGENTCUT_AUTHOR=Unknown", { env: { AGENTCUT_AUTHOR: "Unknown" } }], ["a markup name", { flag: ["--author", "<b>"] }], ["an empty variable", { env: { AGENTCUT_AUTHOR: "" } }]] as const) {
+    const r = mark(5, o);
+    check(`${what} is bad_author and saves nothing`, r.ok === false && r.error.code === "bad_author" && cli(["history"], HC).undo.length === n0, r);
+  }
+  const u = cli(["undo", "--author", "dave"], HC);
+  check("undo records the edit's author and who undid it", u.undone[0].author === "cli" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
+  const r = cli(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });
+  check("redo by another author", r.redone[0].author === "cli" && r.redone[0].movedBy === "erin" && cli(["history"], HC).undo.at(-1).movedBy === "erin", r);
+  check("a read-only command does not read the author", cli(["info", "--author", "you"], HC).ok === true);
+}
 
 console.log("look");
 check("frame jpg", existsSync(cli(["frame", "1.5", "--guides"], C).image));

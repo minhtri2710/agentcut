@@ -9,7 +9,7 @@ const BOOL = new Set(["pretty", "json", "text", "dry-run", "allow-invalid", "gui
 // bare flag, or a value when the next argument is not a flag: `prepare --status` vs `feedback resolve ID --status wontfix`; `feedback summary --md [FILE]`
 const OPT = new Set(["md", "status"]);
 // value flags; any other --flag is a usage error (a dropped flag would silently change what runs)
-const VALUE = new Set(["preset", "width", "height", "fps", "name", "ops", "revision", "scale", "times", "every", "count", "cols", "tile-width", "format", "ids", "beats", "min-shot", "max-shot", "cps", "source", "start", "end", "model", "frames", "pad", "quality", "workers", "codec", "threshold", "noise-db", "min-silence", "language", "port", "max-mb", "older-than", "voice", "rate", "lang", "days", "limit", "kind", "note", "title", "details", "area", "severity", "suggestion", "project", "output"]);
+const VALUE = new Set(["preset", "width", "height", "fps", "name", "ops", "revision", "scale", "times", "every", "count", "cols", "tile-width", "format", "ids", "beats", "min-shot", "max-shot", "cps", "source", "start", "end", "model", "frames", "pad", "quality", "workers", "codec", "threshold", "noise-db", "min-silence", "language", "port", "max-mb", "older-than", "voice", "rate", "lang", "days", "limit", "kind", "note", "title", "details", "area", "severity", "suggestion", "project", "output", "author"]);
 
 const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · CLI + MCP)
 
@@ -17,6 +17,7 @@ Start here:  agentcut guide
 Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--text|--json] · validate · undo [n] · redo [n] · history
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
              [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
+             [--author NAME] on any edit/undo/redo: who made the change, kept in the history (default $AGENTCUT_AUTHOR, else "cli")
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black] [--quiet]
              audio [--source F] [--spectrogram] [--start S --end S] [-o a.png] · motion [--start S --end S] [--frames 10] [-o m.jpg]
@@ -163,7 +164,10 @@ export async function main(argv = process.argv.slice(2)) {
   const bad = Object.keys(f).filter((k) => !BOOL.has(k) && !OPT.has(k) && !VALUE.has(k));
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
   const api = await import("./api.ts");
+  const { declaredAuthor } = await import("./project.ts");
   const P = f.project;
+  // who is making the change: --author, else $AGENTCUT_AUTHOR, else the entry point's own name; a value that is given and refused is bad_author (read only by the commands that write history)
+  const who = () => declaredAuthor(f.author ?? process.env.AGENTCUT_AUTHOR ?? "cli");
   const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
   let last = 0;
   const progress = f.quiet ? undefined : (d: number, n: number, download?: { model: string; bytes: number; total_bytes: number }) => { const now = Date.now(); if (now - last > 400 || d === n || (download && download.bytes === download.total_bytes)) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n, ...(download && { download }) }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr
@@ -175,11 +179,11 @@ export async function main(argv = process.argv.slice(2)) {
         res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), signal }); break;
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision"), signal }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision"), signal }); break;
-      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision"), signal }); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision"), signal }); break;
+      case "apply": res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
       case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), guides: f.guides }); break;
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), signal }); break;
@@ -200,8 +204,8 @@ export async function main(argv = process.argv.slice(2)) {
         });
         break;
       }
-      case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision")); break;
-      case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision")); break;
+      case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision"), who()); break;
+      case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision"), who()); break;
       case "ui": {
         const { startUi } = await import("./ui.ts");
         const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port, "--port") });
@@ -212,7 +216,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {
         res = await api.analyze.beats(pos[0], signal);
-        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` }))); res.markers_added = res.beats.length; }
+        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` })), { author: who() }); res.markers_added = res.beats.length; }
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }
@@ -227,7 +231,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
       case "prepare": {
         if (f.status) { res = api.prepareStatus(P); break; }
-        res = await api.prepare(P, { allowDownload: f["allow-download"], signal, progress });
+        res = await api.prepare(P, { allowDownload: f["allow-download"], author: who(), signal, progress });
         break;
       }
       case "cache": {

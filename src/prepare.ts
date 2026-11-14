@@ -4,7 +4,7 @@
 import { type Clip, allClips, type Dict, EditError, type Timeline } from "./model.ts";
 import { applyOps } from "./ops.ts";
 import { collectMissing, mattesFor } from "./ops-vision.ts";
-import type { Project } from "./project.ts";
+import { checkAuthor, type Project } from "./project.ts";
 import * as V from "./vision.ts";
 
 // pending vision ops in dependency order (track_to maps its box through the target's reframed focus)
@@ -49,7 +49,9 @@ function requireModels(jobs: V.Derived[]) {
   if (need.length) throw V.modelNotCached(need);
 }
 
-export async function prepare(p: Project, o: { progress?: (done: number, total: number, download?: DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) {
+/** author: who the pending requests are applied for (required: the history entry records it; checked before any computing). */
+export async function prepare(p: Project, o: { progress?: (done: number, total: number, download?: DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean; author?: string } = {}) {
+  checkAuthor(o.author);
   const computed: Dict[] = [];
   let applied: Dict[] = [], revision = p.load().revision;
   // a round computes what is missing now; a pending track_to on a pending reframe only shows its job in the next round
@@ -61,7 +63,7 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
         const [next, results] = applyOps(p, tl, ops);
         if ([...allClips(next.tracks)].some((c) => c.pending))
           throw new EditError("prepare could not resolve every pending vision request", "vision_failed", "inspect clip.pending in the full project info; remove a stale request with update_clip set={pending:null}");
-        try { revision = p.save(next, "prepare"); }
+        try { revision = p.save(next, "prepare", o.author); }
         catch (e) { if (e instanceof EditError && e.code === "conflict" && round < 5) continue; throw e; }
         applied = results;
       }

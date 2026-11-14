@@ -17,7 +17,7 @@ import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
-import { checkRevision, findProject, Project, refuseSource, summarize } from "./project.ts";
+import { checkAuthor, checkRevision, findProject, Project, refuseSource, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
@@ -93,20 +93,21 @@ function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
   return `${key}${rest}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
 }
 
-/** revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
+/** author: who is making the change (required unless dryRun: the history entry records it; see checkAuthor). revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
  *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
  *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock, which starts at the first conflict).
  *  An op that needs a transcription, speech, a silence scan or beats throws AN.NeedsAnalysis; the analysis runs here (async, stopped by `signal`),
  *  is kept for the call, and the batch is re-run from a fresh load: one round per analysis the batch asks for, plus the last. */
-export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal } = {}) {
+export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; author?: string; signal?: AbortSignal } = {}) {
   const list = Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops.ops ?? [ops] : undefined;
   if (!Array.isArray(list)) throw new M.EditError("ops must be an array of op objects, or one op object", "bad_request", "each op is {op: name, ...args}");
+  if (!o.dryRun) checkAuthor(o.author); // before any analysis or font work: a call with no identity does nothing
   if (TEXTY.test(JSON.stringify(list))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
   try { return await applyRounds(p, list, o); } finally { AN.release(p); }
 }
 
-async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; signal?: AbortSignal }) {
+async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; author?: string; signal?: AbortSignal }) {
   let until = 0; // set by the first conflict: the analyses a batch waits for do not count against it
   for (;;) {
     const tl = p.load();
@@ -123,7 +124,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
-        try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120)); saved = true; }
+        try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true; }
         catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < (until ||= Date.now() + 10_000)) continue; throw e; }
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
@@ -423,8 +424,9 @@ export async function render(project: string | undefined, o: {
   } finally { if (!o.out) p.releaseOutput(out); }
 }
 
-export const undo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.undo(steps, revision); return { undone: r.labels, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
-export const redo = (project?: string, steps = 1, revision?: number) => { const p = openProject(project); const r = p.redo(steps, revision); return { redone: r.labels, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+/** author: who undoes or redoes (required, like apply's): each moved entry is reported as {label, author, movedBy} with its own author and this one as movedBy. */
+export const undo = (project?: string, steps = 1, revision?: number, author?: string) => { const p = openProject(project); const r = p.undo(steps, revision, author); return { undone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+export const redo = (project?: string, steps = 1, revision?: number, author?: string) => { const p = openProject(project); const r = p.redo(steps, revision, author); return { redone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const history = (project?: string) => openProject(project).history();
 export const probe = (path: string) => probeMedia(presolve(path));
 export const fonts = async (q = "", limit = 60) => { await loadCanvas(); return { fonts: listFonts(q, limit) }; };
@@ -483,7 +485,7 @@ export const feedback = {
 
 /** Compute the derived assets the timeline needs (mattes, vision analyses) and apply the pending vision requests. Slow:
  *  MCP runs it as a background job (render_status); preview/render fail with not_prepared until it ran. */
-export const prepare = (project?: string, o: { progress?: (done: number, total: number, download?: PREP.DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean } = {}) => {
+export const prepare = (project?: string, o: { progress?: (done: number, total: number, download?: PREP.DownloadProgress) => void; signal?: AbortSignal; allowDownload?: boolean; author?: string } = {}) => {
   const p = openProject(project);
   CACHE.sweepStale(p);
   return PREP.prepare(p, o);

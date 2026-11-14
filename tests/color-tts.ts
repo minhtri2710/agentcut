@@ -9,7 +9,7 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-colortts-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY", "AGENTCUT_TTS_MODEL", "AGENTCUT_TTS_VOICE", "AGENTCUT_PIPER_MODEL"]) delete process.env[k];
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { gradeChain, gradeIssues, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");

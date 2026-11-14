@@ -124,8 +124,8 @@ function setState(s) {
   $("name").textContent = s.timeline.name || "untitled";
   $("rev").textContent = "rev " + s.revision + " · " + s.timeline.settings.width + "x" + s.timeline.settings.height + " @" + s.timeline.settings.fps;
   $("issues").textContent = (s.errors || 0) + " errors, " + (s.warnings || 0) + " warnings";
-  $("undo").disabled = !s.history.undo.length; $("undo").title = "undo: " + (s.history.undo.slice(-1)[0] || "");
-  $("redo").disabled = !s.history.redo.length; $("redo").title = "redo: " + (s.history.redo.slice(-1)[0] || "");
+  $("undo").disabled = !s.history.undo.length; $("undo").title = "undo: " + ((s.history.undo.slice(-1)[0] || {}).label || "");
+  $("redo").disabled = !s.history.redo.length; $("redo").title = "redo: " + ((s.history.redo.slice(-1)[0] || {}).label || "");
   $("dur").textContent = total().toFixed(2) + " s";
   V = view();
   picked = picked.filter(function (id) { return findClip(id); });

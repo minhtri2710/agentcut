@@ -237,7 +237,7 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
 // ---------------------------------------------------------------- render + cache via api
 console.log("render + cache");
 process.env.AGENTCUT_UV = fake;
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
 check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() - extraCalls === 1, rr);
@@ -316,6 +316,19 @@ console.log("prepare vs concurrent edits");
     if (d === n) for (const f of readdirSync(cache3)) if (f.startsWith("matte-") && !f.includes(".part-")) rmSync(join(cache3, f), { force: true });
   } }).catch((e) => e);
   check("matte that never stays: prepare fails `internal` and the revision did not move", r.code === "internal" && ((await api.info(P3)) as any).revision === rev, { code: r.code, rev, now: ((await api.info(P3)) as any).revision });
+}
+
+// prepare records who ran it in its own history entry, and needs an author before it computes anything
+{
+  const P4 = join(tmp, "proj-prepare-author"), real = await import("../src/api.ts");
+  mkdirSync(join(tmp, "cache", "models", "face_detection_yunet_2023mar"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "face_detection_yunet_2023mar", "face_detection_yunet_2023mar.onnx"), ""); // cached, as the matte model is: the fake helper does the work
+  api.create(P4, { preset: "reels" });
+  await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "auto_reframe", id: "vid1" }], { author: "alice" });
+  const calls0 = nCalls(), rev0 = ((await api.info(P4)) as any).revision;
+  const none: any = await real.prepare(P4).catch((e) => e);
+  check("prepare with no author is missing_author, computes nothing and saves nothing", none.code === "missing_author" && nCalls() === calls0 && ((await api.info(P4)) as any).revision === rev0, { code: none.code, calls: nCalls() - calls0 });
+  const done: any = await api.prepare(P4, { author: "prep-bot" });
+  check("prepare saves its pending requests under the author it was given", done.ready === true && JSON.stringify(api.history(P4).undo.map((e) => [e.label, e.author])) === JSON.stringify([["add_clip, auto_reframe", "alice"], ["prepare", "prep-bot"]]), api.history(P4));
 }
 
 // ---------------------------------------------------------------- the server as a raw child (stdin EOF, signals, exit code)
@@ -401,7 +414,7 @@ console.log("history: damaged project.json, failed saves, clock steps");
     const d = await mk("hist-a");
     wf(join(d, "project.json"), damage());
     let r: any; try { r = api.undo(d); } catch (e: any) { r = { error: e.code ?? e.message }; }
-    check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0] === "e2" && markers(d) === 1 && Number.isInteger((await api.info(d)).revision), r);
+    check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0]?.label === "e2" && markers(d) === 1 && Number.isInteger((await api.info(d)).revision), r);
     rmSync(d, { recursive: true, force: true });
   }
   // A-35: a failed save keeps redo and adds no undo entry; a failed undo keeps its snapshot; a damaged snapshot is a named error
@@ -425,14 +438,14 @@ console.log("history: damaged project.json, failed saves, clock steps");
     wf(script, `let t = 2e12; Date.now = () => (t -= 1000);
 const api = await import(${JSON.stringify(srcApi)});
 api.create(${JSON.stringify(d)}, { preset: "reels" });
-for (const label of ["e1", "e2", "e3"]) await api.apply(${JSON.stringify(d)}, [{ op: "add_marker", t: 1, label }], { label });
-const hist = api.history(${JSON.stringify(d)}), undone = (await api.undo(${JSON.stringify(d)})).undone;
+for (const label of ["e1", "e2", "e3"]) await api.apply(${JSON.stringify(d)}, [{ op: "add_marker", t: 1, label }], { label, author: "test" });
+const hist = api.history(${JSON.stringify(d)}), undone = (await api.undo(${JSON.stringify(d)}, 1, undefined, "test")).undone;
 process.stdout.write(JSON.stringify({ hist, undone }));
 `);
     const r = spawnSync(process.execPath, ["--no-install", "--no-env-file", script], { encoding: "utf8" });
     let out: any = {};
     try { out = JSON.parse(r.stdout); } catch { /* reported below */ }
-    check("clock steps backwards: history stays in edit order and undo restores the latest edit", JSON.stringify(out.hist?.undo) === '["e1","e2","e3"]' && out.undone?.[0] === "e3", { out, err: r.stderr.slice(-300) });
+    check("clock steps backwards: history stays in edit order and undo restores the latest edit", JSON.stringify(out.hist?.undo?.map((e: any) => e.label)) === '["e1","e2","e3"]' && out.undone?.[0]?.label === "e3", { out, err: r.stderr.slice(-300) });
   }
 }
 

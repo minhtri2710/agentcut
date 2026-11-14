@@ -12,7 +12,7 @@ import { join } from "node:path";
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-vision-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const V = await import("../src/vision.ts");
 const M = await import("../src/model.ts");
 const A = await import("../src/anim.ts");

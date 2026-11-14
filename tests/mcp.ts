@@ -61,7 +61,18 @@ check("export_timeline to a file with no extension is refused naming the file, n
 await call("apply_ops", { ops: [{ op: "add_captions", words: [{ text: "Hi", start: 0.2, end: 0.8 }] }] });
 const ec = await call("export_captions", { output: join(tmp, "subs.vtt") });
 check("export_captions vtt", ec.json.ok && ec.json.cues === 1 && readFileSync(join(tmp, "subs.vtt"), "utf8").startsWith("WEBVTT"), ec.json);
-await call("undo", {});
+const mu = await call("undo", {});
+check("undo reports the name the client declared when it connected, as the edit's author and as who undid it", mu.json.undone?.[0]?.author === "agentcut-test" && mu.json.undone[0].movedBy === "agentcut-test" && typeof mu.json.undone[0].label === "string", mu.json);
+{ // a client whose declared name is empty or reserved is recorded as "mcp", not refused: it cannot change the name it declared
+  for (const name of ["", "you", "Unknown"]) {
+    const c = new Client({ name, version: "1" });
+    await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env }));
+    const callN = callOn(c), project = join(tmp, "p");
+    const done = await callN("apply_ops", { project, ops: [{ op: "add_marker", t: 0.5, label: "named" }] }), back = await callN("undo", { project });
+    check(`a client named ${JSON.stringify(name)} is recorded as "mcp"`, done.json.ok && back.json.undone?.[0]?.author === "mcp" && back.json.undone[0].movedBy === "mcp", { done: done.json, back: back.json });
+    await c.close();
+  }
+}
 const info = await call("project_info", {});
 check("project_info summary", String(info.json.summary).includes("attached→vid1"), info.json.summary);
 check("undo", (await call("undo", {})).json.ok);

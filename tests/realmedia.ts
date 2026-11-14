@@ -15,7 +15,7 @@ if (voices.error || !/^Linh\b/m.test(voices.stdout ?? "")) {
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-realmedia-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const { buildAudio } = await import("../src/audio.ts");
 const AN = await import("../src/analyze.ts");
 

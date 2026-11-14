@@ -11,6 +11,7 @@ import { FEEDBACK_GUIDE, KINDS, recordCall, SEVERITIES } from "./feedback.ts";
 import { EditError } from "./model.ts";
 import { own } from "./own.ts";
 import type { DownloadProgress } from "./prepare.ts";
+import { declaredAuthor } from "./project.ts";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS = `AgentCut: JSON-timeline video editor with CapCut/Final Cut features. Read \`guide\` once. Loop:
@@ -83,6 +84,8 @@ export function buildServer() {
     p.then(() => calls.delete(p), () => calls.delete(p));
     return p;
   });
+  // the history author is the name the client declared when it connected; a client cannot change it, so a missing or refused one is recorded as "mcp", not an error
+  const who = () => { try { return declaredAuthor(s.server.getClientVersion()?.name); } catch { return "mcp"; } };
   const P = z.string().optional().describe("project folder (optional after create/open)");
   const REV = z.number().int().optional().describe("revision you based this on (project_info); if a human/another agent saved since, fails with code 'conflict'");
 
@@ -102,13 +105,13 @@ export function buildServer() {
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {
-    description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Returns new clip ids and the project root it changed (project).`,
+    description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Returns new clip ids and the project root it changed (project). The batch is recorded in the undo history under the name your client declared when it connected.`,
     inputSchema: { ops: z.array(z.record(z.string(), z.any())), project: P, dry_run: z.boolean().default(false), allow_invalid: z.boolean().default(false),
       revision: REV },
-  }, wrap((a, signal) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid, revision: a.revision, signal })));
+  }, wrap((a, signal) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid, revision: a.revision, author: who(), signal })));
   s.registerTool("validate", { description: "Check the timeline: issues with level, JSON path, message, hint.", inputSchema: { project: P } }, wrap((a) => api.validate(proj(a.project))));
-  s.registerTool("undo", { description: "Undo the last N edit batches (steps: a whole number >= 1; fewer are undone when the history holds fewer: result.requested and result.done say how many).", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.undo(proj(a.project), a.steps, a.revision)));
-  s.registerTool("redo", { description: "Redo N undone batches (steps: a whole number >= 1; fewer are redone when fewer are available: result.requested and result.done say how many).", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.redo(proj(a.project), a.steps, a.revision)));
+  s.registerTool("undo", { description: "Undo the last N edit batches (steps: a whole number >= 1; fewer are undone when the history holds fewer: result.requested and result.done say how many). result.undone lists {label, author, movedBy} for each batch: author made the edit, movedBy (you) undid it.", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.undo(proj(a.project), a.steps, a.revision, who())));
+  s.registerTool("redo", { description: "Redo N undone batches (steps: a whole number >= 1; fewer are redone when fewer are available: result.requested and result.done say how many). result.redone lists {label, author, movedBy} for each batch: author made the edit, movedBy (you) redid it.", inputSchema: { steps: z.number().default(1), project: P, revision: REV } }, wrap((a) => api.redo(proj(a.project), a.steps, a.revision, who())));
 
   s.registerTool("preview_frame", {
     description: "Render ONE frame at time t (seconds) and return it as an image. guides=true overlays safe areas (red = social UI zones on 9:16).",
@@ -188,7 +191,8 @@ export function buildServer() {
   }, async (a, { signal }) => {
     let project: string;
     try { project = proj(a.project); if (a.status_only) return ok(api.prepareStatus(project)); } catch (e) { return fail(e); }
-    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download })), a.wait_seconds, signal);
+    const author = who();
+    return waitJob(startJob("prepare", project, (progress, signal) => api.prepare(project, { progress, signal, allowDownload: a.allow_download, author })), a.wait_seconds, signal);
   });
   s.registerTool("cache", {
     description: "Project cache (.agentcut/cache: vision analyses + mattes) and previews/ (frames, sheets, strips): action=info sizes (and the render scratch in .agentcut/tmp, apart from the total); action=prune deletes unreferenced files first (max_mb: until the total fits, then referenced ones too - prepare rebuilds them; older_than: e.g. '7d'); it also removes render scratch a gone process left in .agentcut/tmp. previews/ is capped automatically (AGENTCUT_PREVIEWS_MAX_MB, default 200).",

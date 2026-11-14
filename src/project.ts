@@ -46,6 +46,28 @@ export function checkRevision(base: number, current: number) {
     "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
 }
 
+/** Who made a history change. Self-declared text, not a security boundary: it only has to be one short plain line, since it reaches JSON and the page. */
+export const AUTHOR_MAX = 64;
+const AUTHOR_TEXT = /^(?! )[\p{L}\p{N} ._:@/+-]+(?<! )$/u;
+/** the page's own word for itself (it is stored as is); an entry written before the field existed reads as UNKNOWN_AUTHOR */
+export const UI_AUTHOR = "you";
+export const UNKNOWN_AUTHOR = "unknown";
+/** What history, undo and redo report per entry: who made the edit, and (once it was undone or redone) who last moved it between the stacks. */
+export interface HistoryEntry { label: string; author: string; movedBy?: string }
+const authorRule = `1 to ${AUTHOR_MAX} characters: letters, digits, spaces and . _ - : @ / + (no leading or trailing space)`;
+/** Every history write goes through this: no caller identity is missing_author, a value that is not plain text of at most AUTHOR_MAX characters is bad_author. */
+export function checkAuthor(v: unknown): string {
+  if (v === undefined || v === null) throw new EditError("no author: every history entry records who made the change", "missing_author", "pass the caller's name as the author (CLI --author NAME or $AGENTCUT_AUTHOR; MCP and the page declare one themselves)");
+  if (typeof v !== "string" || v.length > AUTHOR_MAX || !AUTHOR_TEXT.test(v)) throw new EditError(`author must be ${authorRule}, got ${JSON.stringify(typeof v === "string" ? v.slice(0, 40) : v)}${typeof v === "string" && v.length > 40 ? ` (${v.length} characters)` : ""}`, "bad_author", authorRule);
+  return v;
+}
+/** An author the CLI or an MCP client declared: checkAuthor, and neither the page's word nor the old-entry word, so it cannot pass as the person at the page or as an entry from before the field. */
+export function declaredAuthor(v: unknown): string {
+  const a = checkAuthor(v);
+  if ([UI_AUTHOR, UNKNOWN_AUTHOR].includes(a.toLowerCase())) throw new EditError(`author '${a}' is reserved`, "bad_author", `'${UI_AUTHOR}' is the web page and '${UNKNOWN_AUTHOR}' marks entries from before authors were recorded: choose another name`);
+  return a;
+}
+
 /** A render, export, caption or preview output must not replace the project's own files: project.json, anything under .agentcut/ or fonts/, a file an
  *  asset points to, or a font file a text or captions clip names. Compared by path (the deepest existing ancestor resolved, so a path whose parent is not
  *  made yet is compared in the same space as the protected folders) and, for an existing output, by file identity (a case-insensitive volume). A path
@@ -180,16 +202,18 @@ export class Project {
 
   load(): Timeline { return parse(readFileSync(this.file, "utf8")); }
 
-  /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. */
-  save(tl: Timeline, label = "edit", snapshot = true): number {
+  /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. `author` is who made the change: the history
+   *  entry records it (missing_author / bad_author otherwise); with snapshot=false no entry is written and none is needed. */
+  save(tl: Timeline, label: string, author: string | undefined, snapshot = true): number {
     checkVersion(tl, "the timeline to save", "save only a timeline loaded from the project");
+    if (snapshot) checkAuthor(author);
     resolve(tl);
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
       const disk = revisionOf(parse(cur));
       checkRevision(revisionOf(tl), disk);
       let pushed: string | undefined;
-      if (snapshot) { this.entries("undo"); this.entries("redo"); pushed = this.push("undo", cur, label); } // both stacks verified before the first write
+      if (snapshot) { this.entries("undo"); this.entries("redo"); pushed = this.push("undo", cur, label, author!); } // both stacks verified before the first write
       tl.revision = disk + 1;
       // invariant: after a save the redo stack is empty, or the save did not happen. The stack is moved aside before the write (a failure there throws with nothing
       // written), put back if the write fails (history stays as it was), and removed afterwards; a removal that fails leaves an unread dir, never a replayable stack.
@@ -238,10 +262,10 @@ export class Project {
     return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : a < b ? -1 : a > b ? 1 : 0)); // equal values (1.json, 01.json) fall back to the name text, so readdir order never shows
   }
   /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path. */
-  private push(name: string, content: string, label: string) {
+  private push(name: string, content: string, label: string, author: string, movedBy?: string) {
     const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
     const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);
-    writeFile(file, JSON.stringify({ label, time: Date.now(), timeline: content }), this.root);
+    writeFile(file, JSON.stringify({ label, time: Date.now(), author, ...(movedBy === undefined ? {} : { movedBy }), timeline: content }), this.root);
     return file;
   }
   /** Drop the oldest entries above the cap. Called only after the project write has succeeded: a call that fails must leave the history as it was,
@@ -249,25 +273,30 @@ export class Project {
   private prune(name: string) {
     try { const e = this.entries(name); for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old); } catch { /* committed already */ }
   }
-  /** A history entry (label + timeline text); an entry that is not valid JSON is a named error, never a raw SyntaxError. */
-  private static readEntry(file: string, stack: string): { label: string; timeline: string } {
-    const at = `${stack}/${basename(file)}`;
-    try { return JSON.parse(readFileSync(file, "utf8")); }
-    catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", `project.json itself is fine: delete .agentcut/history/${at}`); }
+  /** A history entry (label, author, timeline text, and who last moved it between the stacks); an entry that is not valid JSON, or names an author that is not
+   *  plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR. */
+  private static readEntry(file: string, stack: string): { label: string; author: string; movedBy?: string; timeline: string } {
+    const at = `${stack}/${basename(file)}`, hint = `project.json itself is fine: delete .agentcut/history/${at}`;
+    let d: any;
+    try { d = JSON.parse(readFileSync(file, "utf8")); }
+    catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", hint); }
+    const who = (field: string, v: unknown) => { try { return checkAuthor(v); } catch (e: any) { throw new EditError(`history snapshot ${at} has an invalid ${field}: ${e.message}`, "bad_json", hint); } };
+    return { ...d, author: d.author === undefined ? UNKNOWN_AUTHOR : who("author", d.author), ...(d.movedBy === undefined ? {} : { movedBy: who("movedBy", d.movedBy) }) };
   }
   // restored snapshots get a fresh revision, so the revision only ever increases
-  private step(from: string, to: string, steps: number, base?: number) {
+  private step(from: string, to: string, steps: number, base: number | undefined, mover: string | undefined) {
     if (!Number.isInteger(steps) || steps < 1) throw new EditError(`steps must be a whole number >= 1, got ${JSON.stringify(steps) ?? steps}`, "bad_value", `e.g. ${from} 1; asking for more than the history holds ${from}s what is there and reports it`);
+    const by = checkAuthor(mover);
     return this.locked(() => {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
       try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
       if (base !== undefined && rev !== undefined) checkRevision(base, rev);
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
-      const e = this.entries(from), snaps: { file: string; label: string; tl: Timeline }[] = [];
+      const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
         const file = e[e.length - 1 - i], d = Project.readEntry(file, from);
-        snaps.push({ file, label: d.label, tl: parse(d.timeline, `${from}/${basename(file)}`) });
+        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       this.entries(to); // the stack this call writes to is verified before the first write
@@ -276,22 +305,22 @@ export class Project {
         rev = Math.max(0, ...seen.filter(Number.isInteger));
       }
       for (const sn of snaps) {
-        const pushed = this.push(to, cur, sn.label);
+        const pushed = this.push(to, cur, sn.label, sn.author, by);
         sn.tl.revision = ++rev;
         try { this.write(sn.tl); } catch (err) { rmSync(pushed, { force: true }); throw err; } // the snapshot stays where it was until the project file is written
         unlinkSync(sn.file);
         this.prune(to);
         cur = readFileSync(this.file, "utf8");
       }
-      return { labels: snaps.map((sn) => sn.label), revision: rev, requested: steps, done: snaps.length };
+      return { entries: snaps.map((sn): HistoryEntry => ({ label: sn.label, author: sn.author, movedBy: by })), revision: rev, requested: steps, done: snaps.length };
     });
   }
-  /** base: the revision the caller saw; a newer revision on disk is a conflict. */
-  undo(steps = 1, base?: number) { return this.step("undo", "redo", steps, base); }
-  redo(steps = 1, base?: number) { return this.step("redo", "undo", steps, base); }
+  /** base: the revision the caller saw; a newer revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
+  undo(steps = 1, base?: number, author?: string) { return this.step("undo", "redo", steps, base, author); }
+  redo(steps = 1, base?: number, author?: string) { return this.step("redo", "undo", steps, base, author); }
   history() {
-    const lab = (n: string) => this.entries(n).slice(-20).map((p) => Project.readEntry(p, n).label);
-    return { undo: lab("undo"), redo: lab("redo") };
+    const list = (n: string) => this.entries(n).slice(-20).map((p): HistoryEntry => { const { label, author, movedBy } = Project.readEntry(p, n); return { label, author, ...(movedBy === undefined ? {} : { movedBy }) }; });
+    return { undo: list("undo"), redo: list("redo") };
   }
 
   // ---------------------------------------------------------------- paths

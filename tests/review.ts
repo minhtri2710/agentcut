@@ -9,7 +9,7 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-review-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY"]) delete process.env[k];
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const AN = await import("../src/analyze.ts");
 const { gradeChain } = await import("../src/color.ts");
 const { kfValue } = await import("../src/anim.ts");

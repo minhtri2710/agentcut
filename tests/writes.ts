@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-writes-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
-const api = await import("../src/api.ts");
+const api = await import("./author-api.ts");
 const FB = await import("../src/feedback.ts");
 const S = await import("../src/safe-write.ts");
 

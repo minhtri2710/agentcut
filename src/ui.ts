@@ -8,6 +8,7 @@ import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
 import { inp } from "./ffinput.ts";
 import { EditError, type Dict } from "./model.ts";
+import { UI_AUTHOR } from "./project.ts";
 import { PAGE } from "./ui-page.ts";
 
 const MIME: Record<string, string> = {
@@ -101,9 +102,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       res.on("close", () => gone.abort());
       const body = await readJson(req);
       const rev = body.revision; // as sent: checkRevision refuses anything but a whole number >= 0 and echoes it
-      if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, signal: gone.signal }));
-      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev) });
-      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev) });
+      // the page is one person at one browser: its author is the server's own constant, whatever the request body says
+      if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
+      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev, UI_AUTHOR) });
+      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev, UI_AUTHOR) });
       if (path === "/api/sheet") {
         const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
@@ -153,7 +155,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     preparing = job;
     let last = 0;
     const ctl = new AbortController();
-    running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, signal: ctl.signal, progress: (d, n, download) => { job.progress = n ? +(d / n).toFixed(3) : 0; const changed = download?.model !== job.download?.model; /* appears, disappears or names another model: the page must hear it now */ if (download) job.download = download; else delete job.download; const now = Date.now(); if (changed || now - last > 200) { last = now; broadcast("job", job); } } }))
+    running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, author: UI_AUTHOR, signal: ctl.signal, progress: (d, n, download) => { job.progress = n ? +(d / n).toFixed(3) : 0; const changed = download?.model !== job.download?.model; /* appears, disappears or names another model: the page must hear it now */ if (download) job.download = download; else delete job.download; const now = Date.now(); if (changed || now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
       .finally(() => { delete job.download; preparing = null; running.delete(job.id); broadcast("job", job); }) });
