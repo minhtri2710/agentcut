@@ -89,7 +89,7 @@ export class Layer {
     return tl * Number(this.c.speed ?? 1);
   }
 
-  private media(): FrameSource {
+  media(): FrameSource {
     if (!this.src) {
       const c = this.c, a = this.asset!, r = this.r;
       const speed = Number(c.speed ?? 1) || 1;
