@@ -503,8 +503,10 @@ export function linkedAudio(tl: Timeline, v: Clip): [Track, Clip][] {
 export function soundPeriod(tl: Timeline, c: Clip): number | null {
   const a = tl.assets[c.asset];
   if (!a || (c.type !== "video" && c.type !== "audio")) return null;
-  if (c.type === "audio" && ![...iterClips(tl)].some(([, , , v]) => linkedAudio(tl, v).some(([, x]) => x.id === c.id))) return null;
-  return sourceLen(a, "video");
+  // linkedAudio's pairing (a video clip with the same asset), read from the audio side and through compounds, which the mix flattens
+  if (c.type === "audio" && ![...allClips(tl.tracks)].some((v) => v.type === "video" && v.id === c.attach_to && v.asset === c.asset)) return null;
+  const len = sourceLen(a, "video");
+  return len > 0 ? len : null; // a source with no known length keeps the demuxer loop
 }
 
 /** The one detached audio clip of a video; several pieces are refused, so that an op which edits "the" audio never picks one for the user. */

@@ -399,13 +399,22 @@ console.log("a looping clip's sound repeats at the picture's period; a plain aud
     return onsets(await buildAudio(tl, join(tmp, `loop-${name}.wav`)));
   };
   const near = (got: number[], exp: number[], tol: number) => got.length === exp.length && exp.every((e, k) => Math.abs(got[k] - e) < tol);
-  const clipOp = (file: string, track = "main") => ({ op: "add_clip", track, src: join(m, file), at: 0, duration: 6, loop: true });
+  const clipOp = (file: string, track = "main", extra: object = {}) => ({ op: "add_clip", track, src: join(m, file), at: 0, duration: 6, loop: true, ...extra });
   for (const [name, file, what] of [["long", "pic2-sound4.mov", "4 s of sound under a 2 s picture"], ["short", "pic2-sound07.mov", "0.7 s of sound under a 2 s picture"]] as const) {
     const got = await loopMix(name, [clipOp(file)]);
     check(`a looping video clip with ${what}: the sound repeats every 2 s (${got.map((x) => x.toFixed(3))})`, near(got, [0, 2, 4], 0.002), got);
   }
   const detached = await loopMix("detached", [clipOp("pic2-sound4.mov"), { op: "detach_audio", id: "vid1" }]);
   check(`the detached audio of a looping video clip repeats every 2 s (${detached.map((x) => x.toFixed(3))})`, near(detached, [0, 2, 4], 0.002), detached);
+  const nested = await loopMix("compound", [clipOp("pic2-sound4.mov"), { op: "detach_audio", id: "vid1" }, { op: "make_compound", ids: ["vid1", "aud1"] }]);
+  check(`the detached audio of a looping video clip inside a compound repeats every 2 s (${nested.map((x) => x.toFixed(3))})`, near(nested, [0, 2, 4], 0.002), nested);
+  const noLen = await loopMix("no-length", [clipOp("pic2-sound4.mov")], (tl) => { const a = Object.values<any>(tl.assets)[0]; a.duration = 0; delete a.video_duration; });
+  check(`a looping video clip whose source has no known length keeps the container's loop (${noLen.map((x) => x.toFixed(3))})`, near(noLen, [0, 4], 0.002), noLen);
+  // the picture wraps from source 0 and then takes the in-point: from in 1.5 the burst at source 2 is 0.5 s in, and the next at source 4 (2 s later) is 2.5 s in
+  for (const [dur, exp] of [[1, [0.5]], [3, [0.5, 2.5]]] as [number, number[]][]) {
+    const got = await loopMix(`in-${dur}`, [clipOp("pic2-sound4.mov", "main", { in: 1.5, duration: dur })]);
+    check(`a looping video clip with in 1.5 and ${dur} s: the sound wraps at the picture's period (${got.map((x) => x.toFixed(3))})`, near(got, exp, 0.002), got);
+  }
   const plain = await loopMix("plain", [clipOp("burst-odd.wav", "voice")]);
   check(`a looping audio clip repeats at its container's length (${plain.map((x) => x.toFixed(5))})`, plain.length === 2 && Math.abs(plain[1] - plain[0] - (4 + 16 / 48000)) < 0.5 / 48000, plain);
 }
