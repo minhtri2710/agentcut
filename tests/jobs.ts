@@ -418,8 +418,9 @@ console.log("history: damaged project.json, failed saves, clock steps");
   };
   const markers = (d: string) => JSON.parse(readFileSync(join(d, "project.json"), "utf8")).markers?.length ?? 0;
   // A-08: undo recovers from a damaged project.json
-  for (const [what, damage] of [["not JSON", () => "{ not json"], ["no revision", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); delete t.revision; return JSON.stringify(t); }],
-    ["a revision that is not a whole number", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); t.revision = "x"; return JSON.stringify(t); }]] as const) {
+  const damages = [["not JSON", () => "{ not json"], ["no revision", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); delete t.revision; return JSON.stringify(t); }],
+    ["a revision that is not a whole number", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); t.revision = "x"; return JSON.stringify(t); }]] as const;
+  for (const [what, damage] of damages) {
     const d = await mk("hist-a");
     wf(join(d, "project.json"), damage());
     const damaged: any = await api.info(d).catch((x: any) => x);
@@ -428,6 +429,18 @@ console.log("history: damaged project.json, failed saves, clock steps");
     check(`info and apply both fail on a project.json that is ${what}, with the same code (${what === "not JSON" ? "bad_json" : "bad_revision"})`, damaged.code === (what === "not JSON" ? "bad_json" : "bad_revision") && viaApply.code === damaged.code, { info: damaged.code, apply: viaApply.code });
     let r: any; try { r = api.undo(d, 1, undefined); } catch (e: any) { r = { error: e.code ?? e.message }; }
     check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0]?.label === "e2" && markers(d) === 1 && Number.isInteger((await api.info(d)).revision), r);
+    rmSync(d, { recursive: true, force: true });
+  }
+  // the way out of a damaged project.json is undo alone: redo fails there like every other command, with the file's own error and its hint, and moves nothing
+  for (const [what, damage] of damages) {
+    const d = await mk("hist-a");
+    await undoLatest(d); // e2 is on the redo stack: a redo that wrongly ran would have something to restore
+    wf(join(d, "project.json"), damage());
+    const hd = join(d, ".agentcut", "history"), state = () => JSON.stringify([readFileSync(join(d, "project.json"), "utf8"), (readdirSync(hd, { recursive: true }) as string[]).sort().map((f) => [f, statSync(join(hd, f)).isFile() ? readFileSync(join(hd, f), "utf8") : null])]);
+    const before = state(), want = what === "not JSON" ? "bad_json" : "bad_revision";
+    const none: any = await Promise.resolve().then(() => api.redo(d, 1, undefined)).catch((x: any) => x), given: any = await Promise.resolve().then(() => api.redo(d, 1, 3)).catch((x: any) => x);
+    check(`redo on a project.json that is ${what} is ${want} with or without a revision, its hint points to undo, and project.json and both stacks are unchanged`,
+      none.code === want && given.code === want && /undo restores/.test(none.hint ?? "") && state() === before, { none: none.code ?? none, given: given.code ?? given, hint: none.hint });
     rmSync(d, { recursive: true, force: true });
   }
   // the revision is waived only while project.json cannot be read: on a readable one a missing revision is refused and nothing moves

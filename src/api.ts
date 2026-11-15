@@ -426,7 +426,7 @@ export async function render(project: string | undefined, o: {
 }
 
 /** author: who undoes or redoes (required, like apply's): each moved entry is reported as {label, author, movedBy} with its own author and this one as movedBy. */
-/** revision: the one the caller saw, required (missing_revision) unless project.json is damaged: then undo restores the last good version and needs none. */
+/** revision: the one the caller saw, required (missing_revision) unless project.json is damaged: then undo (not redo) restores the last good version and needs none. */
 export const undo = (project: string | undefined, steps: number, revision: number | undefined, author?: string) => { const p = openProject(project); const r = p.undo(steps, revision, author); return { undone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const redo = (project: string | undefined, steps: number, revision: number | undefined, author?: string) => { const p = openProject(project); const r = p.redo(steps, revision, author); return { redone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const history = (project?: string) => openProject(project).history();

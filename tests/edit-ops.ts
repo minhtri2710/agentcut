@@ -346,6 +346,10 @@ console.log("required revision: every history-writing call names the state it wa
   await api.apply(R, [{ op: "add_marker", t: 4 }], { revision: 3, author: "alice" }); // now 4: the redo stack is cleared
   const gone = await caught(() => api.apply(R, [{ op: "add_marker", t: 3 }], { revision: 2, author: "dave" }));
   check("an undo that an edit followed is not listed", gone.code === "conflict" && gone.details?.changes?.map((c: any) => `${c.author}:${c.label}`).join() === "alice:add_marker" && !gone.message.includes("carol"), { message: gone.message, details: gone.details });
+  api.undo(R, 1, 4, "carol"); // now 5: alice's last edit sits on the redo stack
+  api.redo(R, 1, 5, "erin"); // now 6: erin put it back
+  const redone = await caught(() => api.apply(R, [{ op: "add_marker", t: 5 }], { revision: 5, author: "dave" }));
+  check("a redo since the revision is listed with who redid it, as 'redo <label>'", redone.code === "conflict" && redone.details?.changes?.map((c: any) => `${c.author}:${c.label}`).join() === "erin:redo add_marker" && redone.message.includes('"erin" redo add_marker'), { message: redone.message, details: redone.details });
 
   // clip ids are reused (the lowest free number): an edit planned against the old state must not land on the clip that took a deleted one's id
   const W = join(tmp, "proj-reuse");

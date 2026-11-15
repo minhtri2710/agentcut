@@ -323,7 +323,8 @@ export class Project {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
       try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
-      if (rev !== undefined) { requireRevision(base); this.checkRevision(base, rev); } // an unreadable project.json has no revision to name: undo then needs none
+      if (rev !== undefined) { requireRevision(base); this.checkRevision(base, rev); }
+      else if (from !== "undo") throw damage; // an unreadable project.json has no revision to name, and only undo may run there (it is the way out); redo fails with the file's own error
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
@@ -347,7 +348,7 @@ export class Project {
       return { entries: snaps.map((sn): HistoryEntry => ({ label: sn.label, author: sn.author, movedBy: by })), revision: rev, requested: steps, done: snaps.length };
     });
   }
-  /** base: the revision the caller saw, required (missing_revision) unless project.json is unreadable; any other revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
+  /** base: the revision the caller saw, required (missing_revision), except for an undo while project.json is unreadable (a redo there fails with the file's error); any other revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
   undo(steps = 1, base?: number, author?: string) { return this.step("undo", "redo", steps, base, author); }
   redo(steps = 1, base?: number, author?: string) { return this.step("redo", "undo", steps, base, author); }
   history() {

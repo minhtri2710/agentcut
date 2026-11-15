@@ -112,7 +112,7 @@ console.log("split keeps keyframes on the right half");
 
 console.log("revision must be an integer");
 check("fractional revision -> bad_revision", await code(() => api.apply(P, [{ op: "add_marker", t: 1 }], { revision: 1.5 })) === "bad_revision");
-check("NaN revision (CLI --revision abc) -> bad_revision", await code(() => api.apply(P, [{ op: "add_marker", t: 1 }], { revision: Number("abc") })) === "bad_revision");
+check("NaN revision -> bad_revision", await code(() => api.apply(P, [{ op: "add_marker", t: 1 }], { revision: Number("abc") })) === "bad_revision");
 check("undo with NaN revision -> bad_revision", await code(() => api.undo(P, 1, NaN)) === "bad_revision");
 
 console.log("render -o subs.srt writes captions (CLI and MCP agree)");
