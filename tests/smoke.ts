@@ -92,6 +92,15 @@ cliLatest(["op", "freeze_frame", "id=vid1", "at=0.6", "duration=0.8"], C);
 cliLatest(["op", "remove_silence", "id=vid2", "min_silence=0.5"], C);
 cliLatest(["op", "set_keyframes", "id=vid3", "prop=speed", 'keyframes=[[0,1],[1,0.3],[2,2]]'], C);
 cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, "every=2"], C);
+{ // beats analysed first and passed in: the object `beats --full` prints is accepted as it is, and a cut list retimes only the first clips
+  const file = join(tmp, "beats-full.json");
+  writeFileSync(file, JSON.stringify(cli(["beats", join(m, "beat.wav"), "--full"])));
+  const snap = (beats: string) => cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, "every=2", "--dry-run"], C).results[0];
+  const fromFile = snap(file), fromAudio = snap(join(m, "beat.wav"));
+  check("snap_to_beats takes the file `beats --full` printed and retimes what the audio path does", fromFile.retimed.length > 0 && JSON.stringify(fromFile.retimed) === JSON.stringify(fromAudio.retimed), { fromFile, fromAudio });
+  const cut = cli(["op", "snap_to_beats", "track=main", "beats=[0,1,2]", "--dry-run"], C);
+  check("snap_to_beats with a 3-beat list retimes 2 clips, with no error", cut.results[0].retimed.length === 2 && cut.errors === 0 && cut.warnings === 0, cut);
+}
 cliLatest(["op", "move_clip", "id=col1", "index=0"], C);
 cliLatest(["op", "duplicate_clip", "id=txt1", "at=end-3"], C);
 cliLatest(["op", "add_effect", "id=img2", "type=rgb_split", "amount=10"], C);

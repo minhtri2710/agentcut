@@ -102,6 +102,11 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"update_clip","id":"vid1","set":{"color":{"look":"teal_orange","exposure":0.3,"temperature":-0.2,"vibrance":0.4}}}
 {"op":"update_clip","id":"vid2","set":{"color":{"lift":[0,0,0.05],"gain":[0.05,0,-0.03],"curves":{"master":[[0,0.03],[0.5,0.55],[1,1]]},"hsl":{"blues":{"saturation":-0.3}}}}}
 {"op":"snap_to_beats","track":"main","beats":"/abs/song.mp3","every":2}
+{"op":"snap_to_beats","track":"main","beats":[0.47,0.98,1.47,1.98],"every":2}      a list of seconds, as analyze_beats gave it
+   beats is an audio path or asset id (analysed inside the batch), a list of seconds, or a .json with a top-level "beats" list. Analyse first and pass the list in when you may have to resend:
+   a resend after a "conflict" then analyses nothing. MCP: analyze_beats with max_beats large enough (default 128; over it the list is cut and the result says truncated:true).
+   CLI: agentcut beats F --full > beats.json (without --full the list is cut at 64: beats_truncated:true), then beats=beats.json. A cut list is not an error: it retimes only the first clips
+   and leaves the rest as they were. Give one beat per clip after every and offset; the last clip keeps its length.
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
 {"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}
 {"op":"set_keyframes","id":"vid3","prop":"speed","keyframes":[[0,1],[1,0.25,"ease_in_out"],[2,3]]}   speed ramp
@@ -204,7 +209,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   undo needs no revision only while project.json is damaged (info and apply then fail with bad_revision or bad_json whose hint says so): undo restores the last good version.
   If someone saved meanwhile you get code "conflict" and nothing changes. The message names who changed the project and what, for example
   project changed since revision 12 (now 14): "you" update_clip, "claude-code" add_captions; nothing was changed (details.changes lists {author, label}). Reload (info), judge whether your edit still makes sense, then resend it with the new revision.
-  An analysis the batch needed (transcription, speech, silence scan) runs again on the resend. The names are self-declared; the history holds 100 entries, and an undo that a later edit followed is not listed.
+  An analysis the batch needed (transcription, speech, silence scan) runs again on the resend. Beats: pass the list or the file in and nothing is analysed again (see snap_to_beats). The names are self-declared; the history holds 100 entries, and an undo that a later edit followed is not listed.
   replace_timeline replaces the whole timeline under the call's revision; a "revision" inside the timeline is ignored.
   Every apply result names the project root it applied to ("project"): the one a saved batch changed, or the one a dry run checked without saving.
 - Every undo-history entry records its author, self-declared and not a security boundary: 1-64 characters (letters, accented ones too, digits, space . _ - : @ / +).
