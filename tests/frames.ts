@@ -176,8 +176,8 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
 {
   const p = (f: string) => api.probe(f);
   check("the probe records what a read needs: the video's start, the reorder delay, and the keyframe gap only where a seek may land late",
-    Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif",
-    { late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
+    Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif" && p(v25.plain).color_space === "unknown",
+    { cs: p(v25.plain).color_space, late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
 }
 
 console.log("loops, reverse, freeze and the held last frame");
@@ -269,16 +269,28 @@ console.log("exports, validation and relinking");
 
   const fixed = JSON.parse(readFileSync(join(P, "project.json"), "utf8"));
   const ids = Object.keys(fixed.assets), first = ids[0];
-  for (const k of ["container_start", "video_start", "format", "reorder"]) delete fixed.assets[first][k];
+  for (const k of ["container_start", "video_start", "format", "reorder", "color_space"]) delete fixed.assets[first][k];
   writeFileSync(join(P, "project.json"), JSON.stringify(fixed, null, 2));
   const bare: any = await api.validate(P);
-  check("a video asset without the probe fields is a validation error that names them and points at relink_asset", !bare.valid && /container_start, video_start, format, reorder/.test(JSON.stringify(bare)) && /relink_asset id=\S+ path=/.test(JSON.stringify(bare)), bare);
+  check("a video asset without the probe fields is a validation error that names them and points at relink_asset", !bare.valid && /container_start, video_start, format, reorder, color_space/.test(JSON.stringify(bare)) && /relink_asset id=\S+ path=/.test(JSON.stringify(bare)), bare);
   const rendered = await api.render(P, { out: join(tmp, "bare.mp4"), sheet: false }).then(() => "rendered", (e: any) => e?.code ?? String(e));
   check("and it does not render", rendered !== "rendered", rendered);
   const again: any = JSON.parse(readFileSync(join(P, "project.json"), "utf8")).assets[first];
   await api.apply(P, [{ op: "relink_asset", id: first, path: again.path }], { revision: built.revision }); // project.json was edited in place: no save since the build
   const healed: any = await api.validate(P);
   check("relink_asset with the same path records them and the project validates", healed.valid === true, healed);
+  // the matrix recorded for an asset can be named by hand (it is read as the file's own tag); it is a string, never another type
+  const named = JSON.parse(readFileSync(join(P, "project.json"), "utf8"));
+  const was = named.assets[first].color_space;
+  named.assets[first].color_space = "bt470bg";
+  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+  const byHand: any = await api.validate(P);
+  named.assets[first].color_space = 709;
+  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+  const notString: any = await api.validate(P);
+  named.assets[first].color_space = was;
+  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+  check("a matrix named by hand on a video asset validates when it is a string, and a number does not", byHand.valid === true && !notString.valid && /color_space/.test(JSON.stringify(notString)), { byHand, notString });
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {

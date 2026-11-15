@@ -728,6 +728,13 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     const full = calls.findIndex((c) => c.download && c.download.bytes === c.download.total_bytes), nextCall = calls[full + 1];
     check("prepare reports no download once the model is stored, before the helper runs: the call after the full-size one has no download, done 0, and the helper has not run yet",
       full >= 0 && !!nextCall && nextCall.download === undefined && nextCall.done === 0 && nextCall.ran === calls[full].ran, { calls });
+    { // the matrix rule reaches the helper's job only for an untagged HD video, and then moves the cache key; any other source keeps its key
+      const mj = (w: number, h: number, colorSpace?: string, kind = "video") => V.matteJob(join(m, "rb.mp4"), { kind, fps: 30, duration: 2, srcW: w, srcH: h, model: MODEL, root: G, ...(colorSpace ? { colorSpace } : {}) });
+      const plain = mj(1920, 1080), untagged = mj(1920, 1080, "unknown");
+      check("matte job: an untagged HD video carries the matrix and has its own cache file; a tagged one, an SD one and an image keep the file they had",
+        untagged.job.matrix === "bt709" && untagged.file !== plain.file && mj(1920, 1080, "bt709").file === plain.file && mj(640, 360, "unknown").file === mj(640, 360).file
+        && mj(1920, 1080, "unknown", "image").file === mj(1920, 1080, undefined, "image").file && !("matrix" in mj(1920, 1080, "bt709").job), { untagged: untagged.job.matrix, same: [mj(1920, 1080, "bt709").file === plain.file] });
+    }
     check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
     // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404
@@ -851,6 +858,31 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       fakeFfmpeg("yes x | head -c 400000 >&2; exit 0");
       const flood = decode(8_000);
       check("helper: a decoder that fills stderr does not block the run (finishes, no timeout)", flood.signal === null && flood.status !== null && /no frames decoded/.test(flood.stderr), flood);
+
+      { // colour: the helper's frame reader and FrameSource read an untagged HD source the same way. The real reader text runs against the real ffmpeg; only numpy is the stub above (it keeps the bytes).
+        const hd = join(m, "hd709-untagged.mp4");
+        ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown,format=yuv420p", "-c:v", "libx264", hd);
+        const driver = join(run, "reader.py");
+        writeFileSync(driver, `import json, sys
+sys.path.insert(0, sys.argv[1])
+g = {"__name__": "helper"}
+exec(compile(open(sys.argv[2]).read().split("\\njob = json.loads(")[0], "helper", "exec"), g)
+a = json.loads(sys.argv[3])
+sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "rgb24", **a["kw"])).b)
+`);
+        const read = (kw: Record<string, unknown>) => {
+          const r = spawnSync("python3", ["-I", "-S", "-B", driver, stubs, script, JSON.stringify({ path: hd, kw })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
+          const b = r.stdout as Buffer, o = (18 * 64 + 32) * 3;
+          return r.status === 0 && b.length >= o + 3 ? [b[o], b[o + 1], b[o + 2]] : { status: r.status, err: r.stderr.toString().slice(-300) };
+        };
+        const { FrameSource } = await import("../src/media.ts");
+        const info = api.probe(hd), src = new FrameSource({ path: hd, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 36], facts: info as any });
+        const fs = await src.readAt(0); src.close();
+        const mine = [fs[(18 * 64 + 32) * 4], fs[(18 * 64 + 32) * 4 + 1], fs[(18 * 64 + 32) * 4 + 2]], withRule = read({ matrix: "bt709" }), without = read({});
+        const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 3);
+        check("helper: the frame reader, told the rule applies, gives the same RGB as FrameSource for an untagged HD source (green); without it the reader keeps the BT.601 read (R 20, B 9)",
+          same(withRule) && Array.isArray(without) && without[0] >= 12 && without[2] >= 5, { fs: mine, withRule, without });
+      }
 
       // stdin closed while a decode and an encode are in flight: the helper stops both ffmpeg children before it exits, so the
       // encoder cannot finish writing `out` afterwards. The fake decoder never writes a frame; the fake encoder writes `out` one second after its stdin ends.

@@ -33,11 +33,11 @@ try: _m = os.fstat(0).st_mode
 except OSError: _m = 0
 if stat.S_ISFIFO(_m) or stat.S_ISSOCK(_m): threading.Thread(target=_stop_on_eof, daemon=True).start()
 
-def frames(path, start, dur, fps, w, h, fmt="bgr24"):
+def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None):  # matrix "bt709": the picture is tagged so before the conversion (an untagged HD source, as FrameSource reads it)
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if start is not None: args += ["-ss", "%.6f" % start]
     if dur is not None: args += ["-t", "%.6f" % dur]
-    vf = ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
+    vf = ("setparams=colorspace=bt709," if matrix == "bt709" else "") + ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
     p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)
@@ -132,7 +132,7 @@ def matte(j):
         m = np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
         return np.dstack([f, m])
     if j["kind"] == "image":
-        f = next(frames(j["path"], None, None, None, w, h, "rgb24"))
+        f = next(frames(j["path"], None, None, None, w, h, "rgb24", j.get("matrix")))
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset
         return {"out": j["out"], "frames": 1}
     # MATTE_FACTS in media.ts assumes this writer: an intra-only prores_ks mov that starts at 0
@@ -142,7 +142,7 @@ def matte(j):
     errf = tempfile.TemporaryFile()
     e = _spawn(enc, stdin=subprocess.PIPE, stderr=errf)
     n = 0
-    for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24"):
+    for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24", j.get("matrix")):
         e.stdin.write(rgba(f).tobytes()); n += 1
     e.stdin.close(); e.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
     if e.returncode != 0: raise SystemExit("ffmpeg encode: " + err[:400])

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
-import { EditError, FILTER_SPECS, filterParam, missingFacts, seeksBefore, type VideoFacts } from "./model.ts";
+import { EditError, FILTER_SPECS, filterParam, missingFacts, readsAsBt709, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
@@ -117,7 +117,7 @@ export function probe(path: string): any {
       if (!still && vd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = +vEnd.toFixed(3);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
-        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0 });
+        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: String(v.color_space ?? "unknown") });
         if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
       }
     } else if (a || AUDIO_EXT.has(ext)) {
@@ -230,7 +230,7 @@ export interface SourceOpts {
 }
 
 /** The facts of a background-removal matte: AgentCut writes it as intra-only ProRes in a mov file that starts at 0 (vision-py.ts), so nothing is held back or starts late. */
-export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, format: "mov,mp4,m4a,3gp,3g2,mj2", reorder: 0 };
+export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, format: "mov,mp4,m4a,3gp,3g2,mj2", reorder: 0, color_space: "smpte170m" }; // the writer converts with the BT.601 matrix and writes no tag: named here, so the size rule never reads it as BT.709
 
 /** The tie rule of the slot grid. The stream's timestamps are shifted by TIE_BIAS slots before `fps` rounds them to slots, so slot j shows the latest source frame at or
  *  before the slot's time plus (0.5 - TIE_BIAS) slots: the nearest frame, and a frame exactly halfway between two slots belongs to the later slot (the slot before it keeps the older frame).
@@ -271,7 +271,8 @@ export class FrameSource {
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
-    const vf: string[] = [];
+    // an untagged HD picture is tagged BT.709 first, so every conversion after it (a filter's own `format=rgba` included) uses that matrix
+    const vf: string[] = o.kind === "video" && readsAsBt709(o.facts!.color_space, o.srcW, o.srcH) ? ["setparams=colorspace=bt709"] : [];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
     vf.push(...filterChain(o.filters), ...gradeChain(o.color));
     const fb = fitBox(cw, ch, Math.max(1, Math.round(o.box[0])), Math.max(1, Math.round(o.box[1])), o.fit);

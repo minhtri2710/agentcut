@@ -235,7 +235,7 @@ export function registerVisionOps(h: OpHelpers) {
 /** Matte job for a clip with remove_background (path: the asset's absolute path). */
 export function matteFor(root: string | undefined, tl: Timeline, c: Clip, path: string) {
   const a = asset(tl, c), rb = c.remove_background;
-  return V.matteJob(path, { kind: a.kind, fps: a.fps, duration: a.duration, srcW: a.width, srcH: a.height, model: typeof rb === "object" ? rb.model : undefined, root });
+  return V.matteJob(path, { kind: a.kind, fps: a.fps, duration: a.duration, srcW: a.width, srcH: a.height, colorSpace: a.color_space, model: typeof rb === "object" ? rb.model : undefined, root });
 }
 
 /** Matte jobs of every enabled remove_background clip (compounds included) of an absolutized timeline. */

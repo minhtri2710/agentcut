@@ -123,6 +123,7 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   format: [["string"], "video file: the demuxer's format name (ffprobe format_name)"],
   reorder: [["number"], "video file: frames the decoder holds back before output (has_b_frames), an integer >= 0"],
   key_gap: [["number"], "video file in a format whose seek may land after the target: the longest stretch between keyframes, seconds, a number > 0"],
+  color_space: [["string"], "video file: the matrix tag of its picture as ffprobe names it (bt709, smpte170m, bt470bg, ...), or 'unknown' when it has none; a name set by hand is read as the file's own tag"],
 };
 const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
@@ -135,13 +136,16 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
 const SEEK_BEFORE_FORMATS = new Set(["mov", "matroska", "flv", "avi", "gif"]);
 export const seeksBefore = (format: string) => format.split(",").some((f) => SEEK_BEFORE_FORMATS.has(f));
 /** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
-export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; key_gap?: number }
+export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; key_gap?: number }
 /** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
 export function missingFacts(a: Dict): string[] {
-  const miss = ["container_start", "video_start", "format", "reorder"].filter((k) => a[k] === undefined || a[k] === null);
+  const miss = ["container_start", "video_start", "format", "reorder", "color_space"].filter((k) => a[k] === undefined || a[k] === null);
   if (typeof a.format === "string" && !seeksBefore(a.format) && (a.key_gap === undefined || a.key_gap === null)) miss.push("key_gap");
   return miss;
 }
+/** Whether a video picture is read with the BT.709 matrix by size: its asset names no matrix ('unknown', or 'reserved') and it is HD, a short side of 720 or more
+ *  or a long side of 1280 or more. This is AgentCut's own rule; a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait). Smaller pictures keep the decoder's BT.601. */
+export const readsAsBt709 = (colorSpace: string, w: number, h: number) => (colorSpace === "unknown" || colorSpace === "reserved") && (Math.min(w, h) >= 720 || Math.max(w, h) >= 1280);
 /** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
 export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
 const rembgAsset = (name: string, sha256: string, bytes: number): ModelPin => ({ name, url: `https://github.com/danielgatis/rembg/releases/download/v0.0.0/${name}.onnx`, sha256, bytes });
@@ -1054,7 +1058,7 @@ export function schemaDoc() {
     timeline: {
       version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
       settings: f(SETTINGS_FIELDS),
-      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, color_space, key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
     },

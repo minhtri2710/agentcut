@@ -58,6 +58,10 @@ function needEncoder(name: string, what: string) {
     "install an FFmpeg build with it (e.g. a full static build) or pick another codec/format");
 }
 
+/** The conversion every video output goes through, in place of a bare -pix_fmt: the RGBA frame is converted to YUV with the BT.709 matrix and limited range, the four tags
+ *  that say so are set on the frames (the encoders write them), then the pixel format is chosen. Tags and pixels agree, whatever the size. */
+const bt709 = (pix: string) => ["-vf", `scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv,format=${pix}`];
+
 /** Encoder args for a video codec. `mux` are output-container args that must go on the final file (not on segments). */
 export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean, alpha = false, ext = ""): { v: string[]; mux: string[] } {
   const q = QUALITY[quality]; // api.render refuses an unknown name before any encode
@@ -65,26 +69,26 @@ export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean,
   switch (codec) {
     case "h264":
       if (hwEncode && hasVideoToolbox("h264_videotoolbox"))
-        return { v: ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p", "-q:v", String(q.vt), "-allow_sw", "1"], mux: [] };
+        return { v: ["-c:v", "h264_videotoolbox", ...bt709("yuv420p"), "-q:v", String(q.vt), "-allow_sw", "1"], mux: [] };
       needEncoder("libx264", "h264");
-      return { v: ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(q.crf), "-preset", q.preset], mux: [] };
+      return { v: ["-c:v", "libx264", ...bt709("yuv420p"), "-crf", String(q.crf), "-preset", q.preset], mux: [] };
     case "hevc": {
       const mux = apple ? ["-tag:v", "hvc1"] : []; // hvc1 tag: QuickTime / Apple players refuse the default hev1
       if (hwEncode && hasVideoToolbox("hevc_videotoolbox"))
-        return { v: ["-c:v", "hevc_videotoolbox", "-pix_fmt", "yuv420p", "-q:v", String(q.vt), "-allow_sw", "1"], mux };
+        return { v: ["-c:v", "hevc_videotoolbox", ...bt709("yuv420p"), "-q:v", String(q.vt), "-allow_sw", "1"], mux };
       needEncoder("libx265", "hevc");
-      return { v: ["-c:v", "libx265", "-pix_fmt", "yuv420p", "-crf", String(q.x265), "-preset", q.preset, "-x265-params", "log-level=error"], mux };
+      return { v: ["-c:v", "libx265", ...bt709("yuv420p"), "-crf", String(q.x265), "-preset", q.preset, "-x265-params", "log-level=error"], mux };
     }
     case "prores":
       needEncoder("prores_ks", "prores");
-      return { v: ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"], mux: [] };
+      return { v: ["-c:v", "prores_ks", "-profile:v", "3", ...bt709("yuv422p10le")], mux: [] };
     case "prores_4444":
       needEncoder("prores_ks", "prores_4444");
-      return { v: ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", alpha ? "yuva444p10le" : "yuv444p10le", ...(alpha ? ["-alpha_bits", "16"] : [])], mux: [] };
+      return { v: ["-c:v", "prores_ks", "-profile:v", "4", ...bt709(alpha ? "yuva444p10le" : "yuv444p10le"), ...(alpha ? ["-alpha_bits", "16"] : [])], mux: [] };
     case "vp9":
       needEncoder("libvpx-vp9", "vp9");
       return { v: ["-c:v", "libvpx-vp9", "-b:v", "0", "-row-mt", "1", "-deadline", "realtime", "-cpu-used", "8",
-        "-pix_fmt", alpha ? "yuva420p" : "yuv420p", "-crf", String(q.vp9)], mux: [] };
+        ...bt709(alpha ? "yuva420p" : "yuv420p"), "-crf", String(q.vp9)], mux: [] };
   }
 }
 

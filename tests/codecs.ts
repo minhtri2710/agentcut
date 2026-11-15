@@ -30,6 +30,16 @@ function probe(f: string): { streams: any[]; format: any } {
   const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", f], { encoding: "utf8" });
   return JSON.parse(r.stdout);
 }
+/** The colour tags of a file's video stream: range, matrix, transfer, primaries. Every video output carries the BT.709 set. */
+const tagsOf = (f: string) => { const s = probe(f).streams.find((x) => x.codec_type === "video"); return [s?.color_range, s?.color_space, s?.color_transfer, s?.color_primaries].join(","); };
+const BT709 = "tv,bt709,bt709,bt709";
+/** The centre pixel of a file's first picture, read with the BT.709 matrix as a tagged player does. */
+function centreAs709(f: string): number[] {
+  const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-frames:v", "1", "-vf", "scale=in_color_matrix=bt709:in_range=tv,format=rgb24", "-f", "rawvideo", "-"], { maxBuffer: 1 << 26 });
+  if (r.status !== 0) throw new Error(`decode failed: ${r.stderr}`);
+  const b = r.stdout as Buffer, o = ((H / 2) * W + W / 2) * 3;
+  return [b[o], b[o + 1], b[o + 2]];
+}
 /** Decode one frame at t to straight RGBA bytes. */
 function rgbaFrame(f: string, t: number, vp9 = false): Buffer {
   const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...(vp9 ? ["-c:v", "libvpx-vp9"] : []), "-ss", String(t), "-i", f,
@@ -73,19 +83,25 @@ let r: any = await timed("hevc .mp4", () => renderVideo(tl(), p.root, out("hevc.
 let v = probe(out("hevc.mp4")).streams.find((s) => s.codec_type === "video");
 check("hevc codec + hvc1 tag", v?.codec_name === "hevc" && v?.codec_tag_string === "hvc1", v && { c: v.codec_name, t: v.codec_tag_string });
 check("result codec/alpha", r.codec === "hevc" && r.alpha === false && r.encoder === "libx265" && r.has_audio === true, r);
+check("hevc export carries the BT.709 tags", tagsOf(out("hevc.mp4")) === BT709, tagsOf(out("hevc.mp4")));
 r = await timed("hevc .mp4, 2 workers", () => renderVideo(tl(), p.root, out("hevc2.mp4"), { codec: "hevc", workers: 2 }));
 v = probe(out("hevc2.mp4")).streams.find((s) => s.codec_type === "video");
 check("hevc concat keeps hvc1 + audio", v?.codec_tag_string === "hvc1" && r.has_audio === true && probe(out("hevc2.mp4")).streams.some((s) => s.codec_type === "audio"), v?.codec_tag_string);
+check("the file joined from two workers and muxed with audio carries the BT.709 tags", tagsOf(out("hevc2.mp4")) === BT709, tagsOf(out("hevc2.mp4")));
 if (process.platform === "darwin") {
   r = await timed("hevc .mov hwEncode", () => renderVideo(tl(), p.root, out("hevc_hw.mov"), { codec: "h265", hwEncode: true, workers: 1 }));
   v = probe(out("hevc_hw.mov")).streams.find((s) => s.codec_type === "video");
   check("hevc_videotoolbox .mov (alias h265)", r.encoder === "hevc_videotoolbox" && v?.codec_name === "hevc" && v?.codec_tag_string === "hvc1", { e: r.encoder, t: v?.codec_tag_string });
+  check("the hardware hevc export carries the BT.709 tags", tagsOf(out("hevc_hw.mov")) === BT709, tagsOf(out("hevc_hw.mov")));
+  r = await timed("h264 .mp4 hwEncode, draft", () => renderVideo(tl(), p.root, out("h264_hw_draft.mp4"), { quality: "draft", hwEncode: true, workers: 1, end: 0.5 }));
+  check("the hardware draft h264 export carries the BT.709 tags", r.encoder === "h264_videotoolbox" && tagsOf(out("h264_hw_draft.mp4")) === BT709, { e: r.encoder, t: tagsOf(out("h264_hw_draft.mp4")) });
 }
 
 console.log("opaque defaults unchanged");
 r = await timed("auto .mov", () => renderVideo(tl(), p.root, out("auto.mov"), { workers: 1 }));
 v = probe(out("auto.mov")).streams.find((s) => s.codec_type === "video");
 check("auto .mov = prores 422 HQ, no alpha", r.codec === "prores" && r.alpha === false && v?.profile === "HQ" && !/a/.test(v?.pix_fmt.replace("yuv", "")), v && { p: v.profile, f: v.pix_fmt });
+check("the prores export carries the BT.709 tags", tagsOf(out("auto.mov")) === BT709, tagsOf(out("auto.mov")));
 
 console.log("transparent background");
 await applyLatest(P, { op: "set_settings", background: "#00000000" });
@@ -93,6 +109,7 @@ r = await timed("prores_4444 .mov", () => renderVideo(tl(), p.root, out("alpha.m
 v = probe(out("alpha.mov")).streams.find((s) => s.codec_type === "video");
 check("prores 4444 with alpha pix_fmt", v?.profile === "4444" && /^yuva/.test(v?.pix_fmt), v && { p: v.profile, f: v.pix_fmt });
 check("result alpha on, no warnings", r.alpha === true && r.codec === "prores_4444" && !r.warnings, r);
+check("the prores 4444 export with alpha carries the BT.709 tags", tagsOf(out("alpha.mov")) === BT709, tagsOf(out("alpha.mov")));
 let f = rgbaFrame(out("alpha.mov"), 1);
 check("corner transparent", px(f, W - 6, H - 6)[3] === 0, px(f, W - 6, H - 6));
 check("video area opaque", px(f, 30, 30)[3] === 255, px(f, 30, 30));
@@ -109,6 +126,7 @@ f = rgbaFrame(out("alpha3.mov"), 1.6);
 v = probe(out("alpha3.mov")).streams.find((s) => s.codec_type === "video");
 check("auto .mov -> prores_4444 when transparent", r.codec === "prores_4444" && r.alpha === true && r.workers === 3, r);
 check("multi-worker concat keeps alpha", /^yuva/.test(v?.pix_fmt) && px(f, W - 6, H - 6)[3] === 0 && px(f, 30, 30)[3] === 255, { f: v?.pix_fmt, c: px(f, W - 6, H - 6) });
+check("  and the joined file carries the BT.709 tags", tagsOf(out("alpha3.mov")) === BT709, tagsOf(out("alpha3.mov")));
 check("duration 2s with audio", Math.abs(Number(probe(out("alpha3.mov")).format.duration) - 2) < 0.06 && probe(out("alpha3.mov")).streams.some((s) => s.codec_type === "audio"));
 
 r = await timed("vp9 .webm, 2 workers", () => renderVideo(tl(), p.root, out("alpha.webm"), { workers: 2 }));
@@ -116,6 +134,7 @@ v = probe(out("alpha.webm")).streams.find((s) => s.codec_type === "video");
 f = rgbaFrame(out("alpha.webm"), 1.5, true);
 check("vp9 alpha_mode tag", v?.codec_name === "vp9" && (v?.tags?.alpha_mode ?? v?.tags?.ALPHA_MODE) === "1", v?.tags);
 check("vp9 decoded alpha", r.alpha === true && px(f, W - 6, H - 6)[3] < 8 && px(f, 30, 30)[3] > 245, { c: px(f, W - 6, H - 6), v: px(f, 30, 30) });
+check("the vp9 export with alpha carries the BT.709 tags", tagsOf(out("alpha.webm")) === BT709, tagsOf(out("alpha.webm")));
 
 r = await timed("h264 .mp4 (alpha dropped)", () => renderVideo(tl(), p.root, out("flat.mp4"), { workers: 1 }));
 f = rgbaFrame(out("flat.mp4"), 1);
@@ -123,6 +142,21 @@ check("mp4 warns alpha dropped", r.alpha === false && r.codec === "h264" && /alp
 check("mp4 composited on black", px(f, W - 6, H - 6).slice(0, 3).every((c) => c < 24) && px(f, W - 6, H - 6)[3] === 255, px(f, W - 6, H - 6));
 r = await renderVideo(tl(), p.root, out("flat2.mp4"), { workers: 1, alpha: false, end: 0.5 });
 check("alpha:false is silent", r.alpha === false && !r.warnings, r.warnings);
+check("the h264 export carries the BT.709 tags", tagsOf(out("flat.mp4")) === BT709, tagsOf(out("flat.mp4")));
+
+console.log("colour: the pixels agree with the tags");
+{
+  const G = join(tmp, "green");
+  api.create(G, { width: W, height: H, fps: 10 });
+  await applyLatest(G, [{ op: "add_clip", track: "main", type: "color", color: "#00ff00", duration: 0.5 }]);
+  const gp = openProject(G), gtl = () => gp.absolutized(openProject(G).load());
+  await renderVideo(gtl(), gp.root, join(G, "renders", "green.mp4"), { workers: 1 });
+  const c = centreAs709(join(G, "renders", "green.mp4"));
+  check("a pure green frame, read with the BT.709 matrix the file is tagged with, is green (the BT.601 matrix made G 216)", c[1] >= 250 && c[0] <= 6 && c[2] <= 6, c);
+  await renderVideo(gtl(), gp.root, join(G, "renders", "green.gif"), { workers: 1 });
+  const g = Array.from(rgbaFrame(join(G, "renders", "green.gif"), 0).subarray(0, 4)); // a gif is made at half size, and every pixel is the same green
+  check("a gif made from the same frame keeps the green", g[1] >= 250 && g[0] <= 6 && g[2] <= 6, g);
+}
 
 console.log("invalid combos");
 const bad = async (label: string, o: any, file: string, code = "bad_codec") => {
@@ -847,6 +881,42 @@ console.log("decode and render failures");
   rend.close();
   check("finished layers release their canvases while rendering", during <= 2 && most <= 2, { during, most });
   check("closing the renderer releases every layer canvas", (rend as any).layerCanvases.size === 0);
+}
+
+console.log("colour: a source with no matrix tag is read as BT.709 when it is HD");
+{
+  const { FrameSource, MATTE_FACTS } = await import("../src/media.ts");
+  // flat green, converted to YUV with the named matrix, then the tags are set or cleared: "none" writes no tag, "709" and "601" write the set that goes with that matrix
+  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv" };
+  const mk = (name: string, size: string, matrix: "bt709" | "bt601", tags: keyof typeof SET) => {
+    const f = join(m, `${name}.mp4`);
+    ff("-f", "lavfi", "-i", `color=c=0x00ff00:s=${size}:r=24:d=1,format=rgba`, "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,setparams=${SET[tags]},format=yuv420p`, "-c:v", "libx264", f);
+    return f;
+  };
+  const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
+  const hd709t = mk("hd709-tagged", "1280x720", "bt709", "709"), hd601t = mk("hd601-tagged", "1280x720", "bt601", "601"), hd601 = mk("hd601-untagged", "1280x720", "bt601", "none");
+  check("the probe records the stream's own matrix tag, and one fixed word when it has none",
+    [hd709, sd601, hd709t, hd601t].map((f) => api.probe(f).color_space).join() === "unknown,unknown,bt709,smpte170m", [hd709, sd601, hd709t, hd601t].map((f) => api.probe(f).color_space));
+  const centre = async (f: string, facts: Record<string, unknown> = {}) => {
+    const info = api.probe(f), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
+    try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }
+  };
+  const green = (c: number[]) => c[1] >= 250 && c[0] <= 6 && c[2] <= 6;
+  const got = { hd709: await centre(hd709), sd601: await centre(sd601), hd709t: await centre(hd709t), hd601t: await centre(hd601t), hd601: await centre(hd601), hd601set: await centre(hd601, { color_space: "smpte170m" }) };
+  check("an untagged HD source made with the BT.709 matrix renders green (read as BT.601 it gave R 20, B 9)", green(got.hd709), got.hd709);
+  check("an untagged SD source made with the BT.601 matrix still renders green", green(got.sd601), got.sd601);
+  check("a source tagged BT.709 renders green, and an HD source tagged BT.601 keeps its own tag (the rule never overrides a tag)", green(got.hd709t) && green(got.hd601t), { t709: got.hd709t, t601: got.hd601t });
+  check("an untagged HD source made with BT.601 is read as BT.709 (G 216), and a matrix named on its asset by hand is read as its tag (green)", got.hd601[1] > 205 && got.hd601[1] < 225 && green(got.hd601set), { rule: got.hd601, byHand: got.hd601set });
+  // which sizes count as HD: the short side from 720 or the long side from 1280; the rule shows in the decode chain (pixelKey), so no decode runs
+  const key = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
+    new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey.includes("colorspace=bt709");
+  const sizes: [number, number, boolean][] = [[1279, 719, false], [1280, 719, true], [1279, 720, true], [719, 1279, false], [719, 1280, true], [720, 1279, true], [480, 854, false], [720, 1280, true], [640, 360, false], [1920, 1080, true], [1280, 544, true]];
+  const wrong = sizes.filter(([w, h, hd]) => key(w, h) !== hd);
+  check("HD is a short side of 720 or more, or a long side of 1280 or more, in either orientation", wrong.length === 0, wrong);
+  check("a tag on the asset ends the rule at any size; 'reserved' counts as no tag; an image is never read by it",
+    !key(1920, 1080, "bt709") && !key(1920, 1080, "bt470bg") && key(1920, 1080, "reserved") && !key(1920, 1080, "unknown", { kind: "image" }));
+  check("a background-removal matte is outside the rule at any size (its own writer's pixels are read as they were written)",
+    !new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: MATTE_FACTS }).pixelKey.includes("colorspace=bt709"));
 }
 
 console.log("the JPEG side limit render.ts refuses at");
