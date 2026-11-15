@@ -15,7 +15,7 @@
 // --order=asc|desc|shuffle (http and stages; default asc) visits the same 40 times ascending, descending, or in one fixed shuffle (Fisher-Yates over mulberry32, seed 79) for every timeline and repeat.
 // Run: bun --no-install tests/scrub-measure.ts <http|stages|floor|floor-hw|floor-gop|floor-proxy> <fixtures dir> <label> [--order=asc|desc|shuffle] [timeline ...]
 //   with AGENTCUT_HOME and AGENTCUT_CACHE pointing at isolated dirs (stages and the server child both read them).
-//   A token that starts with "-" is a flag wherever it stands, and the only flag is --order=; a dir or label that starts with "-" is written ./-name.
+//   A token that starts with "-" is a flag wherever it stands, and the only flag is --order=; a dir that starts with "-" is written ./-name; a label cannot start with "-".
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
