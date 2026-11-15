@@ -1,5 +1,5 @@
 // The fixtures the scrub measurement (tests/scrub-measure.ts) runs on, built from parameters kept here so that numbers can be compared.
-//   src.mp4    1920x1080 30 fps 60 s H.264 High + AAC, a test pattern with temporal noise, about 41 MB, a keyframe every 5-6 s
+//   src.mp4    1920x1080 30 fps 60 s H.264 High + AAC, a test pattern with temporal noise, about 42 MB, a keyframe every 5-6 s
 //   music.m4a  30 min AAC tone
 //   k4.mp4     3840x2160 30 fps 60 s HEVC with a keyframe every 10 s (VideoToolbox: the size and the GOP are reproducible, the bytes are not)
 //   tl1 one 60 s clip; tl2 40 cuts of 1.5 s; tl3 six 10 s clips with 0.6 s crossfades, a grade each, a whole-video vignette and two titles;
@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 export const NAMES = ["tl1", "tl2", "tl3", "tl10", "tl30", "k4"] as const;
 export type Name = (typeof NAMES)[number];
 
-/** Source picture and encode. The noise strength and the bitrate were tuned until the file matched the measured one (about 41 MB, a keyframe every 5-6 s). */
+/** Source picture and encode. The noise strength and the bitrate were tuned until the file matched the measured one (about 42 MB, a keyframe every 5-6 s). */
 const SRC = { noise: 3, kbps: 5500, preset: "medium" };
 const NOISE = (n: number) => `noise=alls=${n}:allf=t:all_seed=1`;
 const PATTERN = (w: number, h: number, secs: number) => `testsrc2=s=${w}x${h}:r=30:d=${secs},${NOISE(SRC.noise)},format=yuv420p`;

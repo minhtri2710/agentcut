@@ -21,7 +21,7 @@ const bad = only.filter((n) => !(NAMES as readonly string[]).includes(n));
 if (bad.length) throw new Error(`unknown timeline ${bad.join(", ")}; the names are ${NAMES.join(", ")}`);
 const dir = resolve(dirArg), names = (only.length ? only : NAMES) as Name[];
 const AC = fileURLToPath(new URL("../scripts/ac", import.meta.url));
-const N = 40, SCALE = 0.5;
+const N = 40, SCALE = 0.5, WAIT_MS = 60_000; // the longest wait for the server to listen or for one response; past it the run fails and the server child is ended
 
 mkdirSync(join(dir, "runs"), { recursive: true });
 const file = join(dir, "runs", `${label}.jsonl`);
@@ -43,14 +43,18 @@ async function http(name: Name) {
   console.log(`  ${name}: server pid ${child.pid}`);
   try {
     const url: string = await new Promise((ok, fail) => {
-      child.stdout.once("data", (d) => ok(JSON.parse(String(d).split("\n")[0]).url));
-      void exited.then((c) => fail(new Error(`ui exited ${c} before it listened: ${err.slice(0, 300)}`)));
+      const timer = setTimeout(() => fail(new Error(`ui did not listen within ${WAIT_MS} ms: ${err.slice(0, 300)}`)), WAIT_MS);
+      child.stdout.once("data", (d) => {
+        clearTimeout(timer);
+        try { ok(JSON.parse(String(d).split("\n")[0]).url); } catch { fail(new Error(`ui printed no JSON first line: ${String(d).slice(0, 200)}`)); }
+      });
+      void exited.then((c) => { clearTimeout(timer); fail(new Error(`ui exited ${c} before it listened: ${err.slice(0, 300)}`)); });
     });
-    const T = ((await (await fetch(url + "api/state")).json()) as { duration: number }).duration;
+    const T = ((await (await fetch(url + "api/state", { signal: AbortSignal.timeout(WAIT_MS) })).json()) as { duration: number }).duration;
     const get = async (t: number) => {
-      const a = now(), res = await fetch(`${url}api/frame?t=${t.toFixed(4)}&scale=${SCALE}`), body = Buffer.from(await res.arrayBuffer()), ms = now() - a;
+      const a = now(), res = await fetch(`${url}api/frame?t=${t.toFixed(4)}&scale=${SCALE}`, { signal: AbortSignal.timeout(WAIT_MS) }), body = Buffer.from(await res.arrayBuffer()), ms = now() - a;
       if (res.status !== 200 || body.length < 1000) throw new Error(`${name} t=${t}: status ${res.status}, ${body.length} bytes: ${body.toString("utf8", 0, 200)}`);
-      return { t: r1(t), ms: r1(ms), bytes: body.length };
+      return { t: Number(t.toFixed(4)), ms: r1(ms), bytes: body.length };
     };
     const cold = await get(T / 2);
     const samples: Awaited<ReturnType<typeof get>>[] = [];
