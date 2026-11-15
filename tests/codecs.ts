@@ -135,6 +135,8 @@ f = rgbaFrame(out("alpha.webm"), 1.5, true);
 check("vp9 alpha_mode tag", v?.codec_name === "vp9" && (v?.tags?.alpha_mode ?? v?.tags?.ALPHA_MODE) === "1", v?.tags);
 check("vp9 decoded alpha", r.alpha === true && px(f, W - 6, H - 6)[3] < 8 && px(f, 30, 30)[3] > 245, { c: px(f, W - 6, H - 6), v: px(f, 30, 30) });
 check("the vp9 export with alpha carries the BT.709 tags", tagsOf(out("alpha.webm")) === BT709, tagsOf(out("alpha.webm")));
+r = await timed("vp9 .webm, no alpha", () => renderVideo(tl(), p.root, out("plain.webm"), { alpha: false, workers: 1, end: 0.5 }));
+check("a plain (no alpha) vp9 export carries the BT.709 tags", r.codec === "vp9" && r.alpha === false && tagsOf(out("plain.webm")) === BT709, { c: r.codec, t: tagsOf(out("plain.webm")) });
 
 r = await timed("h264 .mp4 (alpha dropped)", () => renderVideo(tl(), p.root, out("flat.mp4"), { workers: 1 }));
 f = rgbaFrame(out("flat.mp4"), 1);

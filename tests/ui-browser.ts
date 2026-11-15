@@ -694,9 +694,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await new Promise((ok) => empty.server.close(ok));
     }
   }
-  // An HD h264 export played in the browser shows the colours the editor drew. Chrome reads an untagged HD file as BT.709 and honours tags, so an export whose pixels
+  // An HD h264 export played in the browser shows the colours the editor drew. Chrome reads an untagged HD h264 file as BT.709 and honours tags, so an export whose pixels
   // were made with another matrix, or one with no tags, shows saturated colours off by tens of levels. Flat patches are read well inside, after a frame was presented.
-  // (webm is not compared: Chrome does not guess a matrix for VP9.)
+  // The same patches are read from a plain VP9 .webm export: Chrome does not guess a matrix for VP9, so that row is the one that shows whether the tag is honoured there.
   console.log("export in the browser");
   {
     // TOL: observed on the tagged export, the browser's own conversion is off by up to 12 levels on a saturated primary (green: B 11, blue: R 1, B 243) and by 3 or less elsewhere;
@@ -705,10 +705,10 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const patchDir = join(tmp, "patches");
     api.create(patchDir, { width: 1280, height: 720, fps: 10 });
     await applyLatest(patchDir, patches.map((color) => ({ op: "add_clip", track: "main", type: "color", color, duration: per })));
-    await api.render(patchDir, { out: join(dir, "renders", "patches.mp4"), workers: 1, sheet: false });
-    const got = await js(`(async function () {
+    for (const file of ["patches.mp4", "patches.webm"]) await api.render(patchDir, { out: join(dir, "renders", file), workers: 1, sheet: false });
+    const readPatches = (file: string) => js(`(async function () {
       var v = document.createElement("video"), cv = document.createElement("canvas"), out = [];
-      v.muted = true; v.preload = "auto"; v.src = "/files/renders/patches.mp4"; document.body.appendChild(v);
+      v.muted = true; v.preload = "auto"; v.src = "/files/renders/${file}"; document.body.appendChild(v);
       await new Promise(function (ok, fail) { v.onloadeddata = ok; v.onerror = function () { fail(new Error("the export did not load")); }; });
       cv.width = v.videoWidth; cv.height = v.videoHeight;
       var ctx = cv.getContext("2d", { willReadFrequently: true });
@@ -726,10 +726,13 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       return { size: [v.videoWidth, v.videoHeight], px: out };
     })()`).catch((e: Error) => ({ error: e.message }));
     const want = patches.map((c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)));
-    const off = got.px ? got.px.map((p: number[], i: number) => Math.max(...p.map((x, c) => Math.abs(x - want[i][c])))) : null;
-    console.log(`    patches ${patches.join(" ")} read in the browser as ${JSON.stringify(got.px)}, largest difference per patch ${JSON.stringify(off)}`);
-    check("an HD h264 export, played in the browser, shows every flat patch within the tolerance of the colour the editor drew",
-      got.size?.[0] === 1280 && got.px?.length === patches.length && off.every((x: number) => x <= TOL), { got, want, TOL });
+    for (const [file, what] of [["patches.mp4", "h264"], ["patches.webm", "VP9 (.webm)"]] as const) {
+      const got = await readPatches(file);
+      const off = got.px ? got.px.map((p: number[], i: number) => Math.max(...p.map((x, c) => Math.abs(x - want[i][c])))) : null;
+      console.log(`    ${what}: patches ${patches.join(" ")} read in the browser as ${JSON.stringify(got.px)}, largest difference per patch ${JSON.stringify(off)}`);
+      check(`an HD ${what} export, played in the browser, shows every flat patch within the tolerance of the colour the editor drew`,
+        got.size?.[0] === 1280 && got.px?.length === patches.length && off.every((x: number) => x <= TOL), { got, want, TOL });
+    }
   }
   console.log("containment");
   // 192.0.2.1 is a documentation address: the contained browser must be refused at the network layer, before anything leaves the host
