@@ -10,6 +10,9 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY", "AGENTCUT_TTS_MODEL", "AGENTCUT_TTS_VOICE", "AGENTCUT_PIPER_MODEL"]) delete process.env[k];
 const api = await import("./author-api.ts");
+// this suite's rows are about colour, speech and analyses, not concurrency: a write reads the project's revision (info) and applies at it.
+// The rows about a writer landing mid-batch pass theirs by hand (api.apply).
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean; signal?: AbortSignal } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { gradeChain, gradeIssues, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");
@@ -45,16 +48,16 @@ check("full chain is accepted by ffmpeg", run.status === 0, run.stderr);
 
 const P = join(tmp, "proj");
 api.create(P, { preset: "720p" });
-await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
+await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
 const base = meanRgb((await api.frame(P, 1, { out: join(tmp, "base.png") })).image);
-await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: { temperature: 0.8 } } }]);
+await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { color: { temperature: 0.8 } } }]);
 const warm = meanRgb((await api.frame(P, 1, { out: join(tmp, "warm.png") })).image);
 check("temperature + makes grey warmer (R up, B down)", warm[0] > base[0] + 5 && warm[2] < base[2] - 5, { base, warm });
-await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: { exposure: 1 } } }]);
+await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { color: { exposure: 1 } } }]);
 const bright = meanRgb((await api.frame(P, 1, { out: join(tmp, "bright.png") })).image);
 check("exposure +1 brightens", bright[1] > base[1] + 40, { base, bright });
 
-const bad = await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: { look: "warmm", exposure: 9, lift: [1, 2], curves: { master: [[0.5, 0], [0.2, 1]] }, hsl: { pinks: {} }, bogus: 1 } } }]).catch((e) => e);
+const bad = await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { color: { look: "warmm", exposure: 9, lift: [1, 2], curves: { master: [[0.5, 0], [0.2, 1]] }, hsl: { pinks: {} }, bogus: 1 } } }]).catch((e) => e);
 const issues = bad.details?.issues ?? [];
 const paths = issues.map((i: any) => i.path.replace(/^.*\.color\./, ""));
 check("bad grade rejected with one issue per problem", bad.code === "validation_failed" && ["look", "exposure", "lift", "curves.master", "hsl.pinks", "bogus"].every((k) => paths.includes(k)), paths);
@@ -65,8 +68,8 @@ console.log("filters");
 {
   const Q = join(tmp, "projq");
   api.create(Q, { preset: "720p" });
-  await api.apply(Q, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
-  const unknown = await api.apply(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "not_a_filter" }] } }]).catch((e) => e);
+  await applyLatest(Q, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
+  const unknown = await applyLatest(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "not_a_filter" }] } }]).catch((e) => e);
   check("an unknown filter type is rejected with the filter list", unknown.code === "validation_failed" && unknown.details?.issues?.some((i: any) => i.message.includes("unknown filter") && i.hint.includes("lut")), unknown.details);
   // every character that is special in a filtergraph, plus a space and "=" , in the directory and file name
   const dir = join(tmp, "lut q'x:y,z[w]v;u\\t= s");
@@ -75,7 +78,7 @@ console.log("filters");
   const all = (rgb: string) => ["LUT_3D_SIZE 2", ...Array(8).fill(rgb)].join("\n") + "\n";
   writeFileSync(cube, all("1 0 0"));
   const b0 = meanRgb((await api.frame(Q, 1, { out: join(tmp, "nolut.png") })).image);
-  await api.apply(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "lut", path: cube }] } }]);
+  await applyLatest(Q, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "lut", path: cube }] } }]);
   const b1 = await api.frame(Q, 1, { out: join(tmp, "lut.png") }).then((f) => meanRgb(f.image), () => [-1, -1, -1]);
   {
     // Windows drive letter: the platform is presented as win32 only while the chain is built
@@ -97,7 +100,7 @@ console.log("filters");
   api.create(R, { preset: "720p" });
   ff("-f", "lavfi", "-i", "color=c=0x00ff00:size=320x180:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "green.mp4"));
   ff("-f", "lavfi", "-i", "color=c=0xff0000:size=320x180:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "red.mp4"));
-  await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
+  await applyLatest(R, [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }]);
   const rev = (await api.info(R, "json")).revision;
   const badValues = [
     ["a non-numeric eq value", { type: "eq", brightness: "0.1,more" }, "brightness"],
@@ -108,7 +111,7 @@ console.log("filters");
     ["an unknown filter parameter", { type: "denoise", power: 3 }, "power"],
   ] as const;
   for (const [what, f, key] of badValues) {
-    const e = await api.apply(R, [{ op: "update_clip", id: "vid1", set: { filters: [f] } }]).catch((x) => x);
+    const e = await applyLatest(R, [{ op: "update_clip", id: "vid1", set: { filters: [f] } }]).catch((x) => x);
     check(`${what} is rejected by validate and the batch is not applied`, e.code === "validation_failed" && e.details?.issues?.some((i: any) => i.path.endsWith(`.filters[0].${key}`)) && (await api.info(R, "json")).revision === rev, e.details ?? e);
   }
   check("filterChain fails closed on a non-numeric value", throwsCode(() => filterChain([{ type: "eq", brightness: "0.1,more" }]), "bad_filter") === true);
@@ -117,7 +120,7 @@ console.log("filters");
   check("filterChain fails closed on a chromakey colour with extra characters", throwsCode(() => filterChain([{ type: "chromakey", color: "#00ff00,more" }]), "bad_filter") === true);
   check("valid eq and chromakey build the same chains as before", JSON.stringify(filterChain([{ type: "eq", brightness: 0.2, contrast: 1.5 }, { type: "chromakey", color: "#00ff00", similarity: 0.2 }, "chromakey"]))
     === JSON.stringify(["eq=brightness=0.2:contrast=1.5", "format=rgba,chromakey=0x00ff00:0.2:0.05", "format=rgba,chromakey=0x00ff00:0.1:0.05"]), filterChain([{ type: "eq", brightness: 0.2, contrast: 1.5 }]));
-  await api.apply(R, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "eq", brightness: 0.2, contrast: 1.5 }] } }]);
+  await applyLatest(R, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "eq", brightness: 0.2, contrast: 1.5 }] } }]);
   const eqPix = meanRgb((await api.frame(R, 1, { out: join(tmp, "eq.png") })).image);
   ff("-i", join(m, "grey.mp4"), "-vf", "eq=brightness=0.2:contrast=1.5", "-frames:v", "1", join(tmp, "eq-ref.png"));
   const eqRef = meanRgb(join(tmp, "eq-ref.png"));
@@ -126,18 +129,18 @@ console.log("filters");
   for (const [what, src, color, keyed] of [["default green", "green.mp4", undefined, true], ["explicit hex", "green.mp4", "#00ff00", true], ["a colour that is not in the clip", "green.mp4", "#ff0000", false], ["red", "red.mp4", "#ff0000", true]] as const) {
     const K = join(tmp, `projk${ki++}`);
     api.create(K, { preset: "720p" });
-    await api.apply(K, [{ op: "add_clip", track: "main", src: join(m, src), duration: 2, filters: [color ? { type: "chromakey", color, similarity: 0.2 } : { type: "chromakey", similarity: 0.2 }] }]);
+    await applyLatest(K, [{ op: "add_clip", track: "main", src: join(m, src), duration: 2, filters: [color ? { type: "chromakey", color, similarity: 0.2 } : { type: "chromakey", similarity: 0.2 }] }]);
     const px = meanRgb((await api.frame(K, 1, { out: join(tmp, "key.png") })).image);
     check(`chromakey ${what}: ${keyed ? "keyed out" : "kept"}`, keyed ? Math.max(...px) < 40 : Math.max(...px) > 200, px);
   }
 }
 
 console.log("scopes");
-await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: null } }]);
+await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { color: null } }]);
 const sc = await api.scopes(P, 1, { out: join(tmp, "scopes.jpg") });
 check("scopes image written", existsSync(sc.image) && readFileSync(sc.image).length > 5000);
 check("mid-grey: luma ~0.5, no cast, no saturation", Math.abs(sc.stats.luma.avg - 0.5) < 0.05 && Math.abs(sc.stats.cast.u) < 0.02 && Math.abs(sc.stats.cast.v) < 0.02 && sc.stats.saturation_avg < 0.02, sc.stats);
-await api.apply(P, [{ op: "update_clip", id: "vid1", set: { color: { temperature: 0.8 } } }]);
+await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { color: { temperature: 0.8 } } }]);
 const sw = await api.scopes(P, 1, { out: join(tmp, "scopes-warm.jpg") });
 check("warm grade shows as a red/yellow cast (u < 0, v > 0)", sw.stats.cast.u < -0.02 && sw.stats.cast.v > 0.01, sw.stats);
 
@@ -285,11 +288,11 @@ try {
   check("reply converted to 48 kHz stereo", r.provider === "openai" && Math.abs(r.duration - 0.7) < 0.05 && /48000/.test(spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=sample_rate,channels", "-of", "csv=p=0", out], { encoding: "utf8" }).stdout), r);
   const lv = api.voices();
   check("voices lists openai as available with key status only", lv.providers.find((p: any) => p.name === "openai")?.available === true && lv.voices.some((v: any) => v.name === "openai:nova") && !JSON.stringify(lv).includes(KEY));
-  await api.apply(P, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]);
+  await applyLatest(P, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]);
   check("add_voiceover goes through the http provider", (await api.info(P, "json")).timeline.tracks.find((t: any) => t.id === "voice").clips.length === 1);
   { // bad input is refused before any engine request, and the batch saves nothing
     const sent = () => readFileSync(reqLog, "utf8").length, was = sent(), timeline = JSON.stringify((await api.info(P, "json")).timeline);
-    const code = async (extra: any) => (await api.apply(P, [{ op: "add_voiceover", voice: "openai:alloy", text: "hello", ...extra }]).catch((x) => x)).code;
+    const code = async (extra: any) => (await applyLatest(P, [{ op: "add_voiceover", voice: "openai:alloy", text: "hello", ...extra }]).catch((x) => x)).code;
     check("add_voiceover: empty text is missing_input, a rate that is not positive is bad_value, no engine request, nothing saved",
       await code({ text: "  " }) === "missing_input" && await code({ rate: 0 }) === "bad_value" && await code({ rate: -3 }) === "bad_value" && await code({ rate: "175" }) === "bad_value" && sent() === was && JSON.stringify((await api.info(P, "json")).timeline) === timeline);
     await AN.tts("hello", join(tmp, "vo-null-rate.wav"), "openai:alloy", null);
@@ -306,7 +309,7 @@ try {
     const was = snap();
     rmSync(join(W, "media"), { recursive: true });
     symlinkSync(t, join(W, "media"));
-    const e: any = await api.apply(W, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]).catch((x) => x);
+    const e: any = await applyLatest(W, [{ op: "add_voiceover", text: "hello", voice: "openai:alloy" }]).catch((x) => x);
     check("media/ as a link: add_voiceover -> unsafe_path, the target is unchanged", e.code === "unsafe_path" && snap() === was, { code: e.code, now: snap() });
   }
 
@@ -379,7 +382,7 @@ fi
       const V = join(tmp, "vo-piper");
       api.create(V, { preset: "720p" });
       writeFileSync(join(tmp, "ps.n"), "0");
-      await api.apply(V, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]);
+      await applyLatest(V, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]);
       const cap = (await api.info(V, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
       const first = (k: number) => cap.words.filter((_: any, i: number) => i === 0 || /[.!?]$/.test(cap.words[i - 1].text))[k];
       check("add_voiceover: each sentence's first caption word starts at that sentence's start", [0, 1.5, 2.5].every((t, k) => first(k) && Math.abs(first(k).start - t) < 0.02), cap.words);
@@ -393,7 +396,7 @@ fi
         const T2 = "Một hai ba. Bốn năm, sáu bảy. Chín mười.";
         const C = join(tmp, "vo-clause");
         api.create(C, { preset: "720p" });
-        await api.apply(C, [{ op: "add_voiceover", text: T2, voice: "piper", captions: "clean" }]);
+        await applyLatest(C, [{ op: "add_voiceover", text: T2, voice: "piper", captions: "clean" }]);
         const cw = (await api.info(C, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions").words;
         const w = (txt: string) => cw.find((x: any) => x.text === txt);
         check("clause pause: the second clause starts at its detected speech (3.2 s), not at a spread time", w("sáu") && Math.abs(w("sáu").start - 3.2) < 0.05 && Math.abs(w("Bốn").start - 1.5) < 0.05, cw);
@@ -418,7 +421,7 @@ fi
       const tlJson = async () => JSON.stringify((await api.info(F, "json")).timeline);
       const wasMedia = media(), wasTl = (await tlJson());
       writeFileSync(join(tmp, "ps.n"), "0"); writeFileSync(join(tmp, "ps.fail"), "2");
-      const e: any = await api.apply(F, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]).catch((x) => x);
+      const e: any = await applyLatest(F, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]).catch((x) => x);
       check("a failing second part fails the op with tts_failed, writes no output and leaves the timeline unchanged", e.code === "tts_failed" && calls() === 2 && media() === wasMedia && (await tlJson()) === wasTl, { code: e.code, calls: calls(), media: media(), msg: e.message });
       writeFileSync(join(tmp, "ps.n"), "0");
       const direct = join(tmp, "ps-fail.wav");
@@ -500,11 +503,11 @@ fi
       const Q = join(tmp, "cap-range");
       api.create(Q, { preset: "720p" });
       const caps = async () => (await api.info(Q, "json")).timeline.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "captions");
-      await api.apply(Q, [{ op: "add_captions", transcribe: src, language: "vi", transcribe_range: [2, 5.5] }]);
+      await applyLatest(Q, [{ op: "add_captions", transcribe: src, language: "vi", transcribe_range: [2, 5.5] }]);
       check("add_captions transcribe_range: the captions clip holds the shifted times and no range field", (await caps()).length === 1 && times((await caps())[0].words) === JSON.stringify(shifted(2)) && !("transcribe_range" in (await caps())[0]), (await caps())[0]?.words);
       const was2 = JSON.stringify((await api.info(Q, "json")).timeline);
-      const e1: any = await api.apply(Q, [{ op: "add_captions", words: [{ text: "Hi", start: 0, end: 0.4 }], transcribe_range: [0, 2] }]).catch((x) => x);
-      const e2: any = await api.apply(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
+      const e1: any = await applyLatest(Q, [{ op: "add_captions", words: [{ text: "Hi", start: 0, end: 0.4 }], transcribe_range: [0, 2] }]).catch((x) => x);
+      const e2: any = await applyLatest(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
       check("add_captions: transcribe_range without transcribe, and a bad range, are bad_value and leave the timeline unchanged", e1.code === "bad_value" && e2.code === "bad_value" && JSON.stringify((await api.info(Q, "json")).timeline) === was2, { e1: e1.code, e2: e2.code });
     } finally { if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
@@ -524,32 +527,32 @@ fi
       // a clip taken from second 2, and a clip at 5 s playing source 4..8 at speed 2: a word lands at start + (word - in) / speed
       const A = join(tmp, "cap-map");
       api.create(A, { preset: "720p" });
-      await api.apply(A, [{ op: "add_clip", track: "overlay", src: talk, in: 2, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, speed: 2, duration: 2, at: 5 }]);
-      const made: any = await api.apply(A, [{ op: "add_captions", transcribe: "talk" }]);
+      await applyLatest(A, [{ op: "add_clip", track: "overlay", src: talk, in: 2, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, speed: 2, duration: 2, at: 5 }]);
+      const made: any = await applyLatest(A, [{ op: "add_captions", transcribe: "talk" }]);
       const [ca] = await capsOf(A);
       check("captions of media that clips play: words land at start + (word - in) / speed, and a word no clip plays is dropped",
         (await capsOf(A)).length === 1 && JSON.stringify(tw(ca)) === JSON.stringify([["b", 0.2, 0.6], ["c", 1.2, 1.6], ["d", 5.75, 5.95], ["e", 6.25, 6.45], ["f", 6.9, 7]]), tw(ca));
       check("the captions clip does not outlive the last clip that plays the media, and the timeline does not grow",
         ca.start === 0 && ca.duration === 7 && made.duration === 7, { start: ca.start, dur: ca.duration, total: made.duration });
       check("the captions record the asset and the cut they were timed for; validate has no warning for them", JSON.stringify(ca.timed_for) === JSON.stringify({ asset: "talk", cut: [[2, 5, 0, 1], [4, 8, 5, 2]] }) && (await stale(A)).length === 0, { t: ca.timed_for, issues: await stale(A) });
-      const before = asrCalls(), refused: any = await api.apply(A, [{ op: "add_captions", transcribe: "talk", at: 1 }]).catch((e) => e);
+      const before = asrCalls(), refused: any = await applyLatest(A, [{ op: "add_captions", transcribe: "talk", at: 1 }]).catch((e) => e);
       check("at is refused with bad_arg when the media plays on the timeline, before any engine runs", refused.code === "bad_arg" && /'at'/.test(refused.message) && asrCalls() === before && (await capsOf(A)).length === 1, { code: refused.code, msg: refused.message, calls: asrCalls() - before });
       // the cut changes: a trim, then a move, each warn (in review too); putting it back clears the warning
-      const trimmed: any = await api.apply(A, [{ op: "trim_clip", id: "vid1", trim_start: 0.5 }]);
+      const trimmed: any = await applyLatest(A, [{ op: "trim_clip", id: "vid1", trim_start: 0.5 }]);
       check("trimming a clip that plays the media warns in the apply result and in validate, naming the captions clip", trimmed.issues.some((i: any) => i.level === "warning" && /timed_for/.test(i.path) && i.hint.includes(ca.id)) && (await stale(A)).length === 1, trimmed.issues);
       const rv: any = await api.review(A);
       check("review carries the same warning", JSON.stringify(rv).includes("timed_for"), Object.keys(rv));
-      await api.apply(A, [{ op: "update_clip", id: "vid1", set: { start: 0, in: 2, duration: 3 } }]);
+      await applyLatest(A, [{ op: "update_clip", id: "vid1", set: { start: 0, in: 2, duration: 3 } }]);
       check("restoring the clip clears the warning", (await stale(A)).length === 0, await stale(A));
-      const moved: any = await api.apply(A, [{ op: "update_clip", id: "vid2", set: { start: 5.5 } }]);
+      const moved: any = await applyLatest(A, [{ op: "update_clip", id: "vid2", set: { start: 5.5 } }]);
       check("moving a clip that plays the media warns", moved.issues.some((i: any) => /timed_for/.test(i.path)) && (await stale(A)).length === 1, moved.issues);
 
       // remove_silence first (the video's detached audio is cut into the same segments), then one captions clip: the words follow the segments, those in the removed stretch are dropped
       const B = join(tmp, "cap-cut");
       api.create(B, { preset: "720p" });
-      await api.apply(B, [{ op: "add_clip", track: "main", src: talk }, { op: "detach_audio", id: "vid1" }, { op: "remove_silence", id: "vid1" }]);
+      await applyLatest(B, [{ op: "add_clip", track: "main", src: talk }, { op: "detach_audio", id: "vid1" }, { op: "remove_silence", id: "vid1" }]);
       const tB0 = await tlOf(B), pieces = tB0.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "audio"), second = pieces[pieces.length - 1];
-      const cutB: any = await api.apply(B, [{ op: "add_captions", transcribe: "talk" }]);
+      const cutB: any = await applyLatest(B, [{ op: "add_captions", transcribe: "talk" }]);
       const [cb] = await capsOf(B), at = (src: number) => +(second.start + (src - second.in)).toFixed(3);
       check("after remove_silence the words follow the audio pieces and those cut away are dropped: one captions clip, one engine run",
         pieces.length === 2 && cb.words.map((w: any) => w.text).join("") === "adef" && cb.words[1].start === at(5.5) && cb.words[2].start === at(6.5) && (await capsOf(B)).length === 1, { pieces: pieces.map((c: any) => [c.in, c.start, c.duration]), words: tw(cb) });
@@ -558,42 +561,42 @@ fi
       // splitting a clip that plays the media leaves the same sound: no warning
       const H = join(tmp, "cap-split-played");
       api.create(H, { preset: "720p" });
-      await api.apply(H, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
-      const splitH: any = await api.apply(H, [{ op: "split_clip", id: "vid1", at: 3 }]);
+      await applyLatest(H, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
+      const splitH: any = await applyLatest(H, [{ op: "split_clip", id: "vid1", at: 3 }]);
       check("splitting a clip that plays the media gives no warning, and a clip that continues the previous one is one row", splitH.issues.length === 0 && (await stale(H)).length === 0 && JSON.stringify((await capsOf(H))[0].timed_for.cut) === JSON.stringify([[0, 8, 0, 1]]), { issues: splitH.issues, cut: (await capsOf(H))[0].timed_for.cut });
 
       // the cut is relative to the captions clip: the captions moved alone warn; trimming or splitting the captions clip moves its words and the cut together
       const G = join(tmp, "cap-own-start");
       api.create(G, { preset: "720p" });
-      await api.apply(G, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
+      await applyLatest(G, [{ op: "add_clip", track: "overlay", src: talk, at: 0 }, { op: "add_captions", transcribe: "talk" }]);
       const wl = async () => (await stale(G)).length;
-      await api.apply(G, [{ op: "update_clip", id: "cap1", set: { start: 1 } }]);
+      await applyLatest(G, [{ op: "update_clip", id: "cap1", set: { start: 1 } }]);
       const alone = await wl();
-      await api.apply(G, [{ op: "update_clip", id: "cap1", set: { start: 0 } }]);
+      await applyLatest(G, [{ op: "update_clip", id: "cap1", set: { start: 0 } }]);
       check("the captions clip moved alone warns, and moved back it does not", alone === 1 && (await wl()) === 0, { alone, back: await wl() });
-      await api.apply(G, [{ op: "trim_clip", id: "cap1", trim_start: 0.5 }]);
+      await applyLatest(G, [{ op: "trim_clip", id: "cap1", trim_start: 0.5 }]);
       const trimmedCaps = await wl();
-      await api.apply(G, [{ op: "split_clip", id: "cap1", at: 3 }]);
+      await applyLatest(G, [{ op: "split_clip", id: "cap1", at: 3 }]);
       check("a head trim of the captions clip, then a split of it, leave no warning on either half (the recorded cut moves with the words)", trimmedCaps === 0 && (await capsOf(G)).length === 2 && (await wl()) === 0, { trim: trimmedCaps, halves: (await capsOf(G)).map((c: any) => c.timed_for), issues: await stale(G) });
-      const magnetic: any = await api.apply(G, [{ op: "add_track", id: "mcap", kind: "video", magnetic: true }, { op: "add_captions", transcribe: "talk", track: "mcap" }]).catch((e) => e);
+      const magnetic: any = await applyLatest(G, [{ op: "add_track", id: "mcap", kind: "video", magnetic: true }, { op: "add_captions", transcribe: "talk", track: "mcap" }]).catch((e) => e);
       check("a transcript's captions on a magnetic track are bad_arg", magnetic.code === "bad_arg" && /magnetic/.test(magnetic.message), { code: magnetic.code, msg: magnetic.message });
 
       // a speed ramp is not a linear map: the clip is named and its words are not mapped
       const C = join(tmp, "cap-ramp");
       api.create(C, { preset: "720p" });
-      await api.apply(C, [{ op: "add_clip", track: "overlay", src: talk, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, duration: 2, at: 5 }, { op: "set_keyframes", id: "vid2", prop: "speed", keyframes: [[0, 1], [1, 2]] }]);
-      const ramp: any = await api.apply(C, [{ op: "add_captions", transcribe: "talk" }]);
+      await applyLatest(C, [{ op: "add_clip", track: "overlay", src: talk, duration: 3, at: 0 }, { op: "add_clip", track: "overlay", src: talk, in: 4, duration: 2, at: 5 }, { op: "set_keyframes", id: "vid2", prop: "speed", keyframes: [[0, 1], [1, 2]] }]);
+      const ramp: any = await applyLatest(C, [{ op: "add_captions", transcribe: "talk" }]);
       check("a speed-ramped clip is named in the result and its words are not mapped", JSON.stringify(ramp.results[0].unmapped) === JSON.stringify(["vid2"]) && (await capsOf(C))[0].words.map((w: any) => w.text).join("") === "ab", { r: ramp.results[0], w: tw((await capsOf(C))[0]) });
 
       // media no clip plays keeps its meaning: media seconds from at, ending at the media end
       const D = join(tmp, "cap-free");
       api.create(D, { preset: "720p" });
-      await api.apply(D, [{ op: "add_captions", transcribe: talk, at: 2 }]);
+      await applyLatest(D, [{ op: "add_captions", transcribe: talk, at: 2 }]);
       const [cd] = await capsOf(D);
       check("media that no clip plays: media seconds from at, no recorded cut, and the clip ends at the media end (8 s, not 8.3)", cd.start === 2 && cd.words[0].start === 0.5 && cd.words[5].end === 8 && cd.duration === 8 && !("timed_for" in cd), { start: cd.start, dur: cd.duration, w: tw(cd) });
       const E = join(tmp, "cap-limit");
       api.create(E, { preset: "720p" });
-      await api.apply(E, [{ op: "add_captions", transcribe: talk, transcribe_range: [0, 6] }]);
+      await applyLatest(E, [{ op: "add_captions", transcribe: talk, transcribe_range: [0, 6] }]);
       check("a transcribe range ends the captions clip at the range end", (await capsOf(E))[0].duration === 6 && (await capsOf(E))[0].words.map((w: any) => w.text).join("") === "abcd", (await capsOf(E))[0]);
     } finally { writeFileSync(join(tmp, "whisper.json"), saved); if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
@@ -612,7 +615,7 @@ fi
       api.create(Z, { preset: "720p" });
       const w0 = started("whisper.calls"), p0 = started("piper.calls"), rev0 = (await api.info(Z)).revision, undo0 = api.history(Z).undo.length;
       rounds = 0;
-      const r: any = await api.apply(Z, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "add_voiceover", text: "Chào bạn", voice: "piper" }, { op: "add_marker", t: 1, label: "m" }]);
+      const r: any = await api.apply(Z, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "add_voiceover", text: "Chào bạn", voice: "piper" }, { op: "add_marker", t: 1, label: "m" }], { revision: rev0 }); // the revision is passed, not read: reading would add loads to the count
       const used = rounds;
       check("two analysis ops and an edit take 3 rounds, start each engine once, save once and keep the speech in media/ only",
         used === 3 && started("whisper.calls") === w0 + 1 && started("piper.calls") === p0 + 1 && r.revision === rev0 + 1 && api.history(Z).undo.length === undo0 + 1
@@ -629,14 +632,14 @@ fi
       {
         const V = join(tmp, "vo-captions");
         api.create(V, { preset: "720p" });
-        const made: any = await api.apply(V, [{ op: "add_voiceover", text: "Chào bạn", voice: "piper", captions: true }]);
+        const made: any = await applyLatest(V, [{ op: "add_voiceover", text: "Chào bạn", voice: "piper", captions: true }]);
         const tV = async () => (await api.info(V, "json")).timeline, vc = (await tV()).tracks.flatMap((t: any) => t.clips), voice = vc.find((c: any) => c.type === "audio"), cap = vc.find((c: any) => c.type === "captions");
         const staleV = async () => (await api.validate(V)).issues.filter((i: any) => /timed_for/.test(i.path));
         check("voiceover captions record the voice clip's cut, end with the voice clip, and have no warning", JSON.stringify(cap.timed_for) === JSON.stringify({ asset: voice.asset, cut: [[0, voice.duration, 0, 1]] }) && cap.duration <= voice.duration + 1e-6 && made.duration === voice.duration && (await staleV()).length === 0,
           { t: cap.timed_for, cap: cap.duration, voice: voice.duration, total: made.duration });
-        await api.apply(V, [{ op: "update_clip", id: voice.id, set: { start: 1 } }]);
+        await applyLatest(V, [{ op: "update_clip", id: voice.id, set: { start: 1 } }]);
         check("moving the voiceover clip warns that the captions no longer match", (await staleV()).length === 1, await staleV());
-        await api.apply(V, [{ op: "update_clip", id: cap.id, set: { start: 1 } }]);
+        await applyLatest(V, [{ op: "update_clip", id: cap.id, set: { start: 1 } }]);
         check("moving the captions clip with it clears the warning", (await staleV()).length === 0, await staleV());
       }
 
@@ -650,7 +653,7 @@ fi
         api.create(V2, { preset: "720p" });
         process.env.PATH = `${binV}:${pathNow}`;
         Date.now = () => 1_700_000_000_000;
-        try { await api.apply(V2, [{ op: "add_voiceover", text: "Một hai.", voice: "piper" }, { op: "add_voiceover", text: "Ba bốn năm sáu.", voice: "piper" }]); }
+        try { await applyLatest(V2, [{ op: "add_voiceover", text: "Một hai.", voice: "piper" }, { op: "add_voiceover", text: "Ba bốn năm sáu.", voice: "piper" }]); }
         finally { Date.now = realNow; process.env.PATH = pathNow; }
         const t2 = (await api.info(V2, "json")).timeline, files = readdirSync(join(V2, "media")), clips = t2.tracks.find((t: any) => t.id === "voice").clips;
         const dur = (c: any) => +spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", join(V2, t2.assets[c.asset].path)], { encoding: "utf8" }).stdout;
@@ -665,9 +668,9 @@ fi
         let b: any, a1: any, a2: any, used = -1, undo3 = 0;
         try {
           rounds = 0;
-          b = await api.apply(V3, [speak, cut], { signal: ac.signal }).catch((x) => x);
+          b = await api.apply(V3, [speak, cut], { signal: ac.signal, revision: 0 }).catch((x) => x); // V3 is new: revision 0, passed because reading it would add loads to the count
           used = rounds; undo3 = api.history(V3).undo.length;
-          a1 = await api.apply(V4, [speak]); a2 = await api.apply(V4, [cut]);
+          a1 = await applyLatest(V4, [speak]); a2 = await applyLatest(V4, [cut]);
         } finally { clearTimeout(stop); process.env.PATH = pathNow; }
         const same = (o: unknown) => JSON.stringify(o).replace(/vo[-_]\d+/g, "vo-N"), tlOf = async (P: string) => { const t = (await api.info(P, "json")).timeline; delete t.revision; return t; };
         check("add_voiceover then remove_silence of its clip in one batch: 3 rounds, saved once, one voiceover file, the results and timeline of the two ops applied separately",
@@ -685,15 +688,15 @@ fi
         const decodes = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").length : 0);
         const B = join(tmp, "beats-rounds"), cuts = [{ op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }, { op: "add_clip", track: "main", src: join(m, "grey.mp4"), duration: 2 }];
         api.create(B, { preset: "720p" });
-        await api.apply(B, cuts);
+        const bRev = (await applyLatest(B, cuts)).revision;
         const undoB = api.history(B).undo.length;
         process.env.PATH = `${binB}:${pathNow}`;
         let b1: any, used = -1, n1 = -1, b2: any, n2 = -1;
         try {
           rounds = 0;
-          b1 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks }, { op: "snap_to_beats", track: "main", beats: clicks, every: 2 }, { op: "add_marker", t: 1, label: "m" }]);
+          b1 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks }, { op: "snap_to_beats", track: "main", beats: clicks, every: 2 }, { op: "add_marker", t: 1, label: "m" }], { revision: bRev }); // passed, not read: reading would add loads to the count
           used = rounds; n1 = decodes();
-          b2 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
+          b2 = await applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
           n2 = decodes();
         } finally { process.env.PATH = pathNow; }
         check("snap_to_beats of an audio file twice and an edit: 2 rounds, one decode, one save; a later call decodes nothing",
@@ -702,7 +705,7 @@ fi
         const swap = join(tmp, "swap.wav"), other = join(tmp, "other.wav"), t1 = new Date(1_700_000_000_000), t2 = new Date(1_700_000_100_000);
         ff("-f", "lavfi", "-i", "sine=f=1000:d=12,volume='lt(mod(t,0.5),0.05)':eval=frame", "-ar", "22050", other);
         const place = (from: string, at: Date) => { copyFileSync(from, swap); utimesSync(swap, at, at); };
-        const snap = () => api.apply(B, [{ op: "snap_to_beats", track: "main", beats: swap }]);
+        const snap = () => applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: swap }]);
         process.env.PATH = `${binB}:${pathNow}`;
         const seen: number[] = [];
         try {
@@ -715,15 +718,17 @@ fi
         check("a file replaced twice is decoded at each new version, and an unchanged one is not decoded again", seen.join() === "1,2,3,3", seen);
       }
 
-      // a writer saves between the batch's last load and its save: the batch is re-applied from the memo (the engine does not start again) even though its analysis took longer than the 10 s deadline
-      let bumped = false;
-      OPS._other_writer = { doc: "test", args: {}, fn: (p: any) => { if (!bumped) { bumped = true; writeFileSync(p.file, readFileSync(p.file, "utf8").replace(/("revision": )(\d+)/, (_, k, n) => `${k}${Number(n) + 1}`)); } return {}; } };
-      const D = join(tmp, "deadline"), w1 = started("whisper.calls");
-      api.create(D, { preset: "720p" });
-      Date.now = () => realNow() + (started("whisper.calls") > w1 ? 11_000 : 0); // the clock jumps 11 s once the engine has started
-      const e: any = await api.apply(D, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "_other_writer" }]).catch((x) => x);
-      Date.now = realNow;
-      check("a conflict after a slow analysis is re-applied, not failed, and the engine started once", e.ok === true && e.revision === 2 && started("whisper.calls") === w1 + 1, e.code ? { code: e.code, msg: e.message } : { ok: e.ok, rev: e.revision, whisper: started("whisper.calls") - w1 });
+      // another writer saves between the batch's last load and its save: the batch fails with a conflict that names the writer, the analysis is not kept
+      // (the resend runs the engine again), and the resend at the new revision applies
+      let saved = false;
+      OPS._other_writer = { doc: "test", args: {}, fn: (p: any) => { if (!saved) { saved = true; p.save(p.load(), "other edit", "other-agent"); } return {}; } };
+      const D2 = join(tmp, "conflict-names"), w2 = started("whisper.calls"), batch = [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "_other_writer" }];
+      const made2 = api.create(D2, { preset: "720p" });
+      const c: any = await api.apply(D2, batch, { revision: made2.revision }).catch((x) => x);
+      check("a writer saving after a slow analysis is a conflict that names it, the engine started once, nothing from the batch is saved",
+        c.code === "conflict" && c.message.includes('"other-agent" other edit') && started("whisper.calls") === w2 + 1 && (await api.info(D2)).revision === 1, c.code ? { code: c.code, msg: c.message, whisper: started("whisper.calls") - w2 } : c);
+      const resent: any = await api.apply(D2, batch, { revision: c.details?.revision }).catch((x) => x); // the conflict carries the revision to resend at
+      check("the resend at the new revision applies, and the analysis runs again", resent.ok === true && resent.revision === 2 && started("whisper.calls") === w2 + 2, resent.code ? { code: resent.code, msg: resent.message } : { rev: resent.revision, whisper: started("whisper.calls") - w2 });
     } finally { Project.prototype.load = load; Date.now = realNow; delete OPS._other_writer; if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
 
@@ -832,7 +837,7 @@ fi
       const Q = join(E, "proj");
       api.create(Q, { preset: "720p" });
       const was = JSON.stringify((await api.info(Q, "json")).timeline);
-      const a: any = await api.apply(Q, [{ op: "add_captions", transcribe: src, language: "xx" }]).catch((x) => x);
+      const a: any = await applyLatest(Q, [{ op: "add_captions", transcribe: src, language: "xx" }]).catch((x) => x);
       check("add_captions transcribe with an unknown language is bad_value naming it, and the timeline is unchanged", a.code === "bad_value" && a.message.includes("xx") && JSON.stringify((await api.info(Q, "json")).timeline) === was, { code: a.code, msg: a.message });
     } finally { process.env.PATH = pathWas; if (modelWas === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = modelWas; }
   }

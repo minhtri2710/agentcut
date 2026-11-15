@@ -171,9 +171,9 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
     const r: any = await client.callTool({ name, arguments: args });
     return JSON.parse(r.content.find((c: any) => c.type === "text").text);
   };
-  await call("create_project", { path: P, preset: "720p" });
+  const created = await call("create_project", { path: P, preset: "720p" });
   const t1 = performance.now();
-  const ap = await call("apply_ops", { ops: [
+  const ap = await call("apply_ops", { revision: created.revision, ops: [
     { op: "add_clip", track: "main", src: join(m, "green.mp4"), duration: 2 },
     { op: "add_clip", track: "overlay", src: join(m, "src.mp4"), at: 0, duration: 2 },
     { op: "remove_background", id: "vid2" }] });
@@ -197,8 +197,8 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
   check("second prepare: nothing to compute", again.status === "done" && again.result.computed.length === 0 && nCalls() === 1, again);
   // a model that is not cached: the MCP prepare tool refuses it, and allow_download lets the job reach the model download
   const Q = join(tmp, "proj-model");
-  await call("create_project", { path: Q, preset: "720p" });
-  await call("apply_ops", { project: Q, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "silueta" }] });
+  const madeQ = await call("create_project", { path: Q, preset: "720p" });
+  await call("apply_ops", { project: Q, revision: madeQ.revision, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model: "silueta" }] });
   const qs = await call("prepare", { project: Q, status_only: true }), calls0 = nCalls();
   check("MCP prepare status_only lists the model to download", qs.ok && qs.models_to_download?.[0]?.model === "silueta" && qs.models_to_download[0].approx_mb === 44, qs);
   const q1 = await call("prepare", { project: Q, wait_seconds: 10 });
@@ -209,8 +209,8 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
     q2.status === "failed" && q2.error?.code === "model_download_failed" && fetched.join() === (await import("../src/model.ts")).MATTE_PINS.silueta.url && nCalls() === calls0, { q2, fetched });
   { // byte progress: a running prepare that downloads shows download {model, bytes, total_bytes}; a settled job (done or cancelled) shows none
     const dlProject = async (dir: string, model: string) => {
-      await call("create_project", { path: dir, preset: "720p" });
-      await call("apply_ops", { project: dir, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model }] });
+      const madeDir = await call("create_project", { path: dir, preset: "720p" });
+      await call("apply_ops", { project: dir, revision: madeDir.revision, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1", model }] });
     };
     const poll = async (id: string, until: (r: any) => boolean) => { let r: any; for (let i = 0; i < 200; i++) { r = await call("render_status", { job_id: id, wait_seconds: 0 }); if (until(r)) break; await new Promise((ok) => setTimeout(ok, 50)); } return r; };
     writeFileSync(slowFlag, "1");
@@ -238,6 +238,9 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
 console.log("render + cache");
 process.env.AGENTCUT_UV = fake;
 const api = await import("./author-api.ts");
+// this suite's rows are about jobs, prepare and the history files, not concurrency: a call reads the project's revision (info) and uses it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; author?: string; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
+const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
 check("render uses the prepared matte (no helper call)", rr.frames === 60 && nCalls() - extraCalls === 1, rr);
@@ -287,6 +290,9 @@ delete process.env.AGENTCUT_PREVIEWS_MAX_MB;
 const cli = (...a: string[]) => JSON.parse(spawnSync(process.execPath, [resolve(import.meta.dir, "../src/cli.ts"), ...a, "-p", P], { encoding: "utf8", env: { ...process.env, AGENTCUT_UV: fake } }).stdout);
 const ci = cli("cache", "info"), cp = cli("cache", "prune", "--older-than", "30d"), ps = cli("prepare", "--status");
 check("CLI cache info / prune / prepare --status print one JSON object", ci.ok && ci.total.files > 0 && cp.ok && cp.removed.files === 0 && ps.ok && ps.ready === true, { ci, cp, ps });
+// prepare resolves the pending requests of whatever timeline is there, so it takes no revision: it needs only the author and returns the revision it wrote
+const pnone = cli("prepare", "--author", "jobs");
+check("CLI prepare needs no revision and returns the project's revision", pnone.ok === true && pnone.ready === true && Number.isInteger(pnone.revision), pnone);
 
 // prepare while the timeline keeps changing: the missing set is never settled in the round budget -> conflict, not internal
 console.log("prepare vs concurrent edits");
@@ -294,7 +300,7 @@ console.log("prepare vs concurrent edits");
   const P2 = join(tmp, "proj-race"), srcs = [0, 1, 2, 3].map((i) => join(m, `race-${i}.mp4`));
   srcs.forEach((f, i) => ff("-f", "lavfi", "-i", `testsrc2=s=${160 + 16 * i}x90:r=30:d=1`, "-pix_fmt", "yuv420p", f));
   api.create(P2, { preset: "720p" });
-  const addMatte = (i: number) => api.apply(P2, [{ op: "add_clip", track: `t${i}`, src: srcs[i], at: 0, duration: 1 }, { op: "remove_background", id: `vid${i + 1}` }]);
+  const addMatte = (i: number) => applyLatest(P2, [{ op: "add_clip", track: `t${i}`, src: srcs[i], at: 0, duration: 1 }, { op: "remove_background", id: `vid${i + 1}` }]);
   await addMatte(0);
   let edits = 1;
   // once a round's matte is on disk (edits-th matte file), add one more clip that needs a new matte
@@ -309,7 +315,7 @@ console.log("prepare vs concurrent edits");
 {
   const P3 = join(tmp, "proj-stuck"), cache3 = join(P3, ".agentcut", "cache");
   api.create(P3, { preset: "720p" });
-  await api.apply(P3, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "remove_background", id: "vid1" }]);
+  await applyLatest(P3, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "remove_background", id: "vid1" }]);
   const rev = ((await api.info(P3)) as any).revision;
   const r: any = await api.prepare(P3, { progress: (d, n) => {
     // runs after vision.ts renamed the matte into place: delete it so the next round finds it missing again
@@ -323,7 +329,7 @@ console.log("prepare vs concurrent edits");
   const P4 = join(tmp, "proj-prepare-author"), real = await import("../src/api.ts");
   mkdirSync(join(tmp, "cache", "models", "face_detection_yunet_2023mar"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "face_detection_yunet_2023mar", "face_detection_yunet_2023mar.onnx"), ""); // cached, as the matte model is: the fake helper does the work
   api.create(P4, { preset: "reels" });
-  await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "auto_reframe", id: "vid1" }], { author: "alice" });
+  await applyLatest(P4, [{ op: "add_clip", track: "main", src: join(m, "race-0.mp4"), at: 0, duration: 1 }, { op: "auto_reframe", id: "vid1" }], { author: "alice" });
   const calls0 = nCalls(), rev0 = ((await api.info(P4)) as any).revision;
   const none: any = await Promise.resolve().then(() => real.prepare(P4)).catch((e) => e);
   check("prepare with no author is missing_author, computes nothing and saves nothing", none.code === "missing_author" && nCalls() === calls0 && ((await api.info(P4)) as any).revision === rev0, { code: none.code, calls: nCalls() - calls0 });
@@ -366,7 +372,7 @@ console.log("render output is atomic");
   const P4 = join(tmp, "proj-atomic"), dir = join(tmp, "atomic-out");
   mkdirSync(dir);
   api.create(P4, { preset: "720p" });
-  await api.apply(P4, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }]);
+  await applyLatest(P4, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }]);
   const failAfter = (k: number) => (d: number) => { if (d >= k) throw new Error("progress callback failed"); };
   // R1: a mid-render failure (single worker) leaves nothing at the output path and no part file
   const o1 = join(dir, "fail.mp4");
@@ -389,8 +395,8 @@ console.log("render output is atomic");
   ff("-f", "lavfi", "-i", "testsrc2=s=3840x2160:r=30:d=6", "-pix_fmt", "yuv420p", big);
   const srv = mcpProc({ AGENTCUT_UV: fake });
   await srv.init();
-  await srv.call("create_project", { path: P5, preset: "4k" });
-  await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }] });
+  const made5 = await srv.call("create_project", { path: P5, preset: "4k" });
+  await srv.call("apply_ops", { revision: made5.revision, ops: [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }] });
   const job = await srv.call("render", { output: ko, wait_seconds: 0 });
   const sawPart = await until(() => partsIn(killed).length > 0, 30_000);
   process.kill(srv.pid, "SIGTERM");
@@ -407,32 +413,42 @@ console.log("history: damaged project.json, failed saves, clock steps");
   const mk = async (name: string, labels = ["e1", "e2"]) => {
     const d = join(tmp, name);
     api.create(d, { preset: "reels" });
-    for (const [i, label] of labels.entries()) await api.apply(d, [{ op: "add_marker", t: i + 1, label }], { label });
+    for (const [i, label] of labels.entries()) await applyLatest(d, [{ op: "add_marker", t: i + 1, label }], { label });
     return d;
   };
   const markers = (d: string) => JSON.parse(readFileSync(join(d, "project.json"), "utf8")).markers?.length ?? 0;
   // A-08: undo recovers from a damaged project.json
-  for (const [what, damage] of [["not JSON", () => "{ not json"], ["no revision", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); delete t.revision; return JSON.stringify(t); }]] as const) {
+  for (const [what, damage] of [["not JSON", () => "{ not json"], ["no revision", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); delete t.revision; return JSON.stringify(t); }],
+    ["a revision that is not a whole number", () => { const t = JSON.parse(readFileSync(join(tmp, "hist-a/project.json"), "utf8")); t.revision = "x"; return JSON.stringify(t); }]] as const) {
     const d = await mk("hist-a");
     wf(join(d, "project.json"), damage());
-    let r: any; try { r = api.undo(d); } catch (e: any) { r = { error: e.code ?? e.message }; }
+    const damaged: any = await api.info(d).catch((x: any) => x);
+    check(`the error for a project.json that is ${what} says that undo needs no revision there`, /undo needs no revision/.test(damaged.hint ?? ""), { code: damaged.code, hint: damaged.hint });
+    const viaApply: any = await api.apply(d, [{ op: "add_marker", t: 9 }], { revision: 2 }).catch((x: any) => x);
+    check(`info and apply both fail on a project.json that is ${what}, with the same code (${what === "not JSON" ? "bad_json" : "bad_revision"})`, damaged.code === (what === "not JSON" ? "bad_json" : "bad_revision") && viaApply.code === damaged.code, { info: damaged.code, apply: viaApply.code });
+    let r: any; try { r = api.undo(d, 1, undefined); } catch (e: any) { r = { error: e.code ?? e.message }; }
     check(`undo restores the last good version over a project.json that is ${what}`, r.undone?.[0]?.label === "e2" && markers(d) === 1 && Number.isInteger((await api.info(d)).revision), r);
     rmSync(d, { recursive: true, force: true });
+  }
+  // the revision is waived only while project.json cannot be read: on a readable one a missing revision is refused and nothing moves
+  {
+    const d = await mk("hist-rev"), h0 = JSON.stringify(api.history(d)), pj = readFileSync(join(d, "project.json"), "utf8");
+    check("undo with no revision on a readable project.json is missing_revision and changes nothing", (await code(() => api.undo(d, 1, undefined))) === "missing_revision" && JSON.stringify(api.history(d)) === h0 && readFileSync(join(d, "project.json"), "utf8") === pj);
   }
   // A-35: a failed save keeps redo and adds no undo entry; a failed undo keeps its snapshot; a damaged snapshot is a named error
   {
     const d = await mk("hist-b", ["e1", "e2", "e3"]);
-    await api.undo(d);
+    await undoLatest(d);
     const h0 = JSON.stringify(api.history(d)), pj = readFileSync(join(d, "project.json"), "utf8");
     chmodSync(d, 0o500); // no new file can be created beside project.json
-    const s = await code(() => api.apply(d, [{ op: "add_marker", t: 9, label: "x" }]));
-    const u = await code(() => api.undo(d));
+    const s = await code(() => applyLatest(d, [{ op: "add_marker", t: 9, label: "x" }]));
+    const u = await code(() => undoLatest(d));
     chmodSync(d, 0o700);
     check("a save that fails keeps the redo stack and adds no undo entry", s !== "ok" && JSON.stringify(api.history(d)) === h0, { s, h: api.history(d) });
     check("an undo that fails keeps its snapshot and project.json", u !== "ok" && JSON.stringify(api.history(d)) === h0 && readFileSync(join(d, "project.json"), "utf8") === pj, { u, h: api.history(d) });
     const top = join(d, ".agentcut", "history", "undo"), file = readdirSync(top).sort().pop()!;
     wf(join(top, file), "{ not json");
-    check("a snapshot that is not JSON: undo and history say bad_json", (await code(() => api.undo(d))) === "bad_json" && (await code(() => api.history(d))) === "bad_json");
+    check("a snapshot that is not JSON: undo and history say bad_json", (await code(() => undoLatest(d))) === "bad_json" &&(await code(() => api.history(d))) === "bad_json");
   }
   // A-34: the wall clock steps backwards on every read; undo still restores the latest edit
   {
@@ -440,8 +456,8 @@ console.log("history: damaged project.json, failed saves, clock steps");
     wf(script, `let t = 2e12; Date.now = () => (t -= 1000);
 const api = await import(${JSON.stringify(srcApi)});
 api.create(${JSON.stringify(d)}, { preset: "reels" });
-for (const label of ["e1", "e2", "e3"]) await api.apply(${JSON.stringify(d)}, [{ op: "add_marker", t: 1, label }], { label, author: "test" });
-const hist = api.history(${JSON.stringify(d)}), undone = (await api.undo(${JSON.stringify(d)}, 1, undefined, "test")).undone;
+for (const [i, label] of ["e1", "e2", "e3"].entries()) await api.apply(${JSON.stringify(d)}, [{ op: "add_marker", t: 1, label }], { label, author: "test", revision: i });
+const hist = api.history(${JSON.stringify(d)}), undone = (await api.undo(${JSON.stringify(d)}, 1, 3, "test")).undone;
 process.stdout.write(JSON.stringify({ hist, undone }));
 `);
     const r = spawnSync(process.execPath, ["--no-install", "--no-env-file", script], { encoding: "utf8" });
@@ -479,8 +495,8 @@ async function stopDuring(kind: "prepare" | "render", how: "term" | "eof", mode 
   rmSync(uvLog, { force: true });
   const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: mode, FAKE_UV_LOG: uvLog });
   await srv.init();
-  await srv.call("create_project", { path: proj, preset: "720p" });
-  await srv.call("apply_ops", { ops: kind === "prepare"
+  const madeStop = await srv.call("create_project", { path: proj, preset: "720p" });
+  await srv.call("apply_ops", { revision: madeStop.revision, ops: kind === "prepare"
     ? [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]
     : [{ op: "add_clip", track: "main", src: m12, duration: 12 }] });
   const job = await srv.call(kind, kind === "prepare" ? { wait_seconds: 0 } : { output: out, wait_seconds: 0 });
@@ -527,8 +543,8 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   rmSync(uvLog, { force: true });
   const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: read after the loop
   await srv.init();
-  await srv.call("create_project", { path: proj, preset: "720p" });
-  await srv.call("apply_ops", { ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
+  const madeLate = await srv.call("create_project", { path: proj, preset: "720p" });
+  await srv.call("apply_ops", { revision: madeLate.revision, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
   const first = await srv.call("prepare", { wait_seconds: 0 });
   const working = await until(() => existsSync(uvLog), 30_000);
   const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
@@ -593,7 +609,7 @@ for (const shift of [-30, -2, 0, 2, 30]) {
 console.log("cancel a render or prepare job");
 {
   const bigSrc = join(m, "big.mp4"), cmd = join(import.meta.dir, "../src/cli.ts");
-  const mk = async (name: string, src = bigSrc, duration = 5.9) => { const P = join(tmp, name); api.create(P, { preset: "4k" }); await api.apply(P, [{ op: "add_clip", track: "main", src, at: 0, duration }]); return P; };
+  const mk = async (name: string, src = bigSrc, duration = 5.9) => { const P = join(tmp, name); api.create(P, { preset: "4k" }); await applyLatest(P, [{ op: "add_clip", track: "main", src, at: 0, duration }]); return P; };
   rmSync(uvLog, { force: true });
   const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "silent", FAKE_UV_LOG: uvLog });
   await srv.init();
@@ -647,7 +663,7 @@ console.log("cancel a render or prepare job");
   {
     const P = join(tmp, "cancel-prepare"), cacheD = join(P, ".agentcut", "cache");
     api.create(P, { preset: "720p" });
-    await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
+    await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }]);
     rmSync(uvLog, { force: true });
     const job = await tc("prepare", { project: P, wait_seconds: 0 });
     const working = await until(() => existsSync(uvLog) && partsIn(cacheD).length > 0, 30_000);
@@ -686,7 +702,7 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
     const withBin = `${bin}:${process.env.PATH}`;
     const tone = join(m, "with-audio.mp4");
     ff("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2", "-f", "lavfi", "-i", "sine=d=2", "-shortest", "-pix_fmt", "yuv420p", tone);
-    const mkAudio = async (name: string) => { const P = join(tmp, name); api.create(P, { preset: "720p" }); await api.apply(P, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]); return P; };
+    const mkAudio = async (name: string) => { const P = join(tmp, name); api.create(P, { preset: "720p" }); await applyLatest(P, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]); return P; };
     const streams = (f: string) => spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).sort().join();
 
     // MCP: cancel_job while the loudness pass runs
@@ -738,7 +754,7 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
     {
       const P = join(tmp, "cancel-mux"), out = join(tmp, "cancel-mux-out", "out.mp4"), D = join(tmp, "cancel-mux-out");
       api.create(P, { preset: "720p" });
-      await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }, { op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
+      await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), at: 0, duration: 2 }, { op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
       rmSync(markMux, { force: true });
       const s3 = mcpProc({ PATH: withBin });
       await s3.init();
@@ -791,13 +807,14 @@ while :; do sleep 0.05; done
     // The ops never come (stdin stays open). More than a pipe holds is written to stdin, and the write callback fires only once the child has read it:
     // readOps does that after onSignals(), so the handlers are installed by then.
     const started = (c: ReturnType<typeof cli>) => new Promise<void>((r) => c.child.stdin!.write(" ".repeat(1 << 20), () => r()));
-    const one = cli(P, ["apply", "-"]);
+    const rv = String(JSON.parse(readFileSync(join(P, "project.json"), "utf8")).revision); // the command checks the revision before it reads the ops
+    const one = cli(P, ["apply", "-", "--revision", rv]);
     await started(one);
     process.kill(one.pid, "SIGTERM");
     await until(() => one.exit, 20_000);
     const j = (() => { try { return JSON.parse(one.out); } catch { return null; } })();
     check("a command still running after SIGTERM is reported after the bound: one JSON object with code aborted, a hint that does not say the temp files were removed, the process ends by SIGTERM", j?.ok === false && j.error.code === "aborted" && /cache prune/.test(j.error.hint) && !/were removed/.test(j.error.hint) && one.exit?.signal === "SIGTERM" && one.exit.code === null, { out: one.out, exit: one.exit });
-    const two = cli(P, ["apply", "-"]);
+    const two = cli(P, ["apply", "-", "--revision", rv]);
     await started(two);
     process.kill(two.pid, "SIGTERM");
     await sleep(300); // nothing shows that the first signal was handled; two SIGTERMs sent together can merge into one
@@ -811,7 +828,7 @@ while :; do sleep 0.05; done
   {
     const P = join(tmp, "cancel-cli-big");
     api.create(P, { preset: "720p" });
-    await api.apply(P, [{ op: "add_clip", track: "text", text: "x".repeat(8_000_000), at: 0, duration: 1 }]); // the result is far more than a pipe holds
+    await applyLatest(P, [{ op: "add_clip", track: "text", text: "x".repeat(8_000_000), at: 0, duration: 1 }]); // the result is far more than a pipe holds
     const bigWrite = async (resumes: boolean) => {
       const r = cli(P, ["info", "--json"]);
       let first = false;

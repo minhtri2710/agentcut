@@ -10,7 +10,7 @@ import {
   normAnim, parseTime, PRESETS, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
-import { checkRevision, type Project } from "./project.ts";
+import type { Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
 import { own } from "./own.ts";
@@ -858,12 +858,11 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     return { template: a.name, steps: results.length, results, duration: totalDuration(resolve(tl)) };
   });
 
-op("replace_timeline", "Replace the whole timeline JSON (validated, undoable). A timeline that carries `revision` replaces only a project still at that revision (else conflict: re-read it and resend); without `revision` it replaces whatever is there. The saved revision is always the project's own.", { timeline: "full timeline object" }, (p, tl, a) => {
+op("replace_timeline", "Replace the whole timeline JSON (validated, undoable). The call's revision decides whether it applies (a stale one is a conflict). The saved revision is always the project's own, whatever `revision` the timeline carries.", { timeline: "full timeline object" }, (p, tl, a) => {
   const n = a.timeline;
   if (!n || typeof n !== "object" || !n.tracks || !n.settings) throw new EditError("timeline must contain settings and tracks", "bad_timeline");
   if (n.version !== SCHEMA_VERSION)
     throw new EditError(`the op input timeline has schema version ${JSON.stringify(n.version) ?? "missing"}; this build uses version ${SCHEMA_VERSION}`, "bad_version", `set "version": ${SCHEMA_VERSION}`);
-  if (n.revision != null) checkRevision(n.revision, tl.revision);
   n.assets ??= {}; n.markers ??= [];
   const revision = tl.revision; // the project's own counter: an input's revision is ignored
   for (const k of Object.keys(tl)) delete (tl as Dict)[k];

@@ -19,6 +19,8 @@ function cli(...args: (string | number)[]): any {
   if (!out.ok) throw new Error(`${args.join(" ")}: ${r.stdout.slice(0, 600)}`);
   return out;
 }
+// the rows here are about the checks, not concurrency: a write reads the project's revision (info) and passes it
+const cliLatest = (cmd: string, flag: string, project: string, ...rest: (string | number)[]) => cli(cmd, flag, project, ...rest, "--revision", cli("info", "-p", project).revision);
 const f = (n: string) => join(tmp, n);
 const t0 = performance.now();
 
@@ -30,7 +32,7 @@ ff("-f", "lavfi", "-i", "aevalsrc='if(lt(t,1),clip(3*sin(2*PI*500*t),-1,1),if(lt
 
 const P = f("p");
 cli("init", P, "--preset", "reels");
-const add = cli("apply", "-p", P, "--ops", JSON.stringify([
+const add = cliLatest("apply", "-p", P, "--ops", JSON.stringify([
   { op: "add_clip", track: "main", src: f("a.mp4"), duration: 3 },
   { op: "add_clip", track: "main", src: f("a.mp4"), duration: 0.25 },
   { op: "add_clip", track: "main", type: "gap", duration: 1 },
@@ -59,23 +61,23 @@ const lines = rvErr();
 check("review prints progress lines on stderr, ending at 1; --quiet prints none", lines.length > 0 && lines.at(-1).progress === 1 && lines.at(-1).frame === lines.at(-1).frames && !rvErr("--quiet").length, lines.slice(-2));
 
 // fix everything the review complained about -> those findings disappear
-cli("apply", "-p", P, "--ops", JSON.stringify([
+cliLatest("apply", "-p", P, "--ops", JSON.stringify([
   { op: "update_clip", id: "txt1", set: { text: "Hook", duration: 2, position: null, margin: null, y: "45%" } },
   { op: "remove_clip", id: "vid2" }, { op: "remove_clip", id: "gap1" },
   { op: "update_clip", id: "vid3", set: { duration: 2.5 } },
 ]));
 const rv2 = cli("review", "-p", P, "--beats", "0,1,2,3,4,5,6,7,8", "--no-black");
 check("fixed project: no text/shot/validation findings", !rv2.findings.some((x: any) => /^text_|^shot_|^validation_/.test(x.type)), rv2.findings);
-cli("undo", "-p", P);
+cliLatest("undo", "-p", P);
 
 console.log("audio");
-cli("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -6 } }])); // the default duck (-20) would already clear the finding this test pins
+cliLatest("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -6 } }])); // the default duck (-20) would already clear the finding this test pins
 const au = cli("audio", "-p", P, "--spectrogram");
 check("audio image written", au.ok && existsSync(au.image) && au.image.endsWith(".png"), au);
 check("one lane per audible track + mix", ["main", "voice", "music", "mix"].every((t) => au.lanes.some((l: any) => l.track === t)), au.lanes);
 check("music not ducked under the voice is reported", au.findings.some((x: any) => x.type === "music_not_ducked" && x.start < 1 && x.end > 2), au.findings);
 check("music cut off at the end without fade", au.findings.some((x: any) => x.type === "cut_off" && x.track === "music"), au.findings);
-cli("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -30 } }, { op: "update_clip", id: "aud1", set: { fade_out: 1 } }]));
+cliLatest("apply", "-p", P, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: -30 } }, { op: "update_clip", id: "aud1", set: { fade_out: 1 } }]));
 const au2 = cli("audio", "-p", P);
 check("ducked + faded: those findings are gone", !au2.findings.some((x: any) => x.type === "music_not_ducked" || (x.type === "cut_off" && x.track === "music")), au2.findings);
 
@@ -88,7 +90,7 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   const mixOf = (name: string, bed: string) => {
     const Q = f(name);
     cli("init", Q, "--preset", "reels");
-    cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
+    cliLatest("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
       { op: "add_clip", track: "voice", src: f("gated.wav"), at: 0, duration: 4 }, { op: "add_clip", track: "music", src: f(bed), at: 0, duration: 4 }]));
     return Q;
   };
@@ -99,7 +101,7 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   check("bed 3 dB under the speech power: reported with power levels", loud.length === 1 && Math.abs(loud[0].voice_db + 12) < 1 && Math.abs(loud[0].music_db + 15) < 1, loud);
   const duck = /set duck=(-\d+)/.exec(loud[0]?.hint ?? "")?.[1];
   check(`hint names a duck value (${duck})`, !!duck, loud[0]);
-  cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(duck) } }]));
+  cliLatest("apply", "-p", Q, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(duck) } }]));
   const fixed = notDucked(Q);
   check("applying the hinted duck clears the finding", fixed.length === 0, fixed);
 
@@ -108,12 +110,12 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   ff("-f", "lavfi", "-i", "aevalsrc='if(between(t,8,11),0.397,0.0997)*sin(2*PI*220*t)':s=48000:d=20", "-ac", "1", f("swell.wav")); // 14 dB under the voice, 2 dB under for 8-11 s
   const Z = f("q-swell");
   cli("init", Z, "--preset", "reels");
-  cli("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
+  cliLatest("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } },
     { op: "add_clip", track: "voice", src: f("long-voice.wav"), at: 0, duration: 20 }, { op: "add_clip", track: "music", src: f("swell.wav"), at: 0, duration: 20 }]));
   const sw = notDucked(Z);
   check("3 s swell (2 dB under) inside 20 s of narration (14 dB under): one finding around 8-11 s", sw.length === 1 && sw[0].start > 7 && sw[0].start < 9 && sw[0].end > 10 && sw[0].end < 12 && sw[0].end - sw[0].start < 5, sw);
   const swDuck = /set duck=(-\d+)/.exec(sw[0]?.hint ?? "")?.[1];
-  cli("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(swDuck) } }]));
+  cliLatest("apply", "-p", Z, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: Number(swDuck) } }]));
   check(`the swell's hinted duck (${swDuck}) clears it`, !!swDuck && notDucked(Z).length === 0, notDucked(Z));
 
   // each voice clip is judged against its own level: a quiet dialogue clip next to a loud voiceover, with a bed under the dialogue
@@ -122,7 +124,7 @@ console.log("music_not_ducked is judged by power over speech windows, hint is ac
   ff("-f", "lavfi", "-i", "aevalsrc='0.0251*sin(2*PI*220*t)':s=48000:d=13", "-ac", "1", f("bed-low.wav")); // -38 dBFS: 3 dB under the dialogue, 26 dB under the voiceover
   const M = f("q-mixed");
   cli("init", M, "--preset", "reels");
-  cli("apply", "-p", M, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } }, { op: "add_track", id: "dlg", kind: "audio", role: "dialogue" },
+  cliLatest("apply", "-p", M, "--ops", JSON.stringify([{ op: "update_track", id: "music", set: { duck: null } }, { op: "add_track", id: "dlg", kind: "audio", role: "dialogue" },
     { op: "add_clip", track: "voice", src: f("vo-loud.wav"), at: 0, duration: 6 }, { op: "add_clip", track: "dlg", src: f("dlg-quiet.wav"), at: 6.5, duration: 6 },
     { op: "add_clip", track: "music", src: f("bed-low.wav"), at: 0, duration: 13 }]));
   const mixed = notDucked(M);
@@ -139,7 +141,7 @@ ff("-f", "lavfi", "-i", "sine=f=220:d=11", "-ac", "2", f("bed11.wav"));
 {
   const Q = f("q-11025");
   cli("init", Q, "--preset", "reels");
-  cli("apply", "-p", Q, "--ops", JSON.stringify([{ op: "set_settings", sample_rate: 11025, loudness: null }, { op: "add_clip", track: "music", src: f("bed11.wav"), at: 0, duration: 10.01 }]));
+  cliLatest("apply", "-p", Q, "--ops", JSON.stringify([{ op: "set_settings", sample_rate: 11025, loudness: null }, { op: "add_clip", track: "music", src: f("bed11.wav"), at: 0, duration: 10.01 }]));
   let odd: any = null, err = "";
   try { odd = cli("audio", "-p", Q); } catch (e: any) { err = String(e.message); }
   check("audio_check at sample_rate 11025 on a 10.01 s project: mix lane present, no throw", !!odd && odd.lanes.some((l: any) => l.track === "mix"), err || odd?.lanes);

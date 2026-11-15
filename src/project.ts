@@ -30,20 +30,22 @@ function parse(text: string, snapshot?: string): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
-  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : "fix the file or undo to restore the last good version"); }
+  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : DAMAGED_FIX); }
   return checkVersion(tl, source, snapshot ? `there is no upgrade; project.json itself is fine: delete .agentcut/history/${snapshot}` : undefined);
 }
 
+/** The way out of a project.json that cannot be read: undo restores the last good version, and it is the one history call that needs no revision there (no revision can be read). */
+const DAMAGED_FIX = "undo restores the last good version (undo needs no revision while project.json is damaged), or fix the file";
+
 function revisionOf(tl: Timeline): number {
-  if (!Number.isInteger(tl.revision) || tl.revision < 0) throw new EditError(`project.json has no valid 'revision' (got ${JSON.stringify(tl.revision)})`, "bad_revision", 'set "revision": 0 at the top level of project.json');
+  if (!Number.isInteger(tl.revision) || tl.revision < 0) throw new EditError(`project.json has no valid 'revision' (got ${JSON.stringify(tl.revision)})`, "bad_revision", `set "revision": 0 at the top level of project.json; or ${DAMAGED_FIX}`);
   return tl.revision;
 }
 
-/** Optimistic concurrency: an edit based on revision `base` may only be written while the project is still at `base`. */
-export function checkRevision(base: number, current: number) {
-  if (!Number.isInteger(base) || base < 0) throw new EditError(`revision must be a non-negative integer (got ${JSON.stringify(base)})`, "bad_revision", "pass the revision from info / project_info, or omit it");
-  if (base !== current) throw new EditError(`project changed since revision ${base} (now ${current}); nothing was changed`, "conflict",
-    "reload the project (info / project_info), then re-apply your edit against the latest revision", undefined, { revision: current });
+/** Every history-writing call says which state of the project it was planned against; there is no "latest". */
+export function requireRevision(v: unknown): asserts v is number {
+  if (v === undefined || v === null) throw new EditError("no revision: every history-writing call says which state of the project it was planned against", "missing_revision",
+    "pass the revision you last read: info / project_info show it (CLI --revision N, MCP revision), and every apply, undo, redo and prepare result carries the new one; init and create_project return 0");
 }
 
 /** Who made a history change. Self-declared text, not a security boundary: it only has to be one short plain line, since it reaches JSON and the page. */
@@ -200,7 +202,36 @@ export class Project {
     }
   }
 
-  load(): Timeline { return parse(readFileSync(this.file, "utf8")); }
+  /** project.json as a timeline; a file with no valid revision is bad_revision here, so every command names the damage (its hint points to undo). */
+  load(): Timeline { const tl = parse(readFileSync(this.file, "utf8")); revisionOf(tl); return tl; }
+
+  /** Optimistic concurrency: a write based on revision `base` may only land while the project is still at `base`. The one conflict text, shared by api.apply, save, undo/redo and the page:
+   *  it names who changed the project since `base` (changesSince), so the caller can judge whether its edit still makes sense. */
+  checkRevision(base: number, current: number) {
+    if (!Number.isInteger(base) || base < 0) throw new EditError(`revision must be a non-negative integer (got ${JSON.stringify(base)})`, "bad_revision", "pass the revision from info / project_info, or from the previous result's revision");
+    if (base === current) return;
+    const changes = this.changesSince(base), shown = changes.slice(0, 8).map((c) => `${JSON.stringify(c.author)} ${c.label.slice(0, 60)}`).join(", ");
+    throw new EditError(`project changed since revision ${base} (now ${current})${shown ? `: ${shown}${changes.length > 8 ? `, and ${changes.length - 8} more` : ""}` : ""}; nothing was changed`, "conflict",
+      "reload the project (info / project_info), then resend your edit against the latest revision; an analysis the batch needed (transcription, speech, silence) runs again on the resend", undefined, { revision: current, changes });
+  }
+
+  /** Who changed the project at or after revision `base`, oldest first: a history entry holds the timeline from before its change, so a stored revision >= base is a change since.
+   *  Undo-stack entries are saves (or, with movedBy, redos); redo-stack entries are undos. Not listed: an undo that a later edit followed (the redo stack is gone) and what the
+   *  100-entry history dropped. Names are self-declared. Best effort: a history entry that cannot be read ends the list instead of replacing the conflict by another error. */
+  private changesSince(base: number): { author: string; label: string }[] {
+    const found: { r: number; author: string; label: string }[] = [];
+    try {
+      for (const stack of ["undo", "redo"]) {
+        const files = this.entries(stack);
+        for (let i = files.length - 1; i >= 0; i--) {
+          const e = Project.readEntry(files[i], stack), r = JSON.parse(e.timeline).revision;
+          if (!(r >= base)) break; // stored revisions rise with the position in a stack
+          found.push({ r, author: e.movedBy ?? e.author, label: (stack === "redo" ? "undo " : e.movedBy === undefined ? "" : "redo ") + e.label });
+        }
+      }
+    } catch { /* see above */ }
+    return found.sort((a, b) => a.r - b.r).map(({ author, label }) => ({ author, label }));
+  }
 
   /** Write tl if it is based on the revision on disk (else EditError "conflict"); returns the new revision. `author` is who made the change: the history
    *  entry records it (missing_author / bad_author otherwise). */
@@ -211,7 +242,7 @@ export class Project {
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
       const disk = revisionOf(parse(cur));
-      checkRevision(revisionOf(tl), disk);
+      this.checkRevision(revisionOf(tl), disk);
       this.entries("undo"); this.entries("redo"); // both stacks verified before the first write
       const pushed = this.push("undo", cur, label, by);
       tl.revision = disk + 1;
@@ -292,7 +323,7 @@ export class Project {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
       try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
-      if (base !== undefined && rev !== undefined) checkRevision(base, rev);
+      if (rev !== undefined) { requireRevision(base); this.checkRevision(base, rev); } // an unreadable project.json has no revision to name: undo then needs none
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
@@ -316,7 +347,7 @@ export class Project {
       return { entries: snaps.map((sn): HistoryEntry => ({ label: sn.label, author: sn.author, movedBy: by })), revision: rev, requested: steps, done: snaps.length };
     });
   }
-  /** base: the revision the caller saw; a newer revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
+  /** base: the revision the caller saw, required (missing_revision) unless project.json is unreadable; any other revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
   undo(steps = 1, base?: number, author?: string) { return this.step("undo", "redo", steps, base, author); }
   redo(steps = 1, base?: number, author?: string) { return this.step("redo", "undo", steps, base, author); }
   history() {

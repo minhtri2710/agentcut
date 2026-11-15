@@ -252,10 +252,10 @@ if (process.platform === "darwin" && process.env.AGENTCUT_HWACCEL !== "0") {
 console.log("exports, validation and relinking");
 {
   const P = join(tmp, "proj");
-  api.create(P, { width: W, height: H, fps: 30 });
-  await api.apply(P, [
+  const made = api.create(P, { width: W, height: H, fps: 30 });
+  const built = await api.apply(P, [
     { op: "add_clip", track: "main", src: v25.aac, in: 1.013, duration: 2 }, { op: "add_clip", track: "main", src: v50.plain, in: 0.5, duration: 2 },
-    { op: "add_clip", track: "main", src: v2997.aac, in: 2.2, duration: 2 }, { op: "add_clip", track: "main", src: mkv24, in: 1.1, duration: 1.5 }]);
+    { op: "add_clip", track: "main", src: v2997.aac, in: 2.2, duration: 2 }, { op: "add_clip", track: "main", src: mkv24, in: 1.1, duration: 1.5 }], { revision: made.revision });
   const frames = (file: string) => {
     const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", file, "-f", "rawvideo", "-pix_fmt", "gray", "-"], { maxBuffer: 1 << 28 });
     const out: number[] = [];
@@ -276,17 +276,17 @@ console.log("exports, validation and relinking");
   const rendered = await api.render(P, { out: join(tmp, "bare.mp4"), sheet: false }).then(() => "rendered", (e: any) => e?.code ?? String(e));
   check("and it does not render", rendered !== "rendered", rendered);
   const again: any = JSON.parse(readFileSync(join(P, "project.json"), "utf8")).assets[first];
-  await api.apply(P, [{ op: "relink_asset", id: first, path: again.path }]);
+  await api.apply(P, [{ op: "relink_asset", id: first, path: again.path }], { revision: built.revision }); // project.json was edited in place: no save since the build
   const healed: any = await api.validate(P);
   check("relink_asset with the same path records them and the project validates", healed.valid === true, healed);
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {
     const Q = join(tmp, `loop-${name}`);
-    api.create(Q, { width: W, height: H, fps: 24 });
-    await api.apply(Q, ops(src), { allowInvalid: true });
+    const q = api.create(Q, { width: W, height: H, fps: 24 });
+    const added = await api.apply(Q, ops(src), { allowInvalid: true, revision: q.revision });
     const clip = Object.values<any>(JSON.parse(readFileSync(join(Q, "project.json"), "utf8")).tracks).flatMap((t: any) => t.clips)[0];
-    const set: any = await api.apply(Q, [{ op: "update_clip", id: clip.id, set: { loop } }], { allowInvalid: true }).catch((e: any) => ({ error: e }));
+    const set: any = await api.apply(Q, [{ op: "update_clip", id: clip.id, set: { loop } }], { allowInvalid: true, revision: added.revision }).catch((e: any) => ({ error: e }));
     return JSON.stringify(await api.validate(Q)) + JSON.stringify(set.error?.message ?? "");
   };
   const tsLoop = await refused("ts", tsLong, true), mp4Loop = await refused("mp4", loop2, true), gifLoop = await refused("gif", gif, true), mkvLoop = await refused("mkv", mkv24, true);

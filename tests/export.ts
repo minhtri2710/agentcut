@@ -36,7 +36,7 @@ ff("-f", "lavfi", "-i", "gradients=size=800x800:n=4", "-frames:v", "1", P);
 ff("-f", "lavfi", "-i", "sine=f=60:d=12", "-ac", "2", MU);
 
 const dir = join(tmp, "proj");
-api.create(dir, { preset: "square", fps: 30 });
+const created = api.create(dir, { preset: "square", fps: 30 });
 const r = await api.apply(dir, [
   { op: "add_clip", track: "main", src: A, in: 0.5, duration: 2.5 },                                    // vid1 0..75
   { op: "add_clip", track: "main", src: P, duration: 2, transition: "crossfade", fit: "contain" },        // img1 60..120 (15f overlap)
@@ -48,7 +48,7 @@ const r = await api.apply(dir, [
   { op: "add_clip", track: "overlay", type: "shape", shape: "star", size: [100, 100], at: 0, duration: 1 }, // skipped
   { op: "add_clip", track: "music", src: MU, volume: 0.5, fade_in: 0.5, until_end: true },
   { op: "add_marker", t: 3, label: "check this" },
-]);
+], { revision: created.revision });
 check("project built", r.ok && r.errors === 0, r);
 const ids = r.results.map((x: any) => x.id).filter(Boolean);
 const [vid1, img1, vid2, vid3, txt1, ov1, ov2, shp1, mus1] = ids;
@@ -284,8 +284,8 @@ console.log("caption sources and subtitle export");
   const { layout, TextStyle } = await import("../src/text.ts");
   check("the words of a caption page and the layout words of its text agree, so the active word is the one meant", layout(named.map((w) => w.text).join(" "), new TextStyle({ font_size: 40, color: "#fff" }, 1, 360), 1e5).count === named.length);
   const nb = join(tmp, "nbsp-reveal");
-  api.create(nb, { preset: "square", empty: true });
-  await api.apply(nb, [{ op: "add_clip", track: "text", type: "text", text: "10\u00a0km now", duration: 3, enter: { type: "words", duration: 1 } }]);
+  const nbMade = api.create(nb, { preset: "square", empty: true });
+  await api.apply(nb, [{ op: "add_clip", track: "text", type: "text", text: "10\u00a0km now", duration: 3, enter: { type: "words", duration: 1 } }], { revision: nbMade.revision });
   const half = readFileSync((await api.frame(nb, 0.5)).image), full = readFileSync((await api.frame(nb, 1.5)).image);
   check("a text clip of two words (one joined by a no-break space) shows one of them half way through a word reveal", !half.equals(full));
   const bomSrt = join(tmp, "bom.srt"); // the WEBVTT header marks WebVTT, not the .vtt extension

@@ -10,6 +10,8 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// this suite's rows are about media and rendering, not concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { renderVideo, workerFailure } = await import("../src/encode.ts");
 const { HOST_TAG } = await import("../src/safe-write.ts");
 const { openProject } = api;
@@ -56,7 +58,7 @@ ff("-f", "lavfi", "-i", "sine=frequency=220:duration=4", "-ac", "2", join(m, "mu
 
 const P = join(tmp, "proj");
 api.create(P, { width: W, height: H, fps: 24 });
-await api.apply(P, [
+await applyLatest(P, [
   // video in the top-left quarter, text in the middle: the bottom-right corner stays background
   { op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: 0, duration: 2, size: [120, 90], position: "top_left" },
   { op: "add_clip", track: "text", text: "ALPHA", at: 0, duration: 2, font_size: 48 },
@@ -86,7 +88,7 @@ v = probe(out("auto.mov")).streams.find((s) => s.codec_type === "video");
 check("auto .mov = prores 422 HQ, no alpha", r.codec === "prores" && r.alpha === false && v?.profile === "HQ" && !/a/.test(v?.pix_fmt.replace("yuv", "")), v && { p: v.profile, f: v.pix_fmt });
 
 console.log("transparent background");
-await api.apply(P, { op: "set_settings", background: "#00000000" });
+await applyLatest(P, { op: "set_settings", background: "#00000000" });
 r = await timed("prores_4444 .mov", () => renderVideo(tl(), p.root, out("alpha.mov"), { codec: "prores_4444", workers: 1 }));
 v = probe(out("alpha.mov")).streams.find((s) => s.codec_type === "video");
 check("prores 4444 with alpha pix_fmt", v?.profile === "4444" && /^yuva/.test(v?.pix_fmt), v && { p: v.profile, f: v.pix_fmt });
@@ -140,7 +142,7 @@ console.log("still image (.png / .webp)");
 {
   const S = join(tmp, "still");
   api.create(S, { width: W, height: H, fps: 24 });
-  await api.apply(S, [{ op: "set_settings", background: "#00000000" },
+  await applyLatest(S, [{ op: "set_settings", background: "#00000000" },
     { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#ff0000", at: 0, duration: 1 },
     { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 1, duration: 1 }]);
   const so = (f: string) => join(S, "renders", f);
@@ -157,7 +159,7 @@ console.log("still image (.png / .webp)");
     if (chunk) check(`${name}: ${chunk} chunk`, existsSync(so(f)) && chunks(so(f)).join() === chunk && (chunk === "VP8L" || !chunks(so(f)).includes("VP8L")), existsSync(so(f)) && chunks(so(f)));
     const dir = join(tmp, `still-in-${f}`);
     api.create(dir, { width: W, height: H, fps: 24 });
-    await api.apply(dir, [{ op: "set_settings", background: "#00ff00" }, { op: "add_clip", track: "overlay", src: so(f), at: 0, duration: 1 }]).catch(() => {});
+    await applyLatest(dir, [{ op: "set_settings", background: "#00ff00" }, { op: "add_clip", track: "overlay", src: so(f), at: 0, duration: 1 }]).catch(() => {});
     const pv = join(dir, "previews", "x.png");
     await api.frame(dir, 0.5, { out: pv, scale: 1 }).catch(() => {});
     check(`${name}: re-imported, the transparent corner shows the background`, existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4).join() === "0,255,0,255" && px(rgbaFrame(pv, 0), W / 2, H / 2).join() === "255,0,0,255", existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4));
@@ -189,7 +191,7 @@ console.log("still image (.png / .webp)");
   check("an abort that lands after the frame is drawn rejects with its reason and writes no file", lateRes === reason && polls === 2 && !existsSync(lf), { polls, r: lateRes });
   const O = join(tmp, "still-opaque");
   api.create(O, { width: W, height: H, fps: 24 });
-  await api.apply(O, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 0, duration: 1 }]);
+  await applyLatest(O, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [100, 100], fill: "#0000ff", at: 0, duration: 1 }]);
   const op = await api.render(O, { out: join(O, "renders", "o.png") }).catch((e: any) => e) as any;
   const opf = join(O, "renders", "o.png");
   check("opaque background: alpha false, no warning, every pixel opaque", op.alpha === false && !op.warnings && existsSync(opf) && corner(opf).join() === "255,0,0,255", op);
@@ -204,7 +206,7 @@ console.log("timeline without an audible clip: no audio track");
   ff("-f", "lavfi", "-i", "sine=frequency=330:duration=2", "-ac", "2", join(m, "tone.wav"));
   const SP = join(tmp, "mute");
   api.create(SP, { width: W, height: H, fps: 24 });
-  await api.apply(SP, [{ op: "add_clip", track: "main", src: join(m, "mute.mp4"), at: 0, duration: 2 }]);
+  await applyLatest(SP, [{ op: "add_clip", track: "main", src: join(m, "mute.mp4"), at: 0, duration: 2 }]);
   const so = (f: string) => join(SP, "renders", f);
   const kinds = (f: string) => probe(f).streams.map((s) => s.codec_type).sort().join();
   const mute = (r: any) => r.has_audio === false && r.loudness === undefined && r.warnings?.some((w: string) => /no audible clips/.test(w));
@@ -229,12 +231,12 @@ console.log("timeline without an audible clip: no audio track");
   const hw: any = await api.render(SP, { out: so("mute-hw.mp4"), fast: true, workers: 1, end: 1, sheet: false });
   check("silent hardware-encode path (fast): no audio stream, has_audio false", kinds(so("mute-hw.mp4")) === "video" && hw.has_audio === false, { k: kinds(so("mute-hw.mp4")), hw });
   check("silent .mp4 keeps the faststart layout", (() => { const b = readFileSync(so("mute1.mp4")); return b.indexOf("moov") > 0 && b.indexOf("moov") < b.indexOf("mdat"); })());
-  await api.apply(SP, [{ op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
+  await applyLatest(SP, [{ op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
   for (const [f, workers] of [["mute-sub.mp4", 1], ["mute-sub2.mkv", 2]] as const) {
     const rs: any = await api.render(SP, { out: so(f), subtitles: true, workers, end: 1, sheet: false });
     check(`silent ${f} with subtitles: subtitle stream, no audio stream, has_audio false`, kinds(so(f)) === "subtitle,video" && rs.has_audio === false && rs.subtitles?.cues > 0, { k: kinds(so(f)), rs });
   }
-  await api.apply(SP, [{ op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 2, volume: 0.01 }]);
+  await applyLatest(SP, [{ op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 2, volume: 0.01 }]);
   const loud: any = await api.render(SP, { out: so("tone.mp4"), workers: 1 });
   check("a quiet audible clip keeps its track: audio stream, has_audio true, no warning, loudness measured", kinds(so("tone.mp4")) === "audio,video" && loud.has_audio === true && !loud.warnings && loud.loudness?.integrated_lufs != null, { k: kinds(so("tone.mp4")), loud });
 }
@@ -340,7 +342,7 @@ console.log("alpha in vp8/vp9 webm sources");
   const over = async (src: string, name: string) => {
     const dir = join(tmp, name);
     api.create(dir, { width: W, height: H, fps: 24 });
-    await api.apply(dir, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", src, at: 0, duration: 1 }]);
+    await applyLatest(dir, [{ op: "set_settings", background: "#ff0000" }, { op: "add_clip", track: "overlay", src, at: 0, duration: 1 }]);
     return dir;
   };
   const framePx = async (dir: string, name: string) => {
@@ -355,7 +357,7 @@ console.log("alpha in vp8/vp9 webm sources");
   { // render, then import the render, then composite it over red
     const dir = join(tmp, "rt");
     api.create(dir, { width: W, height: H, fps: 24 });
-    await api.apply(dir, [{ op: "set_settings", background: "#00000000" },
+    await applyLatest(dir, [{ op: "set_settings", background: "#00000000" },
       { op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: 0, duration: 1, size: [120, 90], position: "top_left" }]);
     const rt = join(dir, "renders", "rt.webm");
     await renderVideo(api.openProject(dir).absolutized(api.openProject(dir).load()), api.openProject(dir).root, rt, { workers: 1 });
@@ -470,8 +472,8 @@ console.log("font given by file path");
       return d;
     };
     const fileP = pf("fontp"), refP = pf("fontref");
-    await api.apply(fileP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: join(fa, "Brand.ttf") });
-    await api.apply(refP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: "Arial", weight: 400 });
+    await applyLatest(fileP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: join(fa, "Brand.ttf") });
+    await applyLatest(refP, { op: "add_clip", track: "text", text: "Hamburg", at: 0, duration: 1, font_size: 60, font: "Arial", weight: 400 });
     const childJs = join(tmp, "frame-child.ts");
     writeFileSync(childJs, `import { writeFileSync } from "node:fs";
 const api = await import(${JSON.stringify(join(import.meta.dir, "../src/api.ts"))});
@@ -511,8 +513,8 @@ console.log("CJK text: an installed CJK font fills in, and glyphs no font has ar
   }
   const D = join(tmp, "cjk");
   api.create(D, { width: 320, height: 120, fps: 24 });
-  await api.apply(D, [{ op: "add_clip", track: "text", id: "t", text: NONE, at: 0, duration: 1, font_size: 60 }]);
-  const draw = async (text: string) => { await api.apply(D, [{ op: "update_clip", id: "t", set: { text } }]); return Buffer.from((await api.frameImage(D, 0, { scale: 1, format: "png" })).data); };
+  await applyLatest(D, [{ op: "add_clip", track: "text", id: "t", text: NONE, at: 0, duration: 1, font_size: 60 }]);
+  const draw = async (text: string) => { await applyLatest(D, [{ op: "update_clip", id: "t", set: { text } }]); return Buffer.from((await api.frameImage(D, 0, { scale: 1, format: "png" })).data); };
   if (!cjkFont) console.log("  - skipped: no CJK font installed");
   else {
     const none = await draw(NONE);
@@ -521,7 +523,7 @@ console.log("CJK text: an installed CJK font fills in, and glyphs no font has ar
     for (const ch of new Set([...T1])) if (ch.trim() && !/[\x20-\x7e]/.test(ch) && (await draw(ch)).equals(none)) boxes.push(ch);
     check("every Chinese, Japanese and Korean character of the sample draws a glyph with the default font (none looks like a missing glyph)", boxes.length === 0, boxes);
   }
-  await api.apply(D, [{ op: "update_clip", id: "t", set: { text: `Hello ${NONE} there` } }, { op: "add_clip", track: "text", id: "e", text: "👨‍👩‍👧 family 🇻🇳 flag 1️⃣ keycap 👍🏽 tone ❤️ heart", at: 1, duration: 1 }]);
+  await applyLatest(D, [{ op: "update_clip", id: "t", set: { text: `Hello ${NONE} there` } }, { op: "add_clip", track: "text", id: "e", text: "👨‍👩‍👧 family 🇻🇳 flag 1️⃣ keycap 👍🏽 tone ❤️ heart", at: 1, duration: 1 }]);
   const v = spawnSync(process.execPath, ["--no-install", join(import.meta.dir, "../src/cli.ts"), "validate", "-p", D], { encoding: "utf8" }); // a fresh process: Skia is not loaded when it starts
   const vj = JSON.parse(v.stdout);
   check("validate in a fresh process warns, naming the character no font has", vj.warnings === 1 && vj.issues[0].level === "warning" && vj.issues[0].message.includes(NONE) && vj.issues[0].path.includes("<t>"), vj);
@@ -538,7 +540,7 @@ console.log(JSON.stringify({ valid: v.valid, errors: v.errors, warnings: v.warni
   const gate = (proj: string, cache: string) => JSON.parse(spawnSync(process.execPath, ["--no-install", gateJs, proj], { encoding: "utf8", env: { ...process.env, AGENTCUT_CACHE: cache } }).stdout);
   const U = join(tmp, "gate-unknown-font");
   api.create(U, { width: 320, height: 120, fps: 24 });
-  await api.apply(U, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: "NoSuchFontXyz" }], { allowInvalid: true });
+  await applyLatest(U, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: "NoSuchFontXyz" }], { allowInvalid: true });
   const cold = gate(U, join(tmp, "gate-cache")), warm = gate(U, join(tmp, "gate-cache"));
   check("empty cache, ASCII text, unknown font: validate and info both report it (Skia is loaded to learn the families)", cold.valid === false && cold.errors === 1 && cold.infoErrors === 1 && /not found/.test(cold.issues[0].message) && cold.loaded === true, cold);
   check("warm cache: the same answer, and Skia is not loaded", warm.valid === false && warm.errors === 1 && warm.infoErrors === 1 && warm.issues[0].message === cold.issues[0].message && warm.loaded === false, warm);
@@ -547,7 +549,7 @@ console.log(JSON.stringify({ valid: v.valid, errors: v.errors, warnings: v.warni
   else {
     const F = join(tmp, "gate-font-file");
     api.create(F, { width: 320, height: 120, fps: 24 });
-    await api.apply(F, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: FILE }]);
+    await applyLatest(F, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 1, font: FILE }]);
     gate(F, join(tmp, "gate-cache-file")); // the family cache is kept per project (its fonts folder is part of the key): the first run writes it
     const without = gate(F, join(tmp, "gate-cache-file")), withSkia = await api.validate(F);
     check("ASCII text in a font file: validate gives the same issues without Skia as with it", without.loaded === false && without.valid === true && JSON.stringify(without.issues) === JSON.stringify(withSkia.issues) && without.errors === withSkia.errors && without.warnings === withSkia.warnings, { without, withSkia });
@@ -601,7 +603,7 @@ console.log("decode and render failures");
     const L = join(tmp, "freeze-loop"), P = join(tmp, "freeze-plain");
     for (const [d, op, at] of [[L, { loop: true, duration: 4 }, 2.5], [P, {}, 0.5]] as const) {
       api.create(d, { width: 64, height: 64, fps: 30 });
-      await api.apply(d, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4"), ...op }, { op: "freeze_frame", id: "vid1", at, duration: 1 }]);
+      await applyLatest(d, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4"), ...op }, { op: "freeze_frame", id: "vid1", at, duration: 1 }]);
     }
     const fl = await api.frameImage(L, 2.7, { scale: 1 }).catch((e: any) => e), fp = await api.frameImage(P, 0.7, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame in the second pass of a looping clip holds the frame that was playing", fl?.data?.length > 100 && fp?.data?.length > 100 && Buffer.from(fl.data).equals(Buffer.from(fp.data)), fl?.code ?? fp?.code);
@@ -618,7 +620,7 @@ console.log("decode and render failures");
   {
     const F = join(tmp, "freeze-end");
     api.create(F, { width: 64, height: 64, fps: 30 });
-    await api.apply(F, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4") }, { op: "freeze_frame", id: "vid1", at: "end", duration: 1 }]);
+    await applyLatest(F, [{ op: "add_clip", track: "main", src: join(m, "endclip.mp4") }, { op: "freeze_frame", id: "vid1", at: "end", duration: 1 }]);
     const fr = await api.frameImage(F, 2.5, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame at the end of a clip that runs to the end of its file renders", fr?.data?.length > 100, fr?.code ?? fr?.message);
   }
@@ -638,7 +640,7 @@ console.log("decode and render failures");
     ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", join(m, "loop-al.mp4"));
     const LP = join(tmp, "loop-al");
     api.create(LP, { width: 64, height: 64, fps: 24 });
-    await api.apply(LP, [{ op: "add_clip", track: "main", src: join(m, "loop-al.mp4"), loop: true, duration: 12 }]);
+    await applyLatest(LP, [{ op: "add_clip", track: "main", src: join(m, "loop-al.mp4"), loop: true, duration: 12 }]);
     const at = async (t: number) => Buffer.from((await api.frameImage(LP, t, { scale: 1 })).data);
     const [f05, f29, f35, f95] = [await at(0.5), await at(2.9), await at(3.5), await at(9.5)];
     check("a looped video clip of a file with longer sound wraps at the picture's length (3.5 s and 9.5 s show the picture of 0.5 s), so no cycle holds a frozen frame", f35.equals(f05) && f95.equals(f05) && !f35.equals(f29), [f05.length, f29.length]);
@@ -648,14 +650,14 @@ console.log("decode and render failures");
     ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-pix_fmt", "yuv420p", join(m, "p2s4.mp4"));
     const H = join(tmp, "hint-early");
     api.create(H, { width: 64, height: 64, fps: 24 });
-    await api.apply(H, [{ op: "add_clip", track: "main", src: join(m, "p2s4.mp4"), duration: 4, id: "v" }]);
+    await applyLatest(H, [{ op: "add_clip", track: "main", src: join(m, "p2s4.mp4"), duration: 4, id: "v" }]);
     const pj = JSON.parse(readFileSync(join(H, "project.json"), "utf8"));
     const aid = Object.keys(pj.assets)[0], had = pj.assets[aid].video_duration;
     delete pj.assets[aid].video_duration;
     writeFileSync(join(H, "project.json"), JSON.stringify(pj, null, 2));
     const early: any = await api.frameImage(H, 3, { scale: 1 }).catch((e: any) => e);
     check("a source that ends early names relink_asset with the same path, trim_clip's alternative, and not re-import", early.code === "decode_failed" && /relink_asset/.test(early.hint) && /same path/.test(early.hint) && !/re-import/.test(early.hint), { had, code: early.code, hint: early.hint });
-    await api.apply(H, [{ op: "relink_asset", id: aid, path: join(m, "p2s4.mp4") }]);
+    await applyLatest(H, [{ op: "relink_asset", id: aid, path: join(m, "p2s4.mp4") }]);
     const after: any = await api.frameImage(H, 3, { scale: 1 }).catch((e: any) => e);
     check("relink_asset with the same path records the picture's length, and the frame past it is then held", after?.data?.length > 100, after?.code ?? after?.message);
   }
@@ -693,7 +695,7 @@ console.log("decode and render failures");
   const Q = join(tmp, "projq");
   api.create(Q, { width: W, height: H, fps: 24 });
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-pix_fmt", "yuv420p", join(m, "bad.mp4")); // no audio stream: only the decode can fail
-  await api.apply(Q, [{ op: "add_clip", track: "overlay", src: join(m, "bad.mp4"), at: 0, duration: 2 }]);
+  await applyLatest(Q, [{ op: "add_clip", track: "overlay", src: join(m, "bad.mp4"), at: 0, duration: 2 }]);
   writeFileSync(join(m, "bad.mp4"), "not media at all");
   const qp = openProject(Q), qtl = () => qp.absolutized(openProject(Q).load());
   const one = await expectError(() => renderVideo(qtl(), qp.root, join(Q, "renders", "w1.mp4"), { workers: 1 }));
@@ -706,7 +708,7 @@ console.log("decode and render failures");
   const H1 = join(tmp, "projh");
   api.create(H1, { width: W, height: H, fps: 24 });
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "onesec.mp4"));
-  await api.apply(H1, [{ op: "add_clip", track: "overlay", src: join(m, "onesec.mp4"), at: 0, duration: 2 }]);
+  await applyLatest(H1, [{ op: "add_clip", track: "overlay", src: join(m, "onesec.mp4"), at: 0, duration: 2 }]);
   const hp = openProject(H1), htl = () => hp.absolutized(openProject(H1).load());
   const h1 = await expectError(() => renderVideo(htl(), hp.root, join(H1, "renders", "h1.mp4"), { workers: 1 }));
   const h2 = await expectError(() => renderVideo(htl(), hp.root, join(H1, "renders", "h2.mp4"), { workers: 2 }));
@@ -814,7 +816,7 @@ console.log("decode and render failures");
   ff("-f", "lavfi", "-i", "testsrc=size=64x64:rate=30:duration=3", "-pix_fmt", "yuv420p", join(m, "b30.mp4"));
   const D = join(tmp, "projd");
   api.create(D, { width: W, height: H, fps: 24 });
-  await api.apply(D, [
+  await applyLatest(D, [
     { op: "add_clip", track: "main", src: join(m, "a30.mp4"), duration: 2 },
     { op: "add_clip", track: "main", src: join(m, "b30.mp4"), duration: 2, transition: { type: "crossfade", duration: 0.5 } },
   ]);
@@ -826,7 +828,7 @@ console.log("decode and render failures");
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=1", "-pix_fmt", "yuv420p", join(m, "s30.mp4"));
   const G = join(tmp, "projg");
   api.create(G, { width: W, height: H, fps: 24 });
-  await api.apply(G, [{ op: "add_clip", track: "overlay", src: join(m, "s30.mp4"), at: 0, duration: 3 }]);
+  await applyLatest(G, [{ op: "add_clip", track: "overlay", src: join(m, "s30.mp4"), at: 0, duration: 3 }]);
   const [g1, g2] = await renderTwice(G, [1, 2]);
   check("a held frame of a 30 fps source on a 24 fps timeline is the same for one and two workers", g1.length === 72 && differ(g1, g2).length === 0, [g1.length, g2.length, differ(g1, g2).slice(0, 5)]);
 
@@ -834,7 +836,7 @@ console.log("decode and render failures");
   // A-27: a layer that has ended keeps no canvas
   const C = join(tmp, "projc");
   api.create(C, { width: W, height: H, fps: 24 });
-  await api.apply(C, Array.from({ length: 6 }, (_, i) => ({ op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: i * 0.5, duration: 0.5, scale: 0.9 })));
+  await applyLatest(C, Array.from({ length: 6 }, (_, i) => ({ op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: i * 0.5, duration: 0.5, scale: 0.9 })));
   const cp = openProject(C);
   await api.frameImage(C, 0); // loads Skia
   const rend = new R.Renderer(structuredClone(cp.absolutized(openProject(C).load())), cp.root, 1);

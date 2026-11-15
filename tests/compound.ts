@@ -10,6 +10,8 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-compound-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// this suite's rows are about clips and rendering, not concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { audioSources, buildAudio } = await import("../src/audio.ts");
 const { speedIntegral } = await import("../src/anim.ts");
 
@@ -36,7 +38,7 @@ ff("-f", "lavfi", "-i", "sine=frequency=220:duration=12", "-ac", "2", join(m, "b
 
 const P = join(tmp, "proj");
 api.create(P, { preset: "720p" });
-await api.apply(P, [
+await applyLatest(P, [
   { op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3 },
   { op: "add_clip", track: "main", src: join(m, "p.png"), duration: 2, transition: "crossfade", motion: "ken_burns" },
   { op: "add_clip", track: "main", src: join(m, "b.mp4"), duration: 2.5, transition: { type: "crossfade", duration: 0.5 } },
@@ -55,7 +57,7 @@ const before = await snap("before"), audioBefore = await mix("before");
 const dur0 = (await api.info(P)).duration;
 
 console.log("make_compound");
-const r = await api.apply(P, [{ op: "make_compound", ids: ["main#0", "main#1", "txt1"], name: "intro" }]);
+const r = await applyLatest(P, [{ op: "make_compound", ids: ["main#0", "main#1", "txt1"], name: "intro" }]);
 const res = r.results[0];
 check("compound created on main", res.id === "cmp1" && res.track === "main" && res.duration === 4.5, res);
 check("outside connected clip detached", res.detached?.includes("txt2"), res);
@@ -73,14 +75,14 @@ check(`audio mix identical (mean abs diff ${meanDiff(audioBefore, audioAfter).to
 
 console.log("validation + errors");
 const dupNested = [{ op: "add_clip", track: "overlay", type: "color", color: "red", id: "img1", at: 0, duration: 1 }];
-check("duplicate nested id rejected as exists", await rejects(() => api.apply(P, dupNested), "exists"));
-check("  also with allow_invalid", await rejects(() => api.apply(P, dupNested, { allowInvalid: true }), "exists"));
-check("new ids skip nested ones", (await api.apply(P, [{ op: "add_clip", track: "overlay", src: join(m, "p.png"), at: 0, duration: 1 }], { dryRun: true })).results[0].id === "img2");
-check("expand needs a compound", await rejects(() => api.apply(P, [{ op: "expand_compound", id: "vid2" }]), "bad_type"));
-await api.apply(P, [{ op: "update_clip", id: "cmp1", set: { effects: [{ type: "bw" }], opacity: 0.8 } }]);
+check("duplicate nested id rejected as exists", await rejects(() => applyLatest(P, dupNested), "exists"));
+check("  also with allow_invalid", await rejects(() => applyLatest(P, dupNested, { allowInvalid: true }), "exists"));
+check("new ids skip nested ones", (await applyLatest(P, [{ op: "add_clip", track: "overlay", src: join(m, "p.png"), at: 0, duration: 1 }], { dryRun: true })).results[0].id === "img2");
+check("expand needs a compound", await rejects(() => applyLatest(P, [{ op: "expand_compound", id: "vid2" }]), "bad_type"));
+await applyLatest(P, [{ op: "update_clip", id: "cmp1", set: { effects: [{ type: "bw" }], opacity: 0.8 } }]);
 const fx = await api.frame(P, 1, { out: join(tmp, "fx.png"), scale: 0.25 });
 check("compound with effects renders", fx.bytes > 1000);
-await api.apply(P, [{ op: "update_clip", id: "cmp1", set: { effects: null, opacity: null } }]);
+await applyLatest(P, [{ op: "update_clip", id: "cmp1", set: { effects: null, opacity: null } }]);
 
 console.log("render");
 const out = join(tmp, "draft.mp4");
@@ -90,7 +92,7 @@ check("draft has audio + video", pr.streams.some((s: any) => s.codec_type === "a
 check(`draft duration ${Number(pr.format.duration).toFixed(2)} ≈ ${dur0}`, Math.abs(Number(pr.format.duration) - dur0) < 0.1, rr);
 
 console.log("expand_compound");
-const e = (await api.apply(P, [{ op: "expand_compound", id: "cmp1" }])).results[0];
+const e = (await applyLatest(P, [{ op: "expand_compound", id: "cmp1" }])).results[0];
 check("expanded ids", ["vid1", "img1", "txt1"].every((i) => e.ids.includes(i)) && !e.created_tracks.length && !e.gaps.length, e);
 const inf2 = (await api.info(P, "both"));
 check("main restored", inf2.timeline.tracks.find((t: any) => t.id === "main").clips.map((c: any) => c.id).join() === "vid1,img1,vid2");
@@ -98,14 +100,14 @@ check("txt1 still attached to img1", inf2.timeline.tracks.find((t: any) => t.id 
 check("no validation errors after expand", inf2.errors === 0, inf2.issues);
 const back = await snap("back");
 times.forEach((t, i) => check(`frame ${t}s identical after expand (${meanDiff(before[i], back[i]).toFixed(3)})`, meanDiff(before[i], back[i]) < 0.5));
-check("non-contiguous selection rejected", await rejects(() => api.apply(P, [{ op: "make_compound", ids: ["vid1", "vid2"] }]), "not_contiguous"));
-check("selection past the storyline run rejected", await rejects(() => api.apply(P, [{ op: "make_compound", ids: ["img1", "txt2"] }]), "out_of_span"));
+check("non-contiguous selection rejected", await rejects(() => applyLatest(P, [{ op: "make_compound", ids: ["vid1", "vid2"] }]), "not_contiguous"));
+check("selection past the storyline run rejected", await rejects(() => applyLatest(P, [{ op: "make_compound", ids: ["img1", "txt2"] }]), "out_of_span"));
 
 console.log("trimmed compound on a non-magnetic track");
-const g = (await api.apply(P, [{ op: "make_compound", ids: ["txt2", "txt1"] }])).results[0];
+const g = (await applyLatest(P, [{ op: "make_compound", ids: ["txt2", "txt1"] }])).results[0];
 check("compound on text track at s0", g.track === "text" && Math.abs(g.start - 0.2) < 1e-6, g);
-await api.apply(P, [{ op: "update_clip", id: g.id, set: { in: 0.5, duration: 2.6 } }]);
-const e2 = (await api.apply(P, [{ op: "expand_compound", id: g.id }])).results[0];
+await applyLatest(P, [{ op: "update_clip", id: g.id, set: { in: 0.5, duration: 2.6 } }]);
+const e2 = (await applyLatest(P, [{ op: "expand_compound", id: g.id }])).results[0];
 const txt = (await api.info(P, "json")).timeline.tracks.find((t: any) => t.id === "text").clips;
 const t1 = txt.find((c: any) => c.id === "txt1"), t2 = txt.find((c: any) => c.id === "txt2");
 check("trimmed to the visible window", e2.dropped.length === 0 && Math.abs(t2.start - 0.2) < 1e-6 && Math.abs(t2.duration - 0.5) < 1e-6 && Math.abs(t1.start - 2.5) < 1e-6 && Math.abs(t1.duration - 0.3) < 1e-6, { t1, t2, e2 });
@@ -114,105 +116,105 @@ console.log("regroup: expand_compound stamps what it places, make_compound from=
 const Q = join(tmp, "regroup");
 api.create(Q, { preset: "720p" });
 const col = (track: string, id: string, color: string, extra: object = {}) => ({ op: "add_clip", track, type: "color", color, id, duration: 2, ...extra });
-await api.apply(Q, [col("main", "c1", "red"), col("main", "c2", "blue"), col("main", "c3", "green"), col("ov", "o1", "white", { at: 0, duration: 1 }), col("ov", "o2", "gray", { at: 1, duration: 1 })]);
+await applyLatest(Q, [col("main", "c1", "red"), col("main", "c2", "blue"), col("main", "c3", "green"), col("ov", "o1", "white", { at: 0, duration: 1 }), col("ov", "o2", "gray", { at: 1, duration: 1 })]);
 const all = async () => (await api.info(Q, "json")).timeline.tracks.flatMap((t: any) => t.clips) as any[];
 const byId = async (id: string) => (await all()).find((c: any) => c.id === id);
 const groupOf = async (id: string) => (await byId(id))?.group;
 const nestedIds = async (id: string) => (await byId(id)).tracks.flatMap((t: any) => t.clips.map((c: any) => c.id)).sort().join();
-await api.apply(Q, [{ op: "make_compound", ids: ["c1", "c2"], id: "gA", name: "alpha" }, { op: "make_compound", ids: ["c3"], id: "gB" }]);
-await api.apply(Q, [{ op: "update_clip", id: "gB", set: { duration: 3 } }]);
-const xa = (await api.apply(Q, [{ op: "expand_compound", id: "gA" }])).results[0];
-const xb = (await api.apply(Q, [{ op: "expand_compound", id: "gB" }])).results[0];
+await applyLatest(Q, [{ op: "make_compound", ids: ["c1", "c2"], id: "gA", name: "alpha" }, { op: "make_compound", ids: ["c3"], id: "gB" }]);
+await applyLatest(Q, [{ op: "update_clip", id: "gB", set: { duration: 3 } }]);
+const xa = (await applyLatest(Q, [{ op: "expand_compound", id: "gA" }])).results[0];
+const xb = (await applyLatest(Q, [{ op: "expand_compound", id: "gB" }])).results[0];
 check("expand stamps every clip it places", (await Promise.all(xa.ids.map(async (i: string) => JSON.stringify(await groupOf(i)) === JSON.stringify({ id: "gA", name: "alpha", track: "main" })))).every(Boolean), await Promise.all(xa.ids.map(groupOf)));
 check("expand stamps its gaps too (unnamed compound: no name)", xb.gaps.length === 1 && (await Promise.all([...xb.ids, ...xb.gaps].map(async (i: string) => JSON.stringify(await groupOf(i)) === JSON.stringify({ id: "gB", track: "main" })))).every(Boolean), await Promise.all([...xb.ids, ...xb.gaps].map(groupOf)));
 check("two expands give two separate groups", (await all()).filter((c: any) => c.group?.id === "gA").length === 2 && (await all()).filter((c: any) => c.group?.id === "gB").length === 2);
 check("the stamped timeline validates", (await api.info(Q, "json")).errors === 0, (await api.info(Q, "json")).issues);
-const sp = (await api.apply(Q, [{ op: "split_clip", id: "c2", at: 3 }])).results[0];
+const sp = (await applyLatest(Q, [{ op: "split_clip", id: "c2", at: 3 }])).results[0];
 check("split keeps the stamp on both halves", (await groupOf("c2"))?.id === "gA" && (await groupOf(sp.right))?.id === "gA", [(await groupOf("c2")), (await groupOf(sp.right))]);
-const dup = (await api.apply(Q, [{ op: "duplicate_clip", id: "c1" }])).results[0];
+const dup = (await applyLatest(Q, [{ op: "duplicate_clip", id: "c1" }])).results[0];
 check("duplicate_clip clears the stamp on the copy and keeps it on the original", (await groupOf(dup.id)) === undefined && (await groupOf("c1"))?.id === "gA", [(await groupOf(dup.id)), (await groupOf("c1"))]);
-await api.apply(Q, [{ op: "remove_clip", id: dup.id }]);
-const ra = (await api.apply(Q, [{ op: "make_compound", from: "gA" }])).results[0];
+await applyLatest(Q, [{ op: "remove_clip", id: dup.id }]);
+const ra = (await applyLatest(Q, [{ op: "make_compound", from: "gA" }])).results[0];
 check("from regroups both halves on the storyline, with the old id and name", ra.id === "gA" && (await byId("gA"))?.name === "alpha" && (await nestedIds("gA")) === `c1,c2,${sp.right}`.split(",").sort().join(), { ra, nested: (await byId("gA")) && (await nestedIds("gA")) });
 check("  the stamps are cleared inside the compound, and gB's are untouched", !JSON.stringify((await byId("gA")).tracks).includes('"group"') && (await all()).filter((c: any) => c.group?.id === "gB").length === 2);
 check("  nothing is left over from gA", !(await all()).some((c: any) => c.group?.id === "gA"));
 check("  validates", (await api.info(Q, "json")).errors === 0, (await api.info(Q, "json")).issues);
 
-await api.apply(Q, [{ op: "make_compound", ids: ["o1", "o2"], id: "gC" }]);
-const xc = (await api.apply(Q, [{ op: "expand_compound", id: "gC" }])).results[0];
-const spo = (await api.apply(Q, [{ op: "split_clip", id: "o2", at: 1.5 }])).results[0];
+await applyLatest(Q, [{ op: "make_compound", ids: ["o1", "o2"], id: "gC" }]);
+const xc = (await applyLatest(Q, [{ op: "expand_compound", id: "gC" }])).results[0];
+const spo = (await applyLatest(Q, [{ op: "split_clip", id: "o2", at: 1.5 }])).results[0];
 check("non-magnetic track: stamped, and split keeps it", (await Promise.all(xc.ids.map(async (i: string) => (await groupOf(i))?.id === "gC"))).every(Boolean) && (await groupOf(spo.right))?.id === "gC");
-const rc = (await api.apply(Q, [{ op: "make_compound", from: "gC" }])).results[0];
+const rc = (await applyLatest(Q, [{ op: "make_compound", from: "gC" }])).results[0];
 check("non-magnetic track: from regroups all three clips", rc.id === "gC" && rc.track === "ov" && (await nestedIds("gC")) === ["o1", "o2", spo.right].sort().join() && !(await all()).some((c: any) => c.group?.id === "gC"), { rc, n: (await nestedIds("gC")) });
 
 console.log("regroup: detached audio stays paired and stamped");
-await api.apply(Q, [
+await applyLatest(Q, [
   { op: "add_clip", track: "vt", src: join(m, "a.mp4"), id: "v1", at: 0, duration: 2 },
   { op: "detach_audio", id: "v1" },
 ]);
 const au1 = (await all()).find((c: any) => c.type === "audio" && c.attach_to === "v1").id;
-await api.apply(Q, [{ op: "make_compound", ids: ["v1", au1], id: "gD" }]);
-const xd = (await api.apply(Q, [{ op: "expand_compound", id: "gD" }])).results[0];
+await applyLatest(Q, [{ op: "make_compound", ids: ["v1", au1], id: "gD" }]);
+const xd = (await applyLatest(Q, [{ op: "expand_compound", id: "gD" }])).results[0];
 check("expand stamps the detached audio it places", xd.ids.includes(au1) && (await groupOf("v1"))?.id === "gD" && (await groupOf(au1))?.id === "gD", xd);
-const spv = (await api.apply(Q, [{ op: "split_clip", id: "v1", at: 1 }])).results[0];
+const spv = (await applyLatest(Q, [{ op: "split_clip", id: "v1", at: 1 }])).results[0];
 const au2 = (await all()).find((c: any) => c.type === "audio" && c.attach_to === spv.right)?.id;
 check("split keeps the audio paired with its picture, and every half stamped", !!au2 && (await Promise.all([ "v1", au1, spv.right, au2 ].map(async (i) => (await groupOf(i))?.id === "gD"))).every(Boolean), (await all()).map((c: any) => [c.id, c.attach_to, c.group?.id]));
-const rd = (await api.apply(Q, [{ op: "make_compound", from: "gD" }])).results[0];
+const rd = (await applyLatest(Q, [{ op: "make_compound", from: "gD" }])).results[0];
 const nested = (await byId("gD")).tracks.flatMap((t: any) => t.clips) as any[];
 check("from takes both pictures and both audio clips, pairs intact", rd.id === "gD" && nested.length === 4 && nested.find((c: any) => c.id === au1).attach_to === "v1" && nested.find((c: any) => c.id === au2).attach_to === spv.right, nested.map((c: any) => [c.id, c.attach_to]));
 check("  the regrouped project validates", (await api.info(Q, "json")).errors === 0, (await api.info(Q, "json")).issues);
-await api.apply(Q, [{ op: "add_clip", track: "vt", src: join(m, "a.mp4"), id: "v2", at: 5, duration: 1, group: { id: "gE", track: "vt" } }, { op: "detach_audio", id: "v2" }]);
+await applyLatest(Q, [{ op: "add_clip", track: "vt", src: join(m, "a.mp4"), id: "v2", at: 5, duration: 1, group: { id: "gE", track: "vt" } }, { op: "detach_audio", id: "v2" }]);
 check("detach_audio gives the new audio clip its picture's stamp", (await all()).filter((c: any) => c.group?.id === "gE").length === 2, (await all()).map((c: any) => [c.id, c.group?.id]));
 
 console.log("regroup: arguments");
-check("ids and from together are rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", ids: ["v2"], from: "gE" }]), "bad_arg"));
-check("neither ids nor from is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound" }]), "missing_arg"));
-check("from with no stamped clips is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "nope" }]), "no_group"));
-check("from while that compound is on the timeline is rejected", await rejects(() => api.apply(Q, [{ op: "make_compound", from: "gD" }]), "exists"));
+check("ids and from together are rejected", await rejects(() => applyLatest(Q, [{ op: "make_compound", ids: ["v2"], from: "gE" }]), "bad_arg"));
+check("neither ids nor from is rejected", await rejects(() => applyLatest(Q, [{ op: "make_compound" }]), "missing_arg"));
+check("from with no stamped clips is rejected", await rejects(() => applyLatest(Q, [{ op: "make_compound", from: "nope" }]), "no_group"));
+check("from while that compound is on the timeline is rejected", await rejects(() => applyLatest(Q, [{ op: "make_compound", from: "gD" }]), "exists"));
 async function failure(f: () => Promise<unknown>) { try { await f(); return null; } catch (e: any) { return e; } }
-await api.apply(Q, [col("hm", "h1", "red", { at: 0, duration: 1 }), col("hm", "h2", "blue", { at: 1, duration: 1 }), { op: "make_compound", ids: ["h1", "h2"], id: "gH" }, { op: "expand_compound", id: "gH" }]);
-await api.apply(Q, [{ op: "add_track", id: "other" }, { op: "move_clip", id: "h1", track: "other", at: 0 }, { op: "move_clip", id: "h2", track: "other", at: 1 }]);
+await applyLatest(Q, [col("hm", "h1", "red", { at: 0, duration: 1 }), col("hm", "h2", "blue", { at: 1, duration: 1 }), { op: "make_compound", ids: ["h1", "h2"], id: "gH" }, { op: "expand_compound", id: "gH" }]);
+await applyLatest(Q, [{ op: "add_track", id: "other" }, { op: "move_clip", id: "h1", track: "other", at: 0 }, { op: "move_clip", id: "h2", track: "other", at: 1 }]);
 let snapQ = JSON.stringify(api.openProject(Q).load());
-const hx1 = await failure(() => api.apply(Q, [{ op: "make_compound", from: "gH" }]));
+const hx1 = await failure(() => applyLatest(Q, [{ op: "make_compound", from: "gH" }]));
 check("from: every member left the home track -> home_track_empty, naming the track and the group", hx1?.code === "home_track_empty" && /'hm'/.test(hx1.message) && /'gH'/.test(hx1.message) && !!hx1.hint, hx1 && [hx1.code, hx1.message]);
 check("  the failed batch left the timeline unchanged", JSON.stringify(api.openProject(Q).load()) === snapQ);
-await api.apply(Q, [{ op: "remove_track", id: "hm" }]);
+await applyLatest(Q, [{ op: "remove_track", id: "hm" }]);
 snapQ = JSON.stringify(api.openProject(Q).load());
-const hx2 = await failure(() => api.apply(Q, [{ op: "make_compound", from: "gH" }]));
+const hx2 = await failure(() => applyLatest(Q, [{ op: "make_compound", from: "gH" }]));
 check("from: the home track is gone -> missing_track, naming the track and the group", hx2?.code === "missing_track" && /'hm'/.test(hx2.message) && /'gH'/.test(hx2.message) && /add_track/.test(hx2.hint), hx2 && [hx2.code, hx2.message, hx2.hint]);
 check("  the failed batch left the timeline unchanged", JSON.stringify(api.openProject(Q).load()) === snapQ);
-await api.apply(Q, [{ op: "add_track", id: "hm" }, { op: "move_clip", id: "h1", track: "hm", at: 0 }]);
-const rh = (await api.apply(Q, [{ op: "make_compound", from: "gH" }])).results[0];
+await applyLatest(Q, [{ op: "add_track", id: "hm" }, { op: "move_clip", id: "h1", track: "hm", at: 0 }]);
+const rh = (await applyLatest(Q, [{ op: "make_compound", from: "gH" }])).results[0];
 check("from: with the home track back (one member on it) the compound lands there, not on another track", rh.id === "gH" && rh.track === "hm", rh);
-check("a group without a track is rejected by validation", await rejects(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz1", at: 8, duration: 1, group: { id: "G" } }]), "validation_failed"));
-check("a group whose track is not a string is rejected by validation", await rejects(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz2", at: 8, duration: 1, group: { id: "G", track: 5 } }]), "validation_failed"));
-const xs = await failure(() => api.apply(Q, [{ op: "make_compound", from: "c3" }]));
+check("a group without a track is rejected by validation", await rejects(() => applyLatest(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz1", at: 8, duration: 1, group: { id: "G" } }]), "validation_failed"));
+check("a group whose track is not a string is rejected by validation", await rejects(() => applyLatest(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz2", at: 8, duration: 1, group: { id: "G", track: 5 } }]), "validation_failed"));
+const xs = await failure(() => applyLatest(Q, [{ op: "make_compound", from: "c3" }]));
 check("from=<id of a plain clip> says the id is used, not that a compound is", xs?.code === "exists" && /already used/.test(xs.message) && !/compound/.test(xs.message), xs && [xs.code, xs.message]);
-check("a group without an id is rejected by validation", await rejects(() => api.apply(Q, [{ op: "update_clip", id: "v2", set: { group: { id: null } } }]), "validation_failed"));
+check("a group without an id is rejected by validation", await rejects(() => applyLatest(Q, [{ op: "update_clip", id: "v2", set: { group: { id: null } } }]), "validation_failed"));
 
 console.log("regroup: a compound expanded inside an expanded compound rejoins its outer group");
 const deepIds = (c: any): string[] => c.tracks.flatMap((t: any) => t.clips.flatMap((x: any) => (x.type === "compound" ? [x.id, ...deepIds(x)] : [x.id])));
 async function twoLevel(name: string, setup: object[], outer: string[], innerOuterId: string, splitAt: [string, number], expectTrack: string) {
   const R = join(tmp, name);
   api.create(R, { preset: "720p" });
-  await api.apply(R, setup);
-  await api.apply(R, [{ op: "make_compound", ids: ["i1", "i2"], id: "A" }, { op: "make_compound", ids: outer, id: "O" }]);
-  await api.apply(R, [{ op: "expand_compound", id: "O" }]);
-  await api.apply(R, [{ op: "expand_compound", id: "A" }]);
+  await applyLatest(R, setup);
+  await applyLatest(R, [{ op: "make_compound", ids: ["i1", "i2"], id: "A" }, { op: "make_compound", ids: outer, id: "O" }]);
+  await applyLatest(R, [{ op: "expand_compound", id: "O" }]);
+  await applyLatest(R, [{ op: "expand_compound", id: "A" }]);
   const tl = () => api.openProject(R).load();
   const flat = () => tl().tracks.flatMap((t: any) => t.clips) as any[];
   const inner = flat().find((c: any) => c.id === "i1").group;
   check(`${name}: expanding the inner compound records the outer stamp as its parent`, inner?.id === "A" && inner.parent?.id === "O" && inner.parent.track === expectTrack, inner);
-  const sp2 = (await api.apply(R, [{ op: "split_clip", id: splitAt[0], at: splitAt[1] }])).results[0];
+  const sp2 = (await applyLatest(R, [{ op: "split_clip", id: splitAt[0], at: splitAt[1] }])).results[0];
   check(`${name}: split carries the whole stamp, parent included`, JSON.stringify(flat().find((c: any) => c.id === sp2.right).group) === JSON.stringify(inner), flat().find((c: any) => c.id === sp2.right)?.group);
   const before2 = JSON.stringify(tl());
-  const early = await failure(() => api.apply(R, [{ op: "make_compound", from: "O" }]));
+  const early = await failure(() => applyLatest(R, [{ op: "make_compound", from: "O" }]));
   check(`${name}: from=O while A is still expanded -> inner_expanded naming A (not not_contiguous)`, early?.code === "inner_expanded" && /'A'/.test(early.message) && /from=A first/.test(early.hint), early && [early.code, early.message, early.hint]);
   check(`${name}:   the project is unchanged`, JSON.stringify(tl()) === before2);
-  const ra2 = await failure(() => api.apply(R, [{ op: "make_compound", from: "A" }]));
+  const ra2 = await failure(() => applyLatest(R, [{ op: "make_compound", from: "A" }]));
   check(`${name}: from=A succeeds`, ra2 === null, ra2 && [ra2.code, ra2.message]);
   check(`${name}: the rebuilt A carries O's stamp again`, flat().find((c: any) => c.id === "A")?.group?.id === "O");
-  const ro2 = await failure(() => api.apply(R, [{ op: "make_compound", from: "O" }]));
+  const ro2 = await failure(() => applyLatest(R, [{ op: "make_compound", from: "O" }]));
   check(`${name}: from=O succeeds (A is part of the group, so a storyline run stays contiguous)`, ro2 === null, ro2 && [ro2.code, ro2.message]);
   const O = flat().find((c: any) => c.id === "O");
   check(`${name}: O contains A again, with both halves of i1 and i2 inside A`, !!O && deepIds(O).sort().join() === ["A", "i1", sp2.right, "i2", ...outer.filter((i) => i !== "A")].sort().join(), O && deepIds(O));
@@ -226,69 +228,69 @@ await twoLevel("two-level storyline", [col("main", "x1", "red", { duration: 1 })
 {
   const R = join(tmp, "three-level");
   api.create(R, { preset: "720p" });
-  await api.apply(R, [col("tp", "p1", "red", { at: 0, duration: 1 }), col("to", "o1", "blue", { at: 0, duration: 1 }), col("ta", "a1", "green", { at: 0, duration: 1 }), col("ta", "a2", "white", { at: 1, duration: 1 }),
+  await applyLatest(R, [col("tp", "p1", "red", { at: 0, duration: 1 }), col("to", "o1", "blue", { at: 0, duration: 1 }), col("ta", "a1", "green", { at: 0, duration: 1 }), col("ta", "a2", "white", { at: 1, duration: 1 }),
     { op: "make_compound", ids: ["a1", "a2"], id: "A" }, { op: "make_compound", ids: ["o1", "A"], id: "O" }, { op: "make_compound", ids: ["p1", "O"], id: "P" },
     { op: "expand_compound", id: "P" }, { op: "expand_compound", id: "O" }, { op: "expand_compound", id: "A" }]);
   const snap3 = JSON.stringify(api.openProject(R).load());
-  const e3 = await failure(() => api.apply(R, [{ op: "make_compound", from: "P" }]));
+  const e3 = await failure(() => applyLatest(R, [{ op: "make_compound", from: "P" }]));
   check("three levels: from=P while O and A are expanded -> inner_expanded naming both", e3?.code === "inner_expanded" && /'O'/.test(e3.message) && /'A'/.test(e3.message), e3 && [e3.code, e3.message]);
   check("  the project is unchanged", JSON.stringify(api.openProject(R).load()) === snap3);
-  for (const g of ["A", "O", "P"]) await api.apply(R, [{ op: "make_compound", from: g }]);
+  for (const g of ["A", "O", "P"]) await applyLatest(R, [{ op: "make_compound", from: g }]);
   const P3 = api.openProject(R).load().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "P");
   check("  inner first (A, O, P) restores P with O and A inside, unstamped", !!P3 && deepIds(P3).sort().join() === ["A", "O", "a1", "a2", "o1", "p1"].join() && !JSON.stringify(api.openProject(R).load().tracks).includes('"group"'), P3 && deepIds(P3));
 }
-const bp = await failure(() => api.apply(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz3", at: 8, duration: 1, group: { id: "G", track: "t", parent: { id: "P" } } }]));
+const bp = await failure(() => applyLatest(Q, [{ op: "add_clip", track: "vt", type: "color", color: "red", id: "gz3", at: 8, duration: 1, group: { id: "G", track: "t", parent: { id: "P" } } }]));
 check("a stamp whose parent lacks a track is rejected, at group.parent.track", bp?.code === "validation_failed" && JSON.stringify(bp.details?.issues).includes("group.parent.track"), bp && [bp.code, bp.details]);
 
 console.log("match_duration by clip reference");
 {
   const S = join(tmp, "by-reference");
   api.create(S, { preset: "720p" });
-  await api.apply(S, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("ov", "tA", "green", { at: 0, duration: 1 }), col("ov", "tB", "white", { at: 0, duration: 1 }),
+  await applyLatest(S, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("ov", "tA", "green", { at: 0, duration: 1 }), col("ov", "tB", "white", { at: 0, duration: 1 }),
     col("ov2", "tC", "white", { at: 0, duration: 1 }), col("ov3", "vo", "white", { at: 0, duration: 1.5 }),
     { op: "update_clip", id: "tA", match_duration: "m1", end_offset: 0.5 }, { op: "update_clip", id: "tB", match_duration: "vo" }, { op: "update_clip", id: "tC", match_duration: "m1" }]);
   const flat = () => api.openProject(S).load().tracks.flatMap((t: any) => t.clips) as any[];
   const byId = (id: string) => flat().find((c: any) => c.id === id);
-  const k = (await api.apply(S, [{ op: "make_compound", ids: ["m1", "tA", "tB"], id: "K" }])).results[0];
+  const k = (await applyLatest(S, [{ op: "make_compound", ids: ["m1", "tA", "tB"], id: "K" }])).results[0];
   const nested = (await byId("K")).tracks.flatMap((t: any) => t.clips) as any[];
   const nc = (id: string) => nested.find((c: any) => c.id === id);
   check("make_compound: a reference inside the set stays", nc("tA").match_duration === "m1" && nc("tA").end_offset === 0.5 && nc("tA").duration === 1.5, nc("tA"));
   check("make_compound: a reference that leaves the set is frozen to its length", nc("tB").match_duration === undefined && nc("tB").duration === 1.5 && JSON.stringify(k.unlinked_durations?.slice().sort()) === '["tB","tC"]', { k, tB: nc("tB") });
   check("make_compound: a follower outside the set of a clip inside it is frozen", (await byId("tC")).match_duration === undefined && (await byId("tC")).duration === 2, (await byId("tC")));
-  const dup = (await api.apply(S, [{ op: "duplicate_clip", id: "K" }])).results[0];
+  const dup = (await applyLatest(S, [{ op: "duplicate_clip", id: "K" }])).results[0];
   const dn = (await byId(dup.id)).tracks.flatMap((t: any) => t.clips) as any[];
   const dA = dn.find((c: any) => c.match_duration), dM = dn.find((c: any) => c.type === "color" && c.id !== dA?.id);
   check("duplicate_clip of a compound remaps a reference inside it", !!dA && dA.id !== "tA" && dM.id !== "m1" && dA.match_duration === dM.id, dn);
-  await api.apply(S, [{ op: "remove_clip", id: dup.id }]);
-  await api.apply(S, [col("ov4", "tD", "white", { at: 0, duration: 1 }), { op: "update_clip", id: "tD", match_duration: "K" }]);
+  await applyLatest(S, [{ op: "remove_clip", id: dup.id }]);
+  await applyLatest(S, [col("ov4", "tD", "white", { at: 0, duration: 1 }), { op: "update_clip", id: "tD", match_duration: "K" }]);
   check("a follower of the compound itself follows its length", (await byId("tD")).duration === 2, (await byId("tD")));
-  const ex = (await api.apply(S, [{ op: "expand_compound", id: "K" }])).results[0];
+  const ex = (await applyLatest(S, [{ op: "expand_compound", id: "K" }])).results[0];
   check("expand_compound: a reference inside the set stays, on the same ids", (await byId("tA")).match_duration === "m1" && (await byId("tA")).duration === 1.5 && !!(await byId("m1")), (await byId("tA")));
   check("expand_compound: a follower of the compound is frozen and listed", (await byId("tD")).match_duration === undefined && (await byId("tD")).duration === 2 && JSON.stringify(ex.unlinked_durations) === '["tD"]', { ex, tD: (await byId("tD")) });
-  await api.apply(S, [{ op: "update_clip", id: "m1", duration: 3 }]);
+  await applyLatest(S, [{ op: "update_clip", id: "m1", duration: 3 }]);
   check("expand_compound: the kept reference still follows", (await byId("tA")).duration === 2.5, (await byId("tA")));
   check("the by-reference project validates", (await api.info(S, "json")).errors === 0, (await api.info(S, "json")).issues);
 }
 { // a follower on the magnetic track, inside the selected run: the reference is not an attachment, so it survives both ops
   const S2 = join(tmp, "by-reference-run");
   api.create(S2, { preset: "720p" });
-  await api.apply(S2, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("main", "m3", "green", { duration: 1 }), { op: "update_clip", id: "m2", match_duration: "m1", end_offset: 0.5 }]);
+  await applyLatest(S2, [col("main", "m1", "red", { duration: 2 }), col("main", "m2", "blue", { duration: 2 }), col("main", "m3", "green", { duration: 1 }), { op: "update_clip", id: "m2", match_duration: "m1", end_offset: 0.5 }]);
   const flat2 = () => api.openProject(S2).load().tracks.flatMap((t: any) => t.clips) as any[];
-  const mk = (await api.apply(S2, [{ op: "make_compound", ids: ["m1", "m2"], id: "K2" }])).results[0];
+  const mk = (await applyLatest(S2, [{ op: "make_compound", ids: ["m1", "m2"], id: "K2" }])).results[0];
   const n2 = flat2().find((c: any) => c.id === "K2").tracks[0].clips.find((c: any) => c.id === "m2");
   check("make_compound: a main-track follower inside the run keeps its reference and end_offset", n2.match_duration === "m1" && n2.end_offset === 0.5 && n2.duration === 1.5 && mk.unlinked_durations.length === 0, { mk, n2 });
-  const ex2 = (await api.apply(S2, [{ op: "expand_compound", id: "K2" }])).results[0];
+  const ex2 = (await applyLatest(S2, [{ op: "expand_compound", id: "K2" }])).results[0];
   const m2 = flat2().find((c: any) => c.id === "m2");
   check("expand_compound: it survives the expand too", m2.match_duration === "m1" && m2.end_offset === 0.5 && m2.duration === 1.5 && ex2.unlinked_durations.length === 0, { ex2, m2 });
-  await api.apply(S2, [{ op: "update_clip", id: "m1", duration: 3 }]);
+  await applyLatest(S2, [{ op: "update_clip", id: "m1", duration: 3 }]);
   check("  and still follows its target on the magnetic track", flat2().find((c: any) => c.id === "m2").duration === 2.5 && flat2().find((c: any) => c.id === "m3").start === 5.5, flat2().map((c: any) => [c.id, c.start, c.duration]));
 }
 { // remove_asset force inside a compound: a follower of a removed nested clip keeps its length
   const S3 = join(tmp, "by-reference-asset");
   api.create(S3, { preset: "720p" });
-  await api.apply(S3, [{ op: "add_clip", track: "t3", src: join(m, "p.png"), id: "pa", at: 0, duration: 2 }, col("t4", "fb", "blue", { at: 0, duration: 1 }), { op: "update_clip", id: "fb", match_duration: "pa" },
+  await applyLatest(S3, [{ op: "add_clip", track: "t3", src: join(m, "p.png"), id: "pa", at: 0, duration: 2 }, col("t4", "fb", "blue", { at: 0, duration: 1 }), { op: "update_clip", id: "fb", match_duration: "pa" },
     { op: "make_compound", ids: ["pa", "fb"], id: "K3" }]);
-  const ra = (await api.apply(S3, [{ op: "remove_asset", id: Object.keys((await api.info(S3, "json")).timeline.assets)[0], force: true }])).results[0];
+  const ra = (await applyLatest(S3, [{ op: "remove_asset", id: Object.keys((await api.info(S3, "json")).timeline.assets)[0], force: true }])).results[0];
   const fb = api.openProject(S3).load().tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "K3").tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === "fb");
   check("remove_asset force: a nested follower of a removed nested clip keeps its length", JSON.stringify(ra.unlinked_durations) === '["fb"]' && fb.match_duration === undefined && fb.duration === 2, { ra, fb });
   check("  and the project validates", (await api.info(S3, "json")).errors === 0, (await api.info(S3, "json")).issues);
@@ -300,7 +302,7 @@ console.log("expand_compound: a trimmed head moves keyframes, effects and captio
   api.create(X, { preset: "720p" });
   const srt = join(tmp, "cues.srt");
   writeFileSync(srt, "1\n00:00:01,000 --> 00:00:02,000\nhi\n");
-  await api.apply(X, [
+  await applyLatest(X, [
     col("ov", "k1", "red", { at: 0, duration: 4, effects: [{ type: "grain", start: 1, duration: 2 }], keyframes: { opacity: [{ t: 1, v: 0.5 }, { t: 3, v: 1 }] } }),
     { op: "add_clip", track: "cp", type: "captions", id: "cw", at: 0, duration: 4, words: [{ text: "hi", start: 1, end: 2 }, { text: "yo", s: 2.5, e: 3.5 }] },
     { op: "make_compound", ids: ["k1", "cw"], id: "K" },
@@ -314,17 +316,17 @@ console.log("expand_compound: a trimmed head moves keyframes, effects and captio
   check("  the expanded project validates", (await api.info(X, "json")).errors === 0, (await api.info(X, "json")).issues);
   const Y = join(tmp, "expand-srt");
   api.create(Y, { preset: "720p" });
-  await api.apply(Y, [{ op: "add_clip", track: "cp", type: "captions", id: "cs", at: 0, duration: 4, srt }, { op: "add_clip", track: "cp2", type: "captions", id: "cs2", at: 0, duration: 4, srt },
+  await applyLatest(Y, [{ op: "add_clip", track: "cp", type: "captions", id: "cs", at: 0, duration: 4, srt }, { op: "add_clip", track: "cp2", type: "captions", id: "cs2", at: 0, duration: 4, srt },
     { op: "make_compound", ids: ["cs"], id: "S" }, { op: "make_compound", ids: ["cs2"], id: "S2" }, { op: "update_clip", id: "S", set: { in: 0.5, duration: 3 } }]);
-  check("expanding a compound with srt captions at a cut head is refused (cues cannot move)", (await failure(() => api.apply(Y, [{ op: "expand_compound", id: "S" }])))?.code === "bad_type");
-  check("  and with no head cut it expands", (await failure(() => api.apply(Y, [{ op: "expand_compound", id: "S2" }]))) === null);
+  check("expanding a compound with srt captions at a cut head is refused (cues cannot move)", (await failure(() => applyLatest(Y, [{ op: "expand_compound", id: "S" }])))?.code === "bad_type");
+  check("  and with no head cut it expands", (await failure(() => applyLatest(Y, [{ op: "expand_compound", id: "S2" }]))) === null);
 }
 
 console.log("expand_compound: what the compound carried goes to its clips, or the expand is refused");
 {
   const X = join(tmp, "expand-carry");
   api.create(X, { preset: "720p" });
-  await api.apply(X, [
+  await applyLatest(X, [
     { op: "add_clip", track: "ov", src: join(m, "a.mp4"), id: "cv1", at: 0, duration: 2, volume: 0.8 },
     { op: "add_clip", track: "ov", src: join(m, "a.mp4"), id: "cv2", at: 3, duration: 2 },
     col("ov", "cc", "red", { at: 6, duration: 1 }), col("ov", "cd", "blue", { at: 8, duration: 1 }),
@@ -332,13 +334,13 @@ console.log("expand_compound: what the compound carried goes to its clips, or th
     { op: "update_clip", id: "C4", set: { effects: [{ type: "bw" }], opacity: 0.8 } },
     { op: "update_clip", id: "C1", set: { volume: 0.5, enabled: false } }, { op: "update_clip", id: "C2", set: { muted: true } }, { op: "update_clip", id: "C3", set: { effects: [{ type: "bw" }], opacity: 0.8 } }]);
   const flat = () => api.openProject(X).load().tracks.flatMap((t: any) => t.clips) as any[];
-  const e3 = await failure(() => api.apply(X, [{ op: "expand_compound", id: "C3" }]));
+  const e3 = await failure(() => applyLatest(X, [{ op: "expand_compound", id: "C3" }]));
   check("a compound with effects or opacity is refused, naming them, with the fix", e3?.code === "layer_properties" && /effects/.test(e3.message) && /opacity/.test(e3.message) && /update_clip/.test(e3.hint) && flat().some((c: any) => c.id === "C3"), e3 && [e3.code, e3.message, e3.hint]);
-  await api.apply(X, [{ op: "expand_compound", id: "C1" }, { op: "expand_compound", id: "C2" }]);
+  await applyLatest(X, [{ op: "expand_compound", id: "C1" }, { op: "expand_compound", id: "C2" }]);
   const cv1 = flat().find((c: any) => c.id === "cv1"), cv2 = flat().find((c: any) => c.id === "cv2");
   check("the compound's volume multiplies into its clips and its enabled=false goes with them", Math.abs(cv1.volume - 0.4) < 1e-6 && cv1.enabled === false && cv2.enabled === undefined, [cv1, cv2]);
   check("the compound's muted goes to its clips", cv2.muted === true && cv1.muted === undefined, [cv1, cv2]);
-  await api.apply(X, [{ op: "update_clip", id: "C4", set: { effects: null, opacity: null } }, { op: "expand_compound", id: "C4" }]);
+  await applyLatest(X, [{ op: "update_clip", id: "C4", set: { effects: null, opacity: null } }, { op: "expand_compound", id: "C4" }]);
   check("  and with the layer properties cleared it expands", !flat().some((c: any) => c.id === "C4") && (await api.info(X, "json")).errors === 0, (await api.info(X, "json")).issues);
 }
 
@@ -347,29 +349,29 @@ console.log("expand_compound: other storylines and the home storyline keep their
   const setup = async (name: string) => {
     const X = join(tmp, name);
     api.create(X, { preset: "720p" });
-    await api.apply(X, [{ op: "add_track", id: "story2", kind: "video", magnetic: true, below: "overlay" },
+    await applyLatest(X, [{ op: "add_track", id: "story2", kind: "video", magnetic: true, below: "overlay" },
       col("main", "c1", "red"), col("main", "c2", "blue"), col("story2", "s1", "green"), col("story2", "s2", "white"), col("story2", "s3", "gray", { duration: 1 })]);
-    const mk = (await api.apply(X, [{ op: "make_compound", ids: ["c1", "c2", "s1", "s2"], id: "G" }])).results[0];
+    const mk = (await applyLatest(X, [{ op: "make_compound", ids: ["c1", "c2", "s1", "s2"], id: "G" }])).results[0];
     return { X, mk, tl: () => api.openProject(X).load(), story: () => api.openProject(X).load().tracks.find((t: any) => t.id === "story2")!.clips as any[] };
   };
   const a = await setup("expand-story");
   const order0 = a.tl().tracks.map((t: any) => t.id);
   check("setup: make_compound leaves a gap on the other storyline", a.story().map((c: any) => c.id).join() === `${a.mk.gaps[0]},s3`, a.story().map((c: any) => c.id));
-  const ex = (await api.apply(a.X, [{ op: "expand_compound", id: "G" }])).results[0];
+  const ex = (await applyLatest(a.X, [{ op: "expand_compound", id: "G" }])).results[0];
   check("the clips go back into the other storyline's gap: no new track, nothing left over", ex.created_tracks.length === 0 && a.story().map((c: any) => c.id).join() === "s1,s2,s3" && a.tl().tracks.map((t: any) => t.id).join() === order0.join(), { ex, story: a.story().map((c: any) => c.id) });
   check("  they keep their times on that storyline", JSON.stringify(a.story().map((c: any) => [c.id, c.start, c.duration])) === '[["s1",0,2],["s2",2,2],["s3",4,1]]', a.story().map((c: any) => [c.id, c.start, c.duration]));
   check("  and the project validates", (await api.info(a.X, "json")).errors === 0, (await api.info(a.X, "json")).issues);
   const b = await setup("expand-story-moved");
-  await api.apply(b.X, [{ op: "update_clip", id: b.mk.gaps[0], set: { duration: 3 } }]);
-  const exb = (await api.apply(b.X, [{ op: "expand_compound", id: "G" }])).results[0];
+  await applyLatest(b.X, [{ op: "update_clip", id: b.mk.gaps[0], set: { duration: 3 } }]);
+  const exb = (await applyLatest(b.X, [{ op: "expand_compound", id: "G" }])).results[0];
   const order = b.tl().tracks.map((t: any) => t.id);
   check("when that gap no longer fits, the new track sits just above the other storyline, not on top", exb.created_tracks.length === 1 && order[order.indexOf("story2") + 1] === exb.created_tracks[0] && order.indexOf("overlay") > order.indexOf(exb.created_tracks[0]), { exb, order });
   check("  and the other storyline keeps its clips", b.story().map((c: any) => c.id).includes("s3"), b.story().map((c: any) => c.id));
   const Z = join(tmp, "expand-home-empty");
   api.create(Z, { preset: "720p" });
-  await api.apply(Z, [col("main", "h1", "red"), col("main", "h2", "blue"), col("main", "h3", "green"), col("ov", "o1", "white", { at: 0, duration: 4 }), { op: "make_compound", ids: ["h1", "h2", "o1"], id: "H" }]);
+  await applyLatest(Z, [col("main", "h1", "red"), col("main", "h2", "blue"), col("main", "h3", "green"), col("ov", "o1", "white", { at: 0, duration: 4 }), { op: "make_compound", ids: ["h1", "h2", "o1"], id: "H" }]);
   const nested = (api.openProject(Z).load().tracks.find((t: any) => t.id === "main")!.clips[0].tracks as any[]).filter((t: any) => t.id !== "main");
-  await api.apply(Z, [{ op: "update_clip", id: "H", set: { tracks: nested } }, { op: "expand_compound", id: "H" }]);
+  await applyLatest(Z, [{ op: "update_clip", id: "H", set: { tracks: nested } }, { op: "expand_compound", id: "H" }]);
   const zm = api.openProject(Z).load().tracks.find((t: any) => t.id === "main")!.clips as any[];
   const h3 = zm.find((c: any) => c.id === "h3");
   check("a compound with nothing of its own on its storyline leaves a gap, so the clips after it keep their time", zm[0].type === "gap" && zm[0].duration === 4 && h3.start === 4, zm.map((c: any) => [c.id, c.type, c.start, c.duration]));
@@ -379,11 +381,11 @@ console.log("retimed compound: what it drops is reported by validate");
 {
   const R = join(tmp, "retimed");
   api.create(R, { preset: "720p" });
-  await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 2, id: "rv" },
+  await applyLatest(R, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 2, id: "rv" },
     { op: "add_captions", words: [{ text: "Hello", start: 0, end: 1 }], id: "rc", at: 0 },
     { op: "make_compound", ids: ["rv", "rc"], id: "RC" }]);
   const warns = async () => ((await api.validate(R)) as any).issues.filter((i: any) => i.level === "warning" && i.path.endsWith(".speed")) as any[];
-  const retime = (set: object) => api.apply(R, [{ op: "update_clip", id: "RC", set }]);
+  const retime = (set: object) => applyLatest(R, [{ op: "update_clip", id: "RC", set }]);
   check("speed 1: no retime warning", (await warns()).length === 0, await warns());
   await retime({ speed: 2 });
   const w = await warns();
@@ -399,7 +401,7 @@ console.log("retimed compound: what it drops is reported by validate");
   const ie = rampErr(tlR);
   check("validate: keyframes.speed on a compound is an error that names video clips and a constant speed", ie.length === 1 && /video clips/.test(ie[0].hint) && /constant `speed`/.test(ie[0].hint), ie);
   let refused: any = null;
-  try { await api.apply(R, [{ op: "update_clip", id: "RC", set: { keyframes: { speed: [[0, 1], [1, 2]] } } }]); } catch (e: any) { refused = e; }
+  try { await applyLatest(R, [{ op: "update_clip", id: "RC", set: { keyframes: { speed: [[0, 1], [1, 2]] } } }]); } catch (e: any) { refused = e; }
   check("update_clip with keyframes.speed on a compound is refused and the compound is unchanged", refused !== null && JSON.stringify(api.openProject(R).load()).indexOf('"speed":[[') < 0, refused && { code: refused.code, msg: refused.message });
   await retime({ speed: 1.5 });
   check("a constant speed on a compound is still accepted", ((await api.validate(R)) as any).valid === true && api.openProject(R).load().tracks.find((t: any) => t.id === "main")!.clips.find((c: any) => c.id === "RC")!.speed === 1.5);

@@ -29,6 +29,8 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 const api = await import("./author-api.ts");
+// the page's own writes carry the revision it shows; the fixtures the rows set up from outside are not about concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
@@ -36,7 +38,7 @@ const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "a.mp4"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=320x240", "-frames:v", "1", join(media, "p.jpg"));
 api.create(dir, { preset: "square" });
-await api.apply(dir, [
+await applyLatest(dir, [
   { op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 },
   { op: "add_clip", track: "main", src: join(media, "p.jpg"), duration: 1.5 },
   { op: "add_clip", track: "main", src: join(media, "a.mp4"), in: 1, duration: 1.5 },
@@ -194,7 +196,7 @@ try {
   await js(`(function(){var c=JSON.parse($("insp").value); c.text="Edited in Chrome"; c.color="#ffcc00"; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
   check("inspector edit lands in project.json", await untilFile((tl) => clipOf(tl, "txt1")?.text === "Edited in Chrome" && clipOf(tl, "txt1")?.color === "#ffcc00"), clipOf(load(), "txt1"));
   check("page picks up the new revision", await until("revision", `${atRev(load().revision)} && document.querySelector('[data-id="txt1"]').textContent.indexOf("Edited") > 0`));
-  await api.apply(dir, [{ op: "update_clip", id: "vid1", set: { color: { exposure: 0.2, contrast: 0.1 } } }]);
+  await applyLatest(dir, [{ op: "update_clip", id: "vid1", set: { color: { exposure: 0.2, contrast: 0.1 } } }]);
   await click(`[data-id="vid1"]`);
   check("click selects the graded clip", await until("selection2", `$("selinfo").textContent.indexOf("vid1") === 0 && $("insp").value.indexOf('"contrast"') > 0`));
   await js(`(function(){var c=JSON.parse($("insp").value); delete c.color.contrast; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
@@ -238,7 +240,7 @@ try {
   console.log("timeline gestures");
   // two clips on a scratch track "g", removed with the track at the end of this section so the counts of the later rows are unchanged
   const tStart = await nowT();
-  await api.apply(dir, [
+  await applyLatest(dir, [
     { op: "add_clip", track: "g", type: "color", color: "red", id: "gm", at: 0.5, duration: 1 },
     { op: "add_clip", track: "g", type: "color", color: "green", id: "gt", at: 2, duration: 2 },
   ]);
@@ -308,7 +310,7 @@ try {
   // conflict: the page stops following the project (its event stream is closed), another writer edits, then the page edits on its stale revision
   await js(`window.__es.forEach(function (e) { e.close(); })`);
   const revStale = load().revision;
-  await api.apply(dir, [{ op: "add_marker", t: 2.8, label: "outside" }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 2.8, label: "outside" }]);
   await sleep(500); // the project file is polled every 150 ms: a live stream would have delivered the outside edit by now
   check("precondition: the page still shows the revision from before the outside edit", await js(shownRev) === revStale && load().revision === revStale + 1, { page: await js(shownRev), file: load().revision, revStale });
   await opsBox(JSON.stringify([{ op: "add_marker", t: 3.1, label: "from the page" }]));
@@ -317,7 +319,7 @@ try {
   await js(`location.reload()`);
   check("a reloaded page shows the project as it is, outside edit included", await until("reloaded", `${atRev(load().revision)} && document.querySelectorAll("#ruler .marker").length === 2`), await js(`[$("rev").textContent, document.querySelectorAll("#ruler .marker").length]`));
 
-  await api.apply(dir, [{ op: "remove_track", id: "g" }, { op: "clear_markers" }]);
+  await applyLatest(dir, [{ op: "remove_track", id: "g" }, { op: "clear_markers" }]);
   await until("gesture clips gone", `!${node("gm")} && document.querySelectorAll("#ruler .marker").length === 0 && ${atRev(load().revision)}`);
   await seekTo(tStart);
 
@@ -357,7 +359,7 @@ try {
   console.log("regroup buttons come from the project");
   const btns = `[].map.call(document.querySelectorAll("#regroups button"), function (b) { return b.dataset.group; }).sort().join()`;
   check("no button once everything is regrouped", await until("none", `${btns} === ""`), await js(btns));
-  await api.apply(dir, [
+  await applyLatest(dir, [
     { op: "add_clip", track: "q", type: "color", color: "red", id: "qa", at: 0, duration: 1 },
     { op: "add_clip", track: "q", type: "color", color: "blue", id: "qb", at: 1, duration: 1 },
     { op: "add_clip", track: "q", type: "color", color: "green", id: "qc", at: 2, duration: 1 },
@@ -371,11 +373,11 @@ try {
   await untilFile((tl) => !clipOf(tl, "ga") && clipOf(tl, "qa"));
   await until("one button", `${btns} === "ga" && ${atRev(load().revision)}`);
   // an expand made through the API (an agent, not the page) shows its button too
-  await api.apply(dir, [{ op: "expand_compound", id: "gb" }]);
+  await applyLatest(dir, [{ op: "expand_compound", id: "gb" }]);
   check("two expands (page + agent) give two Regroup buttons", await until("two buttons", `${btns} === "ga,gb"`), await js(btns));
   await js(`location.reload()`);
   check("the buttons survive a page reload", await until("reloaded", `$("rev").textContent !== "" && ${btns} === "ga,gb"`), await js(btns));
-  await api.apply(dir, [{ op: "split_clip", id: "qb", at: 1.5 }]);
+  await applyLatest(dir, [{ op: "split_clip", id: "qb", at: 1.5 }]);
   await until("split seen", `document.querySelectorAll('[data-id="qb"]').length === 1 && ${atRev(load().revision)}`);
   await js(`document.querySelector('#regroups button[data-group="ga"]').click()`);
   check("split, then Regroup takes both halves", await untilFile((tl) => {
@@ -394,7 +396,7 @@ try {
   const near = (a: number, b: number) => Math.abs(a - b) < 0.02;
   const boxOf = (id: string) => js(`(function(){var e=document.querySelector('[data-id="${id}"]');return {left:parseFloat(e.style.left)/${zoomPps},width:parseFloat(e.style.width)/${zoomPps},off:e.classList.contains("off")}})()`);
   const same = (b: any, w: { left: number; width: number }) => !!b && near(b.left, w.left) && near(b.width, w.width);
-  await api.apply(dir, [
+  await applyLatest(dir, [
     { op: "add_clip", track: "n", type: "color", color: "red", id: "ra", at: 1, duration: 1 },
     { op: "add_clip", track: "n", type: "color", color: "blue", id: "rb", at: 2, duration: 2 },
     { op: "add_clip", track: "n", type: "color", color: "green", id: "rc", at: 5, duration: 1 },
@@ -414,7 +416,7 @@ try {
   check("clicking a nested tick seeks to the timeline time render plays it at", near(tk, place(L1, 1 + 1)), { t: tk, want: place(L1, 2) });
   await js(`document.querySelector("#crumbs a").click()`);
   await until("top view", atTop);
-  await api.apply(dir, [
+  await applyLatest(dir, [
     { op: "add_clip", track: "m", type: "color", color: "red", id: "x1", at: 1, duration: 2 },
     { op: "add_clip", track: "m", type: "color", color: "blue", id: "x2", at: 3, duration: 2 },
     { op: "make_compound", ids: ["x1", "x2"], id: "ci" },
@@ -433,12 +435,12 @@ try {
   await js(`document.querySelector("#crumbs a").click()`);
   await until("top view again", atTop);
   // a stamp whose compound id is a clip nested inside another compound: the server's make_compound from would answer "exists", so no button
-  await api.apply(dir, [{ op: "add_clip", track: "q", type: "color", color: "red", id: "gz", at: 4, duration: 1, group: { id: "x1", track: "q" } }]);
+  await applyLatest(dir, [{ op: "add_clip", track: "q", type: "color", color: "red", id: "gz", at: 4, duration: 1, group: { id: "x1", track: "q" } }]);
   await until("stamped clip", `!!document.querySelector('[data-id="gz"]')`);
   check("no Regroup button for a group id that exists nested", await js(`${btns} === ""`), await js(btns));
-  await api.apply(dir, [{ op: "remove_clip", id: "gz" }]);
+  await applyLatest(dir, [{ op: "remove_clip", id: "gz" }]);
   // a nested clip with a 0.5 s transition in a speed-2 compound: render plays the nested 0.5 s in 0.25 s
-  await api.apply(dir, [
+  await applyLatest(dir, [
     { op: "add_clip", track: "w", type: "color", color: "red", id: "wa", at: 0, duration: 2 },
     { op: "add_clip", track: "w", type: "color", color: "blue", id: "wb", at: 1.5, duration: 2, transition: { type: "crossfade", duration: 0.5 } },
     { op: "make_compound", ids: ["wa", "wb"], id: "cw" },
@@ -464,7 +466,7 @@ try {
     && (await SPACE(), await until("render started", `$("render").disabled || !!document.querySelector("#out a")`)) && await js(`$("play").textContent === "Play" && $("video").style.display === "none"`),
     await js(`[document.activeElement.id, $("render").disabled, $("play").textContent]`));
   check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !$("render").disabled`, 120_000), await js(`[$("msg").textContent, $("render").disabled]`));
-  await api.apply(dir, [{ op: "add_marker", t: 0.5 }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.5 }]);
   await until("marker seen", `${atRev(load().revision)} && !$("undo").disabled`);
   const rev0 = load().revision;
   await click("#undo");
@@ -512,7 +514,7 @@ try {
   check("Space on a keyboard-focused clip selects it, as Enter does", await until("space selection", selected(order[0])), await js(`[$("selinfo").textContent, document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
   await js(`window.oldClip = document.activeElement; $("scroll").scrollLeft = 0`);
-  await api.apply(dir, [{ op: "add_marker", t: 0.7 }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.7 }]);
   check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `${atRev(load().revision)} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
   check("  and it is still keyboard focus: Right walks on to the next clip", await js(`document.activeElement.dataset.id`) === order[2], await js(`document.activeElement.dataset.id`));
@@ -539,17 +541,17 @@ try {
   check("Ctrl+Z on a keyboard-focused button still undoes", await untilFile((tl) => tl.revision > revZ), { rev: load().revision, revZ });
 
   console.log("page width");
-  await api.apply(dir, [{ op: "add_clip", track: "wide", type: "color", color: "gray", id: "wide1", at: 0, duration: 120 }]);
+  await applyLatest(dir, [{ op: "add_clip", track: "wide", type: "color", color: "gray", id: "wide1", at: 0, duration: 120 }]);
   await until("wide timeline", `!!document.querySelector('[data-id="wide1"]') && ${atRev(load().revision)}`);
   await js(`(function(){var n = document.querySelector('[data-id="cw"]'); n.tabIndex = 0; n.focus(); $("scroll").scrollLeft = 600; window.scrolled = $("scroll").scrollLeft;})()`);
-  await api.apply(dir, [{ op: "add_marker", t: 0.9 }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.9 }]);
   check("a rebuild with a clip focused leaves the timeline where it was scrolled", await until("rebuilt at scroll", `${atRev(load().revision)} && document.activeElement.dataset.id === "cw"`) && await js(`window.scrolled > 0 && $("scroll").scrollLeft === window.scrolled`), await js(`[window.scrolled, $("scroll").scrollLeft]`));
   const errs0 = consoleErrors.length, weird = 'q"a\\b';
-  await api.apply(dir, [{ op: "add_clip", track: "idt", type: "color", color: "red", id: weird, at: 0, duration: 1 }]);
+  await applyLatest(dir, [{ op: "add_clip", track: "idt", type: "color", color: "red", id: weird, at: 0, duration: 1 }]);
   await until("odd id drawn", `!!${node(weird)}`);
   await js(`document.activeElement.blur()`);
   await clickClip(weird);
-  await api.apply(dir, [{ op: "add_marker", t: 0.95 }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.95 }]);
   // every drawn clip has its own id (one node per id)
   check("a clip id with a quote and a backslash is drawn, is the tab stop when selected, and breaks no redraw", await until("odd id redrawn", `${atRev(load().revision)} && ${node(weird)}.tabIndex === 0`)
     && await js(`(function(){var ids = [].map.call(document.querySelectorAll(".clip"), function (n) { return n.dataset.id; }); return new Set(ids).size === ids.length;})()`) && consoleErrors.length === errs0, { errors: consoleErrors.slice(errs0) });
@@ -575,7 +577,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
 `);
   chmodSync(fake, 0o755);
   process.env.AGENTCUT_UV = fake;
-  await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb1" }, { op: "remove_background", id: "rb1" }]);
+  await applyLatest(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb1" }, { op: "remove_background", id: "rb1" }]);
   check("viewer shows not_prepared with its hint and a Prepare action", await until("not_prepared", `$("vstat").textContent.indexOf("not prepared") >= 0 && $("vstat").textContent.indexOf("render_status") > 0 && $("prepare").style.display === ""`),
     await js(`[$("vstat").textContent, $("prepare") && $("prepare").style.display]`));
   await viewport(700); await js(`window.beforeReload = 1; location.reload()`);
@@ -612,7 +614,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     window.fetch = function (u, o) { if (String(u) === "/api/prepare") window.prepBodies.push(JSON.parse(o.body)); else window.otherUrls.push(String(u)); return f.apply(this, arguments); };
     window.otherUrls = [];
   })()`);
-  await api.apply(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb2" }, { op: "remove_background", id: "rb2", model: "u2net_human_seg" }]);
+  await applyLatest(dir, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1, id: "rb2" }, { op: "remove_background", id: "rb2", model: "u2net_human_seg" }]);
   const ask = async () => {
     // a click is by coordinates: when the page redraws after an edit (it notices a project change by polling, then refetches the frame) the button may not be
     // where it was read, and the click sends nothing. Such a click is repeated; one that sent a request and got no dialog still fails.
@@ -684,7 +686,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       const loaded = await onUntil(`document.getElementById("rev").textContent.indexOf("rev ") === 0 && document.getElementById("dur").textContent === "0.00 s"`);
       await sleep(500); // the viewer waits 60 ms before it asks
       check("an empty timeline: the viewer sends no frame request", loaded && await on(`window.frameRequests.length`) === 0 && await on(`document.getElementById("vstat").textContent`) === "", { loaded, requests: await on(`window.frameRequests`) });
-      await api.apply(emptyDir, [{ op: "add_clip", track: "main", type: "color", color: "red", duration: 1 }]);
+      await applyLatest(emptyDir, [{ op: "add_clip", track: "main", type: "color", color: "red", duration: 1 }]);
       check("  and once the project has a clip, the same page asks for a frame", await onUntil(`window.frameRequests.length > 0`), await on(`window.frameRequests`));
     } finally {
       await cdp("Target.closeTarget", { targetId: other }).catch(() => {});

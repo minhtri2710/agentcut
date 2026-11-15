@@ -12,6 +12,10 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-writes-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 const api = await import("./author-api.ts");
+// this suite's rows are about failed writes and the history files, not concurrency: a call reads the project's revision (info) and uses it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
+const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
+const redoLatest = async (project: string, steps = 1) => api.redo(project, steps, (await api.info(project)).revision);
 const FB = await import("../src/feedback.ts");
 const S = await import("../src/safe-write.ts");
 
@@ -32,7 +36,7 @@ let n = 0;
 const project = async (name: string) => {
   const d = join(tmp, name);
   api.create(d, { preset: "reels" });
-  await api.apply(d, [{ op: "add_clip", track: "main", src: join(m, "av.mp4") },
+  await applyLatest(d, [{ op: "add_clip", track: "main", src: join(m, "av.mp4") },
     { op: "add_captions", words: [{ text: "one", start: 0, end: 0.5 }, { text: "two", start: 0.5, end: 1 }] }]);
   return d;
 };
@@ -77,14 +81,14 @@ console.log("a project directory that is a link: refused, the target is unchange
   {
     const p = await project("dir-media"), t = outside("target"), before = snap(t);
     link(p, "media", t);
-    const c = await code(() => api.apply(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]));
+    const c = await code(() => applyLatest(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]));
     check("media/ as a link: import_media copy=true -> unsafe_path, the target is unchanged", c === "unsafe_path" && snap(t) === before, { c, now: snap(t) });
   }
   {
     const p = await project("dir-agentcut"), t = outside("target"), before = snap(t);
     rmSync(join(p, ".agentcut"), { recursive: true });
     symlinkSync(t, join(p, ".agentcut"));
-    const e = await code(() => api.apply(p, [{ op: "add_marker", t: 1 }]));
+    const e = await code(() => applyLatest(p, [{ op: "add_marker", t: 1 }]));
     check(".agentcut as a link: apply -> unsafe_path, the target is unchanged", e === "unsafe_path" && snap(t) === before, { e, now: snap(t) });
   }
   {
@@ -154,7 +158,7 @@ console.log("a project directory that is a link to the project root: refused, no
     ["previews", "preview_frame, default output", (p) => api.frame(p, 1)],
     ["previews", "preview_frame, out typed as <root>/previews/x.jpg", (p) => api.frame(p, 1, { out: join(p, "previews", "x.jpg") })],
     ["renders", "export_timeline, default output", (p) => api.exportTimeline(p, {})],
-    ["media", "import_media copy=true", (p) => api.apply(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }])],
+    ["media", "import_media copy=true", (p) => applyLatest(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }])],
   ];
   for (const [dir, what, act] of cases) {
     const p = await project(`rootlink-${dir}-${++n}`);
@@ -258,16 +262,16 @@ console.log("after a save the redo stack is empty, or the save did not happen");
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
   const texts = (p: string) => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text).join();
-  const undone = async (name: string) => { const p = await project(name); await api.apply(p, text("a")); api.undo(p, 1); return p; }; // redo holds "a"
+  const undone = async (name: string) => { const p = await project(name); await applyLatest(p, text("a")); await undoLatest(p, 1); return p; }; // redo holds "a"
   {
     // a redo dir that cannot be emptied: the save either does not happen, or leaves nothing a redo could replay
     const p = await undone("redo-stuck"), hist = join(p, ".agentcut", "history"), redo = join(hist, "redo");
     chmodSync(redo, 0o500);
     let c: string;
-    try { c = await code(() => api.apply(p, text("b"))); } finally { if (existsSync(redo)) chmodSync(redo, 0o700); for (const e of readdirSync(hist)) if (e.startsWith(".redo-")) chmodSync(join(hist, e), 0o700); } // a leftover must stay removable for the suite
+    try { c = await code(() => applyLatest(p, text("b"))); } finally { if (existsSync(redo)) chmodSync(redo, 0o700); for (const e of readdirSync(hist)) if (e.startsWith(".redo-")) chmodSync(join(hist, e), 0o700); } // a leftover must stay removable for the suite
     const saved = texts(p) === "b", left = api.history(p).redo.length;
     check("redo/ cannot be emptied: the save is refused with nothing written, or redo is empty", saved ? c === "ok" && left === 0 : c !== "ok" && texts(p) === "" && left === 1, { c, texts: texts(p), left });
-    const r = await code(() => api.redo(p));
+    const r = await code(() => redoLatest(p));
     check("  and redo does not replay the superseded edit over the saved one", saved ? r === "empty_history" && texts(p) === "b" : r === "ok" && texts(p) === "a", { r, texts: texts(p) });
   }
   {
@@ -275,9 +279,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const p = await undone("redo-write-fails"), before = api.history(p);
     chmodSync(p, 0o500); // no file can be created in the project dir
     let c: string;
-    try { c = await code(() => api.apply(p, text("b"))); } finally { chmodSync(p, 0o700); }
+    try { c = await code(() => applyLatest(p, text("b"))); } finally { chmodSync(p, 0o700); }
     check("a save whose write fails keeps the history (undo and redo) as it was", c !== "ok" && JSON.stringify(api.history(p)) === JSON.stringify(before) && texts(p) === "", { c, before, after: api.history(p) });
-    check("  and redo still replays the undone edit", (await code(() => api.redo(p))) === "ok" && texts(p) === "a", texts(p));
+    check("  and redo still replays the undone edit", (await code(() => redoLatest(p))) === "ok" && texts(p) === "a", texts(p));
   }
   // a stack at its cap of 100 entries: a call that fails keeps every entry (the prune comes after the commit point)
   {
@@ -295,20 +299,20 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const p = await undone(`cap-save-${mode}`);
       fill(p, "undo", 100);
       const before = stackText(p, "undo"), red = stackText(p, "redo");
-      const c = await failing(p, mode, () => api.apply(p, text("b")));
+      const c = await failing(p, mode, () => applyLatest(p, text("b")));
       check(`a save that fails at the ${mode} at 100 undo entries keeps all 100, unchanged`, c !== "ok" && stackText(p, "undo") === before && stackText(p, "redo") === red && readdirSync(join(p, ".agentcut", "history", "undo")).length === 100, { c, n: readdirSync(join(p, ".agentcut", "history", "undo")).length });
     }
     {
       const p = await undone("cap-save-ok");
       fill(p, "undo", 100);
-      const c = await code(() => api.apply(p, text("b")));
+      const c = await code(() => applyLatest(p, text("b")));
       check("a save that succeeds at 100 undo entries prunes back to 100", c === "ok" && readdirSync(join(p, ".agentcut", "history", "undo")).length === 100, c);
     }
     {
       const p = await undone("cap-undo");
       fill(p, "redo", 100);
       const before = stackText(p, "redo"), undo = stackText(p, "undo");
-      const c = await failing(p, "write", () => api.undo(p, 1));
+      const c = await failing(p, "write", () => undoLatest(p, 1));
       check("an undo that fails at the write with 100 redo entries keeps all 100, unchanged", c !== "ok" && stackText(p, "redo") === before && stackText(p, "undo") === undo, { c, n: readdirSync(join(p, ".agentcut", "history", "redo")).length });
     }
   }
@@ -320,10 +324,10 @@ console.log("history entries order by number: a planted name with more digits th
   const text = (t: string) => [{ op: "add_clip", track: "text", type: "text", text: t, duration: 1 }];
   const texts = (p: string) => JSON.parse(readFileSync(join(p, "project.json"), "utf8")).tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "text").map((c: any) => c.text).join();
   const p = await project("history-order"), undo = join(p, ".agentcut", "history", "undo");
-  await api.apply(p, text("a"));
+  await applyLatest(p, text("a"));
   copyFileSync(join(undo, readdirSync(undo).sort()[0]), join(undo, "9999999999999999999.json")); // the writer's next name has 20 digits
-  await api.apply(p, text("b"));
-  api.undo(p, 1);
+  await applyLatest(p, text("b"));
+  await undoLatest(p, 1);
   check("after a save, undo restores the state just before it", texts(p) === "a", texts(p));
 }
 
@@ -334,12 +338,12 @@ console.log("history entries with equal numeric values order by name, whichever 
   const got: string[] = [];
   for (const order of [["02", "2"], ["2", "02"]]) {
     const p = await project(`history-tie-${order.join("-")}`), undo = join(p, ".agentcut", "history", "undo");
-    await api.apply(p, text("a"));
-    await api.apply(p, text("b"));
+    await applyLatest(p, text("a"));
+    await applyLatest(p, text("b"));
     const [first, second] = readdirSync(undo).sort().slice(-2); // the states before "a" and before "b"
     for (const name of order) copyFileSync(join(undo, name === "2" ? second : first), join(undo, `${name}.json`)); // 2.json holds the later state, 02.json the earlier
     rmSync(join(undo, first)); rmSync(join(undo, second));
-    api.undo(p, 1);
+    await undoLatest(p, 1);
     got.push(texts(p));
   }
   check("after planting 02.json and 2.json in either order, undo restores the entry whose name sorts last", got[0] === got[1] && got[0].includes("a"), got);
@@ -369,13 +373,13 @@ console.log("import_media copy=true: a link at the copy's name is never written 
 {
   const p = await project("media-link"), target = join(tmp, "media-target.bin");
   symlinkSync(target, join(p, "media", "other.mp4"));
-  const r: any = await api.apply(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]);
+  const r: any = await applyLatest(p, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]);
   const copies = readdirSync(join(p, "media")).sort();
   check("a dangling link at media/other.mp4: the copy takes the next free name, the link target is not created", !existsSync(target) && copies.includes("other-1.mp4") && regular(join(p, "media", "other-1.mp4")), { copies, r: r.results?.[0] });
   const q = await project("media-link-file"), keep = join(tmp, "media-target-file.bin");
   writeFileSync(keep, "keep");
   symlinkSync(keep, join(q, "media", "other.mp4"));
-  await api.apply(q, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]);
+  await applyLatest(q, [{ op: "import_media", path: join(m, "other.mp4"), copy: true }]);
   check("a link to a file at media/other.mp4: the file is unchanged", readFileSync(keep, "utf8") === "keep" && regular(join(q, "media", "other-1.mp4")));
 }
 
@@ -384,24 +388,24 @@ console.log("copy and speech ops: a dry run or a refused batch leaves nothing in
 {
   const p = await project("media-stage"), list = () => readdirSync(join(p, "media")).sort().join(","), before = list();
   const copy = { op: "import_media", path: join(m, "other.mp4"), copy: true };
-  await api.apply(p, [copy], { dryRun: true });
+  await applyLatest(p, [copy], { dryRun: true });
   check("dry run: media/ is unchanged", list() === before, list());
-  const bad = await code(() => api.apply(p, [copy, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
+  const bad = await code(() => applyLatest(p, [copy, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
   check("a batch refused by a later op: media/ is unchanged", bad !== "ok" && list() === before, { bad, now: list() });
   const note = join(tmp, "note.txt");
   writeFileSync(note, "not media");
-  const nm = await code(() => api.apply(p, [{ op: "import_media", path: note, copy: true }]));
+  const nm = await code(() => applyLatest(p, [{ op: "import_media", path: note, copy: true }]));
   check("a file that is not media is refused and not copied", nm !== "ok" && list() === before, { nm, now: list() });
   if (process.platform === "darwin") {
     const vo = { op: "add_voiceover", text: "Hi.", voice: "Linh" };
-    await api.apply(p, [vo], { dryRun: true });
+    await applyLatest(p, [vo], { dryRun: true });
     const dry = list();
-    const bad2 = await code(() => api.apply(p, [vo, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
+    const bad2 = await code(() => applyLatest(p, [vo, { op: "add_clip", track: "main", src: join(tmp, "no-such-file.mp4") }]));
     check("speech: a dry run and a refused batch leave no .wav in media/", dry === before && bad2 !== "ok" && list() === before, { dry, bad2, now: list() });
-    await api.apply(p, [vo]);
+    await applyLatest(p, [vo]);
     check("speech: a saved batch keeps its .wav", list().split(",").some((f) => f.endsWith(".wav")), list());
   }
-  await api.apply(p, [copy]);
+  await applyLatest(p, [copy]);
   check("a saved batch keeps the copy", regular(join(p, "media", "other.mp4")), list());
 }
 
@@ -413,7 +417,7 @@ console.log("render/export/caption/preview output at project.json, .agentcut/ or
   copyFileSync(join(m, "av.mp4"), tgt);
   symlinkSync(tgt, lnk);
   const p = await project("out-source");
-  await api.apply(p, [{ op: "import_media", path: own }, { op: "import_media", path: join(m, "other.mp4"), copy: true }, { op: "import_media", path: lnk }]);
+  await applyLatest(p, [{ op: "import_media", path: own }, { op: "import_media", path: join(m, "other.mp4"), copy: true }, { op: "import_media", path: lnk }]);
   const pj = join(p, "project.json"), inMedia = join(p, "media", "other.mp4"), hist = join(p, ".agentcut", "history", "undo", "x.mp4");
   const sums = () => [pj, own, inMedia, tgt].map((f) => readFileSync(f).toString("base64")).join("|"), before = sums();
   const rows: [string, () => unknown][] = [
@@ -448,7 +452,7 @@ console.log("output paths through another spelling of the root, font files, and 
   // plain /tmp is /private/tmp on macOS
   if (realpathSync("/tmp") !== "/tmp") {
     const root = mkdtempSync("/tmp/agentcut-writes-");
-    try { api.create(root, { preset: "reels" }); await api.apply(root, [{ op: "add_clip", track: "main", src: join(m, "av.mp4") }]); await via(root, "root under /tmp"); } finally { rmSync(root, { recursive: true, force: true }); }
+    try { api.create(root, { preset: "reels" }); await applyLatest(root, [{ op: "add_clip", track: "main", src: join(m, "av.mp4") }]); await via(root, "root under /tmp"); } finally { rmSync(root, { recursive: true, force: true }); }
   }
   // font files: a path a clip names, and anything in <root>/fonts/
   {
@@ -456,7 +460,7 @@ console.log("output paths through another spelling of the root, font files, and 
     writeFileSync(font, "font bytes");
     mkdirSync(join(p, "fonts"), { recursive: true });
     writeFileSync(inFonts, "font bytes");
-    await api.apply(p, [{ op: "add_clip", track: "text", type: "text", text: "hi", duration: 1, font }]);
+    await applyLatest(p, [{ op: "add_clip", track: "text", type: "text", text: "hi", duration: 1, font }]);
     const rows: [string, () => unknown, string][] = [
       ["render over a font file a clip uses", () => api.render(p, { out: font, draft: true, sheet: false }), font],
       ["export_timeline over a font file a clip uses", () => api.exportTimeline(p, { format: "fcpxml", out: font }), font],
@@ -586,9 +590,10 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const readOnly = <T,>(dir: string, f: () => T): T => { chmodSync(dir, 0o555); try { return f(); } finally { chmodSync(dir, 0o700); } }; // always writable again: the suite removes it
   const refused = (what: string, r: any, dir: string) => check(`${what}: not_writable, exit 1, the hint names the folder`, r.status === 1 && r.error?.code === "not_writable" && r.error.hint.includes(basename(dir)), r);
   const a = await project("nw-add"), u = await project("nw-undo"), o = await project("nw-render");
-  refused("add in a project folder without write access", readOnly(a, () => run(["op", "add_marker", "t=1"], a)), a);
-  await api.apply(u, [{ op: "add_marker", t: 1 }]);
-  refused("undo in a project folder without write access", readOnly(u, () => run(["undo"], u)), u);
+  const aRev = String((await api.info(a)).revision);
+  refused("add in a project folder without write access", readOnly(a, () => run(["op", "add_marker", "t=1", "--revision", aRev], a)), a);
+  const uSaved = await applyLatest(u, [{ op: "add_marker", t: 1 }]);
+  refused("undo in a project folder without write access", readOnly(u, () => run(["undo", "--revision", String(uSaved.revision)], u)), u);
   const parent = join(tmp, "nw-parent"); mkdirSync(parent);
   refused("init under a folder without write access", readOnly(parent, () => run(["init", join(parent, "proj"), "--preset", "reels"], tmp)), parent);
   check("  and init leaves no folder behind", !existsSync(join(parent, "proj")));

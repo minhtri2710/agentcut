@@ -17,7 +17,7 @@ import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
-import { checkAuthor, checkRevision, findProject, Project, refuseSource, summarize } from "./project.ts";
+import { checkAuthor, findProject, Project, refuseSource, requireRevision, summarize } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
@@ -51,8 +51,8 @@ function brief(issues: M.Issue[], limit = 15) {
 export function create(path: string, o: { preset?: string; width?: number; height?: number; fps?: number; name?: string; empty?: boolean } = {}) {
   const p = Project.create(path, o);
   const tl = p.load();
-  return { project: p.root, settings: tl.settings, tracks: tl.tracks.map((t) => t.id),
-    next: "apply_ops [{op:'add_clip', track:'main', src:'/abs/clip.mp4'}] or [{op:'apply_template', name:'promo', ...}], then contact_sheet, then render" };
+  return { project: p.root, revision: tl.revision, settings: tl.settings, tracks: tl.tracks.map((t) => t.id),
+    next: "apply_ops [{op:'add_clip', track:'main', src:'/abs/clip.mp4'}] or [{op:'apply_template', name:'promo', ...}] with revision 0 (every result returns the next one), then contact_sheet, then render" };
 }
 
 export async function info(project?: string, fmt: "summary" | "json" | "both" = "summary") {
@@ -93,26 +93,28 @@ function issueKey(tl: M.Timeline, ord: Map<M.Clip, number>, i: M.Issue) {
   return `${key}${rest}|${i.message.replace(/\.tracks\[\d+\]\.clips\[\d+\]</g, "<")}`;
 }
 
-/** author: who is making the change (required unless dryRun: the history entry records it; see checkAuthor). revision: the revision the caller based the ops on (stale -> EditError "conflict"). Without it the batch is applied to
- *  the latest timeline: if another process saves in between, the ops are re-applied to the new state (each conflict means
- *  another writer committed, so this converges; bounded by a 10 s deadline like the project lock, which starts at the first conflict).
+/** `revision` must be written by every call that saves (a dry run may leave it out, and a revision it gives is still checked). */
+type ApplyOpts = { allowInvalid?: boolean; label?: string; author?: string; signal?: AbortSignal } & ({ dryRun: true; revision?: number } | { dryRun?: false; revision: number | undefined });
+
+/** author: who is making the change (required unless dryRun: the history entry records it; see checkAuthor). revision: the revision the caller based the ops on, required unless dryRun
+ *  (missing_revision; a stale one is EditError "conflict", which names who changed the project): the batch never lands on a state the caller did not see, since ids are reused.
  *  An op that needs a transcription, speech, a silence scan or beats throws AN.NeedsAnalysis; the analysis runs here (async, stopped by `signal`),
- *  is kept for the call, and the batch is re-run from a fresh load: one round per analysis the batch asks for, plus the last. */
-export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; author?: string; signal?: AbortSignal } = {}) {
+ *  is kept until the call ends, and the batch is re-run from a fresh load, checked against the revision again: one round per analysis the batch asks for, plus the last.
+ *  A conflict ends the call and the analysis with it: the resend runs it again. */
+export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: ApplyOpts) {
   const list = Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops.ops ?? [ops] : undefined;
   if (!Array.isArray(list)) throw new M.EditError("ops must be an array of op objects, or one op object", "bad_request", "each op is {op: name, ...args}");
-  if (!o.dryRun) checkAuthor(o.author); // before any analysis or font work: a call with no identity does nothing
+  if (!o.dryRun) { checkAuthor(o.author); requireRevision(o.revision); } // before any analysis or font work: a call with no identity or no revision does nothing
   if (TEXTY.test(JSON.stringify(list))) await loadCanvas(); // glyph coverage checks for fonts/presets
   const p = openProject(project);
   try { return await applyRounds(p, list, o); } finally { AN.release(p); }
 }
 
-async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; allowInvalid?: boolean; label?: string; revision?: number; author?: string; signal?: AbortSignal }) {
-  let until = 0; // set by the first conflict: the analyses a batch waits for do not count against it
+async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
   for (;;) {
     const tl = p.load();
     await loadForText(tl);
-    if (o.revision !== undefined) checkRevision(o.revision, tl.revision);
+    if (o.revision !== undefined) p.checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
@@ -124,8 +126,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: { dryRun?: boolean; al
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
-        try { p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true; }
-        catch (e) { if (e instanceof M.EditError && e.code === "conflict" && o.revision === undefined && Date.now() < (until ||= Date.now() + 10_000)) continue; throw e; }
+        p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true;
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
       return { ok: true, project: p.root, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };
@@ -425,8 +426,9 @@ export async function render(project: string | undefined, o: {
 }
 
 /** author: who undoes or redoes (required, like apply's): each moved entry is reported as {label, author, movedBy} with its own author and this one as movedBy. */
-export const undo = (project?: string, steps = 1, revision?: number, author?: string) => { const p = openProject(project); const r = p.undo(steps, revision, author); return { undone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
-export const redo = (project?: string, steps = 1, revision?: number, author?: string) => { const p = openProject(project); const r = p.redo(steps, revision, author); return { redone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+/** revision: the one the caller saw, required (missing_revision) unless project.json is damaged: then undo restores the last good version and needs none. */
+export const undo = (project: string | undefined, steps: number, revision: number | undefined, author?: string) => { const p = openProject(project); const r = p.undo(steps, revision, author); return { undone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
+export const redo = (project: string | undefined, steps: number, revision: number | undefined, author?: string) => { const p = openProject(project); const r = p.redo(steps, revision, author); return { redone: r.entries, requested: r.requested, done: r.done, revision: r.revision, duration: M.totalDuration(M.resolve(p.load())) }; };
 export const history = (project?: string) => openProject(project).history();
 export const probe = (path: string) => probeMedia(presolve(path));
 export const fonts = async (q = "", limit = 60) => { await loadCanvas(); return { fonts: listFonts(q, limit) }; };

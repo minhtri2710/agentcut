@@ -10,6 +10,9 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-editops-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// most rows here are about ops, not concurrency: a write reads the project's revision (info) and applies at it. The rows about revisions, conflicts and the history
+// (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project, "json")).revision }); // "json": the text summary cannot print a clip without an id, which some rows save on purpose
 const { applyOps } = await import("../src/ops.ts");
 const { newTimeline, validate, resolve } = await import("../src/model.ts");
 
@@ -35,7 +38,7 @@ ff("-f", "lavfi", "-i", "gradients=size=400x400:n=3", "-frames:v", "1", join(m, 
 
 const P = join(tmp, "proj");
 api.create(P, { preset: "720p" });
-const apply = async (ops: any[], dryRun = false) => (await api.apply(P, ops, { dryRun })).results;
+const apply = async (ops: any[], dryRun = false) => (await applyLatest(P, ops, { dryRun })).results;
 const one = async (o: any, dryRun = false) => (await apply([o], dryRun))[0];
 async function fails(o: any, code: string, name: string) {
   try { await one(o); check(name, false, "no error"); }
@@ -290,28 +293,77 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("slide_clip moves the in-point of a lottie next to it", near(at(sl2, "lt").in, 1.5) && near(at(sl2, "lt").duration, 2.5) && near(at(sl2, "cp").duration, 3.5), [at(sl2, "cp"), at(sl2, "lt")]);
 }
 
-console.log("replace_timeline: expected revision, and the saved revision is the project's");
+console.log("replace_timeline: the call's revision decides, and the saved revision is the project's");
 {
   const R = join(tmp, "proj-replace");
-  api.create(R, { preset: "720p" });
-  const cur = (await api.info(R, "json")).timeline;
+  const made = api.create(R, { preset: "720p" });
+  const cur = (await api.info(R, "json")).timeline; // read at revision 0
   const rev = async () => (await api.info(R, "json")).revision;
-  const replace = (input: any, opts: any = {}) => api.apply(R, [{ op: "replace_timeline", timeline: input }], opts).catch((e: any) => e);
-  await api.apply(R, [{ op: "set_settings", name: "newer edit" }]); // the project moves past the revision `cur` was read at
+  const replace = (input: any, revision: number, opts: any = {}) => api.apply(R, [{ op: "replace_timeline", timeline: input }], { revision, ...opts }).catch((e: any) => e);
+  const moved = await api.apply(R, [{ op: "set_settings", name: "newer edit" }], { revision: made.revision }); // the project moves past the revision `cur` was read at
   const now0 = (await api.info(R, "json"));
-  const stale: any = await replace({ ...structuredClone(cur), name: "stale replace" });
-  check("a timeline read at an older revision is refused as conflict, with a hint, and nothing changes", stale.code === "conflict" && !!stale.hint && (await rev()) === now0.revision && (await api.info(R, "json")).timeline.name === "newer edit", { code: stale.code, message: stale.message, revision: (await rev()) });
-  const staleDry: any = await replace({ ...structuredClone(cur), name: "stale replace" }, { dryRun: true });
+  const stale: any = await replace({ ...structuredClone(now0.timeline), name: "stale replace" }, made.revision); // the timeline is current; the call's revision is not
+  check("a replace at a revision the project moved past is refused as conflict, naming the edit, with a hint, and nothing changes", stale.code === "conflict" && !!stale.hint && stale.message.includes("set_settings") && (await rev()) === moved.revision && (await api.info(R, "json")).timeline.name === "newer edit", { code: stale.code, message: stale.message, revision: (await rev()) });
+  const staleDry: any = await replace({ ...structuredClone(cur), name: "stale replace" }, made.revision, { dryRun: true });
   check("  a dry run refuses it the same way", staleDry.code === "conflict", { code: staleDry.code });
   const t1 = performance.now();
-  const fresh: any = await replace({ ...structuredClone(now0.timeline), name: "replaced at the current revision" });
-  check("a timeline at the current revision is applied at once, and the saved revision is the project's next one", fresh.ok === true && fresh.revision === now0.revision + 1 && (await rev()) === fresh.revision && (await api.info(R, "json")).timeline.name === "replaced at the current revision" && performance.now() - t1 < 5000, { code: fresh.code, message: fresh.message, revision: (await rev()) });
-  const bare: any = structuredClone((await api.info(R, "json")).timeline);
-  delete bare.revision; bare.name = "replaced without a revision";
-  const before = (await rev()), res: any = await replace(bare);
-  check("a timeline without revision replaces whatever is there", res.ok === true && res.revision === before + 1 && (await api.info(R, "json")).timeline.name === "replaced without a revision", { code: res.code, message: res.message });
-  const bad: any = await replace({ ...structuredClone((await api.info(R, "json")).timeline), revision: "x" });
-  check("a revision that is not an integer is refused as bad_revision", bad.code === "bad_revision", { code: bad.code });
+  const fresh: any = await replace({ ...structuredClone(cur), name: "replaced at the current revision" }, moved.revision); // the timeline carries the old revision 0: only the call's counts
+  check("a replace at the current revision is applied at once, whatever revision the timeline carries, and the saved revision is the project's next one", fresh.ok === true && fresh.revision === moved.revision + 1 && (await rev()) === fresh.revision && (await api.info(R, "json")).timeline.name === "replaced at the current revision" && performance.now() - t1 < 5000, { code: fresh.code, message: fresh.message, revision: (await rev()) });
+}
+
+console.log("required revision: every history-writing call names the state it was planned against, and a conflict names who changed what");
+{
+  const R = join(tmp, "proj-required"), N = join(tmp, "proj-no-revision");
+  const caught = (f: () => unknown): Promise<any> => Promise.resolve().then(f).then(() => ({}), (e: any) => e);
+  const made = api.create(N, { preset: "720p" });
+  const n1 = await api.apply(N, [{ op: "add_marker", t: 1 }], { revision: 0, author: "alice" });
+  check("create returns revision 0, and a first write at revision 0 applies", made.revision === 0 && n1.revision === 1, { made: made.revision, n1: n1.revision });
+  const file = () => readFileSync(join(N, "project.json"), "utf8"), hist = () => JSON.stringify(api.history(N));
+  for (const [what, call] of [
+    ["apply", () => api.apply(N, [{ op: "add_marker", t: 2 }], { revision: undefined })],
+    ["an empty batch", () => api.apply(N, [], { revision: undefined })],
+    ["undo", () => api.undo(N, 1, undefined)],
+    ["redo", () => api.redo(N, 1, undefined)],
+  ] as const) {
+    const [f, h] = [file(), hist()], e = await caught(call);
+    check(`${what} with no revision is missing_revision with a hint, and nothing changes`, e.code === "missing_revision" && !!e.hint && file() === f && hist() === h, { code: e.code, message: e.message });
+  }
+  const f1 = file(), dry = await api.apply(N, [{ op: "add_marker", t: 2 }], { dryRun: true });
+  check("a dry run needs no revision and writes nothing", dry.dry_run === true && file() === f1, dry);
+
+  api.create(R, { preset: "720p" });
+  await api.apply(R, [{ op: "add_marker", t: 1 }], { revision: 0, author: "alice" }); // now 1
+
+  await api.apply(R, [{ op: "set_settings", name: "second" }], { revision: 1, author: "bob" }); // now 2
+  const stale = await caught(() => api.apply(R, [{ op: "add_marker", t: 3 }], { revision: 0, author: "carol" }));
+  check("a stale revision is a conflict that names who changed what since it, in order, and the details list them",
+    stale.code === "conflict" && stale.message === 'project changed since revision 0 (now 2): "alice" add_marker, "bob" set_settings; nothing was changed'
+    && JSON.stringify(stale.details) === JSON.stringify({ revision: 2, changes: [{ author: "alice", label: "add_marker" }, { author: "bob", label: "set_settings" }] }), { code: stale.code, message: stale.message, details: stale.details });
+
+  api.undo(R, 1, 2, "carol"); // now 3: bob's edit sits on the redo stack
+  const undone = await caught(() => api.apply(R, [{ op: "add_marker", t: 3 }], { revision: 2, author: "dave" }));
+  check("an undo since the revision is listed with who undid it", undone.code === "conflict" && undone.details?.changes?.map((c: any) => `${c.author}:${c.label}`).join() === "carol:undo set_settings", { message: undone.message, details: undone.details });
+  await api.apply(R, [{ op: "add_marker", t: 4 }], { revision: 3, author: "alice" }); // now 4: the redo stack is cleared
+  const gone = await caught(() => api.apply(R, [{ op: "add_marker", t: 3 }], { revision: 2, author: "dave" }));
+  check("an undo that an edit followed is not listed", gone.code === "conflict" && gone.details?.changes?.map((c: any) => `${c.author}:${c.label}`).join() === "alice:add_marker" && !gone.message.includes("carol"), { message: gone.message, details: gone.details });
+
+  // clip ids are reused (the lowest free number): an edit planned against the old state must not land on the clip that took a deleted one's id
+  const W = join(tmp, "proj-reuse");
+  api.create(W, { preset: "720p" });
+  const color = { op: "add_clip", track: "main", type: "color", color: "#222222", duration: 2 };
+  await api.apply(W, [color, color], { revision: 0, author: "alice" }); // revision 1
+  const ids = async () => (await api.info(W, "json")).timeline.tracks.flatMap((t: any) => t.clips.map((c: any) => c.id));
+  const target = (await ids())[1];
+  await api.apply(W, [{ op: "remove_clip", id: target }], { revision: 1, author: "you" });
+  await api.apply(W, [{ ...color, color: "#ff0000" }], { revision: 2, author: "you" });
+  const reused = (await api.info(W, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === target);
+  const before = readFileSync(join(W, "project.json"), "utf8");
+  const update = [{ op: "update_clip", id: target, set: { opacity: 0.3 } }];
+  const blind = await caught(() => api.apply(W, update, { revision: undefined, author: "agent" }));
+  const edit = await caught(() => api.apply(W, update, { revision: 1, author: "agent" }));
+  const after = readFileSync(join(W, "project.json"), "utf8");
+  check("an edit planned before a clip id was reused is a conflict, and the clip that took the id is untouched", reused?.color === "#ff0000" && edit.code === "conflict" && after === before && edit.details?.changes?.map((c: any) => c.author).join() === "you,you", { reused, code: edit.code, message: edit.message });
+  check("  and the same edit with no revision is refused, not applied to the clip that took the id", blind.code === "missing_revision" && after === before, { code: blind.code });
 }
 
 console.log("match_duration by clip reference");
@@ -356,7 +408,7 @@ console.log("match_duration by clip reference");
   // bad references: bad_ref, nothing written
   const Q = join(tmp, "proj-ref");
   api.create(Q, { preset: "720p" });
-  await api.apply(Q, [
+  await applyLatest(Q, [
     { op: "add_clip", track: "main", src: join(m, "p.png"), id: "img1", duration: 2 },
     { op: "add_clip", track: "main", src: join(m, "p.png"), id: "img2", duration: 2 },
     { op: "add_clip", track: "overlay", text: "vo", id: "vo1", at: 0, duration: 3 },
@@ -381,12 +433,12 @@ console.log("match_duration by clip reference");
     ["add_clip on a chain that reaches an until_end clip", [{ op: "add_clip", track: "overlay", text: "x", id: "uy", attach_to: "ue", match_duration: true }, { op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "uy" }]],
     ["add_clip, unknown id", [{ op: "add_clip", track: "main", src: join(m, "p.png"), match_duration: "nope" }]],
   ] as [string, any[]][]) {
-    try { await api.apply(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
+    try { await applyLatest(Q, ops); check(`${name}: bad_ref`, false, "no error"); }
     catch (e: any) { check(`${name}: bad_ref, a hint, nothing written`, e.code === "bad_ref" && !!e.hint && (await rev()) === r0, { code: e.code, message: e.message, hint: e.hint }); }
   }
-  check("the unknown-id hint suggests a name", await api.apply(Q, [{ op: "update_clip", id: "img1", match_duration: "img22" }]).then(() => "", (e: any) => e.hint) === "did you mean 'img2'?");
+  check("the unknown-id hint suggests a name", await applyLatest(Q, [{ op: "update_clip", id: "img1", match_duration: "img22" }]).then(() => "", (e: any) => e.hint) === "did you mean 'img2'?");
   const qi = (await api.info(Q, "json"));
-  await api.apply(Q, [{ op: "update_clip", id: "img2", match_duration: "vo1" }]);
+  await applyLatest(Q, [{ op: "update_clip", id: "img2", match_duration: "vo1" }]);
   const qi2 = (await api.info(Q, "json"));
   check("project_info shows the resolved duration", qi.errors === 0 && qi2.errors === 0 && qi2.timeline.tracks[0].clips[1].duration === 3 && near(qi2.duration, 5), qi2.timeline.tracks[0].clips);
 
@@ -583,16 +635,16 @@ console.log("match_duration by clip reference");
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }
   {
-    await api.apply(Q, [{ op: "add_clip", track: "overlay", src: join(m, "a.mp4"), id: "vs1", at: 0, duration: 2 }, { op: "update_clip", id: "vs1", match_duration: "vo1", end_offset: 0.5 }]);
-    const r = (await api.apply(Q, [{ op: "remove_silence", id: "vs1" }])).results[0];
+    await applyLatest(Q, [{ op: "add_clip", track: "overlay", src: join(m, "a.mp4"), id: "vs1", at: 0, duration: 2 }, { op: "update_clip", id: "vs1", match_duration: "vo1", end_offset: 0.5 }]);
+    const r = (await applyLatest(Q, [{ op: "remove_silence", id: "vs1" }])).results[0];
     const vs = (await api.info(Q, "json")).timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => r.segments.includes(c.id));
     check("remove_silence: the segments of a follower are plain clips", vs.length > 0 && vs.every((c: any) => c.match_duration === undefined && c.end_offset === undefined && typeof c.duration === "number"), { r, vs });
   }
   {
     const text = async (id: string) => String((await api.info(Q)).summary).split("\n").find((l: string) => l.includes(` ${id} `) || l.includes(` ${id}  `)) ?? "";
-    await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: 0.5 }]);
+    await applyLatest(Q, [{ op: "update_clip", id: "img2", end_offset: 0.5 }]);
     const a1 = (await text("img2"));
-    await api.apply(Q, [{ op: "update_clip", id: "img2", end_offset: -0.3 }]);
+    await applyLatest(Q, [{ op: "update_clip", id: "img2", end_offset: -0.3 }]);
     const a2 = (await text("img2"));
     check("the summary shows end_offset with its sign", a1.includes("length→vo1-0.5") && a2.includes("length→vo1+0.3"), [a1, a2]);
   }
@@ -715,23 +767,23 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   const G = join(tmp, "proj-graph");
   api.create(G, { preset: "720p" });
   const png = join(m, "p.png");
-  await api.apply(G, [
+  await applyLatest(G, [
     { op: "add_clip", track: "main", src: png, id: "g1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "g2", duration: 1 },
     { op: "add_clip", track: "overlay", src: png, id: "o1", at: 0, duration: 1 },
   ]);
-  const code = async (ops: any[], o: any = {}) => { try { await api.apply(G, ops, o); return "ok"; } catch (e: any) { return e.code; } };
-  await api.apply(G, [{ op: "update_clip", id: "g1", filters: ["nope"] }], { allowInvalid: true }); // a pre-existing error on main[0]
+  const code = async (ops: any[], o: any = {}) => { try { await applyLatest(G, ops, o); return "ok"; } catch (e: any) { return e.code; } };
+  await applyLatest(G, [{ op: "update_clip", id: "g1", filters: ["nope"] }], { allowInvalid: true }); // a pre-existing error on main[0]
   check("an insert before a clip with an existing error is accepted", await code([{ op: "add_clip", track: "main", src: png, id: "g0", index: 0, duration: 1 }]) === "ok");
   const withTrack = async (f: (t: any) => void) => { const t = structuredClone((await api.info(G, "json")).timeline); f(t); return t; };
-  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.push({ id: "bed", kind: "audio", clips: [], volume: "loud" }))) }], { allowInvalid: true });
+  await applyLatest(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.push({ id: "bed", kind: "audio", clips: [], volume: "loud" }))) }], { allowInvalid: true });
   check("a new video track that moves a track with an existing error is accepted", await code([{ op: "add_clip", track: "overlay2", src: png, id: "o9", at: 0, duration: 1 }]) === "ok");
-  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 }))) }], { allowInvalid: true });
+  await applyLatest(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 5, duration: 1 }))) }], { allowInvalid: true });
   check("a second clip without an id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ type: "image", asset: t.tracks[0].clips[0].asset, start: 7, duration: 1 }))) }]) === "validation_failed");
   const copyOfG2 = (t: any, start: number) => t.tracks.find((x: any) => x.id === "overlay").clips.push({ ...t.tracks[0].clips.find((c: any) => c.id === "g2"), start });
-  await api.apply(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => copyOfG2(t, 9))) }], { allowInvalid: true }); // id g2 now twice
+  await applyLatest(G, [{ op: "replace_timeline", timeline: (await withTrack((t) => copyOfG2(t, 9))) }], { allowInvalid: true }); // id g2 now twice
   check("another copy of an already duplicated clip id is a new error, not the old one", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => copyOfG2(t, 11))) }]) === "validation_failed");
   const bothG2 = async (f: (c: any) => void) => (await withTrack((t) => { for (const tr of t.tracks) for (const c of tr.clips) if (c.id === "g2") f(c); }));
-  await api.apply(G, [{ op: "replace_timeline", timeline: (await bothG2((c) => { c.filters = ["nope"]; })) }], { allowInvalid: true });
+  await applyLatest(G, [{ op: "replace_timeline", timeline: (await bothG2((c) => { c.filters = ["nope"]; })) }], { allowInvalid: true });
   check("a clip that shifts the index of a duplicated id's copy is accepted", await code([{ op: "add_clip", track: "overlay", src: png, id: "o0", at: 7, duration: 1 }]) === "ok");
   check("removing one copy of a duplicated id keeps the survivor's old errors old", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => { const o = t.tracks.find((x: any) => x.id === "overlay"); o.clips = o.clips.filter((c: any) => c.id !== "g2"); })) }]) === "ok");
   // a ripple follows an attach chain of any depth (17 links here)
@@ -744,10 +796,10 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   check("a ripple moves a clip at the end of a 17-link attach chain once, with its chain", near(at(deep, "B").start, 2) && near(at(deep, "A").start, 2 + 1.7 + 2), [at(deep, "B").start, at(deep, "k16").start, at(deep, "A").start]);
   const N = join(tmp, "proj-nested");
   api.create(N, { preset: "720p" });
-  await api.apply(N, [{ op: "add_clip", track: "main", src: png, id: "n1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "n2", duration: 1 }, { op: "make_compound", ids: ["n1", "n2"], name: "grp" }]);
+  await applyLatest(N, [{ op: "add_clip", track: "main", src: png, id: "n1", duration: 1 }, { op: "add_clip", track: "main", src: png, id: "n2", duration: 1 }, { op: "make_compound", ids: ["n1", "n2"], name: "grp" }]);
   const withFilter = async (ids: string[]) => { const t = structuredClone((await api.info(N, "json")).timeline); for (const c of t.tracks.find((x: any) => x.id === "main").clips[0].tracks[0].clips) if (ids.includes(c.id)) c.filters = ["nope"]; return t; };
-  await api.apply(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1"])) }], { allowInvalid: true }); // one nested error already there
-  const rejected = await api.apply(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1", "n2"])) }]).catch((e: any) => e);
+  await applyLatest(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1"])) }], { allowInvalid: true }); // one nested error already there
+  const rejected = await applyLatest(N, [{ op: "replace_timeline", timeline: (await withFilter(["n1", "n2"])) }]).catch((e: any) => e);
   check("a second nested error with the same message is new, not collapsed onto the compound", rejected.code === "validation_failed" && (await api.info(N)).errors === 1, rejected.code);
 }
 
@@ -961,12 +1013,12 @@ console.log("pieces of an attached clip keep their place and length");
   const S = join(tmp, "proj-attached");
   api.create(S, { preset: "720p" });
   ff("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6,volume=enable='between(t,2,3.5)':volume=0", "-shortest", "-pix_fmt", "yuv420p", join(m, "gap.mp4"));
-  await api.apply(S, [
+  await applyLatest(S, [
     { op: "add_clip", track: "main", src: join(m, "p.png"), id: "bg", duration: 8 },
     { op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "talk", attach_to: "bg", offset: 1, match_duration: true, end_offset: 1 },
   ]);
-  await api.apply(S, [{ op: "update_clip", id: "talk", set: { fade_in: 0.2, fade_out: 0.3, enter: "fade", exit: "fade", effects: [{ type: "bw" }, { type: "grain", start: 4, duration: 1 }] } }]);
-  const rs = (await api.apply(S, [{ op: "remove_silence", id: "talk" }])).results[0];
+  await applyLatest(S, [{ op: "update_clip", id: "talk", set: { fade_in: 0.2, fade_out: 0.3, enter: "fade", exit: "fade", effects: [{ type: "bw" }, { type: "grain", start: 4, duration: 1 }] } }]);
+  const rs = (await applyLatest(S, [{ op: "remove_silence", id: "talk" }])).results[0];
   const si = (await api.info(S, "json"));
   const segs = si.timeline.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => rs.segments.includes(c.id));
   check("remove_silence on an attached clip: one segment per speech part", segs.length === 2, { rs, segs });
@@ -981,8 +1033,8 @@ console.log("pieces of an attached clip keep their place and length");
   // remove_silence cuts the detached audio into the same segments
   const S2 = join(tmp, "proj-detached");
   api.create(S2, { preset: "720p" });
-  await api.apply(S2, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "tk", at: 1, in: 0.5, duration: 5.5 }, { op: "j_cut", id: "tk", seconds: 0.3 }]);
-  const rs2 = (await api.apply(S2, [{ op: "remove_silence", id: "tk" }])).results[0];
+  await applyLatest(S2, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "tk", at: 1, in: 0.5, duration: 5.5 }, { op: "j_cut", id: "tk", seconds: 0.3 }]);
+  const rs2 = (await applyLatest(S2, [{ op: "remove_silence", id: "tk" }])).results[0];
   const si2 = (await api.info(S2, "json"));
   const all2 = si2.timeline.tracks.flatMap((tr: any) => tr.clips), segs2 = rs2.segments.map((id: string) => all2.find((c: any) => c.id === id));
   const aud2 = all2.filter((c: any) => c.type === "audio");
@@ -993,9 +1045,9 @@ console.log("pieces of an attached clip keep their place and length");
   // the J/L lead keeps its length when the silence sits at the head or the tail (gap.mp4 is silent from 2 to 3.5 s)
   const S3 = join(tmp, "proj-jl");
   api.create(S3, { preset: "720p" });
-  await api.apply(S3, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "hj", at: 1, in: 2.2, duration: 3.8 }, { op: "j_cut", id: "hj", seconds: 0.3 },
+  await applyLatest(S3, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "hj", at: 1, in: 2.2, duration: 3.8 }, { op: "j_cut", id: "hj", seconds: 0.3 },
     { op: "add_clip", track: "main", src: join(m, "gap.mp4"), id: "tl", at: 0, in: 0, duration: 2.3 }, { op: "l_cut", id: "tl", seconds: 0.3 }]);
-  const rs3 = (await api.apply(S3, [{ op: "remove_silence", id: "hj" }, { op: "remove_silence", id: "tl" }])).results;
+  const rs3 = (await applyLatest(S3, [{ op: "remove_silence", id: "hj" }, { op: "remove_silence", id: "tl" }])).results;
   const all3 = (await api.info(S3, "json")).timeline.tracks.flatMap((tr: any) => tr.clips);
   const by3 = (id: string) => all3.find((c: any) => c.id === id), on3 = (id: string) => all3.filter((c: any) => c.type === "audio" && c.attach_to === id).sort((x: any, y: any) => x.offset - y.offset);
   const [hs] = rs3[0].segments.map(by3), hp = on3(hs?.id);
@@ -1009,10 +1061,10 @@ console.log("pieces of an attached clip keep their place and length");
   { // the detached audio starts after segment 0 ends: its first piece attaches to a later segment and is named after it
     const S4 = join(tmp, "proj-late-audio");
     api.create(S4, { preset: "720p" });
-    await api.apply(S4, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "la", at: 0, in: 0, duration: 6 }, { op: "detach_audio", id: "la" }]);
+    await applyLatest(S4, [{ op: "add_clip", track: "overlay", src: join(m, "gap.mp4"), id: "la", at: 0, in: 0, duration: 6 }, { op: "detach_audio", id: "la" }]);
     const au4 = (await api.info(S4, "json")).timeline.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio");
-    await api.apply(S4, [{ op: "update_clip", id: au4.id, set: { offset: 2.6 } }]);
-    const r4 = (await api.apply(S4, [{ op: "remove_silence", id: "la" }])).results[0];
+    await applyLatest(S4, [{ op: "update_clip", id: au4.id, set: { offset: 2.6 } }]);
+    const r4 = (await applyLatest(S4, [{ op: "remove_silence", id: "la" }])).results[0];
     const all4 = (await api.info(S4, "json")).timeline.tracks.flatMap((tr: any) => tr.clips), pc = all4.filter((c: any) => c.type === "audio");
     check("remove_silence: an audio piece is named after the segment it attaches to, also when the first segment has none", r4.segments.length === 2 && pc.length > 0 && pc.every((c: any) => c.name === `audio of ${c.attach_to}`) && pc.some((c: any) => c.attach_to === r4.segments[1]) && !pc.some((c: any) => c.attach_to === r4.segments[0]), { r4, pc });
   }
@@ -1248,7 +1300,7 @@ console.log("templates and beats");
   const P2 = join(tmp, "proj2");
   api.create(P2, { preset: "720p" });
   const png = join(m, "p.png");
-  const ap = (ops: any[]) => api.apply(P2, ops).then((r) => r.results);
+  const ap = (ops: any[]) => applyLatest(P2, ops).then((r) => r.results);
   const code = async (ops: any[]) => { try { await ap(ops); return "ok"; } catch (e: any) { return e.code; } };
   check("the slideshow template documents the argument it reads (title_preset)", "title_preset" in (api.capabilities().templates as any).slideshow.args);
   await ap([{ op: "apply_template", name: "slideshow", media: [png], title: "Hi", title_preset: "neon" }]);
@@ -1262,7 +1314,7 @@ console.log("templates and beats");
   const firstCut = async (n: number) => {
     const Pn = join(tmp, `snap-${n}`);
     api.create(Pn, { width: 640, height: 360, fps: 30 });
-    const { results } = await api.apply(Pn, [
+    const { results } = await applyLatest(Pn, [
       { op: "add_clip", track: "main", src: png, id: "a", duration: 3 }, { op: "add_clip", track: "main", src: png, id: "b", duration: 3 },
       { op: "snap_to_beats", track: "main", beats: click, every: 1 }]);
     return results[2].retimed[0].duration as number;
@@ -1278,8 +1330,8 @@ console.log("op arguments, documented ranges, undo steps");
 {
   const Q = join(tmp, "args-proj");
   api.create(Q, { preset: "720p" });
-  await api.apply(Q, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "c1" }, { op: "add_clip", track: "main", type: "color", color: "#404040", duration: 3, id: "c2" }]);
-  const err = (o: any, dryRun = true): Promise<any> => api.apply(Q, [o], { dryRun }).then(() => ({}), (e: any) => e);
+  await applyLatest(Q, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "c1" }, { op: "add_clip", track: "main", type: "color", color: "#404040", duration: 3, id: "c2" }]);
+  const err = (o: any, dryRun = true): Promise<any> => applyLatest(Q, [o], { dryRun }).then(() => ({}), (e: any) => e);
   // [label, op with the misspelled key, the misspelled key, the name the hint must give]
   const typos: [string, any, string, string][] = [
     ["add_marker", { op: "add_marker", t: 2, lable: "x" }, "lable", "label"], ["trim_clip", { op: "trim_clip", id: "c1", trim_strt: 0.5 }, "trim_strt", "trim_start"],
@@ -1319,30 +1371,30 @@ console.log("op arguments, documented ranges, undo steps");
 
   const pop = join(tmp, "pop-proj");
   api.create(pop, { preset: "720p" });
-  await api.apply(pop, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 2, id: "p1", keyframes: { scale: [[0, 0], [0.3, 1]] } }]).catch(() => {}); // refused: the row below fails, the later rows still run
+  await applyLatest(pop, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 2, id: "p1", keyframes: { scale: [[0, 0], [0.3, 1]] } }]).catch(() => {}); // refused: the row below fails, the later rows still run
   const popFrame: any = await api.frame(pop, 0, { out: join(tmp, "pop0.png"), scale: 0.25 }).catch((e: any) => e);
   check("a pop-in scale keyframe (0 -> 1) validates and its t=0 frame renders", (await api.validate(pop)).valid && popFrame.ok !== false && popFrame.code === undefined, popFrame);
 
   const hist = join(tmp, "hist-proj");
-  api.create(hist, { preset: "720p" });
-  for (const label of ["a", "b"]) await api.apply(hist, [{ op: "add_marker", t: 1, label }]);
-  for (const n of [0, -1, 1.5]) check(`redo steps ${n} is bad_value`, (await Promise.resolve().then(() => api.redo(hist, n)).then(() => ({}), (e: any) => e)).code === "bad_value");
-  const u: any = await Promise.resolve().then(() => api.undo(hist, 5)).catch((e: any) => e);
+  let hrev = api.create(hist, { preset: "720p" }).revision;
+  for (const label of ["a", "b"]) hrev = (await api.apply(hist, [{ op: "add_marker", t: 1, label }], { revision: hrev })).revision;
+  for (const n of [0, -1, 1.5]) check(`redo steps ${n} is bad_value`, (await Promise.resolve().then(() => api.redo(hist, n, hrev)).then(() => ({}), (e: any) => e)).code === "bad_value");
+  const u: any = await Promise.resolve().then(() => api.undo(hist, 5, hrev)).catch((e: any) => e);
   check("undo 5 with 2 available reports 5 requested and 2 done", u.requested === 5 && u.done === 2 && u.undone.length === 2, u);
-  const r: any = await Promise.resolve().then(() => api.redo(hist, 1)).catch((e: any) => e);
+  const r: any = await Promise.resolve().then(() => api.redo(hist, 1, u.revision)).catch((e: any) => e);
   check("redo reports the steps requested and done", r.requested === 1 && r.done === 1, r);
 
   // who made each change: recorded by apply, kept when an entry moves between the stacks, and who moved it is recorded too
   const real = await import("../src/api.ts"); // no default author here, unlike ./author-api.ts
   const ha = join(tmp, "author-proj"), same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  api.create(ha, { preset: "720p" });
-  await api.apply(ha, [{ op: "add_marker", t: 1, label: "m1" }], { label: "one", author: "alice" });
-  await api.apply(ha, [{ op: "add_marker", t: 2, label: "m2" }], { label: "two", author: "bob" });
+  const hmade = api.create(ha, { preset: "720p" });
+  const a1 = await api.apply(ha, [{ op: "add_marker", t: 1, label: "m1" }], { label: "one", author: "alice", revision: hmade.revision });
+  const a2 = await api.apply(ha, [{ op: "add_marker", t: 2, label: "m2" }], { label: "two", author: "bob", revision: a1.revision });
   check("history lists each entry's label and author, oldest first", same(api.history(ha).undo, [{ label: "one", author: "alice" }, { label: "two", author: "bob" }]), api.history(ha));
-  const un2: any = api.undo(ha, 2, undefined, "carol");
+  const un2: any = api.undo(ha, 2, a2.revision, "carol");
   check("undo reports each entry's author and who undid it", same(un2.undone, [{ label: "two", author: "bob", movedBy: "carol" }, { label: "one", author: "alice", movedBy: "carol" }]), un2);
   check("the redo stack keeps the authors and the mover", same(api.history(ha), { undo: [], redo: [{ label: "two", author: "bob", movedBy: "carol" }, { label: "one", author: "alice", movedBy: "carol" }] }), api.history(ha));
-  const re2: any = api.redo(ha, 1, undefined, "dave");
+  const re2: any = api.redo(ha, 1, un2.revision, "dave");
   check("redo reports the author and its own mover, and the entry moves back with both", same(re2.redone, [{ label: "one", author: "alice", movedBy: "dave" }])
     && same(api.history(ha), { undo: [{ label: "one", author: "alice", movedBy: "dave" }], redo: [{ label: "two", author: "bob", movedBy: "carol" }] }), { re2, h: api.history(ha) });
   const before = readFileSync(join(ha, "project.json"), "utf8"), count = () => readdirSync(join(ha, ".agentcut", "history", "undo")).length, n0 = count();
@@ -1351,19 +1403,20 @@ console.log("op arguments, documented ranges, undo steps");
     check(`${what} is ${code}, nothing is saved`, e.code === code && !!e.hint && readFileSync(join(ha, "project.json"), "utf8") === before && count() === n0 && same(api.history(ha).redo.map((x) => x.label), ["two"]), { code: e.code, message: e.message });
   };
   const mark = [{ op: "add_marker", t: 3, label: "m3" }];
-  await refused("the real api.apply with no author", () => real.apply(ha, mark), "missing_author");
-  await refused("the real api.undo with no author", () => real.undo(ha), "missing_author");
-  await refused("the real api.redo with no author", () => real.redo(ha), "missing_author");
-  await refused("an author of 65 characters", () => api.apply(ha, mark, { author: "x".repeat(65) }), "bad_author");
-  await refused("an author with markup characters", () => api.apply(ha, mark, { author: "<b>x</b>" }), "bad_author");
-  await refused("an author with a leading space", () => api.undo(ha, 1, undefined, " x"), "bad_author");
-  check("an author of exactly 64 characters is accepted", !!(await api.apply(ha, mark, { author: "x".repeat(64) })).ok);
+  await refused("the real api.apply with no author", () => real.apply(ha, mark, { revision: re2.revision }), "missing_author");
+  await refused("the real api.undo with no author", () => real.undo(ha, 1, re2.revision), "missing_author");
+  await refused("the real api.redo with no author", () => real.redo(ha, 1, re2.revision), "missing_author");
+  await refused("an author of 65 characters", () => api.apply(ha, mark, { author: "x".repeat(65), revision: re2.revision }), "bad_author");
+  await refused("an author with markup characters", () => api.apply(ha, mark, { author: "<b>x</b>", revision: re2.revision }), "bad_author");
+  await refused("an author with a leading space", () => api.undo(ha, 1, re2.revision, " x"), "bad_author");
+  const a64 = await api.apply(ha, mark, { author: "x".repeat(64), revision: re2.revision });
+  check("an author of exactly 64 characters is accepted", !!a64.ok);
   // an entry written before the field existed
   const undoDir = join(ha, ".agentcut", "history", "undo"), file = join(undoDir, readdirSync(undoDir).sort()[0]), raw = JSON.parse(readFileSync(file, "utf8"));
   delete raw.author; delete raw.movedBy;
   writeFileSync(file, JSON.stringify(raw));
   check("an entry without an author field reads as unknown in history", api.history(ha).undo[0].author === "unknown" && api.history(ha).undo[0].label === "one", api.history(ha));
-  const old: any = api.undo(ha, 2, undefined, "erin");
+  const old: any = api.undo(ha, 2, a64.revision, "erin");
   check("undo of entries including one without an author reports it as unknown", same(old.undone.map((x: any) => x.author), ["x".repeat(64), "unknown"]) && old.undone.every((x: any) => x.movedBy === "erin"), old);
   const redoDir = join(ha, ".agentcut", "history", "redo"), newest = join(redoDir, readdirSync(redoDir).sort().pop()!), moved = JSON.parse(readFileSync(newest, "utf8"));
   check("the entry that was unknown keeps that word when it moves", moved.author === "unknown" && moved.movedBy === "erin", moved);
@@ -1371,7 +1424,7 @@ console.log("op arguments, documented ranges, undo steps");
   const hb: any = await Promise.resolve().then(() => api.history(ha)).then(() => ({}), (x: any) => x);
   check("a stored author that is not plain text is a named error, never shown", hb.code === "bad_json" && /invalid author/.test(hb.message) && !!hb.hint, { code: hb.code, message: hb.message });
   const nfd = "Trí Nguyễn"; // Vietnamese with combining marks (NFD)
-  const nfdRun: any = await api.apply(ha, mark, { author: nfd }).catch((e: any) => e);
+  const nfdRun: any = await api.apply(ha, mark, { author: nfd, revision: old.revision }).catch((e: any) => e);
   check("an author with combining marks is accepted and kept as given", nfdRun.ok === true && api.history(ha).undo.at(-1)?.author === nfd, { code: nfdRun.code, message: nfdRun.message });
 }
 
@@ -1395,13 +1448,15 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
 {
   const E = join(tmp, "empty-proj");
   api.create(E, { preset: "720p" });
-  await api.apply(E, [{ op: "add_marker", t: 1, label: "a" }]);
-  await api.apply(E, [{ op: "add_marker", t: 2, label: "b" }]);
-  await api.undo(E, 1); // redo holds one entry
-  const loaded = (await api.apply(E, [], { dryRun: true })) as any;
-  const empty: any = await api.apply(E, []);
+  await applyLatest(E, [{ op: "add_marker", t: 1, label: "a" }]);
+  const eb = await applyLatest(E, [{ op: "add_marker", t: 2, label: "b" }]);
+  const eu = api.undo(E, 1, eb.revision); // redo holds one entry
+  const loaded = (await applyLatest(E, [], { dryRun: true })) as any;
+  const empty: any = await applyLatest(E, []);
   check("an empty batch keeps the revision and returns no results", empty.ok && empty.revision === loaded.revision && empty.results.length === 0, { empty, loaded });
-  check("an empty batch keeps the redo stack and adds no undo entry", (await Promise.resolve().then(() => api.redo(E, 5)).catch((e: any) => e) as any).done === 1 && (await Promise.resolve().then(() => api.undo(E, 5)).catch((e: any) => e) as any).done === 2, {});
+  const rd: any = await Promise.resolve().then(() => api.redo(E, 5, eu.revision)).catch((e: any) => e);
+  const ud: any = await Promise.resolve().then(() => api.undo(E, 5, rd.revision)).catch((e: any) => e);
+  check("an empty batch keeps the redo stack and adds no undo entry", rd.done === 1 && ud.done === 2, { rd, ud });
   const stale = await api.apply(E, [], { revision: 0 }).then(() => ({}), (e: any) => e);
   check("an empty batch with a stale revision is a conflict", stale.code === "conflict", stale);
 
@@ -1427,7 +1482,7 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps
     const F = join(tmp, `oneframe-${fps}`);
     api.create(F, { preset: "720p", fps });
-    await api.apply(F, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 1 / fps, id: "one" }]);
+    await applyLatest(F, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 1 / fps, id: "one" }]);
     const v: any = await api.validate(F);
     check(`a clip of exactly one frame made by add_clip at ${fps} fps does not warn`, !v.issues.some((i: any) => /shorter than one frame/.test(i.message)), v.issues);
   }
@@ -1436,7 +1491,7 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   for (const [name, W, H, full, draft] of [["odd", 1081, 1921, "1082,1922", "540,960"], ["even", 1080, 1920, "1080,1920", "540,960"]] as const) {
     const D = join(tmp, `${name}-canvas`);
     api.create(D, { width: W, height: H, fps: 30 });
-    await api.apply(D, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 0.2 }]);
+    await applyLatest(D, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 0.2 }]);
     const a: any = await api.render(D, { out: join(tmp, `${name}-full.mp4`), quality: "draft" });
     const b: any = await api.render(D, { out: join(tmp, `${name}-draft.mp4`), draft: true });
     check(`${name} ${W}x${H} canvas renders ${full} at scale 1 and ${draft} as a draft`, dims(join(tmp, `${name}-full.mp4`)) === full && dims(join(tmp, `${name}-draft.mp4`)) === draft, { a: dims(join(tmp, `${name}-full.mp4`)), b: dims(join(tmp, `${name}-draft.mp4`)) });
@@ -1450,8 +1505,8 @@ console.log("relink_asset");
   writeFileSync(join(m, "note.txt"), "not media");
   const R = join(tmp, "relink");
   api.create(R, { preset: "720p" });
-  const ra = async (ops: any[]) => (await api.apply(R, ops)).results;
-  const code = async (ops: any[]) => { try { await api.apply(R, ops); return "none"; } catch (e: any) { return e; } };
+  const ra = async (ops: any[]) => (await applyLatest(R, ops)).results;
+  const code = async (ops: any[]) => { try { await applyLatest(R, ops); return "none"; } catch (e: any) { return e; } };
   const rtl = async () => (await api.info(R, "json")).timeline;
   await ra([
     { op: "import_media", path: join(m, "a.mp4"), id: "av" },
@@ -1480,7 +1535,7 @@ console.log("relink_asset");
 
   console.log("  accept: shorter video without audio");
   const before = (await rtl()).assets.av;
-  const r = await api.apply(R, [{ op: "relink_asset", id: "av", path: join(m, "short.mp4") }]);
+  const r = await applyLatest(R, [{ op: "relink_asset", id: "av", path: join(m, "short.mp4") }]);
   const res = r.results[0], after = (await rtl()).assets.av;
   check("record replaced by the new probe", after.path === join(m, "short.mp4") && near(after.duration, 1, 0.1) && after.has_audio === false && after.width === 320, after);
   check("result carries the record without path, asset id and changed old/new", res.asset === "av" && res.path === undefined && res.width === 320 && res.changed.width.old === 640 && res.changed.width.new === 320 && res.changed.has_audio.old === true && res.changed.has_audio.new === false && res.changed.path.old === before.path && res.changed.path.new === after.path && res.changed.kind === undefined, res);
@@ -1488,7 +1543,7 @@ console.log("relink_asset");
   check("validate reports the clip past its media", r.issues.some((i: any) => i.level === "warning" && /\.duration$/.test(i.path)), r.issues);
 
   console.log("  undo");
-  api.undo(R);
+  api.undo(R, 1, r.revision);
   check("undo restores the old record and the old file is still there", JSON.stringify((await rtl()).assets.av) === JSON.stringify(before) && existsSync(join(m, "a.mp4")));
 
   console.log("  in place");
@@ -1534,7 +1589,7 @@ console.log("relink_asset");
   ff("-f", "lavfi", "-i", "gradients=size=200x200:n=2", "-frames:v", "1", join(m, "p2.png"));
   const R2 = join(tmp, "relink2");
   api.create(R2, { preset: "720p" });
-  const rb = async (ops: any[]) => (await api.apply(R2, ops));
+  const rb = async (ops: any[]) => (await applyLatest(R2, ops));
   const warns = (r: any, re: RegExp) => r.issues.filter((i: any) => i.level === "warning" && re.test(i.path));
   const setup = await rb([
     { op: "import_media", path: join(m, "b.mp4"), id: "dv" },
@@ -1566,7 +1621,7 @@ console.log("asset ids from accented names, and one file reached by several path
 {
   const Q = join(tmp, "proj-ids");
   api.create(Q, { preset: "720p" });
-  const imp = async (path: string, id?: string) => (await api.apply(Q, [{ op: "import_media", path, ...(id ? { id } : {}) }])).results[0].asset;
+  const imp = async (path: string, id?: string) => (await applyLatest(Q, [{ op: "import_media", path, ...(id ? { id } : {}) }])).results[0].asset;
   const names = ["cảnh quay 1", "đám cưới", "Đường", "złoty ø ß æ œ", "日本語"];
   for (const n of names) copyFileSync(join(m, "p.png"), join(m, `${n}.png`));
   const got: string[] = [];
@@ -1587,14 +1642,14 @@ console.log("asset ids from accented names, and one file reached by several path
   const assets = (await api.info(Q, "json")).timeline.assets;
   check("the same file through a symlinked folder, or a hard link, is the existing asset; a different file is a new one", viaLink === first && viaHard === first && other !== first && Object.keys(assets).filter((k) => /^f(_|$)/.test(k)).length === 1, { first, viaLink, viaHard, other, ids: Object.keys(assets) });
   let ex: any;
-  try { await api.apply(Q, [{ op: "import_media", path: join(link, "f.png"), id: "elsewhere" }]); } catch (e: any) { ex = e; }
+  try { await applyLatest(Q, [{ op: "import_media", path: join(link, "f.png"), id: "elsewhere" }]); } catch (e: any) { ex = e; }
   check("an explicit other id for a file already imported through another path is refused naming the existing asset", ex?.code === "exists" && `${ex.message} ${ex.hint}`.includes(`'${first}'`), ex && { code: ex.code, message: ex.message });
   // copy:true of a file that is already in media/ (reached through a linked folder) is that file, not a -1 copy
   const C = join(tmp, "proj-copy-link");
   api.create(C, { preset: "720p" });
   copyFileSync(join(m, "p.png"), join(C, "media", "f.png"));
   symlinkSync(join(C, "media"), join(m, "media link"));
-  const cp = (await api.apply(C, [{ op: "import_media", path: join(m, "media link", "f.png"), copy: true }])).results[0].asset;
+  const cp = (await applyLatest(C, [{ op: "import_media", path: join(m, "media link", "f.png"), copy: true }])).results[0].asset;
   check("import_media copy:true of a file already in media/ through a linked folder makes no -1 copy", readdirSync(join(C, "media")).join() === "f.png" && cp === "f", { files: readdirSync(join(C, "media")), cp });
   // a symlink already at media/<name> that points at the source is not a copy: the file is copied under the next free name and the link stays
   const L = join(tmp, "proj-copy-symlink"), srcDir = join(m, "outside src");
@@ -1602,7 +1657,7 @@ console.log("asset ids from accented names, and one file reached by several path
   mkdirSync(srcDir);
   copyFileSync(join(m, "p.png"), join(srcDir, "g.png"));
   symlinkSync(join(srcDir, "g.png"), join(L, "media", "g.png"));
-  const sl = (await api.apply(L, [{ op: "import_media", path: join(srcDir, "g.png"), copy: true }])).results[0].asset;
+  const sl = (await applyLatest(L, [{ op: "import_media", path: join(srcDir, "g.png"), copy: true }])).results[0].asset;
   const own = join(L, "media", "g-1.png");
   check("import_media copy:true with a symlink to the source already at media/<name>: a real copy is made under the next name and the link stays",
     existsSync(own) && !lstatSync(own).isSymbolicLink() && lstatSync(join(L, "media", "g.png")).isSymbolicLink() && (await api.info(L, "json")).timeline.assets[sl].path === "media/g-1.png", { files: readdirSync(join(L, "media")), sl });
@@ -1614,7 +1669,7 @@ console.log("a video whose sound outlasts its picture");
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", al);
   const D = join(tmp, "proj-audiolong");
   api.create(D, { width: 64, height: 64, fps: 24 });
-  const r = (await api.apply(D, [
+  const r = (await applyLatest(D, [
     { op: "import_media", path: al, id: "al" },
     { op: "import_media", path: join(m, "a.mp4"), id: "even" },
     { op: "add_clip", track: "main", asset: "al", id: "dflt" },
@@ -1631,15 +1686,15 @@ console.log("a video whose sound outlasts its picture");
   check("an explicit 8 s video clip warns that it needs 8 s of a 3 s source; the default clip and the audio clip do not", w.length === 1 && w[0].path.includes("<long>") && /8\.00s of source but 'al' is 3\.00s/.test(w[0].message), w);
   // a picture that starts late is not short: it ends where the container does, so no field is recorded and the clip is as long as the file
   ff("-itsoffset", "1", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=7", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-pix_fmt", "yuv420p", join(m, "late.mp4"));
-  const lt = (await api.apply(D, [{ op: "import_media", path: join(m, "late.mp4"), id: "late" }, { op: "add_clip", track: "overlay", asset: "late", at: 60, id: "latec" }])).results;
+  const lt = (await applyLatest(D, [{ op: "import_media", path: join(m, "late.mp4"), id: "late" }, { op: "add_clip", track: "overlay", asset: "late", at: 60, id: "latec" }])).results;
   check("a video stream that starts late but ends with the container records no video_duration, and its clip runs the file's length", !("video_duration" in lt[0]) && near(lt[1].duration, 8), lt);
   // the room an edit may grow a video clip into ends with the picture: 1 s used of 3 s leaves 2 s, not 7 s
   const E = join(tmp, "proj-audiolong-roll");
   api.create(E, { width: 64, height: 64, fps: 24 });
-  await api.apply(E, [{ op: "add_clip", track: "main", src: al, duration: 1, id: "lhs" }, { op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "rhs" }]);
+  await applyLatest(E, [{ op: "add_clip", track: "main", src: al, duration: 1, id: "lhs" }, { op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "rhs" }]);
   let rc = "ok";
-  try { await api.apply(E, [{ op: "roll_edit", id: "lhs", by: 2.5 }]); } catch (e: any) { rc = e.code; }
-  const okRoll = await api.apply(E, [{ op: "roll_edit", id: "lhs", by: 1.5 }]);
+  try { await applyLatest(E, [{ op: "roll_edit", id: "lhs", by: 2.5 }]); } catch (e: any) { rc = e.code; }
+  const okRoll = await applyLatest(E, [{ op: "roll_edit", id: "lhs", by: 1.5 }]);
   check("roll_edit cannot grow a video clip past its picture (2.5 s of 2 s spare: out_of_range), and 1.5 s is fine", rc === "out_of_range" && okRoll.ok !== false && near(okRoll.results[0].left.duration, 2.5), { rc, okRoll });
 }
 

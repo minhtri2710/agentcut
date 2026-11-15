@@ -13,6 +13,9 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-vision-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// this suite's rows are about vision requests and prepare, not concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
+const undoLatest = async (project: string) => api.undo(project, 1, (await api.info(project)).revision);
 const V = await import("../src/vision.ts");
 const M = await import("../src/model.ts");
 const A = await import("../src/anim.ts");
@@ -111,14 +114,14 @@ console.log("smoothPath / simplify");
 console.log("auto_reframe");
 const P = join(tmp, "reel");
 api.create(P, { preset: "reels" });
-const apply = async (proj: string, ops: any[]) => (await api.apply(proj, ops)).results;
+const apply = async (proj: string, ops: any[]) => (await applyLatest(proj, ops)).results;
 async function fails(proj: string, ops: any[], code: string, name: string) {
   try { await apply(proj, ops); check(name, false, "no error"); }
   catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
 }
 /** apply, then prepare when the batch recorded vision requests; returns the op results after prepare */
 async function applyPrep(proj: string, ops: any[], allowDownload = false) {
-  const r = await api.apply(proj, ops);
+  const r = await applyLatest(proj, ops);
   if (!r.results.some((x: any) => x.pending)) return r.results;
   const pr = await api.prepare(proj, { allowDownload });
   return r.results.map((x: any) => (x.pending ? pr.applied.find((y: any) => y.op === x.op && y.id === x.id) ?? x : x));
@@ -127,12 +130,12 @@ async function prepFails(proj: string, ops: any[], code: string, name: string, w
   await apply(proj, ops);
   try { await api.prepare(proj); check(name, false, "no error"); }
   catch (e: any) { check(name, e.code === code && !!e.hint && words.every((w) => `${e.message} ${e.hint}`.includes(w)), { code: e.code, message: e.message, hint: e.hint }); }
-  await api.undo(proj);
+  await undoLatest(proj);
 }
 const clip = async (proj: string, id: string) => (await api.info(proj, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.id === id);
 
 await apply(P, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 }]);
-const t1 = performance.now(), a1: any = await api.apply(P, [{ op: "auto_reframe", id: "vid1" }]);
+const t1 = performance.now(), a1: any = await applyLatest(P, [{ op: "auto_reframe", id: "vid1" }]);
 check("apply only records the request (no helper run, pending + hint)", a1.results[0].pending === true && a1.prepare_needed && nCalls() === 0 && (await clip(P, "vid1")).pending?.auto_reframe && !(await clip(P, "vid1")).keyframes, a1);
 check("apply stays fast", performance.now() - t1 < 1000, performance.now() - t1);
 const nf: any = await api.frame(P, 0.05, { scale: 0.25 }).catch((e) => e);
@@ -267,7 +270,7 @@ await fails(Y, [{ op: "add_track", id: "mag", kind: "video", magnetic: true }, {
 
 // on a reframed (panning) target the follower must account for the moving crop window
 // both pending in one batch (new reframe params): track_to waits for the reframe, prepare runs them in order
-const both: any = await api.apply(P, [{ op: "update_clip", id: "vid1", set: { motion: null } }, { op: "auto_reframe", id: "vid1", fps: 5 },
+const both: any = await applyLatest(P, [{ op: "update_clip", id: "vid1", set: { motion: null } }, { op: "auto_reframe", id: "vid1", fps: 5 },
   { op: "add_clip", track: "overlay", type: "shape", shape: "rect", size: [20, 20], fill: "white", at: 0, duration: 4 },
   { op: "track_to", id: "shp1", target: "vid1", box: [500, 900, 100, 100], at: 2 }]);
 check("track_to on a pending reframe waits for it", both.results[3].waiting_for === "auto_reframe vid1", both.results[3]);
@@ -592,7 +595,7 @@ process.stdout.write(JSON.stringify({ first, mode, loose }));
     delete process.env.FAKE_UV_FAIL;
     const r3 = runs().at(-1)!;
     check("project: a failed run reports vision_failed and removes the helper dir", code === "vision_failed" && !existsSync(dirname(r3.script)), { code, r3 });
-    await api.undo(H);
+    await undoLatest(H);
 
     // an aborted run rejects with the abort reason and removes its dir
     process.env.FAKE_UV_HANG = "1";
@@ -605,7 +608,7 @@ process.stdout.write(JSON.stringify({ first, mode, loose }));
     delete process.env.FAKE_UV_HANG;
     const r4 = runs().at(-1)!;
     check("project: an aborted run rejects (not a cleanup error) and removes the helper dir", outcome === "AbortError" && !existsSync(dirname(r4.script)) && runs().length === n0 + 1, { outcome, r4 });
-    await api.undo(H);
+    await undoLatest(H);
 
     // a cleanup that fails (the run dir cannot be emptied) never replaces the result
     if (posix && process.getuid?.() !== 0) {
@@ -630,11 +633,11 @@ console.log("asset record");
   const rev0 = (await api.info(W, "json")).revision;
   // 1. validate types the asset record; apply and replace_timeline reject the batch and change nothing
   const badFps = { ...tlj, assets: { [aid]: { ...tlj.assets[aid], fps: "30,more" } } };
-  const rejected = await api.apply(W, [{ op: "replace_timeline", timeline: badFps }]).catch((e) => e);
+  const rejected = await applyLatest(W, [{ op: "replace_timeline", timeline: badFps }]).catch((e) => e);
   check("a non-numeric asset fps is rejected by replace_timeline and nothing changes", rejected.code === "validation_failed" && rejected.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.fps`) && (await api.info(W, "json")).revision === rev0, rejected.details ?? rejected);
   for (const [what, patch, key] of [["a zero fps", { fps: 0 }, "fps"], ["a fractional width", { width: 320.5 }, "width"], ["a negative duration", { duration: -1 }, "duration"],
     ["an unknown kind", { kind: "movie" }, "kind"], ["a string sample rate", { sample_rate: "48000" }, "sample_rate"], ["an unknown asset field", { zoom: 2 }, "zoom"]] as const) {
-    const r = await api.apply(W, [{ op: "replace_timeline", timeline: { ...tlj, assets: { [aid]: { ...tlj.assets[aid], ...patch } } } }]).catch((e) => e);
+    const r = await applyLatest(W, [{ op: "replace_timeline", timeline: { ...tlj, assets: { [aid]: { ...tlj.assets[aid], ...patch } } } }]).catch((e) => e);
     check(`${what} in the asset record is rejected`, r.code === "validation_failed" && r.details?.issues?.some((i: any) => i.path === `$.assets.${aid}.${key}`), r.details ?? r);
   }
   check("a valid asset record has no asset issues", (await api.validate(W)).valid === true);

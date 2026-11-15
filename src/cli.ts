@@ -16,7 +16,9 @@ const HELP = `agentcut ${VERSION} - agent-first video editor (JSON timeline · C
 Start here:  agentcut guide
 Project:     init DIR [--preset reels|youtube|square|portrait|4k] · info [--text|--json] · validate · undo [n] · redo [n] · history
 Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · add key=value... · set ID key=value... · rm ID
-             [--revision N] on any edit/undo/redo: fail with code "conflict" if the project moved past revision N
+             --revision N is required (missing_revision without it; a dry run may leave it out) on apply/op/add/set/rm/undo/redo/beats --markers: the revision you last read, from info or
+             from the previous result's "revision" (init returns 0). If the project moved past N the call fails with code "conflict", names who changed what, and changes nothing
+             (undo needs no revision only while project.json is damaged; prepare takes none)
              --author NAME (or $AGENTCUT_AUTHOR) is required, --dry-run too, on apply/op/add/set/rm/undo/redo/prepare (not --status)/beats --markers: who made the change, kept in the history
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black] [--quiet]
@@ -170,10 +172,13 @@ export async function main(argv = process.argv.slice(2)) {
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
   if (missing.length) return emit({ ok: false, error: { code: "usage", message: `${missing.join(" ")} ${missing.length > 1 ? "need" : "needs"} a value`, hint: "write the value right after the flag (--author NAME), or join it with = (--author=NAME; for -o and -p the long forms --output=FILE and --project=DIR); a value that starts with -- needs the = form" } }, 2);
   const api = await import("./api.ts");
-  const { declaredAuthor } = await import("./project.ts");
+  const { declaredAuthor, requireRevision: needRevision } = await import("./project.ts");
+  const requireRevision: (v: unknown) => void = needRevision; // an assertion function can be called only through an annotated name
   const P = f.project;
   // who is making the change: --author, else $AGENTCUT_AUTHOR; neither is missing_author, a value that is given and refused is bad_author (read only by the commands that write history, --dry-run included)
   const who = () => declaredAuthor(f.author ?? process.env.AGENTCUT_AUTHOR);
+  // the revision the edit is based on (--revision N): required like the author, read before any work (a stdin read, an analysis); only a dry run may leave it out
+  const based = (dry?: boolean) => { const r = num(f.revision, "--revision"); if (!dry) requireRevision(r); return r; };
   const signal = cmd === "ui" ? undefined : onSignals(); // ui is a server: a signal ends it the default way
   let last = 0;
   const progress = f.quiet ? undefined : (d: number, n: number, download?: { model: string; bytes: number; total_bytes: number }) => { const now = Date.now(); if (now - last > 400 || d === n || (download && download.bytes === download.total_bytes)) { last = now; process.stderr.write(JSON.stringify({ progress: +(d / n).toFixed(3), frame: d, frames: n, ...(download && { download }) }) + "\n"); } }; // render, prepare, review: one line per 0.4 s on stderr
@@ -185,11 +190,11 @@ export async function main(argv = process.argv.slice(2)) {
         res = await api.info(P, f.json ? "both" : "summary");
         if (f.text) { console.log(res.summary); return; }
         break;
-      case "apply": { const author = who(); res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision: num(f.revision, "--revision"), author, signal }); break; }
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], revision: num(f.revision, "--revision"), author: who(), signal }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
-      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
-      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { revision: num(f.revision, "--revision"), author: who(), signal }); break;
+      case "apply": { const author = who(), revision = based(f["dry-run"]); res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision, author, signal }); break; }
+      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], author: who(), revision: based(f["dry-run"]), signal }); break;
+      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { author: who(), revision: based(), signal }); break;
+      case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { author: who(), revision: based(), signal }); break;
+      case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { author: who(), revision: based(), signal }); break;
       case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
       case "frame": res = await api.frame(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), guides: f.guides }); break;
       case "scopes": res = await api.scopes(P, pos[0] ?? 0, { out: f.output, scale: num(f.scale, "--scale"), signal }); break;
@@ -210,8 +215,8 @@ export async function main(argv = process.argv.slice(2)) {
         });
         break;
       }
-      case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision"), who()); break;
-      case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, num(f.revision, "--revision"), who()); break;
+      case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, based(true), who()); break; // its revision is checked under the project lock: a project.json that cannot be read needs none
+      case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, based(true), who()); break;
       case "ui": {
         const { startUi } = await import("./ui.ts");
         const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port, "--port") });
@@ -221,9 +226,9 @@ export async function main(argv = process.argv.slice(2)) {
       case "history": res = api.history(P); break;
       case "probe": res = api.probe(pos[0]); break;
       case "beats": {
-        const author = f.markers ? who() : undefined; // before the analysis: a refused author costs nothing
+        const author = f.markers ? who() : undefined, revision = f.markers ? based() : undefined; // before the analysis: a refused author or a missing revision costs nothing
         res = await api.analyze.beats(pos[0], signal);
-        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` })), { author }); res.markers_added = res.beats.length; }
+        if (f.markers) { await api.apply(P, res.beats.map((t: number, i: number) => ({ op: "add_marker", t, label: `beat ${i}` })), { author, revision }); res.markers_added = res.beats.length; }
         if (!f.full && res.beats.length > 64) { res.beats = res.beats.slice(0, 64); res.beats_truncated = true; }
         break;
       }

@@ -16,6 +16,8 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-realmedia-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// this suite's rows are about real media, not concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { buildAudio } = await import("../src/audio.ts");
 const AN = await import("../src/analyze.ts");
 
@@ -94,12 +96,12 @@ const mix = (P: string, tag: string, loud: number | null = null) => {
 console.log("enhance_voice on noisy speech");
 {
   const P = project("enhance");
-  await api.apply(P, [{ op: "add_clip", track: "voice", src: noisy, at: 0 }]);
+  await applyLatest(P, [{ op: "add_clip", track: "voice", src: noisy, at: 0 }]);
   const raw = await mix(P, "raw");
   const pauseLevel = (f: string) => pauses.map(([a, b]) => level(f, a, b));
   const speechDb = (f: string) => level(f, 0.1, pauses[0][0] - 0.3).rms;
   const rawPause = pauseLevel(raw)[0].rms, rawSnr = speechDb(raw) - rawPause;
-  await api.apply(P, [{ op: "enhance_voice", track: "voice" }]);
+  await applyLatest(P, [{ op: "enhance_voice", track: "voice" }]);
   const enh = await mix(P, "enh");
   const ep = pauseLevel(enh), snr = speechDb(enh) - ep[0].rms;
   check(`noise floor in pauses down >= 15 dB (${rawPause.toFixed(1)} -> ${ep.map((x) => x.rms.toFixed(1)).join(", ")} dBFS)`, ep.every((x) => x.rms < rawPause - 15));
@@ -131,7 +133,7 @@ console.log("pitch on speech");
   const P = project("pitch");
   const tone = join(m, "tone.wav");
   ff("-f", "lavfi", "-i", "sine=f=300:duration=2", "-ar", "48000", tone);
-  await api.apply(P, [{ op: "add_clip", track: "music", src: tone, at: 0, duration: 2, pitch: 7 }]);
+  await applyLatest(P, [{ op: "add_clip", track: "music", src: tone, at: 0, duration: 2, pitch: 7 }]);
   const x = pcm(await mix(P, "pitch-tone"));
   let last = 0;
   for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > 0.01) last = i;
@@ -142,7 +144,7 @@ console.log("soft subtitles with Vietnamese text");
 {
   const P = project("subs");
   const words = [["Xin", 0.2, 0.5], ["chào", 0.5, 0.9], ["các bạn.", 0.9, 1.4], ["Đừng", 2, 2.4], ["quên", 2.4, 2.8], ["nhé!", 2.8, 3.3]].map(([text, start, end]) => ({ text, start, end }));
-  await api.apply(P, [{ op: "add_clip", track: "main", src: video, duration: 4 }, { op: "add_captions", words, preset: "clean" }]);
+  await applyLatest(P, [{ op: "add_clip", track: "main", src: video, duration: 4 }, { op: "add_captions", words, preset: "clean" }]);
   const want = "1\n00:00:00,200 --> 00:00:02,000\nXin chào các bạn.\n\n2\n00:00:02,000 --> 00:00:03,600\nĐừng quên nhé!\n";
   for (const [ext, codec] of [["mp4", "mov_text"], ["mov", "mov_text"], ["mkv", "subrip"], ["webm", "webvtt"]]) {
     const out = join(tmp, `subs.${ext}`);
@@ -157,7 +159,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
 {
   const P = project("tts");
   const text = "Xin chào các bạn. Hôm nay chúng ta sẽ học cách dựng video thật nhanh. Đừng quên đăng ký kênh nhé!";
-  const r = (await api.apply(P, [{ op: "add_voiceover", text, voice: "Linh", captions: "clean" }])).results[0];
+  const r = (await applyLatest(P, [{ op: "add_voiceover", text, voice: "Linh", captions: "clean" }])).results[0];
   const vo = join(P, r.path), segs = (await AN.silence(vo, -40, 0.15)).speech;
   const cap = (await api.info(P, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "captions");
   const firsts = cap.words.filter((_: any, i: number) => i === 0 || /[.!?]$/.test(cap.words[i - 1].text));
@@ -165,7 +167,7 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
   check("each sentence's caption starts with its speech segment (not inside a pause)",
     firsts.length === 3 && firsts.every((w: any, i: number) => Math.abs(w.start - segs[i][0]) < 0.05), { firsts, segs });
   check("caption words keep their diacritics", cap.words.map((w: any) => w.text).join(" ") === text);
-  await api.apply(P, [{ op: "add_clip", track: "main", src: video }, { op: "add_clip", track: "music", src: music, at: 0, until_end: true, fade_out: 1 }, { op: "enhance_voice", track: "voice" }]);
+  await applyLatest(P, [{ op: "add_clip", track: "main", src: video }, { op: "add_clip", track: "music", src: music, at: 0, until_end: true, fade_out: 1 }, { op: "enhance_voice", track: "voice" }]);
   const out = join(tmp, "tts.mp4");
   const res: any = await api.render(P, { out, subtitles: true, workers: 2, sheet: false });
   const L = await AN.loudness(out);

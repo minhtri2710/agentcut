@@ -10,6 +10,11 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY"]) delete process.env[k];
 const api = await import("./author-api.ts");
+// most rows here are about review, history files and error codes, not concurrency: a call reads the project's revision (info) and uses it.
+// The rows about revisions, and the bad_version rows that must reach the write itself, pass theirs by hand.
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
+const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
+const redoLatest = async (project: string, steps = 1) => api.redo(project, steps, (await api.info(project)).revision);
 const AN = await import("../src/analyze.ts");
 const { gradeChain } = await import("../src/color.ts");
 const { kfValue } = await import("../src/anim.ts");
@@ -65,23 +70,23 @@ console.log("colour: tint + gamma stay inside colorbalance's range");
 
 console.log("scopes: full-range luma");
 {
-  await api.apply(P, [{ op: "add_clip", track: "main", type: "color", color: "#FFFFFF", duration: 1 }]);
+  await applyLatest(P, [{ op: "add_clip", track: "main", type: "color", color: "#FFFFFF", duration: 1 }]);
   const s = await api.scopes(P, 0.5, { out: join(tmp, "white-scopes.jpg") });
   check("pure white reads as luma 1.0 (was 0.92 = limited range)", s.stats.luma.max > 0.98 && s.stats.luma.avg > 0.98, s.stats);
-  await api.apply(P, [{ op: "remove_clip", id: "col1" }]);
+  await applyLatest(P, [{ op: "remove_clip", id: "col1" }]);
 }
 
-const add = await api.apply(P, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), fit: "contain" }]);
+const add = await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), fit: "contain" }]);
 const vid = add.results[0].id as string;
 
 console.log("remove_background.model is validated with the timeline");
-check("unknown model in update_clip -> validation_failed", await code(() => api.apply(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "bogus" } } }])) === "validation_failed");
-check("known model passes validation", (await api.validate(P)).valid && (await code(() => api.apply(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "u2netp" } } }], { dryRun: true }))) === "ok");
+check("unknown model in update_clip -> validation_failed", await code(() => applyLatest(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "bogus" } } }])) === "validation_failed");
+check("known model passes validation", (await api.validate(P)).valid && (await code(() => applyLatest(P, [{ op: "update_clip", id: vid, set: { remove_background: { model: "u2netp" } } }], { dryRun: true }))) === "ok");
 
 console.log("detach_audio carries the audio processing");
 {
-  await api.apply(P, [{ op: "update_clip", id: vid, set: { eq: "voice_clarity", pan: -0.5, normalize: true } }]);
-  const r = await api.apply(P, [{ op: "detach_audio", id: vid }]);
+  await applyLatest(P, [{ op: "update_clip", id: vid, set: { eq: "voice_clarity", pan: -0.5, normalize: true } }]);
+  const r = await applyLatest(P, [{ op: "detach_audio", id: vid }]);
   const aud = (await clip(r.results[0].audio ?? r.results[0].id));
   const v = (await clip(vid));
   check("eq/pan/normalize moved to the audio clip", aud?.eq === "voice_clarity" && aud.pan === -0.5 && aud.normalize === true, aud);
@@ -90,14 +95,14 @@ console.log("detach_audio carries the audio processing");
 
 console.log("split keeps keyframes on the right half");
 {
-  await api.apply(P, [
+  await applyLatest(P, [
     { op: "set_keyframes", id: vid, prop: "opacity", keyframes: [[0, 0], [4, 1]] },
     { op: "set_keyframes", id: vid, prop: "speed", keyframes: [[0, 1], [4, 1]] },
   ], { allowInvalid: true });
-  await api.apply(P, [{ op: "set_keyframes", id: vid, prop: "speed", keyframes: null }]);
+  await applyLatest(P, [{ op: "set_keyframes", id: vid, prop: "speed", keyframes: null }]);
   const audId = (await tl()).tracks.flatMap((t: any) => t.clips).find((c: any) => c.attach_to === vid).id;
-  await api.apply(P, [{ op: "set_keyframes", id: audId, prop: "volume", keyframes: [[0, 1], [4, 0]] }]);
-  const s = await api.apply(P, [{ op: "split_clip", id: vid, at: 1 }]);
+  await applyLatest(P, [{ op: "set_keyframes", id: audId, prop: "volume", keyframes: [[0, 1], [4, 0]] }]);
+  const s = await applyLatest(P, [{ op: "split_clip", id: vid, at: 1 }]);
   const right = (await clip(s.results[0].right)), left = (await clip(vid));
   check("left half keeps its curve", kfValue(left.keyframes.opacity, 0.5) === 0.125, left.keyframes);
   check("right half continues the curve (was reset to static)", Math.abs(kfValue(right.keyframes.opacity, 0) - 0.25) < 1e-9 && Math.abs(kfValue(right.keyframes.opacity, 3) - 1) < 1e-9, right.keyframes);
@@ -112,7 +117,7 @@ check("undo with NaN revision -> bad_revision", await code(() => api.undo(P, 1, 
 
 console.log("render -o subs.srt writes captions (CLI and MCP agree)");
 {
-  await api.apply(P, [{ op: "add_captions", words: [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "world", start: 0.6, end: 1 }] }]);
+  await applyLatest(P, [{ op: "add_captions", words: [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "world", start: 0.6, end: 1 }] }]);
   const r: any = await api.render(P, { out: join(tmp, "subs.srt") });
   check("api.render .srt -> subtitle file", r.format === "srt" && r.cues === 1 && /hello world/i.test(readFileSync(join(tmp, "subs.srt"), "utf8")), r);
 }
@@ -137,10 +142,10 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   const everyPath: [string, (d: string) => unknown][] = [
     ["info", (d) => api.info(d, "json")],
     ["validate", (d) => api.validate(d)],
-    ["apply", (d) => api.apply(d, [{ op: "add_marker", t: 1 }])],
+    ["apply", (d) => api.apply(d, [{ op: "add_marker", t: 1 }], { revision: 1 })], // 1: the revision d had when its version was changed (a create and one apply)
     ["apply --dry-run", (d) => api.apply(d, [{ op: "add_marker", t: 1 }], { dryRun: true })],
-    ["undo", (d) => api.undo(d)],
-    ["redo", (d) => api.redo(d)],
+    ["undo", (d) => api.undo(d, 1, 1)],
+    ["redo", (d) => api.redo(d, 1, 1)],
     ["frame", (d) => api.frame(d, 0)],
     ["sheet", (d) => api.sheet(d, {})],
     ["scopes", (d) => api.scopes(d, 0)],
@@ -158,7 +163,7 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   for (const [label, v] of [["version+1", SCHEMA_VERSION + 1], ["no version", undefined]] as const) {
     const d = join(tmp, `ver-${label.replace(/\W/g, "")}`);
     api.create(d, { preset: "reels" });
-    await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
+    await applyLatest(d, [{ op: "add_marker", t: 0.5 }]);
     setVersion(d, v);
     const before = readFileSync(join(d, "project.json"), "utf8");
     const hist = () => tree(join(d, ".agentcut", "history"));
@@ -175,14 +180,14 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   for (const stack of ["undo", "redo"] as const) {
     const d = join(tmp, `ver-snap-${stack}`);
     api.create(d, { preset: "reels" });
-    await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
-    if (stack === "redo") await api.undo(d);
+    await applyLatest(d, [{ op: "add_marker", t: 0.5 }]);
+    if (stack === "redo") await undoLatest(d);
     const dir = join(d, ".agentcut", "history", stack), f = join(dir, readdirSync(dir).filter((n) => n.endsWith(".json")).sort().pop()!);
     const snap = JSON.parse(readFileSync(f, "utf8")), inner = JSON.parse(snap.timeline);
     inner.version = SCHEMA_VERSION + 1; snap.timeline = JSON.stringify(inner);
     writeFileSync(f, JSON.stringify(snap));
     const before = readFileSync(join(d, "project.json"), "utf8"), snapBefore = readFileSync(f, "utf8");
-    const e = await caught(() => (stack === "undo" ? api.undo(d) : api.redo(d)));
+    const e = await caught(() => (stack === "undo" ? undoLatest(d) : redoLatest(d)));
     check(`${stack}: a snapshot of another version -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
     check(`${stack}: the message names the snapshot, not project.json`, e?.message.includes(basename(f)) && /history snapshot/.test(e.message) && !e.message.startsWith("project.json"), e?.message);
     check(`${stack}: the hint says to remove that entry and that project.json is fine, not to recreate the project`,
@@ -203,12 +208,12 @@ console.log("undo/redo act only on history entries, never on a path named inside
   const make = async (name: string, stack: "undo" | "redo", n = 1) => {
     const d = join(tmp, name);
     api.create(d, { preset: "reels" });
-    for (let i = 0; i < n; i++) await api.apply(d, [{ op: "add_marker", t: 0.5 + i }]);
-    if (stack === "redo") await api.undo(d, n);
+    for (let i = 0; i < n; i++) await applyLatest(d, [{ op: "add_marker", t: 0.5 + i }]);
+    if (stack === "redo") await undoLatest(d, n);
     return d;
   };
   const entries = (d: string, stack: string) => readdirSync(join(d, ".agentcut", "history", stack)).filter((x) => x.endsWith(".json")).sort();
-  const run = (d: string, stack: string, steps = 1) => (stack === "undo" ? api.undo(d, steps) : api.redo(d, steps));
+  const run = (d: string, stack: string, steps = 1) => (stack === "undo" ? undoLatest(d, steps) : redoLatest(d, steps));
   for (const stack of ["undo", "redo"] as const) {
     // (a) a "file" key naming a file outside the project, (b) one naming a sibling inside the project but outside history
     for (const [label, where] of [["outside the project", join(tmp, "outside-victim.txt")], ["a sibling inside the project", "keep.txt"]] as const) {
@@ -219,7 +224,7 @@ console.log("undo/redo act only on history entries, never on a path named inside
       const snap = JSON.parse(readFileSync(f, "utf8")); snap.file = victim; writeFileSync(f, JSON.stringify(snap));
       const e = await caught(() => run(d, stack));
       check(`${stack}: a snapshot naming a file ${label} does not delete it`, existsSync(victim) && readFileSync(victim, "utf8") === "keep me", e ? { code: e.code } : "ok");
-      const e2 = await caught(() => (stack === "undo" ? api.redo(d) : api.undo(d)));
+      const e2 = await caught(() => (stack === "undo" ? redoLatest(d) : undoLatest(d)));
       check(`${stack}: ... nor does the opposite step (${label})`, existsSync(victim) && readFileSync(victim, "utf8") === "keep me", e2 ? { code: e2.code } : "ok");
     }
     // (c) an entry that is a symlink to a snapshot outside history, (d) the stack directory itself a symlink
@@ -264,19 +269,19 @@ console.log("history writes never follow a symlink, and nothing is written befor
   const make = async (name: string, stack: "undo" | "redo") => {
     const d = join(tmp, name);
     api.create(d, { preset: "reels" });
-    await api.apply(d, [{ op: "add_marker", t: 0.5 }]);
-    if (stack === "redo") await api.undo(d);
+    await applyLatest(d, [{ op: "add_marker", t: 0.5 }]);
+    if (stack === "redo") await undoLatest(d);
     return d;
   };
   const acts: [string, (d: string) => unknown][] = [
-    ["undo", (d) => api.undo(d)], ["redo", (d) => api.redo(d)],
-    ["apply", (d) => api.apply(d, [{ op: "add_marker", t: 1 }])], ["history", (d) => api.history(d)],
+    ["undo", (d) => undoLatest(d)], ["redo", (d) => redoLatest(d)],
+    ["apply", (d) => applyLatest(d, [{ op: "add_marker", t: 1 }])], ["history", (d) => api.history(d)],
   ];
 
   // DP-10: project.json as a link is replaced by a regular file; the file it pointed to is left alone
   {
     const d = await make("json-link", "undo"), target = join(tmp, "json-link-target.json");
-    for (const [name, f] of [["apply", () => api.apply(d, [{ op: "add_marker", t: 2 }])], ["undo", () => api.undo(d)], ["redo", () => api.redo(d)]] as const) {
+    for (const [name, f] of [["apply", () => applyLatest(d, [{ op: "add_marker", t: 2 }])], ["undo", () => undoLatest(d)], ["redo", () => redoLatest(d)]] as const) {
       writeFileSync(target, readFileSync(join(d, "project.json"), "utf8"));
       const keep = readFileSync(target, "utf8");
       rmSync(join(d, "project.json")); symlinkSync(target, join(d, "project.json"));
@@ -298,7 +303,7 @@ console.log("history writes never follow a symlink, and nothing is written befor
     mkdirSync(join(d, ".agentcut", "history", other), { recursive: true });
     const bad = join(d, ".agentcut", "history", other, "1.json");
     if (kind === "symlink") symlinkSync(outside, bad); else mkdirSync(bad);
-    for (const [name, f] of [[stack, () => (stack === "undo" ? api.undo(d) : api.redo(d))], ["apply", () => api.apply(d, [{ op: "add_marker", t: 1 }])]] as const) {
+    for (const [name, f] of [[stack, () => (stack === "undo" ? undoLatest(d) : redoLatest(d))], ["apply", () => applyLatest(d, [{ op: "add_marker", t: 1 }])]] as const) {
       const proj = readFileSync(join(d, "project.json"), "utf8"), hist = tree(join(d, ".agentcut", "history"));
       const e = await caught(f);
       check(`${name} with a ${kind} entry in ${other}/ -> unsafe_path, history and project.json byte-identical`,
@@ -330,13 +335,13 @@ console.log("replace_timeline rejects a wrong or missing version itself (dry run
   const before = readFileSync(join(d, "project.json"), "utf8");
   for (const [label, v] of [["version+1", SCHEMA_VERSION + 1], ["no version", undefined]] as const) for (const dryRun of [true, false]) {
     const t = JSON.parse(before); if (v === undefined) delete t.version; else t.version = v;
-    const e = await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: t }], { dryRun }));
+    const e = await caught(() => applyLatest(d, [{ op: "replace_timeline", timeline: t }], { dryRun }));
     check(`replace_timeline ${label}${dryRun ? " (dry run)" : ""} -> bad_version about the op input`,
       e?.code === "bad_version" && /op input/.test(e.message) && !e.message.startsWith("project.json") && e.hint.includes(`"version": ${SCHEMA_VERSION}`) && !/init/.test(e.hint), e ? { code: e.code, message: e.message, hint: e.hint } : "ok");
   }
   check("replace_timeline: project.json is byte-identical", readFileSync(join(d, "project.json"), "utf8") === before);
   const good = JSON.parse(before); good.name = "replaced";
-  check("replace_timeline with the supported version is applied", (await caught(() => api.apply(d, [{ op: "replace_timeline", timeline: good }]))) === null && (await api.info(d, "json")).timeline.name === "replaced");
+  check("replace_timeline with the supported version is applied", (await caught(() => applyLatest(d, [{ op: "replace_timeline", timeline: good }]))) === null && (await api.info(d, "json")).timeline.name === "replaced");
 }
 
 console.log("ui: concurrent play renders share one job, the cache never sees a partial file");
@@ -370,7 +375,7 @@ console.log("review: a cancelled review stops, progress is reported, findings do
   const { EditError } = await import("../src/model.ts");
   const RP = join(tmp, "rv-run");
   api.create(RP, { width: 320, height: 240, fps: 24 });
-  await api.apply(RP, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }, { op: "add_clip", track: "main", type: "gap", duration: 1.5 }, { op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }]);
+  await applyLatest(RP, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }, { op: "add_clip", track: "main", type: "gap", duration: 1.5 }, { op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }]);
   const ticks: [number, number][] = [];
   const plain: any = await api.review(RP);
   const reported: any = await api.review(RP, { progress: (d, n) => ticks.push([d, n]) });
@@ -383,7 +388,7 @@ console.log("review: a cancelled review stops, progress is reported, findings do
   check("a cancelled review stops at the next sample with code aborted", e?.code === "aborted" && seen === 3, { code: e?.code, seen });
   const pre = new AbortController();
   pre.abort(new EditError("the review was cancelled", "aborted"));
-  await api.apply(RP, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 2 }]);
+  await applyLatest(RP, [{ op: "add_clip", track: "text", text: "Hello", at: 0, duration: 2 }]);
   check("a review cancelled before it starts, with a text layer to measure, fails with aborted", (await api.review(RP, { signal: pre.signal }).catch((x) => x))?.code === "aborted");
 }
 
@@ -401,7 +406,7 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   const build = async (name: string, ops: object[]) => {
     const d = join(tmp, `bm-${name}`);
     api.create(d, { width: 320, height: 240, fps: 24 });
-    const r: any = await api.apply(d, ops);
+    const r: any = await applyLatest(d, ops);
     return { d, ids: r.results.map((x: any) => x.id as string) };
   };
   const vid = (extra: object = {}, src = A) => ({ op: "add_clip", track: "main", src, ...extra });
@@ -452,7 +457,7 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   ];
   for (const [name, ops, want, after] of truth) {
     const { d } = await build(name, ops);
-    if (after) await api.apply(d, after);
+    if (after) await applyLatest(d, after);
     const fresh = await scan(d), again = await scan(d);
     check(`${name}: black ${want.map(([a, b]) => `${a}-${b}`).join(", ") || "none"} on a first scan, from the memo, and as the renderer alone draws it`,
       same(fresh.black, want, again.black, await renderOnly(d)) && again.stats.frames === 0, { fresh: fresh.black, again: again.black, stats: again.stats });
@@ -483,14 +488,14 @@ console.log("review: the black-frame scan remembers each source frame and reads 
 
   // a plain clip behind a leading transition: its stream starts after the transition's window, which the renderer draws
   const lead = await build("leading", [vid({ in: 0.1 / 24, duration: 2 }, edgeA), vid({ in: 40.1 / 24, duration: 2.5 }, edgeA)]);
-  await api.apply(lead.d, [{ op: "add_transition", to: lead.ids[1], type: "crossfade", duration: 0.5 }]);
+  await applyLatest(lead.d, [{ op: "add_transition", to: lead.ids[1], type: "crossfade", duration: 0.5 }]);
   const ls = await scan(lead.d), lref = await renderOnly(lead.d);
   check("a plain clip behind a leading transition: the transition's samples are drawn, the rest come from the memo, and the black runs are the renderer's",
     lref.length === 1 && ls.stats.rendered > 0 && ls.stats.memo + ls.stats.read > 0 && same(ls.black, lref), { memo: ls.black, renderer: lref, stats: ls.stats });
 
   const ed = await build("edit", [0, 3, 6, 9].map((s) => vid({ in: s, duration: 1 }, long)));
   const e1 = await scan(ed.d);
-  await api.apply(ed.d, [{ op: "update_clip", id: ed.ids[3], set: { in: 11 } }]);
+  await applyLatest(ed.d, [{ op: "update_clip", id: ed.ids[3], set: { in: 11 } }]);
   const e2 = await scan(ed.d);
   check("a second review after one clip changed decodes only that clip's frames and takes the other three clips' samples from the memo",
     e1.stats.read === 20 && e2.stats.frames > 0 && e2.stats.frames <= 24 && e2.stats.read === 5 && e2.stats.memo === 15 && e2.stats.rendered === 0 && !e2.black.length, { first: e1.stats, second: e2.stats });
@@ -551,7 +556,7 @@ console.log("review: the black-frame scan remembers each source frame and reads 
     same(ly.found.map((f: any) => [f.t, f.end]), [[2, 3], [5, 8]], await renderOnly(lay.d)) && under(ly.found[0]) && same(ly.found[0].text_ids, [lay.ids[1]]) && !ly.found[1].text_ids, ly.found);
 
   const nest = await build("nested", [vid({ in: 0, duration: 4 }, dark), txt({ duration: 3 })]);
-  await api.apply(nest.d, [{ op: "make_compound", ids: nest.ids }]);
+  await applyLatest(nest.d, [{ op: "make_compound", ids: nest.ids }]);
   const ns = await scan(nest.d);
   check("a compound holding text over black footage reports black, with the nested text id",
     same(ns.found.map((f: any) => [f.t, f.end]), [[0, 4]], await renderOnly(nest.d)) && under(ns.found[0]) && same(ns.found[0].text_ids, [nest.ids[1]]), ns.found);
@@ -586,7 +591,7 @@ console.log("templates: the text of every template stays inside the safe area at
     for (const [preset, [w, h]] of Object.entries(PRESETS)) {
       const d = join(tmp, `tpl-${name}-${preset}`);
       api.create(d, { width: w, height: h });
-      await api.apply(d, [{ op: "apply_template", name, ...args[name] }]);
+      await applyLatest(d, [{ op: "apply_template", name, ...args[name] }]);
       const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
       if (unsafe.length) bad[preset] = unsafe.map((f: any) => f.message).join("; ");
     }
@@ -601,12 +606,12 @@ console.log("templates: placement is kept where it was safe, a preset's own plac
   const { resolve } = await import("../src/model.ts");
   const MP = join(tmp, "margin-xy");
   api.create(MP, { preset: "reels" });
-  await api.apply(MP, [{ op: "add_clip", track: "text", text: "Label", at: 0, duration: 2, font_size: 60, position: "bottom_left", margin: "5% 20%" }]);
+  await applyLatest(MP, [{ op: "add_clip", track: "text", text: "Label", at: 0, duration: 2, font_size: 60, position: "bottom_left", margin: "5% 20%" }]);
   const pj = new Project(MP), R = new Renderer(pj.absolutized(resolve(pj.load())), pj.root, 1);
   const b = await R.layoutBox(R.layers.find((l) => l.type === "text")!, 1);
   R.close();
   check("a margin 'x y' sets the left distance and the bottom distance apart (5% and 20% of 1080 px)", !!b && Math.abs(b[0] - 54) < 2 && Math.abs(1920 - (b[1] + b[3]) - 216) < 2, b);
-  const marginIn = async (margin: unknown) => code(() => api.apply(MP, [{ op: "add_clip", track: "text", text: "M", at: 3, duration: 1, position: "top", margin }]));
+  const marginIn = async (margin: unknown) => code(() => applyLatest(MP, [{ op: "add_clip", track: "text", text: "M", at: 3, duration: 1, position: "top", margin }]));
   const refused = [await marginIn("5% 20% 30%"), await marginIn("5% x"), await marginIn("abc"), await marginIn("")];
   check("a margin with three parts, a part that is not a length, or no value is refused at validation", refused.every((c) => c === "validation_failed"), refused);
   const accepted = [await marginIn("5% 12%"), await marginIn("40px 12%"), await marginIn("8%"), await marginIn(40)];
@@ -614,7 +619,7 @@ console.log("templates: placement is kept where it was safe, a preset's own plac
   const titleOf = async (preset: string, extra: object = {}) => {
     const d = join(tmp, `ttl-${preset}-${Object.keys(extra).length}`);
     api.create(d, { preset });
-    await api.apply(d, [{ op: "apply_template", name: "slideshow", media: [join(m, "p.png")], title: "Hi", ...extra }]);
+    await applyLatest(d, [{ op: "apply_template", name: "slideshow", media: [join(m, "p.png")], title: "Hi", ...extra }]);
     return ((await api.info(d, "json")).timeline as any).tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
   };
   const land = await titleOf("youtube"), vert = await titleOf("reels"), own = await titleOf("youtube", { title_preset: "lower_third" }), ownV = await titleOf("reels", { title_preset: "lower_third" });

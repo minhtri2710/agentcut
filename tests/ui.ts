@@ -33,12 +33,14 @@ mkdirSync(media);
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "a.mp4"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=320x240", "-frames:v", "1", join(media, "p.jpg"));
-api.create(dir, { preset: "square" });
+// the fixtures a row sets up from outside are not about concurrency: they read the project's revision (info) and apply at it. The rows about revisions, conflicts and the page pass theirs by hand.
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
+const made = api.create(dir, { preset: "square" });
 await api.apply(dir, [
   { op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 },
   { op: "add_clip", track: "main", src: join(media, "p.jpg"), duration: 1, transition: "crossfade" },
   { op: "add_clip", track: "text", text: "Hi", attach_to: "main#0", offset: 0.2, duration: 1 },
-]);
+], { revision: made.revision });
 
 // ---------------------------------------------------------------- concurrency across processes
 console.log("concurrency");
@@ -47,10 +49,16 @@ const stale = await cliAsync(["-p", dir, "op", "add_marker", "t=1", `--revision`
 check("stale --revision from another process -> conflict", stale.ok === false && stale.error.code === "conflict" && stale.error.revision === r0, stale);
 check("conflict changed nothing", (await api.info(dir)).revision === r0);
 const N = 6;
-const par = await Promise.all(Array.from({ length: N }, (_, i) => cliAsync(["-p", dir, "op", "add_marker", `t=${i + 1}`, `label=m${i}`])));
+const marker = (i: number) => ["op", "add_marker", `t=${i + 1}`, `label=m${i}`];
+const par = await Promise.all(Array.from({ length: N }, (_, i) => cliAsync(["-p", dir, ...marker(i), "--revision", r0])));
+check(`${N} parallel writers at one revision: one applies, the others are conflicts that name who changed what`,
+  par.filter((x) => x.ok).length === 1 && par.filter((x) => !x.ok).every((x) => x.error.code === "conflict" && x.error.message.includes('"ui-test" add_marker')), par);
+// the agent's protocol after a conflict: read the revision again, resend. Writers racing on the project lock never lose an edit.
+const resend = async (i: number) => { for (;;) { const now = await cliAsync(["-p", dir, "info"]), r = await cliAsync(["-p", dir, ...marker(i), "--revision", now.revision]); if (r.ok || r.error.code !== "conflict") return r; } };
+const again = await Promise.all(par.flatMap((x, i) => (x.ok ? [] : [resend(i)])));
 const tl = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
 const labels = new Set(tl.markers.map((m: any) => m.label));
-check(`${N} parallel writers: every edit kept`, par.every((x) => x.ok) && Array.from({ length: N }, (_, i) => `m${i}`).every((l) => labels.has(l)), { par, markers: tl.markers });
+check(`${N} writers that resend after a conflict: every edit kept`, again.every((x) => x.ok) && Array.from({ length: N }, (_, i) => `m${i}`).every((l) => labels.has(l)), { again, markers: tl.markers });
 check("revision advanced once per write", tl.revision === r0 + N, tl.revision);
 const und = await cliAsync(["-p", dir, "undo", "--revision", r0]);
 check("stale undo -> conflict", und.ok === false && und.error.code === "conflict", und);
@@ -157,7 +165,12 @@ check("op via HTTP applied", ap.status === 200 && ap.j.ok && ap.j.revision === r
 check("SSE pushed the HTTP edit", await waitRev(r0 + N + 1));
 const cf = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: 0.2 } }], revision: r0 } });
 check("stale page edit -> 409 conflict with hint", cf.status === 409 && cf.j.error.code === "conflict" && /reload/.test(cf.j.error.hint), cf.j);
-const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }] } });
+check("  and the page's notice is the shared text: it names who changed the project, the page's own edit as \"you\"", cf.j.error.message.includes('"you" update_clip') && cf.j.error.changes?.some((c: any) => c.author === "you" && c.label === "update_clip"), cf.j.error);
+for (const path of ["/api/ops", "/api/redo"]) { // an op that does not exist, so a server that wrongly accepted the call would still change nothing
+  const miss = await jget(path, { method: "POST", body: { ops: [{ op: "no_such_op" }] } });
+  check(`${path} with no revision -> 400 missing_revision`, miss.status === 400 && miss.j.error.code === "missing_revision" && !!miss.j.error.hint, miss.j);
+}
+const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }], revision: (await api.info(dir)).revision } });
 check("invalid batch rejected with issues", bad.status === 422 && bad.j.error.code === "validation_failed" && bad.j.error.issues?.length, bad.j);
 
 for (const [what, text, code] of [["{}", "{}", "bad_request"], ["[]", "[]", "bad_json"], ["an ops value that is not a list", '{"ops":"add_marker"}', "bad_request"]] as const) {
@@ -173,7 +186,7 @@ for (const [path, body] of [["/api/ops", { ops: [{ op: "add_marker", t: 1 }], re
   check(`${path} with revision ${JSON.stringify(body.revision)}: bad_revision that echoes the value as sent`, r.status === 400 && r.j.error.code === "bad_revision" && r.j.error.message.includes(`got ${JSON.stringify(body.revision)}`), r);
 }
 
-const ext = await cliAsync(["-p", dir, "op", "add_marker", "t=2.5", "label=agent"]);
+const ext = await cliAsync(["-p", dir, "op", "add_marker", "t=2.5", "label=agent", "--revision", (await api.info(dir)).revision]);
 check("SSE pushed an edit made by another process", ext.ok && await waitRev(ext.revision), ext);
 const pushed = events.findLast((e) => e.event === "state").data;
 check("pushed state contains the agent's marker", pushed.timeline.markers.some((m: any) => m.label === "agent"));
@@ -196,12 +209,13 @@ check("foreign Host header refused (DNS rebinding)", (await raw("/api/state", { 
 const xo = await new Promise<number>((ok) => {
   const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST",
     headers: { host: `127.0.0.1:${ui.port}`, origin: "http://evil.example", "content-type": "application/json" } }, (res) => { res.resume(); ok(res.statusCode!); });
-  rq.end(JSON.stringify({ ops: [] }));
+  rq.end(JSON.stringify({ ops: [], revision: 0 }));
 });
 check("cross-origin POST refused", xo === 403);
 // a 3-byte character split across two request writes; the rejected op echoes its name back, so no revision moves
+const splitRev = (await api.info(dir)).revision;
 const split = await new Promise<string>((ok) => {
-  const body = Buffer.from(JSON.stringify({ ops: [{ op: "nope_ệ" }] })), cut = body.indexOf(Buffer.from("ệ")) + 1;
+  const body = Buffer.from(JSON.stringify({ ops: [{ op: "nope_ệ" }], revision: splitRev })), cut = body.indexOf(Buffer.from("ệ")) + 1;
   const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ui.port}`, "content-type": "application/json" } }, (res) => {
     const ch: Buffer[] = []; res.on("data", (c) => ch.push(c)); res.on("end", () => ok(Buffer.concat(ch).toString("utf8")));
   });
@@ -235,7 +249,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
 `);
 chmodSync(fake, 0o755);
 process.env.AGENTCUT_UV = fake;
-await api.apply(dir, [{ op: "remove_background", id: vid.id }]);
+await applyLatest(dir, [{ op: "remove_background", id: vid.id }]);
 const np = await jget("/api/frame?t=0.5&scale=0.25");
 check("frame of an unprepared project -> 422 not_prepared with hint", np.status === 422 && np.j.error.code === "not_prepared" && /prepare/.test(np.j.error.hint), np);
 check("page offers the Prepare action for not_prepared", page.body.toString().includes("/api/prepare"));
@@ -274,9 +288,9 @@ process.exit(1);
   process.env.AGENTCUT_UV = capture;
   const dirC = join(tmp, "consent");
   api.create(dirC, { preset: "square" });
-  await api.apply(dirC, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1 }]);
+  await applyLatest(dirC, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 1 }]);
   const cid = JSON.parse(readFileSync(join(dirC, "project.json"), "utf8")).tracks.find((t: any) => t.id === "main").clips[0].id;
-  await api.apply(dirC, [{ op: "remove_background", id: cid, model: "u2net_human_seg" }]);
+  await applyLatest(dirC, [{ op: "remove_background", id: cid, model: "u2net_human_seg" }]);
   const uc = await startUi(dirC, { port: 0 });
   const prep = async (o: { text?: string; origin?: string }) => {
     const r = await jget("/api/prepare", { method: "POST", port: uc.port, ...o });
@@ -310,7 +324,7 @@ console.log("cancel");
   ff("-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=30:duration=6", "-pix_fmt", "yuv420p", big);
   const dirK = join(tmp, "cancel");
   api.create(dirK, { preset: "4k" });
-  await api.apply(dirK, [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }]);
+  await applyLatest(dirK, [{ op: "add_clip", track: "main", src: big, at: 0, duration: 5.9 }]);
   const uk = await startUi(dirK, { port: 0 });
   const R = join(dirK, "renders"), left = () => (existsSync(R) ? readdirSync(R) : []);
   const events: any[] = [];
@@ -349,7 +363,7 @@ console.log("cancel");
     ff("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2", "-f", "lavfi", "-i", "sine=d=2", "-shortest", "-pix_fmt", "yuv420p", tone);
     const dirE = join(tmp, "cancel-extras");
     api.create(dirE, { preset: "720p" });
-    await api.apply(dirE, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
+    await applyLatest(dirE, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
     const ue = await startUi(dirE, { port: 0 });
     const was = process.env.PATH;
     process.env.PATH = `${bin}:${was}`;
@@ -371,7 +385,7 @@ console.log("cancel");
     chmodSync(join(bin, "ffmpeg"), 0o755);
     const dirP = join(tmp, "cancel-play-again");
     api.create(dirP, { preset: "720p" });
-    await api.apply(dirP, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
+    await applyLatest(dirP, [{ op: "add_clip", track: "main", src: tone, at: 0, duration: 2 }]);
     const up = await startUi(dirP, { port: 0 });
     const was = process.env.PATH;
     process.env.PATH = `${bin}:${was}`;
@@ -398,7 +412,7 @@ console.log("cancel");
     const gone = join(media, "gone.mp4"), dirF = join(tmp, "cancel-failed");
     writeFileSync(gone, readFileSync(join(media, "a.mp4")));
     api.create(dirF, { preset: "720p" });
-    await api.apply(dirF, [{ op: "add_clip", track: "main", src: gone, at: 0, duration: 1 }]);
+    await applyLatest(dirF, [{ op: "add_clip", track: "main", src: gone, at: 0, duration: 1 }]);
     rmSync(gone);
     const uf = await startUi(dirF, { port: 0 });
     const f = (await jget("/api/render", { method: "POST", port: uf.port, body: {} })).j;
@@ -412,7 +426,7 @@ console.log("cancel");
   }
   const UNDO = join(dirK, ".agentcut", "history", "undo"), undoCount = () => (existsSync(UNDO) ? readdirSync(UNDO).length : 0);
   const [rev0, undo0] = [api.openProject(dirK).load().revision, undoCount()];
-  const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [] } });
+  const emptyOps = await jget("/api/ops", { method: "POST", port: uk.port, body: { ops: [], revision: rev0 } });
   check("/api/ops with an empty list answers 200 with the same revision, applies no op and adds no undo entry", emptyOps.status === 200 && emptyOps.j.ok === true && emptyOps.j.results.length === 0 && emptyOps.j.revision === rev0 && api.openProject(dirK).load().revision === rev0 && undoCount() === undo0, { emptyOps, rev0, undo0 });
   sse.destroy();
   uk.server.closeAllConnections?.();
@@ -435,7 +449,7 @@ if (process.platform !== "win32") {
   try {
     const rq = request({ host: "127.0.0.1", port: ua.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ua.port}`, "content-type": "application/json" } });
     rq.on("error", () => { /* the socket is destroyed below */ });
-    rq.end(JSON.stringify({ ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }] }));
+    rq.end(JSON.stringify({ ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }], revision: 0 })); // dirA is a new project
     for (let i = 0; i < 200 && !pid; i++) { await Bun.sleep(25); try { pid = Number(readFileSync(pidFile, "utf8")) || 0; } catch { /* not started yet */ } }
     aliveBefore = pid > 0 && alive(pid);
     rq.destroy();
@@ -453,7 +467,7 @@ if (process.platform !== "win32") {
   process.env.AGENTCUT_PIPER_MODEL = join(media, "p.jpg");
   const rev0 = (await api.info(dirA)).revision as number;
   let done: { status: number; j: any } | undefined;
-  try { done = await jget("/api/ops", { method: "POST", port: ua.port, body: { ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }] } }); }
+  try { done = await jget("/api/ops", { method: "POST", port: ua.port, body: { ops: [{ op: "add_voiceover", text: "Hello there.", voice: "piper" }], revision: rev0 } }); }
   finally { for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   check("a UI apply whose client stays connected completes and saves a revision", done?.status === 200 && (await api.info(dirA)).revision === rev0 + 1 && done.j.results?.[0]?.clip?.id, { status: done?.status, j: done?.j, rev0 });
   ua.server.closeAllConnections?.();

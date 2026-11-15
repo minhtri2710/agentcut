@@ -1,5 +1,5 @@
 {
-  "_comment": "9:16 promo built by hand. Replace /ABS/... with real files: agentcut init promo --preset reels && cd promo && agentcut apply ../examples/reels-promo.ops.json --author my-agent",
+  "_comment": "9:16 promo built by hand. Replace /ABS/... with real files: agentcut init promo --preset reels && cd promo && agentcut apply ../examples/reels-promo.ops.json --author my-agent --revision 0",
   "ops": [
     {"op": "add_sequence", "track": "main",
      "items": [

@@ -21,6 +21,8 @@ function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: R
   if ((o.ok ?? true) && !out.ok) throw new Error(`${args.join(" ")} failed: ${JSON.stringify(out).slice(0, 900)}`);
   return out;
 }
+// most rows are about edits, not concurrency: a write reads the project's revision (info, in the same folder) and passes it. The rows about revisions pass theirs by hand.
+const cliLatest = (args: (string | number)[], o: Parameters<typeof cli>[1] = {}) => cli([...args, "--revision", cli(["info"], { cwd: o.cwd }).revision], o);
 function check(name: string, cond: unknown, info?: unknown) {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
@@ -76,25 +78,25 @@ const ops = [
   { op: "add_clip", track: "music", src: join(m, "beat.wav"), volume: 0.6, fade_in: 0.5, until_end: true, keyframes: { volume: [[0, 0.5], [4, 1]] } },
   { op: "add_effect", type: "letterbox", ratio: 1.6, start: 0, duration: 2 },
 ];
-const r = cli(["apply", "--ops", JSON.stringify(ops)], { cwd: P });
+const r = cliLatest(["apply", "--ops", JSON.stringify(ops)], { cwd: P });
 const ids = new Set(r.results.map((x: any) => x.id));
 check("batch created clips", ["vid1", "img1", "col1", "vid2", "vid3", "img2", "shp1", "cap1", "lot1"].every((i) => ids.has(i)), [...ids]);
-const bad = cli(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "text", text: "x", enter: "fade_inn" }])], { ok: false, cwd: P });
+const bad = cliLatest(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "text", text: "x", enter: "fade_inn" }])], { ok: false, cwd: P });
 check("invalid batch rejected with hint", bad.error.code === "validation_failed" && /fade/.test(bad.error.hint), bad.error);
-check("typo op suggests fix", /update_clip/.test(cli(["op", "updat_clip", "id=vid1"], { ok: false, cwd: P }).error.hint));
+check("typo op suggests fix", /update_clip/.test(cliLatest(["op", "updat_clip", "id=vid1"], { ok: false, cwd: P }).error.hint));
 const C = { cwd: P };
-cli(["set", "img1", "motion=ken_burns", "fit=contain"], C);
-const sp = cli(["op", "split_clip", "id=vid1", "at=1.2"], C).results[0];
-cli(["op", "trim_clip", `id=${sp.right}`, "trim_start=0.2"], C);
-cli(["op", "freeze_frame", "id=vid1", "at=0.6", "duration=0.8"], C);
-cli(["op", "remove_silence", "id=vid2", "min_silence=0.5"], C);
-cli(["op", "set_keyframes", "id=vid3", "prop=speed", 'keyframes=[[0,1],[1,0.3],[2,2]]'], C);
-cli(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, "every=2"], C);
-cli(["op", "move_clip", "id=col1", "index=0"], C);
-cli(["op", "duplicate_clip", "id=txt1", "at=end-3"], C);
-cli(["op", "add_effect", "id=img2", "type=rgb_split", "amount=10"], C);
-cli(["op", "add_marker", "t=1.5", "label=check"], C);
-const vo = cli(["op", "add_voiceover", "text=Xin chào, đây là AgentCut", "voice=Linh", "captions=tiktok", "at=0.5"], { ok: false, cwd: P });
+cliLatest(["set", "img1", "motion=ken_burns", "fit=contain"], C);
+const sp = cliLatest(["op", "split_clip", "id=vid1", "at=1.2"], C).results[0];
+cliLatest(["op", "trim_clip", `id=${sp.right}`, "trim_start=0.2"], C);
+cliLatest(["op", "freeze_frame", "id=vid1", "at=0.6", "duration=0.8"], C);
+cliLatest(["op", "remove_silence", "id=vid2", "min_silence=0.5"], C);
+cliLatest(["op", "set_keyframes", "id=vid3", "prop=speed", 'keyframes=[[0,1],[1,0.3],[2,2]]'], C);
+cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, "every=2"], C);
+cliLatest(["op", "move_clip", "id=col1", "index=0"], C);
+cliLatest(["op", "duplicate_clip", "id=txt1", "at=end-3"], C);
+cliLatest(["op", "add_effect", "id=img2", "type=rgb_split", "amount=10"], C);
+cliLatest(["op", "add_marker", "t=1.5", "label=check"], C);
+const vo = cliLatest(["op", "add_voiceover", "text=Xin chào, đây là AgentCut", "voice=Linh", "captions=tiktok", "at=0.5"], { ok: false, cwd: P });
 // only a missing voice or engine (the host lacks 'Linh' / a TTS binary) skips; any other error is a failure
 if (vo.ok) console.log("  ✓ voiceover (Linh)");
 else if (["bad_voice", "missing_dependency"].includes(vo.error.code)) console.log(`SKIPPED: voiceover (${vo.error.code}): ${vo.error.message}`);
@@ -103,16 +105,16 @@ const info = cli(["info"], C);
 console.log(info.summary.split("\n").map((l: string) => "    " + l).join("\n"));
 check("timeline valid", info.errors === 0, info.issues);
 const d0 = info.duration;
-cli(["rm", "col1"], C); cli(["undo"], C);
+cliLatest(["rm", "col1"], C); cliLatest(["undo"], C);
 check("undo restores", cli(["info"], C).duration === d0);
-cli(["redo"], C); cli(["undo"], C);
+cliLatest(["redo"], C); cliLatest(["undo"], C);
 
 console.log("history authors");
 {
   const H = join(tmp, "authors"), HC = { cwd: H };
   cli(["init", H, "--preset", "reels"]);
   const top = () => { const h = cli(["history"], HC).undo; return h[h.length - 1] ?? {}; };
-  const mark = (t: number, o: { env?: Record<string, string>; flag?: readonly string[] } = {}) => cli([...(o.flag ?? []), "op", "add_marker", `t=${t}`, `label=a${t}`], { ...HC, ok: false, env: o.env });
+  const mark = (t: number, o: { env?: Record<string, string>; flag?: readonly string[] } = {}) => cliLatest([...(o.flag ?? []), "op", "add_marker", `t=${t}`, `label=a${t}`], { ...HC, ok: false, env: o.env });
   mark(1, { flag: ["--author", "alice"] });
   check("--author names the entry's author", top().author === "alice" && top().label === "add_marker", top());
   mark(2, { env: { AGENTCUT_AUTHOR: "bob" } });
@@ -123,9 +125,9 @@ console.log("history authors");
     // no name at all: every history-writing form (a dry run too) fails with missing_author and leaves project.json and the history byte-identical
     const R = join(tmp, "author-required"), RC = { cwd: R, ok: false, anon: true };
     cli(["init", R, "--preset", "reels"]);
-    cli(["op", "add_clip", "track=text", "id=t1", "text=x", "at=0", "duration=1"], { cwd: R });
-    cli(["op", "add_marker", "t=2"], { cwd: R });
-    cli(["undo"], { cwd: R }); // an entry on each stack, so undo and redo have something to move
+    cliLatest(["op", "add_clip", "track=text", "id=t1", "text=x", "at=0", "duration=1"], { cwd: R });
+    cliLatest(["op", "add_marker", "t=2"], { cwd: R });
+    cliLatest(["undo"], { cwd: R }); // an entry on each stack, so undo and redo have something to move
     const hist = join(R, ".agentcut", "history"), snap = () => [readFileSync(join(R, "project.json"), "utf8"), ...(readdirSync(hist, { recursive: true }) as string[]).sort().map((f) => (statSync(join(hist, f)).isFile() ? `${f}:${readFileSync(join(hist, f), "utf8")}` : f))].join("\0");
     const before = snap();
     const forms: [string, string[]][] = [["apply", ["apply", "--ops", JSON.stringify([{ op: "add_marker", t: 1 }])]], ["op", ["op", "add_marker", "t=1"]], ["op --dry-run", ["op", "add_marker", "t=1", "--dry-run"]],
@@ -151,15 +153,44 @@ console.log("history authors");
     const r = cli(args, { ...HC, ok: false });
     check(`a value flag ${what} is a usage error naming it, nothing saved`, r.ok === false && r.error.code === "usage" && r.error.message.includes(named) && /needs? a value/.test(r.error.message) && rev() === rev0 && cli(["history"], HC).undo.length === n1, r);
   }
-  const eq = cli(["op", "add_marker", "t=8", "--author=zed"], HC);
+  const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });
   check("guard: a negative number is still a value (--revision -1 reaches the revision check)", neg.ok === false && neg.error.code === "bad_revision", neg);
-  const u = cli(["undo", "--author", "dave"], HC);
+  const u = cliLatest(["undo", "--author", "dave"], HC);
   check("undo records the edit's author and who undid it", u.undone[0].author === "zed" && u.undone[0].movedBy === "dave" && u.undone[0].label === "add_marker", u);
-  const r = cli(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });
+  const r = cliLatest(["redo"], { ...HC, env: { AGENTCUT_AUTHOR: "erin" } });
   check("redo by another author", r.redone[0].author === "zed" && r.redone[0].movedBy === "erin" && cli(["history"], HC).undo.at(-1).movedBy === "erin", r);
   check("guard: a read-only command needs no author and does not read one", cli(["info", "--author", "you"], { ...HC, anon: true }).ok === true);
+}
+
+console.log("required revision");
+{
+  const V = join(tmp, "revision-required"), VC = { cwd: V }, VF = { cwd: V, ok: false };
+  const init = cli(["init", V, "--preset", "reels"]);
+  check("init returns revision 0", init.revision === 0, init);
+  const first = cli(["op", "add_clip", "track=text", "id=t1", "text=x", "at=0", "duration=1", "--revision", 0], VC); // 0: what init returned
+  const second = cli(["op", "add_marker", "t=2", "--revision", first.revision], VC);
+  const undone = cli(["undo", "--revision", second.revision], VC); // an entry on each stack, so undo and redo have something to move
+  const rev = () => cli(["info"], VC).revision, now = rev();
+  check("the revision each result returns is the one the next call needs", first.revision === 1 && second.revision === 2 && undone.revision === 3 && now === 3, { first: first.revision, second: second.revision, undone: undone.revision, now });
+  const hist = join(V, ".agentcut", "history"), snap = () => [readFileSync(join(V, "project.json"), "utf8"), ...(readdirSync(hist, { recursive: true }) as string[]).sort().map((f) => (statSync(join(hist, f)).isFile() ? `${f}:${readFileSync(join(hist, f), "utf8")}` : f))].join("\0");
+  const before = snap();
+  const forms: [string, string[]][] = [["apply", ["apply", "--ops", JSON.stringify([{ op: "add_marker", t: 1 }])]], ["op", ["op", "add_marker", "t=1"]], ["add", ["add", "track=text", "text=y", "at=0", "duration=1"]],
+    ["set", ["set", "t1", "text=y"]], ["rm", ["rm", "t1"]], ["undo", ["undo"]], ["redo", ["redo"]],
+    ["beats --markers (a missing file: the revision is checked before the analysis)", ["beats", join(tmp, "no-such-file.wav"), "--markers"]]];
+  for (const [what, args] of forms) {
+    const r = cli(args, VF);
+    check(`${what} with no revision is missing_revision, the hint names --revision and info, nothing changes`, r.ok === false && r.error.code === "missing_revision" && r.error.hint.includes("--revision") && r.error.hint.includes("info") && snap() === before, r);
+  }
+  for (const [what, args] of [["op --dry-run", ["op", "add_marker", "t=1", "--dry-run"]], ["apply --dry-run", ["apply", "--dry-run", "--ops", JSON.stringify([{ op: "add_marker", t: 1 }])]], ["info", ["info"]], ["history", ["history"]]] as const) {
+    const b = snap(), r = cli([...args], VF);
+    check(`${what} needs no revision and changes nothing`, r.ok === true && snap() === b, r);
+  }
+  const stale = cli(["beats", join(m, "beat.wav"), "--markers", "--revision", now - 1], VF);
+  check("beats --markers honours --revision: a stale one is a conflict and nothing is saved", stale.ok === false && stale.error.code === "conflict" && snap() === before, stale);
+  const fresh = cli(["beats", join(m, "beat.wav"), "--markers", "--revision", now], VC);
+  check("  and the current one saves the markers at the next revision", fresh.markers_added > 0 && rev() === now + 1, { markers_added: fresh.markers_added, rev: rev() });
 }
 
 console.log("look");
@@ -205,7 +236,7 @@ console.log("frame time and caption file format");
     check("a sheet 64 tiles wide on a 1080 timeline is bad_value naming its size, with a .png and a tile_width that fits", e?.code === "bad_value" && e.message.includes(`${64 * 1080 + 63 * 4}x1080`) && e.hint.includes(".png") && fit > 0 && 64 * fit + 63 * 4 <= 65500, e);
     const W = join(tmp, "wide-short");
     cli(["init", W, "--width", 2800, "--height", 16]);
-    cli(["op", "add_clip", "track=main", `src=${join(m, "p.png")}`, "duration=1"], { cwd: W });
+    cliLatest(["op", "add_clip", "track=main", `src=${join(m, "p.png")}`, "duration=1"], { cwd: W });
     const mo = cli(["motion", "--start", 0, "--end", 1, "--frames", 24, "--tile-width", 2800], { ok: false, cwd: W }).error;
     check("a motion image 24 frames of a wide timeline across is bad_value naming its size", mo?.code === "bad_value" && mo.message.includes(`${24 * 2800 + 23 * 3}x`) && /fewer frames/.test(mo.hint), mo);
     const png = cli(["sheet", "--count", 64, "--cols", 64, "--tile-width", 1100, "-o", "wide.png"], { cwd: W });
@@ -219,13 +250,13 @@ console.log("moved media: the hinted relink_asset repairs the project");
   const D = join(tmp, "moved"), old = join(m, "old-place.mp4"), moved = join(m, "new-place.mp4");
   cli(["init", D, "--preset", "square"]);
   copyFileSync(join(m, "green.mp4"), old);
-  cli(["op", "add_clip", "track=main", `src=${old}`], { cwd: D });
+  cliLatest(["op", "add_clip", "track=main", `src=${old}`], { cwd: D });
   const aid = Object.keys(cli(["info", "--json"], { cwd: D }).timeline.assets)[0];
   renameSync(old, moved);
   const v = cli(["validate"], { ok: false, cwd: D });
   const hint: string = v.issues[0]?.hint ?? "";
   check("the hint names relink_asset with the asset id", hint.includes(`relink_asset id=${aid} path=`), hint);
-  cli(["op", "relink_asset", `id=${aid}`, `path=${moved}`], { cwd: D });
+  cliLatest(["op", "relink_asset", `id=${aid}`, `path=${moved}`], { cwd: D });
   const after = cli(["validate"], { cwd: D });
   check("after the hinted op the project validates and renders a frame", after.valid === true && existsSync(cli(["frame", 0], { cwd: D }).image), after);
 }
@@ -247,17 +278,17 @@ check("output 1080x1080 with audio", pr.width === 1080 && pr.has_audio, pr);
 console.log("templates");
 const T = join(tmp, "tpl");
 cli(["init", T, "--preset", "reels"]);
-const tp = cli(["op", "apply_template", "name=promo", "--json", JSON.stringify({ media: [join(m, "a.mp4"), join(m, "p.png"), join(m, "q.jpg")], hook: "Ra mắt", points: ["Nhanh", "Đẹp"], cta: "Mua ngay", music: join(m, "beat.wav") })], { cwd: T });
+const tp = cliLatest(["op", "apply_template", "name=promo", "--json", JSON.stringify({ media: [join(m, "a.mp4"), join(m, "p.png"), join(m, "q.jpg")], hook: "Ra mắt", points: ["Nhanh", "Đẹp"], cta: "Mua ngay", music: join(m, "beat.wav") })], { cwd: T });
 check("promo template", tp.results[0].steps > 5 && tp.errors === 0, tp);
 for (const name of ["slideshow", "beat_montage"]) {
   const d = join(tmp, name);
   cli(["init", d, "--preset", "youtube"]);
-  const x = cli(["op", "apply_template", `name=${name}`, "--json", JSON.stringify({ media: [join(m, "p.png"), join(m, "q.jpg"), join(m, "a.mp4")], music: join(m, "beat.wav"), title: "Album" })], { cwd: d });
+  const x = cliLatest(["op", "apply_template", `name=${name}`, "--json", JSON.stringify({ media: [join(m, "p.png"), join(m, "q.jpg"), join(m, "a.mp4")], music: join(m, "beat.wav"), title: "Album" })], { cwd: d });
   check(`${name} template`, x.errors === 0, x.issues);
 }
 const q = join(tmp, "quote");
 cli(["init", q, "--preset", "square"]);
-check("quote template", cli(["op", "apply_template", "name=quote", "text=Stay hungry, stay foolish", "author=Steve Jobs"], { cwd: q }).errors === 0);
+check("quote template", cliLatest(["op", "apply_template", "name=quote", "text=Stay hungry, stay foolish", "author=Steve Jobs"], { cwd: q }).errors === 0);
 check("template renders", cli(["render", "--draft", "--quiet"], { cwd: T }).frames > 0);
 
 console.log("preset and explicit size");
@@ -267,12 +298,12 @@ console.log("preset and explicit size");
   check("init: a preset gives its size, fps as given", size(cli(["init", S1, "--preset", "reels", "--fps", "24"])) === "1080x1920@24");
   check("init: width and height given with a preset win over it", size(cli(["init", S2, "--preset", "reels", "--width", "720", "--height", "1280", "--fps", "24"])) === "720x1280@24");
   check("init: a preset fills only the size that is not given", size(cli(["init", S3, "--preset", "reels", "--width", "720"])) === "720x1920@30");
-  const set = (a: string[]) => size(cli(["op", "set_settings", ...a], { cwd: S1 }).results[0]);
+  const set = (a: string[]) => size(cliLatest(["op", "set_settings", ...a], { cwd: S1 }).results[0]);
   check("set_settings: a preset gives its size", set(["preset=youtube"]) === "1920x1080@24");
   check("set_settings: width and height given with a preset win over it", set(["preset=reels", "width=720", "height=1280"]) === "720x1280@24");
   check("set_settings: a preset fills only the size that is not given", set(["preset=reels", "width=720"]) === "720x1920@24");
   const bad = (a: string[]) => cli(a, { ok: false, cwd: S1 }).error;
-  const e1 = bad(["init", join(tmp, "size4"), "--preset", "reel"]), e2 = bad(["op", "set_settings", "preset=reel"]);
+  const e1 = bad(["init", join(tmp, "size4"), "--preset", "reel"]), e2 = bad(["op", "set_settings", "preset=reel", "--revision", cli(["info"], { cwd: S1 }).revision]);
   check("init and set_settings name an unknown preset the same way: bad_preset, the nearest name and the list", [e1, e2].every((e) => e.code === "bad_preset" && /did you mean 'reels'/.test(e.hint) && /presets: reels/.test(e.hint)), [e1, e2]);
 }
 
@@ -280,8 +311,8 @@ console.log("feedback");
 const n1 = cli(["feedback", "add", "kind=friction", "title=had to guess the fade animation name", "area=enter"]);
 const n2 = cli(["feedback", "add", "kind=friction", "title=Had to guess the fade animation name!"]);
 check("feedback note merged", n2.merged && n2.id === n1.id && n2.count === 2, n2);
-for (const op of ["j_cut", "split_clip"]) cli(["op", op, "id=x", "wobble=1"], { cwd: q, ok: false });
-cli(["op", "add_effect", "type=grain", "intesity=1"], { cwd: q, ok: false });
+for (const op of ["j_cut", "split_clip"]) cliLatest(["op", op, "id=x", "wobble=1"], { cwd: q, ok: false });
+cliLatest(["op", "add_effect", "type=grain", "intesity=1"], { cwd: q, ok: false });
 const fs = cli(["feedback", "summary"]);
 check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
 check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "wobble"], ["split_clip argument", "wobble"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => fs.naming_misses.some((m: any) => m.kind === k && m.guess === g)), fs.naming_misses);
@@ -422,7 +453,7 @@ console.log("schema version");
     if (v === undefined) delete t.version; else t.version = v;
     writeFileSync(join(d, "project.json"), JSON.stringify(t, null, 2));
     const before = readFileSync(join(d, "project.json"), "utf8");
-    for (const args of [["validate"], ["info"], ["op", "add_marker", "t=1"], ["undo"]]) {
+    for (const args of [["validate"], ["info"], ["op", "add_marker", "t=1", "--revision", "0"], ["undo", "--revision", "0"]]) { // 0: d is a new project, only its version was changed
       const r = cli(args, { cwd: d, ok: false });
       check(`${label}: cli ${args[0]} -> bad_version, hint names both versions`, r.ok === false && r.error.code === "bad_version" && r.error.hint.includes(String(V)) && r.error.hint.includes(String(v ?? "missing")), r);
     }

@@ -32,7 +32,7 @@ Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.t
 capabilities.engines says which transcription, TTS and vision engines are usable now.
 
 ## Workflow that works
-1. create_project (CLI: agentcut init DIR --preset reels).
+1. create_project (CLI: agentcut init DIR --preset reels). The result's "revision" is 0: your first write passes it (--revision 0 / revision 0); every write returns the next one.
 2. probe_media / analyze_beats / analyze_scenes / analyze_silence (/ analyze_subject) your inputs - know durations first.
 3. Build in ONE apply_ops batch (atomic: a batch that would create validation errors is rejected, nothing changes).
 4. LOOK (previews are JPEG, ~0.1 s per frame): contact_sheet (whole video) + preview_frame at the hook, every text, every transition (guides=true for 9:16).
@@ -194,9 +194,16 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
   editor, compound open/expand/regroup, prepare, render). The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
   The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.
-- project.json has a "revision" that goes up by 1 on every save. Pass the revision you read: --revision N (CLI) or revision (MCP
-  apply_ops/undo/redo). If someone saved meanwhile you get code "conflict" and nothing changes: reload, then redo your edit.
-  Without a revision the batch is applied to the latest state. A replace_timeline whose timeline carries a "revision" other than the project's is refused the same way.
+- project.json has a "revision" that goes up by 1 on every save. Every call that writes history needs the revision you last read, so an edit never lands on a state you did not see
+  (clip ids are reused: a deleted vid3 is the id of the next clip you add). CLI: --revision N on apply, op, add, set, rm, undo, redo and beats --markers. MCP: revision on apply_ops, undo and redo.
+  Without it the call fails with missing_revision, before any work, and changes nothing. There is no "latest": get the revision from info / project_info, or from the "revision" of your previous result
+  (apply, undo, redo and prepare return the new one; create_project and init return 0). One write at a time: a second write sent in parallel with the same revision conflicts.
+  Not bound: dry runs, read-only commands, and prepare (it resolves the pending vision requests of whatever timeline is there and returns the revision it wrote; take the revision from its result).
+  undo needs no revision only while project.json is damaged (info and apply then fail with bad_revision or bad_json whose hint says so): undo restores the last good version.
+  If someone saved meanwhile you get code "conflict" and nothing changes. The message names who changed the project and what, for example
+  project changed since revision 12 (now 14): "you" update_clip, "claude-code" add_captions; nothing was changed (details.changes lists {author, label}). Reload (info), judge whether your edit still makes sense, then resend it with the new revision.
+  An analysis the batch needed (transcription, speech, silence scan) runs again on the resend. The names are self-declared; the history holds 100 entries, and an undo that a later edit followed is not listed.
+  replace_timeline replaces the whole timeline under the call's revision; a "revision" inside the timeline is ignored.
   Every apply result names the project root it applied to ("project"): the one a saved batch changed, or the one a dry run checked without saving.
 - Every undo-history entry records its author, self-declared and not a security boundary: 1-64 characters (letters, accented ones too, digits, space . _ - : @ / +).
   CLI: declare your own name with --author NAME or $AGENTCUT_AUTHOR (the flag wins; set the variable once per session) on every command that writes history:

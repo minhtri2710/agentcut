@@ -49,7 +49,7 @@ const ignored = (name: string, wrote: string) => {
 
 // project and media are made before those files are written
 cli(["init", work, "--preset", "square"], tmp);
-cli(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", duration: 2 }, { op: "add_clip", track: "text", text: "Hi", at: 0, duration: 2 }])], work);
+cli(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", duration: 2 }, { op: "add_clip", track: "text", text: "Hi", at: 0, duration: 2 }]), "--revision", "0"], work); // init returns revision 0
 writeFileSync(join(work, "pre.ts"), `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, "x");\n`);
 writeFileSync(join(work, "bunfig.toml"), 'preload = ["./pre.ts"]\n');
 for (const f of [".env", ".env.local"]) writeFileSync(join(work, f), `AGENTCUT_HOME=${dotenvHome}\nAGENTCUT_CACHE=${dotenvCache}\n`);
@@ -94,7 +94,7 @@ console.log("cli input and flags");
   const body = Buffer.from(JSON.stringify([{ op: "add_clip", track: "text", id: "big", text: "ệ".repeat(20) + "x".repeat(3000000), at: 0, duration: 1 }]));
   const cut = body.indexOf(Buffer.from("ệ")) + 1;
   const a = await new Promise<{ out: string }>((done) => {
-    const p = spawn(cliCmd[0], [...cliCmd.slice(1), "apply", "-", "-p", io], { cwd: tmp, env: env(), stdio: ["pipe", "pipe", "ignore"] });
+    const p = spawn(cliCmd[0], [...cliCmd.slice(1), "apply", "-", "-p", io, "--revision", "0"], { cwd: tmp, env: env(), stdio: ["pipe", "pipe", "ignore"] });
     let out = ""; p.stdout!.on("data", (d) => (out += d)); p.on("close", () => done({ out }));
     p.stdin!.write(body.subarray(0, cut));
     setTimeout(() => p.stdin!.end(body.subarray(cut)), 500);
@@ -102,7 +102,7 @@ console.log("cli input and flags");
   check("apply - keeps multi-byte text whole across stdin chunks", JSON.parse(a.out || "{}").ok === true && !readFileSync(join(io, "project.json"), "utf8").includes("\uFFFD"), a.out.slice(0, 300));
   const rev = () => run(["info", "-p", io], tmp).json?.revision;
   const r0 = rev();
-  const dr = run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", id: "c1", duration: 2 }]), "--dry-run=false", "-p", io], tmp);
+  const dr = run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "main", type: "color", color: "#204080", id: "c1", duration: 2 }]), "--dry-run=false", "--revision", String(r0), "-p", io], tmp);
   check("--dry-run=false saves the edit", dr.json?.dry_run === false && rev() > r0, dr.out.slice(0, 300));
   const u = run(["render", "--no-such-flag", "2", "-p", io], tmp);
   check("unknown flag: exit 2, code usage, names the flag", u.status === 2 && u.json?.error?.code === "usage" && u.json.error.message.includes("--no-such-flag"), u.out.slice(0, 300));
@@ -114,8 +114,8 @@ console.log("cli input and flags");
   const md = join(tmp, "backlog.md");
   const sm = run(["feedback", "summary", "--md", md], tmp);
   check("feedback summary --md FILE writes the file", sm.json?.ok === true && existsSync(md), sm.out.slice(0, 300));
-  run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "text", id: "t1", text: "Hi", at: 0, duration: 1, attach_to: "c1" }]), "-p", io], tmp);
-  const rm = run(["rm", "c1", "--keep-attached", "-p", io], tmp);
+  run(["apply", "--ops", JSON.stringify([{ op: "add_clip", track: "text", id: "t1", text: "Hi", at: 0, duration: 1, attach_to: "c1" }]), "--revision", String(rev()), "-p", io], tmp);
+  const rm = run(["rm", "c1", "--keep-attached", "--revision", String(rev()), "-p", io], tmp);
   check("rm --keep-attached keeps the attached clip", rm.json?.ok === true && clipIds().includes("t1") && !clipIds().includes("c1"), [rm.out.slice(0, 200), clipIds()]);
   // a result bigger than the pipe buffer, read late: the process must not exit before the pipe is drained
   const slow = await new Promise<{ len: number; ok: boolean }>((done) => {

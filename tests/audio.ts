@@ -10,6 +10,8 @@ const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
+// this suite's rows are about audio, not concurrency: a write reads the project's revision (info) and applies at it
+const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean; signal?: AbortSignal } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
 const { hasCodec } = await import("../src/media.ts");
 const { run } = await import("../src/proc.ts");
@@ -67,7 +69,7 @@ ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=4", "-i", join(m
 
 const P = join(tmp, "proj");
 api.create(P, { width: 320, height: 240, fps: 24 });
-const apply = async (ops: any[]) => (await api.apply(P, ops)).results;
+const apply = async (ops: any[]) => (await applyLatest(P, ops)).results;
 const mix = (tag: string, loud: number | null = null) => {
   const p = api.openProject(P), tl = p.absolutized(p.load()), w = join(tmp, `${tag}.wav`);
   tl.settings.loudness = loud; // off: compare raw levels between variants
@@ -99,7 +101,7 @@ const wavOf = (name: string, x: Float32Array) => {
 const project = async (name: string, src: string, dur: number, denoise: boolean) => {
   const proj = join(tmp, name);
   api.create(proj, { width: 320, height: 240, fps: 24 });
-  await api.apply(proj, [{ op: "add_clip", track: "voice", src, at: 0, duration: dur, ...(denoise ? { denoise: true } : {}) }]);
+  await applyLatest(proj, [{ op: "add_clip", track: "voice", src, at: 0, duration: dur, ...(denoise ? { denoise: true } : {}) }]);
   const p = api.openProject(proj), tl = p.absolutized(p.load());
   tl.settings.loudness = null;
   return buildAudio(tl, join(tmp, `${name}.wav`));
@@ -279,7 +281,7 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const FPS = 30, DUR = 3, kfs = [[0, 1], [1, 0.5], [2, 2]];
   const RP = join(tmp, "ramp-proj");
   api.create(RP, { width: 320, height: 240, fps: FPS });
-  await api.apply(RP, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
+  await applyLatest(RP, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
   const rmix = (tag: string, edit?: (tl: any) => void) => { const p = api.openProject(RP), tl = p.absolutized(p.load()); tl.settings.loudness = null; edit?.(tl); return buildAudio(tl, join(tmp, `${tag}.wav`)); };
   const ramped = await rmix("ramp");
   // the output time at which the picture shows source time u: the inverse of speedIntegral
@@ -313,7 +315,7 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const worst = (g: number[], e: number[]) => (g.length === e.length ? Math.max(...e.map((x, k) => Math.abs(g[k] - x))) : Infinity);
   const P44 = join(tmp, "ramp-proj44");
   api.create(P44, { width: 320, height: 240, fps: FPS });
-  await api.apply(P44, [{ op: "add_clip", track: "main", src: join(m, "clicks44.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
+  await applyLatest(P44, [{ op: "add_clip", track: "main", src: join(m, "clicks44.mp4"), at: 0, duration: DUR }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: kfs }]);
   const p44 = api.openProject(P44), tl44 = p44.absolutized(p44.load());
   tl44.settings.loudness = null;
   const w44 = worst(onsets(await buildAudio(tl44, join(tmp, "ramp44.wav"))), expected);
@@ -347,7 +349,7 @@ console.log("a speed-ramped video clip plays its sound, time-mapped by the curve
   const zigProject = async (name: string, secs: number) => {
     const Z = join(tmp, name);
     api.create(Z, { width: 320, height: 240, fps: FPS });
-    await api.apply(Z, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: secs, loop: true }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: Array.from({ length: secs * 2 + 1 }, (_, i) => [i * 0.5, i % 2 ? 4 : 0.2]) }]);
+    await applyLatest(Z, [{ op: "add_clip", track: "main", src: join(m, "clicks.mp4"), at: 0, duration: secs, loop: true }, { op: "set_keyframes", id: "vid1", prop: "speed", keyframes: Array.from({ length: secs * 2 + 1 }, (_, i) => [i * 0.5, i % 2 ? 4 : 0.2]) }]);
     const pz = api.openProject(Z), tlz = pz.absolutized(pz.load());
     tlz.settings.loudness = null;
     return tlz;
@@ -393,7 +395,7 @@ console.log("a looping clip's sound repeats at the picture's period; a plain aud
   const loopMix = async (name: string, ops: any[], edit?: (tl: any) => void) => {
     const Q = join(tmp, `loop-${name}`);
     api.create(Q, { width: 320, height: 240, fps: 24 });
-    await api.apply(Q, ops);
+    await applyLatest(Q, ops);
     const p = api.openProject(Q), tl = p.absolutized(p.load());
     tl.settings.loudness = null;
     edit?.(tl);
@@ -435,7 +437,7 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // the stand-in waits only when an argument contains `key` (any call when key is empty); every other call runs the real ffmpeg
     const standIn = (key: string) => writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\ncase "$*" in *'${key}'*) echo $$ > '${pidFile}'; exec sleep 60;; esac\nexec '${realFfmpeg}' "$@"\n`, { mode: 0o755 });
     api.create(Q, { width: 320, height: 240, fps: 24 });
-    await api.apply(Q, [{ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 0, duration: 2 }]);
+    await applyLatest(Q, [{ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 0, duration: 2 }]);
     hasCodec("encoders", "pcm_s16le"); // the encoder list is read once per process: read it from the real ffmpeg before the stand-in takes PATH
     const pq = api.openProject(Q), realPath = process.env.PATH!;
     // the stand-in sleeps 60 s, so a rejection within 5 s of the abort shows the abort stopped it rather than the child ending on its own
@@ -467,7 +469,7 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // the render tail: the stand-in waits only at the step under test, so the render reaches it with the real frames and segments
     const R = join(tmp, "abort-video");
     api.create(R, { width: 320, height: 240, fps: 24 });
-    await api.apply(R, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }]);
+    await applyLatest(R, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }]);
     await abortRun("the segment concat", "concat", (signal) => api.render(R, { out: join(tmp, "abort-concat.mp4"), workers: 2, sheet: false, signal }));
     await abortRun("the gif conversion", "palettegen", (signal) => api.render(R, { out: join(tmp, "abort.gif"), workers: 1, sheet: false, signal }));
     const { embedSubtitles } = await import("../src/subtitles.ts"), { loudness } = await import("../src/analyze.ts");
@@ -480,7 +482,7 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     await abortRun("the single-worker mix", "pcm_f32le", (signal) => api.render(R, { out: join(tmp, "abort-mix1.mp4"), workers: 1, sheet: false, signal }));
     const S = join(tmp, "abort-subs");
     api.create(S, { width: 320, height: 240, fps: 24 });
-    await api.apply(S, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }, { op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }], preset: "clean", at: 0 }]);
+    await applyLatest(S, [{ op: "add_clip", track: "main", src: join(m, "talk.mp4"), duration: 1 }, { op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }], preset: "clean", at: 0 }]);
     await abortRun("the render subtitle mux", "-c:s", (signal) => api.render(S, { out: join(tmp, "abort-render-sub.mp4"), workers: 1, sheet: false, subtitles: true, signal }));
     // the video was committed before the mux: it stays, without a subtitle stream, and the mux's own part file and sidecar are gone
     const subOut = join(tmp, "abort-render-sub.mp4");
@@ -505,10 +507,10 @@ console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
     // beats: f32le is the argument only its decode carries
     const BM = join(tmp, "abort-music");
     api.create(BM, { width: 320, height: 240, fps: 24 });
-    await api.apply(BM, [{ op: "add_clip", track: "music", src, duration: 2 }]);
+    await applyLatest(BM, [{ op: "add_clip", track: "music", src, duration: 2 }]);
     await abortRun("a beat analysis", "-f f32le", (signal) => api.analyze.beats(src, signal));
     await abortRun("review's music beats", "-f f32le", (signal) => api.review(BM, { beats: "music", signal }));
-    await abortRun("snap_to_beats reading an audio file", "-f f32le", (signal) => api.apply(BM, [{ op: "snap_to_beats", track: "main", beats: src }], { signal }));
+    await abortRun("snap_to_beats reading an audio file", "-f f32le", (signal) => applyLatest(BM, [{ op: "snap_to_beats", track: "main", beats: src }], { signal }));
     writeFileSync(join(bin, "whisper-cli"), "#!/bin/sh\nexit 0\n", { mode: 0o755 }); // found on PATH and never started: the extraction stops first
     await abortRun("a transcription's audio extraction", "-ar 16000", (signal) => api.analyze.transcribe(src, "vi", src, undefined, undefined, signal));
     const speaker = join(bin, process.platform === "darwin" ? "say" : "espeak-ng");
@@ -625,7 +627,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   api.create(D, { width: 320, height: 240, fps: 24 });
   const dmix = (tag: string) => { const p = api.openProject(D), tl = p.absolutized(p.load()); tl.settings.loudness = null; return buildAudio(tl, join(tmp, `${tag}.wav`)); };
   const at = 1.013; // not a multiple of the 20 ms analysis window
-  await api.apply(D, [
+  await applyLatest(D, [
     { op: "update_track", id: "music", set: { duck: -30 } },
     { op: "add_clip", track: "music", src: join(m, "tone.wav"), at: 0, duration: 4 },
     { op: "add_clip", track: "voice", src: join(m, "tone.wav"), at, duration: 2, muted: true }, // muted: only the music is in the mix, the voice interval still ducks it
@@ -635,7 +637,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   const first = rms(dk, at, at + 0.03);
   check(`music already at the ducked level in the first 30 ms of the voice (${first.toFixed(1)} vs ${steady.toFixed(1)} dB)`, Math.abs(first - steady) < 2);
 
-  await api.apply(D, [{ op: "update_track", id: "music", set: { duck: null } }, { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: [[0, 1], [1.1, 1], [1.12, 0.0316]] }]);
+  await applyLatest(D, [{ op: "update_track", id: "music", set: { duck: null } }, { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: [[0, 1], [1.1, 1], [1.12, 0.0316]] }]);
   const kf = await dmix("kf-drop"), top = rms(kf, 0.2, 0.7), low = rms(kf, 2, 3), after = rms(kf, 1.13, 1.17);
   check(`volume keyframe drop 1.10 -> 1.12 s: ${top.toFixed(1)} -> ${low.toFixed(1)} dB, already there at 1.13-1.17 s (${after.toFixed(1)})`, Math.abs(top - low - 30) < 0.5 && Math.abs(after - low) < 2);
 
@@ -643,7 +645,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   ff("-f", "lavfi", "-i", "sine=f=220:d=140:r=8000", "-ac", "1", join(m, "bed140.wav"));
   const V = join(tmp, "many");
   api.create(V, { width: 320, height: 240, fps: 24 });
-  await api.apply(V, [
+  await applyLatest(V, [
     { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 0, duration: 70 }, { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 70, duration: 70 },
     ...Array.from({ length: 130 }, (_, i) => ({ op: "add_clip", track: "voice", src: join(m, "tone.wav"), at: 1 + i, duration: 0.3, muted: true })),
   ]);
@@ -657,7 +659,7 @@ console.log("frame-evaluated volume expressions follow their curve to within a f
   const W = join(tmp, "pump");
   api.create(W, { width: 320, height: 240, fps: 24 });
   const plateau = (j: number) => (j % 2 ? 0.25 : 1);
-  await api.apply(W, [
+  await applyLatest(W, [
     { op: "add_clip", track: "music", src: join(m, "bed140.wav"), at: 0, duration: 14 },
     { op: "set_keyframes", id: "aud1", prop: "volume", keyframes: Array.from({ length: 130 }, (_, i) => [Math.round((Math.floor(i / 2) * 0.2 + (i % 2) * 0.1) * 100) / 100, plateau(Math.floor(i / 2))]) },
   ]);

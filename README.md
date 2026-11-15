@@ -70,7 +70,7 @@ Nếu dùng binary thì đổi thành `{ "command": "/path/bin/agentcut", "args"
 
 ```bash
 agentcut init promo --preset reels && cd promo
-agentcut op apply_template name=promo --author my-agent --json '{
+agentcut op apply_template name=promo --author my-agent --revision 0 --json '{
   "media": ["/abs/hero.mp4", "/abs/detail.jpg", "/abs/usage.mp4"],
   "hook": "Ra mắt sản phẩm mới", "points": ["Nhẹ hơn 30%", "Pin 2 ngày"],
   "cta": "Mua ngay", "music": "/abs/song.mp3"}'
@@ -80,6 +80,8 @@ agentcut render -o final.mp4     # bản cuối, kèm contact sheet và số đo
 ```
 
 Template sinh ra các clip bình thường, nên agent sửa tiếp được: đổi chữ, thay clip, thêm hiệu ứng, `undo`.
+
+Mọi lệnh ghi vào lịch sử (`apply`, `op`, `add`, `set`, `rm`, `undo`, `redo`, `beats --markers`; MCP: `apply_ops`, `undo`, `redo`) đều bắt buộc có `--revision N`: revision bạn đọc lần cuối, lấy từ `agentcut info` hoặc từ `revision` trong kết quả của lệnh trước (`init` trả về 0). Thiếu thì lệnh lỗi `missing_revision`; nếu project đã đổi, lệnh lỗi `conflict`, nêu ai đã đổi gì, và không sửa gì cả.
 
 ## Tính năng so với CapCut / Final Cut
 

@@ -17,7 +17,7 @@ const MIME: Record<string, string> = {
   ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
   ".fcpxml": "application/xml", ".otio": "application/json",
 };
-const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
@@ -101,7 +101,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const gone = new AbortController(); // the response closes once it is sent or the client goes away; only the second finds work still waiting
       res.on("close", () => gone.abort());
       const body = await readJson(req);
-      const rev = body.revision; // as sent: checkRevision refuses anything but a whole number >= 0 and echoes it
+      const rev = body.revision; // as sent: no revision is missing_revision, and anything but a whole number >= 0 is bad_revision that echoes it
       // the page is one person at one browser: its author is the server's own constant, whatever the request body says
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev, UI_AUTHOR) });

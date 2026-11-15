@@ -17,6 +17,7 @@ import { VERSION } from "./version.ts";
 const INSTRUCTIONS = `AgentCut: JSON-timeline video editor with CapCut/Final Cut features. Read \`guide\` once. Loop:
 create_project -> probe_media/analyze_* -> apply_ops (atomic; or apply_template) -> contact_sheet/preview_frame (LOOK) ->
 render (draft first) -> fix with apply_ops/undo -> final render. Times are seconds; tracks[0] is the bottom layer.
+apply_ops, undo and redo need \`revision\`: the revision you last read (project_info, or the previous result's \`revision\`; create_project returns 0).
 After create_project/open_project the server remembers the project, so 'project' args are optional.
 Help improve AgentCut: when something is slow, confusing, missing or broken, call report_feedback (one short call).`;
 
@@ -87,7 +88,7 @@ export function buildServer() {
   // the history author is the name the client declared when it connected; a client cannot change it, so a missing or refused one is recorded as "mcp", not an error
   const who = () => { try { return declaredAuthor(s.server.getClientVersion()?.name); } catch { return "mcp"; } };
   const P = z.string().optional().describe("project folder (optional after create/open)");
-  const REV = z.number().int().optional().describe("revision you based this on (project_info); if a human/another agent saved since, fails with code 'conflict'");
+  const REV = z.number().int().optional().describe("REQUIRED (missing_revision without it; apply_ops may leave it out only with dry_run): the revision you last read, from project_info or the previous result's revision (create_project returns 0). If anyone saved since, the call fails with code 'conflict' naming who changed what, and changes nothing. undo needs none only while project.json is damaged");
 
   s.registerTool("guide", { description: "Read first: how AgentCut works (tracks, magnetic timeline, templates, ops cheat-sheet, vocabulary, rules)." },
     async () => ({ content: [text(GUIDE.trim())] }));
@@ -97,7 +98,7 @@ export function buildServer() {
   s.registerTool("timeline_schema", { description: "The timeline JSON format (fields per clip type, units, enums)." }, wrap(() => api.schema()));
 
   s.registerTool("create_project", {
-    description: "Create a project folder and make it current. preset: reels|tiktok|shorts (1080x1920), youtube (1920x1080), square, portrait, 4k, 720p.",
+    description: "Create a project folder and make it current; it starts at revision 0, which the result returns (your first apply_ops passes it). preset: reels|tiktok|shorts (1080x1920), youtube (1920x1080), square, portrait, 4k, 720p.",
     inputSchema: { path: z.string(), preset: z.string().default("reels"), width: z.number().int().optional(), height: z.number().int().optional(), fps: z.number().default(30), name: z.string().optional() },
   }, wrap((a) => { const r = api.create(a.path, { preset: a.preset, width: a.width, height: a.height, fps: a.fps, name: a.name }); state.project = r.project; return r; }));
   s.registerTool("open_project", { description: "Select an existing project folder and return its summary.", inputSchema: { path: z.string() } },
@@ -105,7 +106,7 @@ export function buildServer() {
   s.registerTool("project_info", { description: "Compact text summary of the timeline (tracks bottom->top, clip ids/times) + validation counts. include_json returns the full JSON.", inputSchema: { project: P, include_json: z.boolean().default(false) } },
     wrap((a) => api.info(proj(a.project), a.include_json ? "both" : "summary")));
   s.registerTool("apply_ops", {
-    description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Returns new clip ids and the project root it changed (project). The batch is recorded in the undo history under the name your client declared when it connected.`,
+    description: `Apply a batch of edit ops atomically. Each op is {op, ...args}. Ops: ${api.capabilities().ops.join(", ")} (args: ops_reference). A batch that would add validation errors is rejected with issues+hints. Needs revision (the one you last read: project_info, or the previous result's revision; one write at a time, a parallel second write conflicts). Returns the new revision, new clip ids and the project root it changed (project). The batch is recorded in the undo history under the name your client declared when it connected.`,
     inputSchema: { ops: z.array(z.record(z.string(), z.any())), project: P, dry_run: z.boolean().default(false), allow_invalid: z.boolean().default(false),
       revision: REV },
   }, wrap((a, signal) => api.apply(proj(a.project), a.ops, { dryRun: a.dry_run, allowInvalid: a.allow_invalid, revision: a.revision, author: who(), signal })));
