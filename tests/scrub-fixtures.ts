@@ -1,8 +1,9 @@
 // The fixtures the scrub measurement (tests/scrub-measure.ts) runs on, built from parameters kept here so that numbers can be compared.
 //   src.mp4    1920x1080 30 fps 60 s H.264 High + AAC, a test pattern with temporal noise, about 42 MB, a keyframe every 5-6 s
+//   short.mp4  the same picture and encode as src.mp4 with a keyframe forced every 1.5 s
 //   music.m4a  30 min AAC tone
-//   k4.mp4     3840x2160 30 fps 60 s HEVC with a keyframe every 10 s (VideoToolbox: the size and the GOP are reproducible, the bytes are not)
-//   tl1 one 60 s clip; tl2 40 cuts of 1.5 s; tl3 six 10 s clips with 0.6 s crossfades, a grade each, a whole-video vignette and two titles;
+//   k4.mp4     3840x2160 30 fps 60 s HEVC with a keyframe every 10 s (VideoToolbox: one build shows its size and GOP, not that they reproduce; the bytes are not expected to)
+//   tl1 one 60 s clip; tl2 40 cuts of 1.5 s; tl1s / tl2s the same two on short.mp4; tl3 six 10 s clips with 0.6 s crossfades, a grade each, a whole-video vignette and two titles;
 //   tl10 / tl30 100 / 300 clips of 6.02 s with a crossfade on every 5th, titles and the music (590 s / 1770 s); k4 one clip of k4.mp4.
 // Run: bun --no-install tests/scrub-fixtures.ts <dir>    (needs ffmpeg and ffprobe; AGENTCUT_HOME and AGENTCUT_CACHE must already point at isolated dirs)
 import { spawnSync } from "node:child_process";
@@ -10,7 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const NAMES = ["tl1", "tl2", "tl3", "tl10", "tl30", "k4"] as const;
+export const NAMES = ["tl1", "tl2", "tl1s", "tl2s", "tl3", "tl10", "tl30", "k4"] as const;
 export type Name = (typeof NAMES)[number];
 
 /** Source picture and encode. The noise strength and the bitrate were tuned until the file matched the measured one (about 42 MB, a keyframe every 5-6 s). */
@@ -36,13 +37,16 @@ function keyframes(f: string): number[] {
 export const mediaDir = (dir: string) => join(dir, "media");
 export const projectDir = (dir: string, name: Name) => join(dir, "projects", name);
 const SRC_FILE = (dir: string) => join(mediaDir(dir), "src.mp4");
+export const SHORT_FILE = (dir: string) => join(mediaDir(dir), "short.mp4");
 const MUSIC_FILE = (dir: string) => join(mediaDir(dir), "music.m4a");
 const K4_FILE = (dir: string) => join(mediaDir(dir), "k4.mp4");
 
 export function buildMedia(dir: string) {
   mkdirSync(mediaDir(dir), { recursive: true });
-  ff("-f", "lavfi", "-i", PATTERN(1920, 1080, 60), "-f", "lavfi", "-i", TONE(440, 60), "-c:v", "libx264", "-profile:v", "high", "-b:v", `${SRC.kbps}k`, "-preset", SRC.preset,
-    "-c:a", "aac", "-b:a", "128k", "-shortest", SRC_FILE(dir));
+  const h264 = (out: string, ...gop: string[]) => ff("-f", "lavfi", "-i", PATTERN(1920, 1080, 60), "-f", "lavfi", "-i", TONE(440, 60), "-c:v", "libx264", "-profile:v", "high", "-b:v", `${SRC.kbps}k`, "-preset", SRC.preset,
+    ...gop, "-c:a", "aac", "-b:a", "128k", "-shortest", out);
+  h264(SRC_FILE(dir));
+  h264(SHORT_FILE(dir), "-g", "45", "-keyint_min", "45", "-sc_threshold", "0"); // a keyframe every 45 frames = 1.5 s
   ff("-f", "lavfi", "-i", TONE(220, 1800), "-c:a", "aac", "-b:a", "128k", MUSIC_FILE(dir));
   ff("-f", "lavfi", "-i", PATTERN(3840, 2160, 60), "-f", "lavfi", "-i", TONE(440, 60), "-c:v", "hevc_videotoolbox", "-b:v", "45M", "-g", "300", "-tag:v", "hvc1",
     "-c:a", "aac", "-b:a", "128k", "-shortest", K4_FILE(dir));
@@ -58,10 +62,10 @@ const crossfade = { type: "crossfade", duration: XF };
 
 /** The ops of each timeline and the length it must come to. */
 function plan(dir: string, name: Name): { ops: Ops; duration: number } {
-  const src = SRC_FILE(dir), music = MUSIC_FILE(dir);
-  if (name === "tl1") return { ops: [clip(src, 0, 60)], duration: 60 };
+  const music = MUSIC_FILE(dir), src = name === "tl1s" || name === "tl2s" ? SHORT_FILE(dir) : SRC_FILE(dir);
+  if (name === "tl1" || name === "tl1s") return { ops: [clip(src, 0, 60)], duration: 60 };
   if (name === "k4") return { ops: [clip(K4_FILE(dir), 0, 60)], duration: 60 };
-  if (name === "tl2") return { ops: Array.from({ length: 40 }, (_, i) => clip(src, ((7 * i) % 39) * 1.5, 1.5)), duration: 60 };
+  if (name === "tl2" || name === "tl2s") return { ops: Array.from({ length: 40 }, (_, i) => clip(src, ((7 * i) % 39) * 1.5, 1.5)), duration: 60 }; // on short.mp4 every in-point is a keyframe
   if (name === "tl3") {
     const grade = { exposure: 0.15, contrast: 1.12, saturation: 1.2 };
     return {
@@ -101,7 +105,7 @@ export async function buildProjects(dir: string) {
 }
 
 export function manifest(dir: string, projects: Record<string, unknown>) {
-  const files = [SRC_FILE(dir), MUSIC_FILE(dir), K4_FILE(dir)].map((f) => {
+  const files = [SRC_FILE(dir), SHORT_FILE(dir), MUSIC_FILE(dir), K4_FILE(dir)].map((f) => {
     const kf = keyframes(f);
     return { file: f, bytes: statSync(f).size, sha256: sha256(f), keyframes: kf.length, keyframe_gaps_s: kf.slice(1).map((t, i) => Math.round((t - kf[i]) * 100) / 100).slice(0, 12) };
   });
