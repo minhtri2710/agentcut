@@ -700,7 +700,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   console.log("export in the browser");
   {
     // TOL: observed on the tagged export, the browser's own conversion is off by up to 12 levels on a saturated primary (green: B 11, blue: R 1, B 243) and by 3 or less elsewhere;
-    // the same file untagged gave 39 on green (G 216), 24 on red, 14 on blue and 8 on the skin tone, so green alone separates the two.
+    // the same file untagged gave 39 on green (G 216), 24 on red, 14 on blue and 8 on the skin tone, so under 16 green and red separate the two (the export is read as BT.709 either way, so this row proves the pixels, and the tags rest on the ffprobe rows in codecs).
     const patches = ["#00ff00", "#ff0000", "#0000ff", "#c87850", "#808080"], per = 0.5, TOL = 16;
     const patchDir = join(tmp, "patches");
     api.create(patchDir, { width: 1280, height: 720, fps: 10 });

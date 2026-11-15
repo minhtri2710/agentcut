@@ -279,18 +279,22 @@ console.log("exports, validation and relinking");
   await api.apply(P, [{ op: "relink_asset", id: first, path: again.path }], { revision: built.revision }); // project.json was edited in place: no save since the build
   const healed: any = await api.validate(P);
   check("relink_asset with the same path records them and the project validates", healed.valid === true, healed);
-  // the matrix recorded for an asset can be named by hand (it is read as the file's own tag); it is a string, never another type
+  // the matrix recorded for an asset can be named by hand: only a name from the fixed list (or unknown / reserved) validates, and the error names the field and the list
   const named = JSON.parse(readFileSync(join(P, "project.json"), "utf8"));
   const was = named.assets[first].color_space;
-  named.assets[first].color_space = "bt470bg";
-  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
-  const byHand: any = await api.validate(P);
-  named.assets[first].color_space = 709;
-  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
-  const notString: any = await api.validate(P);
-  named.assets[first].color_space = was;
-  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
-  check("a matrix named by hand on a video asset validates when it is a string, and a number does not", byHand.valid === true && !notString.valid && /color_space/.test(JSON.stringify(notString)), { byHand, notString });
+  const withName = async (v: unknown) => {
+    named.assets[first].color_space = v;
+    writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+    return (await api.validate(P)) as any;
+  };
+  const accepted: (readonly [string, boolean])[] = [];
+  for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "gbr", "reserved", "unknown"]) accepted.push([v, (await withName(v)).valid] as const);
+  const refusedNames: (readonly [unknown, any])[] = [];
+  for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", 709, null]) refusedNames.push([v, await withName(v)] as const);
+  check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
+  check("any other name or an empty one is a validation error naming color_space and the list; another type is an error naming color_space",
+    refusedNames.every(([v, r]) => !r.valid && /color_space/.test(JSON.stringify(r)) && (typeof v !== "string" || (r.issues ?? []).some((i: any) => i.path?.endsWith("color_space") && /bt709/.test(i.message)))), refusedNames.map(([v, r]) => [v, r.valid, JSON.stringify(r).slice(0, 160)]));
+  await withName(was);
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {

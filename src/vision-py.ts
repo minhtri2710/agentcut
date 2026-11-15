@@ -33,11 +33,14 @@ try: _m = os.fstat(0).st_mode
 except OSError: _m = 0
 if stat.S_ISFIFO(_m) or stat.S_ISSOCK(_m): threading.Thread(target=_stop_on_eof, daemon=True).start()
 
-def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None):  # matrix "bt709": the picture is tagged so before the conversion (an untagged HD source, as FrameSource reads it)
+_MATRICES = ("gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2")  # the project's COLOR_SPACES (a test compares them)
+
+def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None):  # matrix: the picture is tagged with it before the conversion, as FrameSource reads it; only a name in the list above
+    if matrix is not None and matrix not in _MATRICES: raise SystemExit("matrix is not a name this helper reads with: %r" % (matrix,))
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if start is not None: args += ["-ss", "%.6f" % start]
     if dur is not None: args += ["-t", "%.6f" % dur]
-    vf = ("setparams=colorspace=bt709," if matrix == "bt709" else "") + ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
+    vf = ("setparams=colorspace=%s," % matrix if matrix else "") + ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
     p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)

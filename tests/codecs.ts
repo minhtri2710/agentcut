@@ -902,21 +902,35 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }
   };
   const green = (c: number[]) => c[1] >= 250 && c[0] <= 6 && c[2] <= 6;
-  const got = { hd709: await centre(hd709), sd601: await centre(sd601), hd709t: await centre(hd709t), hd601t: await centre(hd601t), hd601: await centre(hd601), hd601set: await centre(hd601, { color_space: "smpte170m" }) };
+  const sd709 = mk("sd709-untagged", "640x360", "bt709", "none");
+  const got = { hd709: await centre(hd709), sd601: await centre(sd601), hd709t: await centre(hd709t), hd601t: await centre(hd601t), hd601: await centre(hd601), hd601set: await centre(hd601, { color_space: "smpte170m" }),
+    hd709set: await centre(hd709, { color_space: "bt709" }), sd709: await centre(sd709), sd709set: await centre(sd709, { color_space: "bt709" }), tagSame: await centre(hd709t, { color_space: "bt709" }) };
   check("an untagged HD source made with the BT.709 matrix renders green (read as BT.601 it gave R 20, B 9)", green(got.hd709), got.hd709);
   check("an untagged SD source made with the BT.601 matrix still renders green", green(got.sd601), got.sd601);
   check("a source tagged BT.709 renders green, and an HD source tagged BT.601 keeps its own tag (the rule never overrides a tag)", green(got.hd709t) && green(got.hd601t), { t709: got.hd709t, t601: got.hd601t });
-  check("an untagged HD source made with BT.601 is read as BT.709 (G 216), and a matrix named on its asset by hand is read as its tag (green)", got.hd601[1] > 205 && got.hd601[1] < 225 && green(got.hd601set), { rule: got.hd601, byHand: got.hd601set });
-  // which sizes count as HD: the short side from 720 or the long side from 1280; the rule shows in the decode chain (pixelKey), so no decode runs
-  const key = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
-    new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey.includes("colorspace=bt709");
-  const sizes: [number, number, boolean][] = [[1279, 719, false], [1280, 719, true], [1279, 720, true], [719, 1279, false], [719, 1280, true], [720, 1279, true], [480, 854, false], [720, 1280, true], [640, 360, false], [1920, 1080, true], [1280, 544, true]];
-  const wrong = sizes.filter(([w, h, hd]) => key(w, h) !== hd);
-  check("HD is a short side of 720 or more, or a long side of 1280 or more, in either orientation", wrong.length === 0, wrong);
-  check("a tag on the asset ends the rule at any size; 'reserved' counts as no tag; an image is never read by it",
-    !key(1920, 1080, "bt709") && !key(1920, 1080, "bt470bg") && key(1920, 1080, "reserved") && !key(1920, 1080, "unknown", { kind: "image" }));
-  check("a background-removal matte is outside the rule at any size (its own writer's pixels are read as they were written)",
-    !new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: MATTE_FACTS }).pixelKey.includes("colorspace=bt709"));
+  check("an untagged HD source made with BT.601 is read as BT.709 (G 216), and the asset naming smpte170m reads it as BT.601 (green)", got.hd601[1] > 205 && got.hd601[1] < 225 && green(got.hd601set), { rule: got.hd601, byHand: got.hd601set });
+  check("the asset naming bt709 reads an untagged HD file and an untagged SD file as BT.709 (green); the SD file with no name is still read as BT.601 (R 20, B 9)",
+    green(got.hd709set) && green(got.sd709set) && got.sd709[0] >= 12 && got.sd709[2] >= 5, { hd: got.hd709set, sd: got.sd709set, sdUnnamed: got.sd709 });
+  check("the asset naming the tag a file already has changes nothing", green(got.tagSame), got.tagSame);
+  // which matrix a picture is read with, from the decode chain (pixelKey), so no decode runs: the asset's own name; else BT.709 for HD (a short side from 720 or a long side from 1280); else none
+  const read = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
+    /setparams=colorspace=([a-z0-9-]+)/.exec(new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey)?.[1];
+  const sizes: [number, number, string | undefined][] = [[1279, 719, undefined], [1280, 719, "bt709"], [1279, 720, "bt709"], [719, 1279, undefined], [719, 1280, "bt709"], [720, 1279, "bt709"], [480, 854, undefined], [720, 1280, "bt709"],
+    [640, 360, undefined], [1920, 1080, "bt709"], [1280, 544, "bt709"]];
+  const wrong = sizes.filter(([w, h, want]) => read(w, h) !== want);
+  check("an unnamed picture is read as BT.709 when it is HD: a short side of 720 or more, or a long side of 1280 or more, in either orientation", wrong.length === 0, wrong);
+  check("a name on the asset is the matrix at any size ('reserved' counts as no name); an image is never read by it",
+    read(1920, 1080, "bt470bg") === "bt470bg" && read(640, 360, "bt709") === "bt709" && read(1920, 1080, "reserved") === "bt709" && read(640, 360, "reserved") === undefined
+    && read(1920, 1080, "unknown", { kind: "image" }) === undefined && read(1920, 1080, "bt709", { kind: "image" }) === undefined);
+  check("a background-removal matte is read as its writer made it (BT.601), at any size",
+    /setparams=colorspace=smpte170m/.test(new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: MATTE_FACTS }).pixelKey));
+  const refusal = (color_space: string) => { try { new FrameSource({ path: hd709, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any }); return "built"; } catch (e: any) { return e.code; } };
+  check("a name outside the list never reaches the decode chain: the source is refused", ["bt.709", "709", "", "bt709,format=gray", "BT709"].every((n) => refusal(n) === "bad_media"), ["bt.709", "709", "", "bt709,format=gray", "BT709"].map(refusal));
+  // an HD gif (a palette picture): the rule puts its tag on it too, and it must still decode to the colour drawn
+  const gifHd = join(m, "hd.gif");
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-frames:v", "2", gifHd);
+  const gifInfo = api.probe(gifHd), gifPx = await centre(gifHd).catch((e) => String(e?.message ?? e).slice(0, 200));
+  check("an HD gif (probe: kind video, color_space recorded as given) decodes through FrameSource to the colour drawn", gifInfo.kind === "video" && Array.isArray(gifPx) && green(gifPx), { kind: gifInfo.kind, color_space: gifInfo.color_space, gifPx });
 }
 
 console.log("the JPEG side limit render.ts refuses at");

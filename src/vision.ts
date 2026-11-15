@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { stopOnAbort } from "./proc.ts";
 import { alive } from "./project.ts";
-import { type Dict, EditError, MATTE_MB, MATTE_MODELS, MATTE_PINS, type ModelPin, ORT_ENV, readsAsBt709, sizeText } from "./model.ts";
+import { type Dict, EditError, MATTE_MB, MATTE_MODELS, MATTE_PINS, matrixFor, type ModelPin, ORT_ENV, sizeText } from "./model.ts";
 import { commit, createFile, ensureDir, HOST_TAG, notWritable, partSibling, tmpSibling, writeFile } from "./safe-write.ts";
 import { has, isExecutable } from "./tts.ts";
 import { VISION_PY } from "./vision-py.ts";
@@ -357,8 +357,10 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   if (!MATTE_MODELS.includes(model)) throw new EditError(`unknown matte model '${model}'`, "bad_value", `models: ${MATTE_MODELS.join(", ")}`);
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
   const fps = o.kind === "image" ? null : o.fps ?? 30; // a video of unknown rate is matted at 30
-  // the helper's frame reader reads an untagged HD video as BT.709, as FrameSource does; the field is in the key only then, so no other matte's file name depends on it
-  const params = { cmd: "matte", kind: o.kind, fps, w, h, model, ...(o.kind === "video" && o.colorSpace !== undefined && readsAsBt709(o.colorSpace, o.srcW, o.srcH) ? { matrix: "bt709" } : {}) };
+  // the helper's frame reader reads a video with the same matrix FrameSource does (the asset's name, else bt709 for an untagged HD one); the job carries it only when there is one, and a video with no color_space is refused
+  if (o.kind === "video" && o.colorSpace === undefined) throw new EditError("a video matte job needs the asset's color_space", "bad_media", "relink_asset with the file's path records it");
+  const matrix = o.kind === "video" ? matrixFor(o.colorSpace!, o.srcW, o.srcH) : undefined;
+  const params = { cmd: "matte", kind: o.kind, fps, w, h, model, ...(matrix ? { matrix } : {}) };
   const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
   d.job.model_file = modelFile(model);
   d.job.model_sha256 = MATTE_PINS[model].sha256; // the helper hashes the file it loads

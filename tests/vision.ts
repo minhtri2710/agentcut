@@ -657,13 +657,13 @@ console.log("asset record");
   const code = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
   const base = { srcW: 640, srcH: 360 };
   for (const bad of ["30,more", Number.NaN, Infinity, 0, -5]) {
-    check(`matteJob refuses fps ${String(bad)}`, code(() => V.matteJob(join(m, "green.mp4"), { kind: "video", fps: bad as any, duration: 2, ...base })) === "bad_media");
+    check(`matteJob refuses fps ${String(bad)}`, code(() => V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", fps: bad as any, duration: 2, ...base })) === "bad_media");
     check(`subjectJob refuses fps ${String(bad)}`, code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: bad as any, ...base })) === "bad_media");
     check(`trackJob refuses fps ${String(bad)}`, code(() => V.trackJob(join(m, "green.mp4"), { start: 0, duration: 2, at: 0, box: [0, 0, 0.1, 0.1], fps: bad as any, ...base })) === "bad_media");
     check(`FrameSource refuses rate ${String(bad)}`, code(() => new FrameSource({ path: join(m, "green.mp4"), kind: "video", ...base, rate: bad as any, fit: "fill", box: [64, 64] })) === "bad_media");
   }
   check("subjectJob refuses a non-numeric start", code(() => V.subjectJob(join(m, "green.mp4"), { start: "1,more" as any, duration: 2, fps: 6, ...base })) === "bad_media");
-  check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", fps: null, duration: 2, ...base }).job.fps === 30);
+  check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", fps: null, duration: 2, ...base }).job.fps === 30);
 }
 
 // ---------------------------------------------------------------- matte models are downloaded only on request
@@ -728,14 +728,19 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     const full = calls.findIndex((c) => c.download && c.download.bytes === c.download.total_bytes), nextCall = calls[full + 1];
     check("prepare reports no download once the model is stored, before the helper runs: the call after the full-size one has no download, done 0, and the helper has not run yet",
       full >= 0 && !!nextCall && nextCall.download === undefined && nextCall.done === 0 && nextCall.ran === calls[full].ran, { calls });
-    { // the matrix rule reaches the helper's job only for an untagged HD video, and then moves the cache key; any other source keeps its key
+    { // the matrix a picture is read with reaches the helper's job as `matrix` for a video (the asset's own name, else bt709 for HD, else none) and is part of the cache key
       const mj = (w: number, h: number, colorSpace?: string, kind = "video") => V.matteJob(join(m, "rb.mp4"), { kind, fps: 30, duration: 2, srcW: w, srcH: h, model: MODEL, root: G, ...(colorSpace ? { colorSpace } : {}) });
-      const plain = mj(1920, 1080), untagged = mj(1920, 1080, "unknown");
-      check("matte job: an untagged HD video carries the matrix and has its own cache file; a tagged one, an SD one and an image keep the file they had",
-        untagged.job.matrix === "bt709" && untagged.file !== plain.file && mj(1920, 1080, "bt709").file === plain.file && mj(640, 360, "unknown").file === mj(640, 360).file
-        && mj(1920, 1080, "unknown", "image").file === mj(1920, 1080, undefined, "image").file && !("matrix" in mj(1920, 1080, "bt709").job), { untagged: untagged.job.matrix, same: [mj(1920, 1080, "bt709").file === plain.file] });
+      const refuses = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
+      const hdUntagged = mj(1920, 1080, "unknown"), hdNamed = mj(1920, 1080, "bt470bg"), sdNamed = mj(640, 360, "bt709"), sdUntagged = mj(640, 360, "unknown");
+      check("matte job: the job carries the matrix the picture is read with (untagged HD: bt709; a name on the asset: that name, at any size; untagged SD or an image: none)",
+        hdUntagged.job.matrix === "bt709" && hdNamed.job.matrix === "bt470bg" && sdNamed.job.matrix === "bt709" && !("matrix" in sdUntagged.job) && !("matrix" in mj(1920, 1080, "unknown", "image").job),
+        { hd: hdUntagged.job.matrix, named: hdNamed.job.matrix, sd: sdNamed.job.matrix, sdUntagged: sdUntagged.job.matrix });
+      check("matte job: a different matrix is a different cache file, and an image's file does not depend on the colour name",
+        new Set([hdUntagged.file, hdNamed.file, sdNamed.file, sdUntagged.file]).size === 4 && mj(1920, 1080, "bt709", "image").file === mj(1920, 1080, undefined, "image").file);
+      check("matte job: a video without its color_space, or with a name outside the list, is refused before a job is made",
+        refuses(() => mj(1920, 1080)) === "bad_media" && refuses(() => mj(1920, 1080, "bt.709")) === "bad_media" && refuses(() => mj(640, 360, "bt709,format=gray")) === "bad_media");
     }
-    check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
+    check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", colorSpace: "unknown", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
     // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404
     rmSync(join(G, ".agentcut", "cache"), { recursive: true }); rmSync(modelFile(MODEL));
@@ -868,6 +873,8 @@ sys.path.insert(0, sys.argv[1])
 g = {"__name__": "helper"}
 exec(compile(open(sys.argv[2]).read().split("\\njob = json.loads(")[0], "helper", "exec"), g)
 a = json.loads(sys.argv[3])
+if a.get("list"):
+  sys.stdout.write(json.dumps(list(g["_MATRICES"]))); sys.exit(0)
 sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "rgb24", **a["kw"])).b)
 `);
         const read = (kw: Record<string, unknown>) => {
@@ -880,8 +887,13 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
         const fs = await src.readAt(0); src.close();
         const mine = [fs[(18 * 64 + 32) * 4], fs[(18 * 64 + 32) * 4 + 1], fs[(18 * 64 + 32) * 4 + 2]], withRule = read({ matrix: "bt709" }), without = read({});
         const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 3);
-        check("helper: the frame reader, told the rule applies, gives the same RGB as FrameSource for an untagged HD source (green); without it the reader keeps the BT.601 read (R 20, B 9)",
+        check("helper: the frame reader, told to read with bt709, gives the same RGB as FrameSource for an untagged HD source (green); told nothing it keeps the BT.601 read (R 20, B 9)",
           same(withRule) && Array.isArray(without) && without[0] >= 12 && without[2] >= 5, { fs: mine, withRule, without });
+        const { COLOR_SPACES } = await import("../src/model.ts");
+        const run1 = (job: object) => spawnSync("python3", ["-I", "-S", "-B", driver, stubs, script, JSON.stringify({ path: hd, ...job })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
+        const listed = run1({ list: true }), bad = run1({ kw: { matrix: "bt709,format=gray" } });
+        check("helper: its list of matrix names is the project's, and a name outside it is refused before ffmpeg starts",
+          listed.status === 0 && JSON.stringify(JSON.parse(listed.stdout).sort()) === JSON.stringify([...COLOR_SPACES].sort()) && bad.status !== 0 && /matrix/.test(bad.stderr), { listed: listed.stdout, status: bad.status, err: bad.stderr.slice(-200) });
       }
 
       // stdin closed while a decode and an encode are in flight: the helper stops both ffmpeg children before it exits, so the
@@ -1203,7 +1215,7 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
   const jobs = {
     subject: () => V.subjectJob(rb, { fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
     track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], srcW: 640, srcH: 360, root: root() }),
-    matte: () => V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
+    matte: () => V.matteJob(rb, { kind: "video", colorSpace: "unknown", fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
   };
   /** compute one job under the failing uv; the run it logged, and the error */
   const go = async (job: ReturnType<(typeof jobs)[keyof typeof jobs]>, allow: boolean) => {
@@ -1221,7 +1233,7 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       const jobOf = (r: PyRun) => JSON.parse(r.argv.at(-1)!);
       const u2netp = jobOf((await go(jobs.matte(), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
       check("the matte job reaching the helper carries the model's sha256 and file, and no allow_download", u2netp.model_sha256 === M.MATTE_PINS.u2netp.sha256 && u2netp.model_file === V.modelFile("u2netp") && !("allow_download" in u2netp), u2netp);
-      check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", fps: 10, duration: 1, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
+      check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", colorSpace: "unknown", fps: 10, duration: 1, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
       check("every matte model has a pin: its own name, an https url ending /<name>.onnx, 64 hex sha256, bytes > 0, and a size in whole MB",
         M.MATTE_MODELS.length === 5 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(`/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
         && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 5);
@@ -1315,7 +1327,7 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
   }],
   ["real: video matte produced under the models dir layout and cached", async () => {
     await apply(real.Q, [{ op: "remove_background", id: "vid1" }]);
-    const mt: any = await api.prepare(real.Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", fps: 30, duration: 3, srcW: 640, srcH: 360, root: real.Q }));
+    const mt: any = await api.prepare(real.Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", colorSpace: "unknown", fps: 30, duration: 3, srcW: 640, srcH: 360, root: real.Q }));
     return [existsSync(mt.computed[0].file) && again.cached === true && existsSync(V.modelFile("u2netp")), mt];
   }],
   ["real: image matte is a PNG with an alpha channel and is cached", async () => {
