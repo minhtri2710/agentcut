@@ -4,9 +4,9 @@ Agent-first video editor. Read [AGENTS.md](AGENTS.md) to *use* it; this file is 
 `legacy/python/` is the first prototype - do not edit or use it.
 
 - Setup: `bun install`. Run from source: `scripts/ac …` (CLI), the `.mcp.json` command (MCP; copy its flags to launch it by hand): they pass `--no-install --no-env-file --config=scripts/bunfig.empty.toml`, so a bunfig.toml and .env in the working dir are not read and nothing is auto-installed (tests/launchers.ts).
-- Check: `npx tsc --noEmit -p .` and `npx tsc --noEmit -p src/ui` (the page: DOM lib, no node types; `bun run typecheck` runs both), then `bun run test` (smoke, mcp, edit-ops, compound, codecs, export, ui, audio, color-tts, verify, writes, vision, review, jobs, ui-browser, realmedia, launchers; they need a per-user TMPDIR, since the vision helper refuses a cache under a shared temp dir). Export roundtrip
+- Check: `npx tsc --noEmit -p .` and `npx tsc --noEmit -p src/ui` (the page: DOM lib, no node types; `bun run typecheck` runs both), then `bun run test` (smoke, mcp, edit-ops, compound, codecs, frames, export, ui, audio, color-tts, verify, writes, vision, review, jobs, ui-browser, realmedia, launchers; they need a per-user TMPDIR, since the vision helper refuses a cache under a shared temp dir); ui-browser needs macOS and /usr/bin/sandbox-exec and fails without them. Export roundtrip
   checks run when `AGENTCUT_OTIO_PY` (python with opentimelineio) / `AGENTCUT_FCPXML_DTD` are set.
-- Build: `bun run build` -> `dist/` (Node >= 20 bundles); `bun run build -- --compile` -> `bin/agentcut` (single binary).
+- Build: `bun run build` -> `dist/` (Node >= 20 bundles); `bun run build -- --compile` -> `bin/agentcut` (single binary). `bun run ui` writes src/ui/page.gen.ts (the page as one string the server serves); `bun run ui --check` exits 1 when that file differs from a fresh build (launchers runs it; the committed file is the build of the pinned Bun).
 - Perf tools: `bun scripts/profile-frames.ts <project>`, `bun scripts/profile-layers.ts <project>`, `bun scripts/bench-ops.ts`.
 - Deciding what to improve: start from `agentcut feedback summary --md` (ranked backlog from agent notes + auto-logged
   errors, guessed names, rejected batches, latency, render speed). Guessed names usually mean "add an alias" or "rename";
