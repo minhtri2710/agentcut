@@ -429,7 +429,7 @@ export class FrameSource {
       }
     }
     if (!(await held)) throw new EditError(`decode failed for ${o.path}: the source ended before its probed length at ${at.toFixed(2)}s (the project records ${D.toFixed(2)}s of picture)`, "decode_failed",
-      "relink_asset with the same path probes the file again. If the error stays, the file reports no length for its picture (mkv, webm) and its sound may outlast it: remux it to mp4 and relink, or set loop false");
+      "relink_asset with the same path probes the file again. If the error stays, the file's recorded length is longer than its picture (a truncated file, or an mkv/webm whose sound outlasts its picture): remux it to mp4 and relink, or set loop false");
   }
 
   /** The frame a freeze holds: the one at the in-point (wrapped into the source for a loop clip); at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
