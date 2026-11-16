@@ -1521,11 +1521,11 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
       && /set loop: true/.test(refusedHint(longer, slipBy(-0.5))) && /^no slip fits/.test(refusedHint(longer, slipBy(-2))) && !/loop/.test(refusedHint(longer, slipBy(-2))),
       [refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-0.5)), refusedHint(longer, slipBy(-2))]);
     check("  nor when only its detached sound is reversed, nor on a source whose format cannot loop", !/loop/.test(refusedHint(reversedSound, slip)) && /^no slip fits/.test(refusedHint(reversedSound, slip)) && !/loop/.test(refusedHint(mk([vid()], { format: "mpegts", key_gap: 1 }), slip)));
-    // a hint prints "allowed by: a .. b" only when a non-zero amount fits (a < b, or a = b off zero); a clip with no spare source (or more than its source) says so instead
-    const shown = [refusedHint(mk([vid({ duration: 1 })]), slipBy(1.5)), refusedHint(mk([vid({ in: 1, duration: 1 })]), slipBy(-2))], none = [refusedHint(mk([vid()]), slip), refusedHint(longer, slipBy(-0.5)), refusedHint(longer, slipBy(-2))];
+    // a hint prints "allowed by: a .. b" only when a non-zero amount fits (a < b, or a = b off zero); a clip longer than its source says so even where loop is offered
+    const shown = [refusedHint(mk([vid({ duration: 1 })]), slipBy(1.5)), refusedHint(mk([vid({ in: 1, duration: 1 })]), slipBy(-2))];
     const range = (h: string) => /allowed by: (-?[\d.]+) \.\. (-?[\d.]+) s/.exec(h)?.slice(1).map(Number);
-    check("slip_clip prints 'allowed by' only for a range that holds an amount; none holds one on a clip with no spare source or more than its source",
-      shown.every((h) => { const r = range(h); return !!r && r[0] <= r[1] && (r[0] < r[1] || r[0] !== 0); }) && none.every((h) => /^no slip fits/.test(h) && !range(h)), { shown, none });
+    check("slip_clip prints 'allowed by' only for a range that holds an amount; a clip longer than its source, offered loop, says no slip fits",
+      shown.every((h) => { const r = range(h); return !!r && r[0] <= r[1] && (r[0] < r[1] || r[0] !== 0); }) && /^no slip fits/.test(refusedHint(longer, slipBy(-0.5))), { shown, longer: refusedHint(longer, slipBy(-0.5)) });
     // the roll and the slide share the one print: two clips with no spare source say "no by fits", a pair with room still print their range
     const pair = (a: any, b: any) => mk([vid({ id: "L", ...a }), vid({ id: "R", ...b })]), roll = [{ op: "roll_edit", id: "L", by: 0.5 }];
     const slid = refusedHint(mk([vid({ id: "A", in: 1, duration: 5 }), vid({ id: "M", in: 1, duration: 1 }), vid({ id: "N", in: 1, duration: 1 })]), [{ op: "slide_clip", id: "M", by: 0.5 }]);
@@ -1535,14 +1535,21 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     // a clip's loop flag is its own, so the hint names every clip it must be set on; following it (loop on each named clip, the same op again) must pass
     const det = applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }])[0], two = applyOps(null as any, det, [{ op: "split_clip", id: "aud1", at: 1 }])[0];
     const named = (h: string) => [...h.matchAll(/'([^']+)'/g)].map((m) => m[1]);
-    const follows = (t: any, ops: any[], ids: string[]) => { try { applyOps(null as any, structuredClone(t), [...ids.map((id) => ({ op: "update_clip", id, set: { loop: true } })), ...ops]); return true; } catch { return false; } };
+    const follows = (t: any, ops: any[], ids: string[], cure = (id: string): any => ({ op: "update_clip", id, set: { loop: true } })) => { try { applyOps(null as any, structuredClone(t), [...ids.map(cure), ...ops]); return true; } catch { return false; } };
     const slipNamed = [det, two].map((t) => named(refusedHint(t, slip)));
     const yLooped = applyOps(null as any, det, [{ op: "update_clip", id: "y", set: { loop: true } }])[0];
     check("slip_clip on a video with detached audio names the video and each piece to set loop on (one piece or two), and setting loop on those clips lets the same slip pass; a clip with loop is not named again",
-      slipNamed[0].join() === "y,aud1" && slipNamed[1].join() === "y,aud1,aud2" && follows(det, slip, slipNamed[0]) && follows(two, slip, slipNamed[1]) && named(refusedHint(yLooped, slip)).join() === "aud1", [slipNamed, refusedHint(yLooped, slip)]);
-    const lcutNamed = named(refusedHint(det, lcut).split("set loop")[1] ?? "");
+      slipNamed[0].join() === "y,aud1" && slipNamed[1].join() === "y,aud1,aud2" && follows(det, slip, slipNamed[0]) && follows(two, slip, slipNamed[1]) && named(refusedHint(yLooped, slip)).join() === "aud1" && /on 'aud1' \(/.test(refusedHint(yLooped, slip)) && /on each of 'y', 'aud1' \(/.test(refusedHint(det, slip)), [slipNamed, refusedHint(yLooped, slip)]);
+    // trim_clip leaves a reversed picture's audio alone, so on a reversed video with detached audio the trim cure also names each clip; a lone clip, or a forward video whose audio follows the trim, keeps the plain text
+    const revDet = applyOps(null as any, mk([vid({ reverse: true })]), [{ op: "detach_audio", id: "y" }])[0], revHint = refusedHint(revDet, slipBy(-0.5)), revNamed = named(revHint);
+    const trimEnd = (id: string): any => ({ op: "trim_clip", id, trim_end: 0.5 });
+    check("slip_clip on a reversed video with detached audio says the clip or its audio has no spare source, names each clip to trim, and trimming those clips lets the same slip pass; a lone clip keeps the plain text",
+      /^no slip fits: the clip or its audio /.test(revHint) && revNamed.join() === "y,aud1" && follows(revDet, slipBy(-0.5), revNamed, trimEnd) && !follows(revDet, slipBy(-0.5), ["y"], trimEnd)
+      && /\(trim_clip shorter first\)$/.test(refusedHint(mk([vid({ reverse: true })]), slipBy(-0.5))) && /^no slip fits: the clip has no spare source/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && /\(trim_clip shorter first; or set loop: true on 'aud1' \(/.test(refusedHint(yLooped, slip)), [revHint, refusedHint(yLooped, slip)]);
+    const lcutName = (t: any) => named(refusedHint(t, lcut).split("set loop")[1] ?? ""), lcutNamed = lcutName(det), linked = mk([vid({ in: 1, duration: 1 })]); // the audio clip an l_cut makes is thrown away with its refused batch: there the video is the clip to set
     check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
-    check("l_cut on a video with detached audio names the audio clip to set loop on, and setting it lets the same l_cut pass", lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed), [refusedHint(det, lcut)]);
+    check("l_cut names the audio clip to set loop on when the video already has one, the video when the l_cut would make the audio, and setting the named clip lets the same l_cut pass",
+      lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed) && lcutName(linked).join() === "y" && follows(linked, lcut, lcutName(linked)), [refusedHint(det, lcut), refusedHint(linked, lcut)]);
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
     // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint reaches that case
