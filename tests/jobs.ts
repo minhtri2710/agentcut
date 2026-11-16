@@ -489,7 +489,7 @@ writeFileSync(slowUv, `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const mode = process.env.FAKE_UV_MODE, job = JSON.parse(process.argv.at(-1));
-if (mode === "stubborn" || mode === "deaf") process.on("SIGTERM", () => {});
+if (mode === "stubborn" || mode === "deaf") process.on("SIGTERM", () => appendFileSync(process.env.FAKE_UV_LOG + ".term", "term\\n")); // the server sent it: its stop has begun
 if (mode !== "deaf") { process.stdin.on("end", () => process.exit(143)); process.stdin.resume(); }
 const dec = spawn("ffmpeg", ["-v", "error", "-nostdin", "-re", "-f", "lavfi", "-i", "testsrc2=s=" + job.w + "x" + job.h + ":r=30:d=25", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { stdio: ["ignore", "pipe", "ignore"] });
 const enc = spawn("ffmpeg", ["-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", job.w + "x" + job.h, "-framerate", "30", "-i", "-", "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov", job.out], { stdio: ["pipe", "ignore", "ignore"] });
@@ -554,6 +554,7 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 for (const shift of [-30, -2, 0, 2, 30]) {
   const proj = join(tmp, `proj-late${shift}`);
   rmSync(uvLog, { force: true });
+  rmSync(`${uvLog}.term`, { force: true }); // the stubborn and deaf rows above leave it behind
   const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: read after the loop
   await srv.init();
   const madeLate = await srv.call("create_project", { path: proj, preset: "720p" });
@@ -564,10 +565,13 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   const t0 = performance.now();
   let late: any = null, lateMs: number | null = null;
   const send = () => srv.call("prepare", { wait_seconds: 5 }).then((r) => { late = r; lateMs = Math.round(performance.now() - t0); });
-  let sent: Promise<void>, cancelled: any = null;
+  let sent: Promise<void>, cancelled: any = null, termSeen = false;
   if (shift < 0) { sent = send(); await sleep(-shift); process.kill(srv.pid, "SIGTERM"); }
   else { process.kill(srv.pid, "SIGTERM"); await sleep(shift); sent = send(); }
-  if (shift >= 2) srv.call("cancel_job", { job_id: first.job_id }).then((r) => { cancelled = r; }); // inside the shutdown window, on a job the shutdown has aborted
+  if (shift === 30) { // only after the server has sent the helper SIGTERM, which it does after it began its stop: a signal and a stdin line a few ms apart have no order
+    termSeen = await until(() => existsSync(`${uvLog}.term`), 1000); // the deaf helper is killed 1.5 s after the abort
+    if (termSeen) srv.call("cancel_job", { job_id: first.job_id }).then((r) => { cancelled = r; }); // inside the shutdown window, on a job the shutdown has aborted
+  }
   await until(() => srv.exit, 10_000);
   await Promise.race([sent, sleep(200)]); // a reply written before the exit is already in the pipe
   const exitMs = srv.exit ? Math.round(srv.exit.at - t0) : null;
@@ -575,7 +579,7 @@ for (const shift of [-30, -2, 0, 2, 30]) {
   for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
   check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
     working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
-  if (shift >= 2) check(`DL-02: a cancel_job ${shift} ms after SIGTERM leaves the job failed with code aborted, not cancelled`, cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { cancelled });
+  if (shift === 30) check("DL-02: a cancel_job sent once the helper has been told to stop leaves the job failed with code aborted, not cancelled", termSeen && cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { termSeen, cancelled });
 }
 {
   const logged = readFileSync(join(tmp, "home-late", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -791,7 +795,8 @@ exec ${JSON.stringify(realFfmpeg)} "$@"
     await until(() => r.exit, 20_000);
     const lines = r.out.trim().split("\n"), j = (() => { try { return lines.length === 1 ? JSON.parse(lines[0]) : null; } catch { return null; } })();
     check("SIGTERM to a CLI render: one JSON object with code aborted, the process ends by SIGTERM, renders/ is empty and no render temp is left", sawPart && j?.ok === false && j.error.code === "aborted" && r.exit?.signal === "SIGTERM" && r.exit.code === null && !stray(R).length && !renderTmpLeft(P).length, { sawPart, out: r.out, exit: r.exit, left: stray(R), tmp: renderTmpLeft(P) });
-    check("  and its render workers are gone", procs.length > 0 && procs.every((p) => !isAlive(p)), procs.filter(isAlive));
+    const gone = await until(() => procs.every((p) => !isAlive(p)), 3000); // a SIGKILLed decoder answers kill(pid, 0) until it is reaped
+    check("  and its render workers are gone", procs.length > 0 && gone, procs.filter(isAlive));
     for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
   }
   // Ctrl-C reaches the whole process group: the decoder of a `frame` dies with it (a stand-in ffmpeg that fails when interrupted, and on every retry), and the run

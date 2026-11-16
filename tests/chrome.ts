@@ -3,7 +3,8 @@
 // macOS `sandbox-exec` with a profile that denies executing those helpers and the update service's mach names, denies writes to the
 // update service's directories, and denies the network except loopback. There is no uncontained path and no switch for one:
 // a host without sandbox-exec (or a seat that is itself sandboxed) fails the suite instead of launching Chrome.
-// The mach-lookup deny is not proven by a row: the profile parsing shows its syntax only, and no installed tool looks up a mach name.
+// No row asserts the mach-lookup deny: the profile parsing shows its syntax only, and no installed tool looks up a mach name. It has been
+// observed to match the real name: the system's sandbox log showed the contained Chrome's lookups of the update service's mach name refused.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
