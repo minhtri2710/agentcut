@@ -162,6 +162,8 @@ console.log("a project.json with no valid revision: the number its hint gives is
     ["has no revision: the one undo restores", false, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }],
     ["has no revision: one undo does not restore, over a project.json with no valid revision", true, 0, (en: any) => { delete en.revision; return JSON.stringify(en); }],
     ["is not an object: one undo does not restore, over a project.json with no valid revision", true, 0, () => "null"],
+    ["has no revision: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }],
+    ["holds text that is not JSON: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => JSON.stringify({ ...en, timeline: "{ not json" })],
   ] as const) {
     const d = await fresh(`rev-entry-${what.replace(/\W+/g, "-")}`, 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(pick)!);
     writeFileSync(file, text(JSON.parse(readFileSync(file, "utf8"))));

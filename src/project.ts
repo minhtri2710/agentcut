@@ -25,13 +25,18 @@ function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: 
   return tl;
 }
 
-/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json */
-function parse(text: string, snapshot?: string): Timeline {
+/** What to do about a history entry that cannot be used (`at` is stack/name). `damaged`: the call is an undo over a project.json with no valid revision, where the file is not fine. The one place these two texts are built. */
+const entryFix = (at: string, damaged: boolean) => damaged
+  ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
+  : `project.json itself is fine: delete .agentcut/history/${at}`;
+
+/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `damaged`: see entryFix */
+function parse(text: string, snapshot?: string, damaged = false): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
-  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? `project.json itself is fine: delete .agentcut/history/${snapshot}` : DAMAGED_FIX); }
-  return checkVersion(tl, source, snapshot ? `there is no upgrade; project.json itself is fine: delete .agentcut/history/${snapshot}` : undefined);
+  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? entryFix(snapshot, damaged) : DAMAGED_FIX); }
+  return checkVersion(tl, source, snapshot ? `there is no upgrade; ${entryFix(snapshot, damaged)}` : undefined);
 }
 
 /** The way out of a project.json that cannot be read: undo restores the last good version, and it is the one history call that needs no revision there (no revision can be read). */
@@ -318,9 +323,7 @@ export class Project {
    *  whole number >= 0, or names an author that is not plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR,
    *  and the only reader of an entry's revision (never its timeline text). `damaged`: the read is part of an undo over a project.json with no valid revision, where the hint cannot call the file fine. */
   private static readEntry(file: string, stack: string, damaged = false): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
-    const at = `${stack}/${basename(file)}`, hint = damaged
-      ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
-      : `project.json itself is fine: delete .agentcut/history/${at}`;
+    const at = `${stack}/${basename(file)}`, hint = entryFix(at, damaged);
     let d: any;
     try { d = JSON.parse(readFileSync(file, "utf8")); }
     catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", hint); }
@@ -358,7 +361,7 @@ export class Project {
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
         const file = e[e.length - 1 - i], d = Project.readEntry(file, from, rev === undefined);
-        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`) });
+        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`, rev === undefined) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       // the damaged file is taken to have the number the hint gives (the history's highest + 1), and the entry that keeps it records that number: the undone state lands on the next one
