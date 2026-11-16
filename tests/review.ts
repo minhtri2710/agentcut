@@ -139,6 +139,32 @@ console.log("a project.json with no valid revision: the number its hint gives is
   rmSync(join(none, ".agentcut"), { recursive: true, force: true }); // a deleted history looks the same as an empty one
   const e1: any = await api.info(none).catch((x: any) => x);
   check("a deleted history gets no number either, and reading the error creates no history", e1.code === "bad_revision" && !/"revision" to \d/.test(e1.hint) && !existsSync(join(none, ".agentcut")), { code: e1.code, hint: e1.hint });
+
+  // undo is the way out of such a file: it lands above the number the file lost, so no state shares a number with another
+  const marks = (dir: string) => JSON.parse(readFileSync(join(dir, "project.json"), "utf8")).markers.length;
+  const u = await fresh("rev-undo", 3), held = (await api.info(u)).revision; // an agent that read the file before the damage holds this
+  setRevision(u);
+  const undone: any = await api.undo(u, 1, undefined);
+  check("undo over a project.json with no valid revision lands above the number the file lost", undone.revision === held + 1 && (await api.info(u)).revision === undone.revision, { held, undone: undone.revision });
+  check("an agent that holds the lost number gets a conflict, and the undone state stays", (await code(() => api.apply(u, [{ op: "add_marker", t: 9 }], { revision: held }))) === "conflict" && marks(u) === held - 1);
+  setRevision(u);
+  const again: any = await api.info(u).catch((x: any) => x);
+  check("damaged again before any save: the hint gives the number the file had", Number(/"revision" to (\d+)/.exec(again.hint ?? "")?.[1]) === undone.revision, { hint: again.hint, had: undone.revision });
+  const r = await fresh("rev-redo", 3);
+  setRevision(r);
+  const back: any = await api.redo(r, 1, (await api.undo(r, 1, undefined) as any).revision);
+  check("redo after it restores the damaged file's content at a fresh number", back.revision === held + 2 && marks(r) === held, { held, back: back.revision });
+
+  // an entry is read only with its revision: one without is refused by name, over a readable file or a damaged one, and nothing is written
+  const tree = (dir: string) => { const h = join(dir, ".agentcut", "history"); return JSON.stringify([readFileSync(join(dir, "project.json"), "utf8"), (readdirSync(h, { recursive: true }) as string[]).sort().map((f) => [f, lstatSync(join(h, f)).isFile() ? readFileSync(join(h, f), "utf8") : null])]); };
+  for (const [what, damaged, pick] of [["the one undo restores", false, -1], ["one undo does not restore, over a project.json with no valid revision", true, 0]] as const) {
+    const d = await fresh(`rev-entry-${pick}`, 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(pick)!), entry = JSON.parse(readFileSync(file, "utf8"));
+    delete entry.revision;
+    writeFileSync(file, JSON.stringify(entry));
+    if (damaged) setRevision(d);
+    const before = tree(d), e: any = await Promise.resolve().then(async () => api.undo(d, 1, damaged ? undefined : (await api.info(d)).revision)).catch((x: any) => x);
+    check(`an entry with no revision (${what}) is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
+  }
 }
 
 console.log("info prints a project that has a clip with no id (validate names it)");

@@ -232,7 +232,7 @@ export class Project {
       for (const stack of ["undo", "redo"]) {
         const files = this.entries(stack);
         for (let i = files.length - 1; i >= 0; i--) {
-          const e = Project.readEntry(files[i], stack), r = JSON.parse(e.timeline).revision;
+          const e = Project.readEntry(files[i], stack), r = e.revision;
           if (!(r >= base)) break; // stored revisions rise with the position in a stack
           found.push({ r, author: e.movedBy ?? e.author, label: (stack === "redo" ? "undo " : e.movedBy === undefined ? "" : "redo ") + e.label });
         }
@@ -252,7 +252,7 @@ export class Project {
       const disk = revisionOf(parse(cur), () => this.highestStored());
       this.checkRevision(revisionOf(tl), disk);
       this.entries("undo"); this.entries("redo"); // both stacks verified before the first write
-      const pushed = this.push("undo", cur, label, by);
+      const pushed = this.push("undo", cur, disk, label, by);
       tl.revision = disk + 1;
       // invariant: after a save the redo stack is empty, or the save did not happen. The stack is moved aside before the write (a failure there throws with nothing
       // written), put back if the write fails (history stays as it was), and removed afterwards; a removal that fails leaves an unread dir, never a replayable stack.
@@ -301,11 +301,12 @@ export class Project {
     const n = (f: string) => BigInt(basename(f, ".json"));
     return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : a < b ? -1 : a > b ? 1 : 0)); // equal values (1.json, 01.json) fall back to the name text, so readdir order never shows
   }
-  /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path. */
-  private push(name: string, content: string, label: string, author: string, movedBy?: string) {
+  /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path.
+   *  `revision` is the revision of the state `content` holds (for a project.json with no valid revision, the number it is taken to have): the one place a revision is read from an entry. */
+  private push(name: string, content: string, revision: number, label: string, author: string, movedBy?: string) {
     const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
     const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);
-    writeFile(file, JSON.stringify({ label, time: Date.now(), author, ...(movedBy === undefined ? {} : { movedBy }), timeline: content }), this.root);
+    writeFile(file, JSON.stringify({ label, time: Date.now(), revision, author, ...(movedBy === undefined ? {} : { movedBy }), timeline: content }), this.root);
     return file;
   }
   /** Drop the oldest entries above the cap. Called only after the project write has succeeded: a call that fails must leave the history as it was,
@@ -313,26 +314,31 @@ export class Project {
   private prune(name: string) {
     try { const e = this.entries(name); for (const old of e.slice(0, Math.max(0, e.length - MAX_HISTORY))) unlinkSync(old); } catch { /* committed already */ }
   }
-  /** A history entry (label, author, timeline text, and who last moved it between the stacks); an entry that is not valid JSON, or names an author that is not
-   *  plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR. */
-  private static readEntry(file: string, stack: string): { label: string; author: string; movedBy?: string; timeline: string } {
+  /** A history entry (label, author, revision, timeline text, and who last moved it between the stacks); an entry that is not valid JSON, has no revision that is a
+   *  whole number >= 0, or names an author that is not plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR,
+   *  and the only reader of an entry's revision (never its timeline text). */
+  private static readEntry(file: string, stack: string): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
     const at = `${stack}/${basename(file)}`, hint = `project.json itself is fine: delete .agentcut/history/${at}`;
     let d: any;
     try { d = JSON.parse(readFileSync(file, "utf8")); }
     catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", hint); }
+    if (!Number.isInteger(d.revision) || d.revision < 0) throw new EditError(`history snapshot ${at} has no valid revision (got ${JSON.stringify(d.revision)})`, "bad_json", hint);
     const who = (field: string, v: unknown) => { try { return checkAuthor(v); } catch (e: any) { throw new EditError(`history snapshot ${at} has an invalid ${field}: ${e.message}`, "bad_json", hint); } };
     return { ...d, author: d.author === undefined ? UNKNOWN_AUTHOR : who("author", d.author), ...(d.movedBy === undefined ? {} : { movedBy: who("movedBy", d.movedBy) }) };
   }
-  /** The highest revision any readable entry of either stack holds; undefined when none is readable (an empty history and a deleted one look the same). Never throws and creates nothing. */
-  private highestStored(): number | undefined {
+  /** The highest revision any entry of either stack holds; undefined when there is none (an empty history and a deleted one look the same). Creates nothing.
+   *  The hint (`strict` off) never throws: an unreadable entry or stack is skipped, and the hint gives the number of the rest. The undo over a damaged project.json
+   *  (`strict`) takes the file's number from it, so it throws the entry's or the stack's own error instead of counting only part of the history. */
+  private highestStored(strict = false): number | undefined {
     let top = -1;
+    const skip = (e: unknown) => { if (strict) throw e; };
     for (const name of ["undo", "redo"]) {
       try {
         if (!existsSync(join(this.root, ".agentcut", "history", name))) continue;
         for (const f of this.entries(name)) {
-          try { const r = parse(Project.readEntry(f, name).timeline).revision; if (Number.isInteger(r)) top = Math.max(top, r); } catch { /* an unreadable entry is skipped */ }
+          try { top = Math.max(top, Project.readEntry(f, name).revision); } catch (e) { skip(e); }
         }
-      } catch { /* an unreadable stack is skipped */ }
+      } catch (e) { skip(e); }
     }
     return top < 0 ? undefined : top;
   }
@@ -353,10 +359,11 @@ export class Project {
         snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
+      // the damaged file is taken to have the number the hint gives (the history's highest + 1), and the entry that keeps it records that number: the undone state lands on the next one
+      if (rev === undefined) rev = (this.highestStored(true) ?? -1) + 1;
       this.entries(to); // the stack this call writes to is verified before the first write
-      if (rev === undefined) rev = this.highestStored() ?? 0; // the revision continues from the history
       for (const sn of snaps) {
-        const pushed = this.push(to, cur, sn.label, sn.author, by);
+        const pushed = this.push(to, cur, rev, sn.label, sn.author, by);
         sn.tl.revision = ++rev;
         try { this.write(sn.tl); } catch (err) { rmSync(pushed, { force: true }); throw err; } // the snapshot stays where it was until the project file is written
         unlinkSync(sn.file);
