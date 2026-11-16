@@ -25,13 +25,13 @@ function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: 
   return tl;
 }
 
-/** The state of project.json a history entry is read beside: "sound" (the file passed its own read, or the hint is never shown: changesSince and the non-strict highestStored skip every error they meet), "undo" (an undo over a project.json with no valid revision),
+/** The state of project.json a history entry is read beside: "sound" (the file passed its own read, or the hint is never shown: changesSince and the non-strict highestStored skip every error they meet), "undo" (an undo over a project.json it can read no revision from: not JSON, or no valid revision),
  *  "unfit" (a history listing over a project.json that failed its read). */
 type Beside = "sound" | "undo" | "unfit";
 
 /** What to do about a history entry that cannot be used (`at` is stack/name), by the state of project.json beside it. The one place these three texts are built. */
 const entryFix = (at: string, beside: Beside) => beside === "undo"
-  ? `an undo over a project.json with no valid revision counts every history entry: move .agentcut/history/${at} out of the history folder (it may still hold a timeline) and undo again`
+  ? `move .agentcut/history/${at} out of the history folder (it may still hold a timeline) and undo again`
   : beside === "unfit"
     ? `project.json has its own error (info shows it); this entry cannot be read either: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`
     : `project.json itself is fine: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`;
