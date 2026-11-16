@@ -756,7 +756,7 @@ function beatsFile(path: string): number[] {
   if (d?.ok === false) throw new EditError(`${path} holds a failed result (${d.error?.code ?? "no code"}), not beats`, "bad_beats", hint);
   const beats = seconds(d?.beats, `${path} has no 'beats' list of numbers`, hint);
   // both producers cut `beats` after the analysis and leave `count`: a result whose count is above its list was cut, whatever its flag is called
-  if (typeof d.count === "number" && d.count > beats.length) throw new EditError(`${path} holds ${beats.length} of ${d.count} beats (a cut list)`, "bad_beats", hint);
+  if (typeof d.count === "number" && d.count > beats.length) throw new EditError(`${path} holds ${beats.length} of ${d.count} beats (a cut list)`, "bad_beats", `${hint}; if you shortened the list yourself, remove count`);
   return beats;
 }
 

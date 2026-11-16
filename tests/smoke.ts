@@ -122,7 +122,7 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
   const refused = (beats: string) => { const was = cli(["info"], C).revision; const r = cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, "--revision", was], { ...C, ok: false }); return { r, kept: cli(["info"], C).revision === was }; };
   for (const [what, path] of [["the cut `beats F` printed", cutFile], ["a cut MCP result", cutMcp]]) {
     const { r, kept } = refused(path);
-    check(`snap_to_beats with ${what}: bad_beats naming --full, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /--full/.test(r.error.hint) && /\d+ of \d+/.test(r.error.message) && kept, r);
+    check(`snap_to_beats with ${what}: bad_beats naming --full, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /--full/.test(r.error.hint) && /remove count/.test(r.error.hint) && /\d+ of \d+/.test(r.error.message) && kept, r);
   }
   check("snap_to_beats takes a hand-written file with no count", cli(["op", "snap_to_beats", "track=main", `beats=${writeBeats("beats-bare.json", { beats: [0, 1, 2] })}`, "--dry-run"], C).results[0].retimed.length === 2);
   // an inline list holds the same numbers a file does; the hint is for a list typed in the call
