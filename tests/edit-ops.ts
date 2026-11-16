@@ -605,6 +605,8 @@ console.log("match_duration by clip reference");
     check("snap_to_beats refuses a descent past the track, and accepts a close pair past it", /^bad_beats/.test(code([0, 1, 2, 3, 4, 3.5, 5])) && code([0, 1, 2, 3, 4, 4.01, 5]) === "accepted");
     const rising = run(fol, [{ op: "update_clip", id: "img4", transition: { type: "crossfade", duration: 0.5 } }])[0];
     const refused = [code([0, 1, 2, 2.04, 5], rising), code([0, 1, 1, 3, 4]), code([-1, 0, 1, 2, 3]), code([0, 1, 2, 3, -2])];
+    const kept = (() => { try { const [x, [n]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 1.03, 3] }]); return { x, n }; } catch (e: any) { return { err: e.code }; } })();
+    check("snap_to_beats does not judge the beat pair of a clip that keeps its computed length", JSON.stringify(kept.n?.kept_computed) === '["img2"]' && at(kept.x, "img2").duration === at(fol, "img2").duration, kept.err ?? kept.n);
     check("snap_to_beats refuses a reached pair 0.05 s or less apart even with a transition to cover it, a repeat, a negative time, and a negative past the track; the hint names every and not --full",
       refused.every((r) => /^bad_beats/.test(r) && /every/.test(r) && !/--full/.test(r)), refused);
   }

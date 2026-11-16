@@ -780,7 +780,7 @@ const MIN_SPAN = 0.05; // a clip between two beats lasts more than this
 /** every and offset count beats: a whole number of at least `lo` (a number as text is refused too); absent or null is the default */
 function wholeNumber(v: unknown, name: string, d: number, lo: number): number {
   if (v === undefined || v === null) return d;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < lo) throw new EditError(`${name} must be a whole number of at least ${lo}, got ${typeof v === "number" ? v : JSON.stringify(v)}`, "bad_value", `pass a number, e.g. ${name}=${Math.max(d, lo)}`);
+  if (typeof v !== "number" || !Number.isInteger(v) || v < lo) throw new EditError(`${name} must be a whole number of at least ${lo}, got ${typeof v === "number" ? v : JSON.stringify(v)}`, "bad_value", `pass a whole number, e.g.${name}=${Math.max(d, lo)}`);
   return v;
 }
 
@@ -796,7 +796,7 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     // order is judged over the whole selected list; closeness only over the pairs a clip reaches (an analysis can put two beats a few ms apart far past the track)
     cuts.forEach((t, i) => { if (t < 0 || (i && t <= cuts[i - 1])) throw new EditError(`cut ${i + 1} of the selected beats is ${t} s${i ? `, not after ${cuts[i - 1]} s` : ""}: beats must be 0 s or more and rise`, "bad_beats", rise); });
     const starts = [0, ...cuts.slice(1, tr.clips.length)]; // the first clip starts at 0, so its span ends at the second cut
-    starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
+    starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN && !computedDuration(tr.clips[i - 1])) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
     resolve(tl);
     const changed: Clip[] = [], kept: string[] = [];
     tr.clips.forEach((c, i) => {
