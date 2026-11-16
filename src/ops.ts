@@ -761,8 +761,9 @@ function beatsFile(path: string): number[] {
 function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   if (Array.isArray(b)) return b.map(Number);
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
-  const path = own(tl.assets, b) ? p.abs(tl.assets[b].path) : absPath(b);
-  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
+  const asset = own(tl.assets, b);
+  const path = asset ? p.abs(tl.assets[b].path) : absPath(b);
+  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found", asset ? undefined : "use an absolute path or a path relative to the current directory");
   return path.endsWith(".json") ? beatsFile(path) : AN.analysis(p, { kind: "beats", path }).beats;
 }
 

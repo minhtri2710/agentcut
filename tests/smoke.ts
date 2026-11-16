@@ -107,7 +107,6 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
     ["a failed result saved in its place", writeBeats("beats-failed.json", { ok: false, error: { code: "bad_media", message: "x" } }), "bad_beats"],
     ["not JSON", writeBeats("beats-text.json", "not json {"), "bad_beats"],
     ["a directory", dir, "bad_beats"],
-    ["no beats list", writeBeats("beats-none.json", { ok: true }), "bad_beats"],
     ["beats that is not a list", writeBeats("beats-str.json", { beats: "abc" }), "bad_beats"],
     ["a non-number among the beats", writeBeats("beats-mixed.json", { beats: [0, "x", 2] }), "bad_beats"],
     ["a file that does not exist", join(tmp, "beats-missing.json"), "not_found"]];

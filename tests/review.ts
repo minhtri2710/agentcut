@@ -125,11 +125,12 @@ console.log("a project.json with no valid revision: the number its hint gives is
   };
   const setRevision = (d: string, rev?: number) => { const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); if (rev === undefined) delete t.revision; else t.revision = rev; writeFileSync(join(d, "project.json"), JSON.stringify(t)); };
   const d = await fresh("rev-hint", 3); // an agent that read revision 0, 1 or 2 may still hold it
+  const lost = (await api.info(d)).revision; // the revision the file loses: the hint must give exactly this one
   setRevision(d);
   const err: any = await api.info(d).catch((x: any) => x), n = /"revision" to (\d+)/.exec(err.hint ?? "")?.[1];
-  check("no revision: bad_revision, the hint keeps undo and names a number", err.code === "bad_revision" && /undo/.test(err.hint) && n !== undefined, { code: err.code, hint: err.hint });
+  check("no revision: bad_revision, the hint keeps undo and gives the revision the file lost", err.code === "bad_revision" && /undo/.test(err.hint) && Number(n) === lost, { code: err.code, hint: err.hint, lost });
   setRevision(d, Number(n));
-  check("after the number is set, a write at an old revision is a conflict", (await code(() => api.apply(d, [{ op: "add_marker", t: 9 }], { revision: 0 }))) === "conflict");
+  check("after the number is set, a write at the newest revision an agent may still hold is a conflict", (await code(() => api.apply(d, [{ op: "add_marker", t: 9 }], { revision: lost - 1 }))) === "conflict");
   check("and a write at the number itself lands", (await code(() => api.apply(d, [{ op: "add_marker", t: 9 }], { revision: Number(n) }))) === "ok");
   const none = await fresh("rev-hint-empty", 0);
   setRevision(none);
