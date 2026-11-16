@@ -909,7 +909,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         else if (hasSound(c, assets) && Number(c.volume ?? 1) * tf.gain > 0) flow.sink.audio = true;
       }
       if (MEDIA_TYPES.has(c.type)) {
-        if ((c.type === "video" || c.type === "audio") && c.reverse && c.loop) issues.push({ level: "error", path: `${p}.loop`, message: "reverse and loop cannot both be set: the picture would hold while the sound loops and then plays backwards", hint: "set only one of them (loop false or reverse false)" });
+        if ((c.type === "video" || c.type === "audio") && c.reverse && c.loop) issues.push({ level: "error", path: `${p}.loop`, message: "reverse and loop cannot both be set on one clip", hint: "set only one of them (loop false or reverse false)" });
         const aid = c.asset;
         if (!aid) issues.push({ level: "error", path: `${p}.asset`, message: "media clip needs 'asset' (or 'src' when adding)" });
         else if (!own(assets, aid)) {
