@@ -30,4 +30,4 @@ initTimeline(); initViewer(); initInspector(); initJobs(); initHistory(); initKe
 const events = new EventSource("/api/events");
 events.addEventListener("state", (e) => { setState(JSON.parse((e as MessageEvent).data)); });
 events.addEventListener("job", (e) => { onJobEvent(JSON.parse((e as MessageEvent).data)); });
-events.addEventListener("error", (e) => { const d = (e as MessageEvent).data; if (d) fail(JSON.parse(d), true); }); // the stream names why it has no state
+events.addEventListener("error", (e) => { const d = (e as MessageEvent).data; if (d) fail(JSON.parse(d), true); }); // the stream's error means the server could not build the state

@@ -14,7 +14,7 @@ export function show(kind: "ok" | "err", text: string) {
   if (kind === "ok") setTimeout(() => { if (m.textContent === text) m.className = ""; }, 2500);
 }
 
-/** an API error in the message box (a conflict included: its text says the page is stale and to reload). noState: the error is the stream's, which means the page has no state. */
+/** an API error in the message box (a conflict included: its text says the page is stale and to reload). noState: the message says the page has no current state (the stream's error, which can also reach a page that holds a now stale state, or the NO_STATE refusal); the next state takes it away. */
 export function fail(e: ApiError, noState = e === NO_STATE) {
   if (e && e.code === "not_prepared") $("prepare").style.display = "";
   show("err", errText(e));
