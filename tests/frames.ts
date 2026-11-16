@@ -251,7 +251,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     });
     check("the record of a picture that is not a whole millisecond long holds ffprobe's length to the microsecond", Math.abs(api.probe(f7).duration - exact) <= 1e-6, { record: api.probe(f7).duration, exact });
     row("a fresh read in the 60th to 63rd pass of that loop (the pass starts and a slot either side) shows the frame the exact period gives", bad);
-    // the limit (see `sec` in media.ts): a pass starts at n times a decimal length, up to 5e-7 s off per wrap, so a slot within ~1e-4 slot of a frame boundary can differ between a fresh and a streamed read after tens of wraps
+    // the limit (see `sec` in media.ts): a pass starts at n times a decimal length, up to 5e-7 s off per wrap (1.5e-5 slot at 30 fps; 1e-5 slot here), so a slot whose margin to a frame boundary is below n x 1e-5 slot (3e-4 at slot 467) can differ between a fresh and a streamed read after n wraps
     const bad467 = await attempt(async () => {
       const s = source(f7, 30, 0, { loop: true }), streamed: number[] = [];
       for (let k = 0; k <= 467; k++) streamed.push(await read(s, k, 30));
