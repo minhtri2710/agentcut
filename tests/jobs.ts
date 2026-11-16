@@ -548,38 +548,45 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 }
 
 // DL-02 / DL-07: a tool call the server has accepted around the stop always gets its reply before the server exits (exit code unchanged).
-// The late `prepare` is sent just before or just after SIGTERM (shift in ms; < 0: request first); it is `aborted` either way, and the
-// server must never start a helper after `stopping`: a request sent after SIGTERM (shift >= 0) starts none (1 helper), one sent before may
-// start a concurrent compute (<= 2). Independent of the helper's 1.5 s kill window.
-for (const shift of [-30, -2, 0, 2, 30]) {
-  const proj = join(tmp, `proj-late${shift}`);
+// A second `prepare` sent around the stop is always answered `aborted` before the exit. Whether it starts a helper depends on what it computes:
+// on the running job's project it joins that computation (one helper); on another project it needs its own, so the server's refusal to start
+// work once it is stopping is what keeps the count at one. The row after the stop is sent only once the helper has been told to stop (the
+// `.term` line), which the server writes after it began its stop: a signal and a stdin line a few ms apart have no order. A request sent
+// 2 ms before the signal may be read before it (then it starts a helper the stop aborts: 2) or after (1). Independent of the helper's 1.5 s kill window.
+for (const [shift, own, name] of [
+  [-30, false, "a second prepare on the running job's project, sent 30 ms before SIGTERM, joins its computation and is answered `aborted` before the server exits (143), one helper"],
+  [-2, true, "a prepare on another project, sent 2 ms before SIGTERM, is answered `aborted` before the server exits (143), at most 2 helpers"],
+  [null, true, "a prepare on another project, sent once the helper has been told to stop, is answered `aborted` before the server exits (143) and starts no helper"],
+] as const) {
+  const tag = shift ?? "stopped", proj = join(tmp, `proj-late${tag}`), proj2 = join(tmp, `proj-late${tag}-b`);
   rmSync(uvLog, { force: true });
   rmSync(`${uvLog}.term`, { force: true }); // the stubborn and deaf rows above leave it behind
   const srv = mcpProc({ AGENTCUT_UV: slowUv, FAKE_UV_MODE: "deaf", FAKE_UV_LOG: uvLog, AGENTCUT_HOME: join(tmp, "home-late") }); // its own feedback log: read after the loop
   await srv.init();
-  const madeLate = await srv.call("create_project", { path: proj, preset: "720p" });
-  await srv.call("apply_ops", { revision: madeLate.revision, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
-  const first = await srv.call("prepare", { wait_seconds: 0 });
+  for (const p of own ? [proj, proj2] : [proj]) { // every call names its project: create_project moves the remembered one
+    const madeLate = await srv.call("create_project", { path: p, preset: "720p" });
+    await srv.call("apply_ops", { project: p, revision: madeLate.revision, ops: [{ op: "add_clip", track: "main", src: join(m, "src.mp4"), duration: 2 }, { op: "remove_background", id: "vid1" }] });
+  }
+  const first = await srv.call("prepare", { project: proj, wait_seconds: 0 });
   const working = await until(() => existsSync(uvLog), 30_000);
   const procs = [...new Set([...tree(srv.pid), ...readFileSync(uvLog, "utf8").split(/\s+/).filter(Boolean).map(Number)])];
   const t0 = performance.now();
   let late: any = null, lateMs: number | null = null;
-  const send = () => srv.call("prepare", { wait_seconds: 5 }).then((r) => { late = r; lateMs = Math.round(performance.now() - t0); });
-  let sent: Promise<void>, cancelled: any = null, termSeen = false;
-  if (shift < 0) { sent = send(); await sleep(-shift); process.kill(srv.pid, "SIGTERM"); }
-  else { process.kill(srv.pid, "SIGTERM"); await sleep(shift); sent = send(); }
-  if (shift === 30) { // only after the server has sent the helper SIGTERM, which it does after it began its stop: a signal and a stdin line a few ms apart have no order
+  const send = () => srv.call("prepare", { project: own ? proj2 : proj, wait_seconds: 5 }).then((r) => { late = r; lateMs = Math.round(performance.now() - t0); });
+  let sent: Promise<void> = Promise.resolve(), cancelled: any = null, termSeen = false;
+  if (shift === null) {
+    process.kill(srv.pid, "SIGTERM");
     termSeen = await until(() => existsSync(`${uvLog}.term`), 1000); // the deaf helper is killed 1.5 s after the abort
-    if (termSeen) srv.call("cancel_job", { job_id: first.job_id }).then((r) => { cancelled = r; }); // inside the shutdown window, on a job the shutdown has aborted
-  }
+    if (termSeen) { sent = send(); srv.call("cancel_job", { job_id: first.job_id }).then((r) => { cancelled = r; }); } // inside the shutdown window, on a job the shutdown has aborted
+  } else { sent = send(); await sleep(-shift); process.kill(srv.pid, "SIGTERM"); }
   await until(() => srv.exit, 10_000);
   await Promise.race([sent, sleep(200)]); // a reply written before the exit is already in the pipe
   const exitMs = srv.exit ? Math.round(srv.exit.at - t0) : null;
-  const helpers = readFileSync(uvLog, "utf8").trim().split("\n").length;
-  for (const p of procs) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } }
-  check(`DL-02/DL-07: a prepare sent ${shift < 0 ? `${-shift} ms before` : `${shift} ms after`} SIGTERM is answered \`aborted\` before the server exits (143), ${shift < 0 ? "at most 2 helpers" : "no new helper"}`,
-    working && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift < 0 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, exit: srv.exit });
-  if (shift === 30) check("DL-02: a cancel_job sent once the helper has been told to stop leaves the job failed with code aborted, not cancelled", termSeen && cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { termSeen, cancelled });
+  const logLines = readFileSync(uvLog, "utf8").trim().split("\n"), helpers = logLines.length;
+  for (const p of new Set([...procs, ...logLines.join(" ").split(/\s+/).filter(Boolean).map(Number)])) if (isAlive(p)) { try { process.kill(p, "SIGKILL"); } catch { /* gone */ } } // the log again: a helper the server started later outlives it
+  check(`DL-02/DL-07: ${name}`,
+    working && (shift === null ? termSeen : true) && late?.status === "failed" && late.error?.code === "aborted" && srv.exit?.code === 143 && (shift === -2 ? helpers <= 2 : helpers === 1), { late, helpers, exitMs, lateMs, termSeen, exit: srv.exit });
+  if (shift === null) check("DL-02: a cancel_job sent once the helper has been told to stop leaves the job failed with code aborted, not cancelled", termSeen && cancelled?.status === "failed" && cancelled.ok === false && cancelled.error?.code === "aborted", { termSeen, cancelled });
 }
 {
   const logged = readFileSync(join(tmp, "home-late", "feedback", "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
