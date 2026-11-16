@@ -33,7 +33,7 @@ type Beside = "sound" | "undo" | "unfit";
 const entryFix = (at: string, beside: Beside) => beside === "undo"
   ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
   : beside === "unfit"
-    ? `project.json has its own error (info shows it); this entry cannot be read either: delete .agentcut/history/${at}`
+    ? `project.json has its own error (info shows it); this entry cannot be read either: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`
     : `project.json itself is fine: delete .agentcut/history/${at}`;
 
 /** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `beside`: see entryFix */
