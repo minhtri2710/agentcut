@@ -105,7 +105,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    beats is an audio path or asset id (analysed inside the batch), a list of seconds, or a .json with a top-level "beats" list. CLI: every call analyses an audio path again (a dry run, the apply,
    a resend after a "conflict"), so analyse once: agentcut beats F --full > beats.json (without --full the list is cut at 64: beats_truncated:true; a file cut that way is refused), then beats=beats.json. MCP: the server keeps an
    audio path's beats, so the path is enough; a list from analyze_beats works too, with max_beats large enough (default 128; over it the list is cut: truncated:true). A short list typed in the call is not an error:
-   it retimes only the first clips and leaves the rest as they were. A saved result that was cut (its count is above its list; the file `beats F` prints without --full) is refused as bad_beats: save it again with --full.
+   it retimes only the first clips and leaves the rest as they were. A saved result that was cut (its count is above its list; the file `beats F` prints without --full) is refused as bad_beats: save it again with --full (MCP: a larger max_beats), or pass the audio path.
    A typed list holds numbers only. Give one beat per clip after every and offset; the last clip keeps its length.
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
 {"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}
