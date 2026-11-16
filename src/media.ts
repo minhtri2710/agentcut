@@ -418,7 +418,7 @@ export class FrameSource {
     if (!o.loop || o.reverse || !D || at <= 0) return;
     // the answer is the file's: a preview or a render segment builds a new FrameSource per read, so it is kept per file, size, mtime and point (a failed read is not kept)
     let key: string | null = null;
-    try { const st = statSync(o.path); key = `${o.path}|${st.size}|${st.mtimeMs}|${at}`; } catch { /* not a plain file: no key */ }
+    try { const st = statSync(o.path); key = `${o.path}|${st.size}|${st.mtimeMs}|${at}`; } catch { /* a path that cannot be stat'ed (a missing file, a URL): no key, the answer is not kept */ }
     let held = key ? LOOP_REACH.get(key) : undefined;
     if (!held) {
       held = this.decodeStill(true, "reach", at).then((f) => !!f);
@@ -428,7 +428,8 @@ export class FrameSource {
         held.catch(() => LOOP_REACH.delete(key!));
       }
     }
-    if (!(await held)) throw this.gone("the source ended before its probed length", at);
+    if (!(await held)) throw new EditError(`decode failed for ${o.path}: the source ended before its probed length at ${at.toFixed(2)}s (the project records ${D.toFixed(2)}s of picture)`, "decode_failed",
+      "relink_asset with the same path probes the file again. If the error stays, the file reports no length for its picture (mkv, webm) and its sound may outlast it: remux it to mp4 and relink, or set loop false");
   }
 
   /** The frame a freeze holds: the one at the in-point (wrapped into the source for a loop clip); at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
