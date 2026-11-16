@@ -240,9 +240,11 @@ export function registerEditOps(h: OpHelpers) {
       // a loop flag is the clip's own: update_clip on the video does not reach its pieces
       const loopTail = high && !low && canLoop(tl.assets, ...list) ? `; or set loop: true${pieces.length ? ` on ${named(list.filter((x) => !x.loop))} (update_clip on the video does not reach its audio)` : ""}` : "";
       // mirrors trim_clip, which leaves a reversed picture's audio alone (ops.ts, `c.reverse ? undefined : soleAudio`)
-      const trimTail = pieces.length && c.reverse ? `, on ${named(list)} (trim_clip on a reversed video does not reach its audio)` : "";
+      // each trim end opens one bound: a forward clip's trim_end opens the later source (high) and its trim_start the earlier (low); a reversed clip is the other way round
+      const trimEnds = [low && (c.reverse ? "trim_end" : "trim_start"), high && (c.reverse ? "trim_start" : "trim_end")].filter(Boolean).join(" and ");
+      const trimTail = pieces.length && c.reverse ?`, on ${named(list)} (trim_clip on a reversed video does not reach its audio)` : "";
       if (low || high) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
-        `${noFit(lo, hi) ? `no slip fits: the clip${pieces.length ? " or its audio" : ""} has no spare source to slide over (trim_clip shorter first${trimTail}` : `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source`}${loopTail})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+        `${noFit(lo, hi) ? `no slip fits: the clip${pieces.length ? " or its audio" : ""} has no spare source to slide over (trim_clip ${trimEnds} first${trimTail}` : `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source`}${loopTail})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };
