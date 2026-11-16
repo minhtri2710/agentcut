@@ -225,8 +225,8 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
 {
   const bad = await attempt(async () => {
   const bad: string[] = [];
-  // No ts here: a ts read to the end of the file can end with error-level decoder text on a clean exit, which readAt reports as decode_failed (a known gap, not this rule).
-  for (const f of [v25.plain, v25.aac, v50.aac, mkv24, webm24]) for (const tl of [24, 30]) for (const srcIn of [4, 4.013]) {
+  // the ts and m2ts files start these streams by a seek that lands mid-GOP: their decoder text about frames never shown is not a failure of the clip
+  for (const f of [v25.plain, v25.aac, v50.aac, mkv24, webm24, tsc, tso, tsLate, m2ts]) for (const tl of [24, 30]) for (const srcIn of [4, 4.013]) {
     const { pts, S } = timingOf(f), D = pts[pts.length - 1] - S + (pts[1] - pts[0]), s = source(f, tl, srcIn, { srcDuration: D });
     let streamed = -1;
     for (let k = 0; k < Math.ceil((D - srcIn) * tl) + 40; k++) { const n = await read(s, k, tl); if ((s as any).eof) { streamed = n; break; } }
