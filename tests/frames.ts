@@ -36,10 +36,11 @@ const X264_OPEN = [...X264, "-g", "25", "-bf", "3", "-x264-params", "open-gop=1:
 const MPEG2 = ["-c:v", "mpeg2video", "-qscale:v", "2", "-g", "12", "-bf", "2", "-pix_fmt", "yuv420p"];
 const VP9 = ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-pix_fmt", "yuv420p"];
 /** A numbered clip: `audio` adds an AAC track (mp2 for mpeg-ps), `late` starts the picture that many seconds after the sound, `mux` is the output's own options. */
-function make(file: string, rate: string, secs: number, enc: string[], o: { audio?: boolean; late?: number; mux?: string[] } = {}): string {
+function make(file: string, rate: string, secs: number, enc: string[], o: { audio?: boolean; late?: number; sound?: number; mux?: string[] } = {}): string {
   const out = join(m, file);
-  ff(...(o.late ? ["-itsoffset", String(o.late)] : []), "-f", "lavfi", "-i", pic(rate, secs), ...(o.audio ? ["-f", "lavfi", "-i", "sine=f=440:r=48000"] : []), ...enc,
-    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", "-shortest"] : ["-an"]), ...(o.mux ?? []), out);
+  // sound: the sound's length in seconds, when it outlasts the picture (no -shortest)
+  ff(...(o.late ? ["-itsoffset", String(o.late)] : []), "-f", "lavfi", "-i", pic(rate, secs), ...(o.audio ? ["-f", "lavfi", "-i", `sine=f=440:r=48000${o.sound ? `:d=${o.sound}` : ""}`] : []), ...enc,
+    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", ...(o.sound ? [] : ["-shortest"])] : ["-an"]), ...(o.mux ?? []), out);
   return out;
 }
 
@@ -75,7 +76,7 @@ function num(b: Buffer, w: number, h: number, bw = 10, px = 4): number {
   return n;
 }
 
-interface Opts { loop?: boolean; reverse?: boolean; freeze?: boolean; segLen?: number; srcDuration?: number }
+interface Opts { loop?: boolean; reverse?: boolean; freeze?: boolean; segLen?: number; srcDuration?: number; facts?: any }
 function source(file: string, r: number, srcIn: number, o: Opts = {}) {
   const info = api.probe(file);
   return new FrameSource({ path: file, kind: "video", srcW: W, srcH: H, srcFps: info.fps, srcIn, rate: r, fit: "fill", box: [W, H], srcDuration: info.video_duration ?? info.duration, facts: info, ...o });
@@ -128,6 +129,12 @@ const mpg = make("o.mpg", "25", 8, MPEG2, { audio: true, mux: ["-f", "mpeg"] });
 const mpgLate = make("olate.mpg", "25", 8, MPEG2, { audio: true, late: 0.54, mux: ["-f", "mpeg", "-fps_mode", "passthrough"] });
 const tsLong = make("tslong.ts", "25", 12, [...X264, "-g", "100", "-bf", "2", "-x264-params", "open-gop=0:scenecut=0"], { audio: true, mux: ["-f", "mpegts"] });
 const loop2 = make("loop2.mp4", "25", 2, X264), loop2a = make("loop2a.mp4", "25", 2, X264, { audio: true });
+// loop fixtures with more than one keyframe (a seek then lands past the first one): 2 s with a keyframe every 1 s (mp4 with AAC, mov), a gap that does not divide the length, a 0.4 s loop, video that starts late
+const X264_KEY = (g: number) => [...X264, "-g", String(g), "-x264-params", `keyint=${g}:min-keyint=${g}:scenecut=0`];
+const loop2k = make("loop2k.mp4", "25", 2, X264_KEY(25), { audio: true }), loop2kMov = make("loop2k.mov", "25", 2, X264_KEY(25));
+const loop18 = make("loop18.mp4", "25", 2, X264_KEY(18)), loop04 = make("loop04.mp4", "25", 0.4, X264_KEY(5));
+const loopLate = make("looplate.mp4", "25", 2, X264_KEY(25), { audio: true, late: 0.54 }), loopShort = make("loopshort.mp4", "25", 1.7, X264);
+const loopSound = make("loopsound.mp4", "25", 2, X264_KEY(25), { audio: true, sound: 3 }); // 2 s of picture over 3 s of sound: the record has video_duration
 const gif = join(m, "loop.gif");
 ff("-f", "lavfi", "-i", pic("10", 2), gif);
 
@@ -184,6 +191,49 @@ console.log("loops, reverse, freeze and the held last frame");
 row("a loop over mp4, video only and with AAC: fresh, streamed and the rule agree across the wrap", [...await sweep("loop", loop2, 24, [0, 1.5], [0, 0.5], [0, 20, 47, 48, 49, 50, 51, 60, 95, 96, 97], { loop: true }),
   ...await sweep("loopa", loop2a, 30, [0, 1.5], [0, 0.5], [0, 20, 59, 60, 61, 100, 119, 120, 121], { loop: true })]);
 row("a looping GIF is accepted and its frames follow the rule across a wrap", await sweep("gif", gif, 24, [0, 1.5], [0, 0.5], [0, 10, 20, 47, 48, 49, 50, 51, 60, 90, 100], { loop: true }));
+{ // a keyframe inside the file: a seek lands past the first one, and a loop used to restart there instead of at the file's start
+  const wraps = (r: number) => { const n = Math.round(2 * r); return [0, 20, n - 1, n, n + 1, 2 * n, 2 * n + 1, 3 * n - 1, 3 * n, 3 * n + 2]; }; // three wraps
+  row("a loop over a file with a keyframe at 1 s (mp4 with AAC at 24 and 30 fps, mov at 25): fresh, streamed and the rule agree across three wraps", [
+    ...await sweep("loopk24", loop2k, 24, [0, 1.5], [0, 0.5], wraps(24), { loop: true }),
+    ...await sweep("loopk30", loop2k, 30, [0, 1.5], [0, 0.5], wraps(30), { loop: true }),
+    ...await sweep("loopkmov", loop2kMov, 25, [0, 1.5], [0], wraps(25), { loop: true })]);
+  row("a loop whose in-point is just before, on and just after its keyframe, and just before the end of a pass", await sweep("loopk-in", loop2k, 25, [0.96, 1, 1.04, 1.99], [0], [0, 1, 12, 49, 50, 51, 99, 100, 101, 150], { loop: true }));
+  row("a loop over keyframes 0.72 s apart (the gap does not divide the length): fresh, streamed and the rule agree across wraps", [
+    ...await sweep("loop18", loop18, 25, [0, 0.7, 1.44], [0], wraps(25), { loop: true }), ...await sweep("loop18-30", loop18, 30, [0.75, 1.9], [0], wraps(30), { loop: true })]);
+  row("a 0.4 s loop (a keyframe every 0.2 s) over thirteen wraps: a stream and fresh reads in late passes agree with the rule", await sweep("loop04", loop04, 25, [0, 0.2], [0, 0.5], [0, 1, 9, 10, 11, 60, 97, 111, 129], { loop: true }));
+  row("a loop whose video starts 0.54 s after the sound (the pass is the container's length, the gap holds the last frame): fresh, streamed and the rule agree across wraps at 25 and 30 fps", [
+    ...await sweep("looplate25", loopLate, 25, [0, 1.5], [0, 0.5], [0, 12, 13, 14, 25, 49, 63, 64, 65, 100, 126, 127, 128, 150], { loop: true }),
+    ...await sweep("looplate30", loopLate, 30, [0, 1.99], [0], [0, 16, 17, 18, 40, 76, 77, 78, 120, 152, 153, 154, 180], { loop: true })]);
+  row("a loop over a picture shorter than its sound (the record has video_duration, the pass is the picture): fresh, streamed and the rule agree across three wraps at 25 and 30 fps", [
+    ...await sweep("loopsound25", loopSound, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
+    ...await sweep("loopsound30", loopSound, 30, [0, 1.99], [0], [0, 20, 59, 60, 61, 119, 120, 121, 179, 180], { loop: true })]);
+  const fills = (f: string, o: Opts = {}) => (source(f, 25, 0, { loop: true, ...o }) as any).fillsPass();
+  check("the probe record of a file whose picture fills its pass lets later passes come from one looping stream, a picture shorter than the sound included; a late video (0.54 s, or 0.02 s), a longer recorded pass or a shorter picture does not",
+    api.probe(loopSound).video_duration > 1.9 && fills(loop2k) && fills(loop2kMov) && fills(loop18) && fills(loop04) && fills(loopSound) && !fills(loopLate) && !fills(nz25) && !fills(loop2k, { srcDuration: 2.2 }) && !fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } }),
+    [api.probe(loopSound).video_duration, fills(loop2k), fills(loop2kMov), fills(loop18), fills(loop04), fills(loopSound), fills(loopLate), fills(nz25), fills(loop2k, { srcDuration: 2.2 }), fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } })]);
+  { // a named limit (not a defect): a record whose picture is shorter than its length (the picture is 1.7 s, the record says 2 s) passes the check above, so the first wrap is at the record's length and later wraps at the file's own period
+    const bad = await attempt(async () => {
+      const s = source(loopShort, 25, 0.5, { loop: true, srcDuration: 2, facts: { ...api.probe(loopShort), duration: 2 } }), got: number[] = [];
+      for (let k = 0; k < 124; k++) got.push(await read(s, k, 25));
+      s.close();
+      const want = [...Array.from({ length: 31 }, (_, i) => 12 + i), ...Array(7).fill(42), ...Array.from({ length: 43 }, (_, i) => i), ...Array.from({ length: 43 }, (_, i) => i)];
+      return got.flatMap((n, k) => n === want[k] ? [] : [`slot ${k}: ${n} want ${want[k]}`]);
+    });
+    row("NAMED LIMIT, pinned as it is: a clip whose record says 2 s over a 1.7 s picture holds the last frame to the first wrap at the record's length, and wraps at the file's own length after", bad);
+  }
+  { // a looping video whose record has no picture length (a webm written to a pipe has none) is refused; remuxed, it reports its length and loops
+    const live = join(m, "live.webm"), remuxed = join(m, "live.mkv");
+    writeFileSync(live, spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", pic("25", 1), ...VP9, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout);
+    ff("-i", live, "-c", "copy", remuxed);
+    const err = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e; } };
+    const refusedLive: any = err(() => source(live, 25, 0, { loop: true })), freezeLive = err(() => source(live, 25, 0, { loop: true, freeze: true }));
+    const info = api.probe(remuxed), cured = source(remuxed, 25, 0.5, { loop: true });
+    const frames = [await read(cured, 0, 25), await read(cured, 30, 25)]; cured.close();
+    check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built; the remuxed file reports its length and loops",
+      api.probe(live).duration === 0 && refusedLive?.code === "bad_media" && /cannot loop/.test(refusedLive.message) && /<file>\.mkv\b/.test(refusedLive.hint) && /relink_asset/.test(refusedLive.hint) && freezeLive === null && info.duration > 0.9 && [0, 30].every((k, i) => frames[i] === rule(remuxed, 0.5, 25, k, info.video_duration ?? info.duration)),
+      { duration: api.probe(live).duration, code: refusedLive?.code, hint: refusedLive?.hint, freeze: freezeLive?.message, remuxed: info.duration, frames });
+  }
+}
 {
   const bad = await attempt(async () => {
   const bad: string[] = [];
@@ -210,9 +260,9 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
 { // a frozen loop clip: in-points just after a pass start (inside the pre-roll), in a later pass, and just before a pass end (the next pass's first frame is the nearest)
   const bad = await attempt(async () => {
   const bad: string[] = [];
-  for (const [f, tl] of [[loop2, 24], [loop2a, 30]] as const) {
+  for (const [f, tl] of [[loop2, 24], [loop2a, 30], [loop2k, 24], [loop2kMov, 30], [loopLate, 25], [loopLate, 30]] as const) {
     const info = api.probe(f), D = info.video_duration ?? info.duration;
-    for (const srcIn of [0, 0.1, D + 0.1, D - 0.01]) {
+    for (const srcIn of [0, 0.1, 0.2, D + 0.1, D - 0.01, D + 1.04]) { // the late file's first 0.54 s are before its picture: in 0, 0.1 and 0.2 lie there
       const stream = source(f, tl, srcIn, { loop: true }), still = source(f, tl, srcIn, { loop: true, freeze: true });
       const first = await read(stream, 0, tl), held = await still.readAt(0).then((b) => num(b, W, H), (e) => e?.code ?? "threw");
       stream.close(); still.close();
@@ -220,7 +270,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     }
   }
   return bad; });
-  row("a frozen loop clip holds the frame slot 0 of the same clip shows, at in 0, in the second pass and just before a pass end", bad);
+  row("a frozen loop clip holds the frame slot 0 of the same clip shows, at in 0, in the second pass, past the second keyframe of a later pass and just before a pass end", bad);
 }
 {
   const bad = await attempt(async () => {
