@@ -1518,6 +1518,14 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
+    // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint offers loop there
+    const loopErr = (t: any) => validate(t).find((i: any) => i.level === "error" && /\.loop$/.test(i.path));
+    const noLen = { duration: 0 }, refuse = loopErr(mk([vid({ loop: true })], noLen));
+    check("validate refuses a looping video over an asset with no recorded length and names the mkv remux; a freeze, an audio clip and a clip without loop pass",
+      /no picture length/.test(String(refuse?.message)) && /<file>\.mkv/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
+    // no op hint can reach canLoop with such an asset (the source length is then unlimited), so the helper is checked on its own: it must say what validate says
+    const { canLoop } = await import("../src/model.ts"), loopOf = (c: any) => { const t = mk([c], noLen); return canLoop(t.assets, t.tracks[0].clips[0]); };
+    check("canLoop is false for a video clip over an asset with no recorded length, and true for a freeze and an audio clip", !loopOf(vid()) && loopOf(vid({ freeze: true })) && loopOf({ ...vid(), type: "audio" }));
   }
 
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps

@@ -132,14 +132,21 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
 };
 
 /** The demuxers measured to put a seek at or before its target: a stream read from a seek then holds every frame the slot's own stream does, whatever the keyframe spacing.
- *  A format off this list is read with the file's longest keyframe gap as pre-roll, and its clips cannot loop (`-stream_loop` restarts such a file past the target). */
+ *  A format off this list is read with the file's longest keyframe gap as pre-roll, and its clips cannot loop (a loop pass is read from a seek, and a seek in such a format can land after the frame asked for). */
 const SEEK_BEFORE_FORMATS = new Set(["mov", "matroska", "flv", "avi", "gif"]);
 export const seeksBefore = (format: string) => format.split(",").some((f) => SEEK_BEFORE_FORMATS.has(f));
-/** Whether validate accepts `loop` on every one of these clips: not reversed, and a video clip needs a format that seeks before its target (an audio clip loops in any format). A hint offers loop only when this holds. */
-export const canLoop = (assets: Dict, ...clips: Clip[]) => clips.every((c) => {
-  const a = own(assets, c.asset) ? assets[c.asset] : undefined;
-  return !c.reverse && !(c.type === "video" && a?.kind === "video" && typeof a.format === "string" && !seeksBefore(a.format));
-});
+/** Why `loop` is refused on a video clip over this video asset (null: it is accepted; reverse is its own rule). An audio clip loops in any format and over any length. A pass of a loop ends at the picture's length,
+ *  so a video asset with none recorded has no point where a pass ends; a freeze reads no pass. */
+const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: string } | null => {
+  if (c.type !== "video" || a.kind !== "video") return null;
+  if (typeof a.format === "string" && !seeksBefore(a.format))
+    return { message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" };
+  if (!c.freeze && !(sourceLen(a, "video") > 0))
+    return { message: `loop is not available on '${aid}': its probe record has no picture length (duration 0), so there is no point where a pass ends`, hint: "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), relink_asset the new file, or set loop false" };
+  return null;
+};
+/** Whether validate accepts `loop` on every one of these clips: not reversed, and no `loopRefusal`. A hint offers loop only when this holds. */
+export const canLoop = (assets: Dict, ...clips: Clip[]) => clips.every((c) => !c.reverse && !(own(assets, c.asset) && loopRefusal(c, c.asset, assets[c.asset])));
 /** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
 export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; key_gap?: number }
 /** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
@@ -922,8 +929,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' not in project`, hint: s ? `did you mean '${s}'?` : "import it first (import_media) or add with 'src'" });
         } else {
           const a = assets[aid];
-          if (c.type === "video" && c.loop && a.kind === "video" && typeof a.format === "string" && !seeksBefore(a.format))
-            issues.push({ level: "error", path: `${p}.loop`, message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" });
+          const refusal = c.loop ? loopRefusal(c, aid, a) : null;
+          if (refusal) issues.push({ level: "error", path: `${p}.loop`, ...refusal });
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
             const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
             pastEnd(issues, p, aid, sourceLen(a, c.type), inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`, canLoop(assets, c));

@@ -57,7 +57,7 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
 /** A video stream shorter than the container by less than this (s) is the container's own rounding, not a longer sound. Same slack as the 'clip needs more source' warning. */
 const VIDEO_END_SLACK = 0.05;
 /** How far (s) the period of an un-sought loop may differ from the pass length (FrameSource.fillsPass). In a render both come from the same recorded length, so they cancel and what this bounds is `video_start`:
- *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is the record's own rounding (`toFixed(3)`), so any real start offset is read pass by pass. */
+ *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is the record's own rounding (`toFixed(3)`), so a start offset above it is read pass by pass. */
 const PERIOD_TOLERANCE = 1e-3;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
