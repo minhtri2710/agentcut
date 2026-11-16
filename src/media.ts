@@ -56,6 +56,8 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
 
 /** A video stream shorter than the container by less than this (s) is the container's own rounding, not a longer sound. Same slack as the 'clip needs more source' warning. */
 const VIDEO_END_SLACK = 0.05;
+/** The probe records its lengths to the millisecond (`toFixed(3)`): two lengths that differ by no more than this are the same length. */
+const RECORD_ROUNDING = 1e-3;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -273,7 +275,7 @@ export class FrameSource {
     // a pass of a loop ends at the picture's length: without it there is no slot where a pass ends (a freeze reads no pass)
     if (o.loop && o.kind === "video" && !o.reverse && !o.freeze && !(o.srcDuration! > 0))
       throw new EditError(`${o.path} cannot loop: its probe record has no picture length, so there is no point where a pass ends`, "bad_media",
-        "remux the file to mkv or mp4 so that it reports its length (ffmpeg -i <file> -c copy <file>.mkv), then relink_asset with the new path; or set loop false");
+        "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), then relink_asset with the new path; or set loop false");
     if (o.kind !== "image") {
       const miss = missingFacts(o.facts ?? {});
       if (miss.length) throw new EditError(`the probe record of ${o.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
@@ -324,12 +326,12 @@ export class FrameSource {
     while (this.passStart(n) > k) n--;
     return n;
   }
-  /** Whether the passes after a stream's first may come from one un-sought `-stream_loop -1` stream, which restarts at the file's own length: only when the probe record shows that the picture fills its pass.
-   *  The video starts where the container starts (`video_start` within VIDEO_END_SLACK), the record names no shorter picture (`video_duration` unset), and the container's length (`duration`) is the pass length
-   *  (`srcDuration`, within VIDEO_END_SLACK). A record that leaves one of them out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
+  /** Whether the passes after a stream's first may come from one un-sought `-stream_loop -1` stream: only when the period such a stream would have is the pass length.
+   *  That period runs from the video's first packet to the picture's end: the picture's recorded length (`video_duration`, else the container's `duration`) less `video_start`. It must equal `srcDuration` within
+   *  the record's own rounding (RECORD_ROUNDING); a record that leaves the length out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
   private fillsPass() {
     const f = this.o.facts as VideoFacts & { duration?: number; video_duration?: number | null };
-    return f.video_start <= VIDEO_END_SLACK && f.video_duration == null && typeof f.duration === "number" && Math.abs(f.duration - this.o.srcDuration!) <= VIDEO_END_SLACK;
+    return Math.abs((f.video_duration ?? f.duration)! - f.video_start - this.o.srcDuration!) <= RECORD_ROUNDING;
   }
 
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
@@ -471,11 +473,14 @@ export class FrameSource {
     const o = this.o;
     let at = o.srcIn ?? 0;
     if (o.loop && o.srcDuration) at %= o.srcDuration;
-    // the wrapped read below hides a source that ends well inside its probed length, so a loop first reads its in-point inside one pass
-    if (o.loop && o.srcDuration && !(await this.decodeStill(true, "reach")) && this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
+    // the still below reads only the pass of slot 0, which can end before the picture starts (an in-point in a late video's lead-in) and then holds no frame of its own: a loop first reads its in-point
+    // inside one pass, which alone tells a source that ends well inside its probed length from that gap
+    const passes = !!o.loop && !!o.srcDuration;
+    if (passes && !(await this.decodeStill(true, "reach")) && this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
     const f = await this.decodeStill(true);
     if (f) return f;
-    if (this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
+    // an empty still of a loop whose reach read held is the gap before the pass's picture: the clip shows the tail frame there, as it does while it plays
+    if (!passes && this.endedEarly(at, true)) throw this.gone("the source ended before the frozen frame", at);
     const last = await this.tailFrame();
     if (!last) throw this.gone("the source has no frame", at);
     return last;
