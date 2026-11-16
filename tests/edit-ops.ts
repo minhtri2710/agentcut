@@ -1531,9 +1531,8 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
       /no picture length/.test(String(refuse?.message)) && /<file>\.mkv/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
     // no hint reaches the no-length case: such an asset has an unlimited source length, so no upper bound trips one; canLoop is still the predicate "validate accepts loop on these clips" for every refusal
     const agrees = (clip: any, extra: any = {}) => { const t = mk([clip], extra); return canLoop(t.assets, t.tracks[0].clips[0]) === !loopErr(t); };
-    check("canLoop equals validate's acceptance of loop: plain, no recorded length (video, freeze, audio), a format that cannot loop, reversed",
-      [agrees(vid({ loop: true })), agrees(vid({ loop: true }), noLen), agrees(vid({ loop: true, freeze: true }), noLen), agrees({ ...vid({ loop: true }), type: "audio" }, noLen), agrees(vid({ loop: true }), { format: "mpegts", key_gap: 1 }), agrees(vid({ loop: true, reverse: true }))].every(Boolean)
-      && !canLoop(mk([vid()], noLen).assets, vid() as any) && canLoop(mk([vid()]).assets, vid() as any));
+    const agreed = { plain: agrees(vid({ loop: true })), noLength: agrees(vid({ loop: true }), noLen), noLengthFreeze: agrees(vid({ loop: true, freeze: true }), noLen), noLengthAudio: agrees({ ...vid({ loop: true }), type: "audio" }, noLen), mpegts: agrees(vid({ loop: true }), { format: "mpegts", key_gap: 1 }), reversed: agrees(vid({ loop: true, reverse: true })) };
+    check("canLoop equals validate's acceptance of loop: plain, no recorded length (video, freeze, audio), a format that cannot loop, reversed", Object.values(agreed).every(Boolean), agreed);
   }
 
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps
