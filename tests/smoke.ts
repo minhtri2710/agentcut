@@ -39,6 +39,7 @@ ff("-f", "lavfi", "-i", "color=c=0x00ff00:size=640x360:rate=30:duration=3", "-vf
 ff("-f", "lavfi", "-i", "gradients=size=800x800:n=4", "-frames:v", "1", join(m, "p.png"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=900x600", "-frames:v", "1", join(m, "q.jpg"));
 ff("-f", "lavfi", "-i", "aevalsrc='sin(2*PI*60*t)*exp(-25*mod(t,0.5))':s=44100:d=12", "-ac", "2", join(m, "beat.wav"));
+ff("-f", "lavfi", "-i", "aevalsrc='sin(2*PI*60*t)*exp(-25*mod(t,0.5))':s=44100:d=40", "-ac", "2", join(m, "beat-long.wav")); // 79 beats: `beats` without --full cuts it at 64
 ff("-f", "lavfi", "-i", "sine=f=300:d=1.5", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1.2", "-f", "lavfi", "-i", "sine=f=300:d=1.5",
   "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", join(m, "talk.wav"));
 ff("-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=4.2", "-i", join(m, "talk.wav"), "-shortest", "-pix_fmt", "yuv420p", join(m, "talk.mp4"));
@@ -114,6 +115,20 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
   for (const [what, path, want] of bad) {
     const r = cli(["op", "snap_to_beats", "track=main", `beats=${path}`, "--revision", rev0], { ...C, ok: false });
     check(`snap_to_beats with a beats .json that is ${what}: ${want}, with a hint, and nothing saved`, r.ok === false && r.error.code === want && !!r.error.hint && cli(["info"], C).revision === rev0, r);
+  }
+  // a saved result that was cut (count above its list) is refused whatever its flag is called; one with no count is taken as it is
+  const cutFile = writeBeats("beats-cut.json", cli(["beats", join(m, "beat-long.wav")]));
+  const cutMcp = writeBeats("beats-cut-mcp.json", { ok: true, count: 5, beats: [0, 1, 2], truncated: true });
+  const refused = (beats: string) => { const was = cli(["info"], C).revision; const r = cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, "--revision", was], { ...C, ok: false }); return { r, kept: cli(["info"], C).revision === was }; };
+  for (const [what, path] of [["the cut `beats F` printed", cutFile], ["a cut MCP result", cutMcp]]) {
+    const { r, kept } = refused(path);
+    check(`snap_to_beats with ${what}: bad_beats naming --full, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /--full/.test(r.error.hint) && /remove count/.test(r.error.hint) && /\d+ of \d+/.test(r.error.message) && kept, r);
+  }
+  check("snap_to_beats takes a hand-written file with no count", cli(["op", "snap_to_beats", "track=main", `beats=${writeBeats("beats-bare.json", { beats: [0, 1, 2] })}`, "--dry-run"], C).results[0].retimed.length === 2);
+  // an inline list holds the same numbers a file does; the hint is for a list typed in the call
+  for (const [what, list] of [["a non-number", '[0,"x",2]'], ["numbers in strings", '["0","2"]']]) {
+    const { r, kept } = refused(list);
+    check(`snap_to_beats with an inline list of ${what}: bad_beats, with a hint for a typed list, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /seconds/.test(r.error.hint) && !/--full/.test(r.error.hint) && kept, r);
   }
 }
 { // the help names every flag the guide tells an agent to use on beats
