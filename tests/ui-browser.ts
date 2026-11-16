@@ -665,7 +665,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     } finally { release(); rmSync(holdFile, { force: true }); globalThis.fetch = realFetch; Object.assign(pin, pinned); }
   }
   // a timeline with no duration has no frame: the viewer asks the server for none. A second page, on a project with no clips, counts the /api/frame requests it makes.
-  // It runs last because a second tab can take the first one's focus. Once a clip exists the same page must ask, which shows the count works.
+  // Once a clip exists the same page must ask, which shows the count works.
   console.log("viewer, empty project");
   {
     const emptyDir = join(tmp, "empty");
@@ -694,7 +694,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await new Promise((ok) => empty.server.close(ok));
     }
   }
-  // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in.
+  // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
+  // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");
   {
     const badDir = join(tmp, "unreadable-entry");
@@ -705,20 +706,69 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const noRev = JSON.parse(readFileSync(entry, "utf8")); delete noRev.revision;
     writeFileSync(entry, JSON.stringify(noRev));
     const bad = await startUi(badDir, { port: 0 });
-    const { targetId: other } = await cdp("Target.createTarget", { url: "about:blank" });
-    const sid = (await cdp("Target.attachToTarget", { targetId: other, flatten: true })).sessionId;
-    const on = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sid)).result?.value;
-    const onUntil = async (expr: string, ms: number) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await on(expr).catch(() => false)) return true; await sleep(80); } return false; };
-    try {
+    // two tabs on the same stateless project: the first only watches, the second is handled (clicks, keys) before its state arrives
+    const openTab = async () => {
+      const { targetId } = await cdp("Target.createTarget", { url: "about:blank" });
+      const sid = (await cdp("Target.attachToTarget", { targetId, flatten: true })).sessionId;
+      const on = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sid)).result?.value;
+      const onUntil = async (expr: string, ms: number) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await on(expr).catch(() => false)) return true; await sleep(80); } return false; };
       await cdp("Runtime.enable", {}, sid);
       await cdp("Page.enable", {}, sid);
       await cdp("Page.navigate", { url: bad.url }, sid);
-      const shown = await onUntil(`document.getElementById("msg").className === "err" && document.getElementById("msg").textContent.indexOf("[bad_json]") >= 0 && document.getElementById("msg").textContent.indexOf(${JSON.stringify(entryName)}) >= 0 && document.getElementById("rev").textContent === ""`, 8000);
-      check("over an unreadable history entry the page shows the named error and has no state", shown, await on(`document.getElementById("msg").textContent`));
+      return { targetId, on, onUntil };
+    };
+    const stateless = `document.getElementById("msg").className === "err" && document.getElementById("msg").textContent.indexOf("[bad_json]") >= 0 && document.getElementById("msg").textContent.indexOf(${JSON.stringify(entryName)}) >= 0 && document.getElementById("rev").textContent === ""`;
+    const filled = `document.getElementById("rev").textContent.indexOf("rev ") === 0`;
+    const tabs: { targetId: string }[] = [];
+    try {
+      const watch = await openTab(); tabs.push(watch);
+      const hands = await openTab(); tabs.push(hands);
+      check("over an unreadable history entry the page shows the named error and has no state", await watch.onUntil(stateless, 8000), await watch.on(`document.getElementById("msg").textContent`));
+      // before any state the page has nothing to write against: each writer says so by name (a click that threw showed nothing), and the keys and the zoom do nothing
+      await hands.onUntil(stateless, 8000);
+      const errsBefore = consoleErrors.length;
+      const refused = async (expr: string) => {
+        for (let i = 0; i < 25; i++) { // the stream's own error comes back every few seconds: ask again until the refusal is what the box shows
+          await hands.on(`document.getElementById("msg").className = ""; document.getElementById("msg").textContent = ""; ${expr}`);
+          await sleep(100);
+          if (await hands.on(`document.getElementById("msg").className === "err" && document.getElementById("msg").textContent.indexOf("[no_state]") === 0`)) return true;
+        }
+        return false;
+      };
+      const writers = {
+        "Undo click": `document.getElementById("undo").click()`,
+        "Redo click": `document.getElementById("redo").click()`,
+        "Ctrl+Z": `document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }))`,
+        "Apply ops": `document.getElementById("ops").value = "[]"; document.getElementById("applyo").click()`,
+      };
+      const said: Record<string, boolean> = {};
+      for (const [what, expr] of Object.entries(writers)) said[what] = await refused(expr);
+      await hands.on(`document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }))`);
+      await hands.on(`(function(){var z=document.getElementById("zoom"); z.value="200"; z.dispatchEvent(new Event("input"));})()`);
+      await hands.on(`document.getElementById("scroll").dispatchEvent(new WheelEvent("wheel", { ctrlKey: true, deltaY: -100, bubbles: true, cancelable: true }))`);
+      await sleep(300);
+      check("with no state, Undo, Redo, Ctrl+Z and Apply ops each show the no-state refusal", Object.values(said).every(Boolean), said);
+      check("  and those four, the arrow key, the zoom slider and the Ctrl+wheel throw no page exception", consoleErrors.length === errsBefore, consoleErrors.slice(errsBefore));
+      // the second tab keeps asking for its refusal while it has no state (a click only then: once the state is there Undo would really undo), so the box holds the refusal when the state arrives.
+      // The first ask is made while the entry is still there, so `before` is seeded from a page that surely has no state.
+      let before = await hands.on(`(async function () { if (!document.getElementById("rev").textContent) document.getElementById("undo").click(); await null; await null; return document.getElementById("msg").textContent; })()`) as string;
       rmSync(entry);
-      check("  and after the entry is removed the page's reconnect fills it in", await onUntil(`document.getElementById("rev").textContent.indexOf("rev ") === 0`, 12000), await on(`document.getElementById("rev").textContent`));
+      let after = { msg: "", cls: "", rev: "" };
+      for (let t0 = Date.now(); !after.rev && Date.now() - t0 < 12000; await sleep(40)) {
+        await hands.on(`if (!document.getElementById("rev").textContent) document.getElementById("undo").click()`);
+        after = await hands.on(`({ msg: document.getElementById("msg").textContent, cls: document.getElementById("msg").className, rev: document.getElementById("rev").textContent })`);
+        if (!after.rev) before = after.msg;
+      }
+      check("  and after the entry is removed the page's reconnect fills it in", await watch.onUntil(filled, 12000), await watch.on(`document.getElementById("rev").textContent`));
+      check("  the stream's error is gone from the box once the state is there", await watch.onUntil(`document.getElementById("msg").textContent === "" && document.getElementById("msg").className === ""`, 3000), await watch.on(`document.getElementById("msg").textContent`));
+      check("  and so is the no-state refusal of the tab that had asked for it", before.indexOf("[no_state]") === 0 && !!after.rev && after.msg === "" && after.cls === "", { before, after });
+      // a message the user caused is not the page's lack of state: a state event that follows does not take it away
+      await watch.on(`document.getElementById("ops").value = "not json"; document.getElementById("applyo").click()`);
+      await applyLatest(badDir, [{ op: "add_marker", t: 3 }]);
+      const revNow = (await api.info(badDir)).revision;
+      check("  while an error the user caused stays when a later state arrives", await watch.onUntil(`document.getElementById("rev").textContent.indexOf("rev ${revNow} ") === 0 && document.getElementById("msg").className === "err" && document.getElementById("msg").textContent.indexOf(${JSON.stringify(entryName)}) < 0`, 8000), await watch.on(`[document.getElementById("rev").textContent, document.getElementById("msg").className, document.getElementById("msg").textContent]`));
     } finally {
-      await cdp("Target.closeTarget", { targetId: other }).catch(() => {});
+      for (const t of tabs) await cdp("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
       bad.server.closeAllConnections?.();
       await new Promise((ok) => bad.server.close(ok));
     }

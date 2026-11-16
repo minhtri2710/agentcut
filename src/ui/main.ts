@@ -1,5 +1,5 @@
 // The page's entry point: wires every module and follows the server's event stream.
-import { fail } from "./messages.ts";
+import { clearStateless, fail } from "./messages.ts";
 import { initHistory } from "./history.ts";
 import { initInspector, select } from "./inspector.ts";
 import { initJobs, onJobEvent } from "./jobs.ts";
@@ -10,7 +10,7 @@ import type { State } from "./types.ts";
 import { initViewer, requestFrame } from "./viewer.ts";
 
 function setState(s: State) {
-  st.S = s;
+  st.S = s; clearStateless();
   $("name").textContent = s.timeline.name || "untitled";
   $("rev").textContent = "rev " + s.revision + " · " + s.timeline.settings.width + "x" + s.timeline.settings.height + " @" + s.timeline.settings.fps;
   $("issues").textContent = (s.errors || 0) + " errors, " + (s.warnings || 0) + " warnings";
@@ -30,4 +30,4 @@ initTimeline(); initViewer(); initInspector(); initJobs(); initHistory(); initKe
 const events = new EventSource("/api/events");
 events.addEventListener("state", (e) => { setState(JSON.parse((e as MessageEvent).data)); });
 events.addEventListener("job", (e) => { onJobEvent(JSON.parse((e as MessageEvent).data)); });
-events.addEventListener("error", (e) => { const d = (e as MessageEvent).data; if (d) fail(JSON.parse(d)); });
+events.addEventListener("error", (e) => { const d = (e as MessageEvent).data; if (d) fail(JSON.parse(d), true); }); // the stream's error means the server could not build the state

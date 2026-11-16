@@ -14,6 +14,7 @@ const COL: Record<string, string> = { video: "#3b6fb6", image: "#2f8f83", text: 
 export let clipNodes = new Map<string, HTMLElement>();
 
 export function drawTimeline() {
+  if (!st.S) return; // the zoom before the first state: nothing to draw yet, the first state draws at the scale set
   const tl = S().timeline, v = V(), pps = st.pps, W = Math.max(total() + 5, 10) * pps, lanes = $("lanes");
   clipNodes = new Map();
   const ae = document.activeElement as HTMLElement | null, keep = ae && ae.classList && ae.classList.contains("clip") ? ae.dataset.id : null; // the rebuild below drops the focused clip

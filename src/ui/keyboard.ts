@@ -31,6 +31,6 @@ export function initKeyboard() {
     // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays
     if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button") && kbFocus(g)) return;
     if (e.key === " ") { e.preventDefault(); $("play").click(); }
-    else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { const f = 1 / S().timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(st.t + (e.key === "ArrowLeft" ? -f : f)); }
+    else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && st.S) { const f = 1 / S().timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(st.t + (e.key === "ArrowLeft" ? -f : f)); }
   });
 }
