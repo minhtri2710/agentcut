@@ -1373,6 +1373,14 @@ console.log("op arguments, documented ranges, undo steps");
     && (await text("700")).code === undefined && (await text("bold")).code === undefined);
   check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror), a scale keyframe of 0 (pop-in)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { volume: 4 }, { scale_x: -1 }, { keyframes: { scale: [[0, 0], [0.3, 1]] } }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined));
 
+  const both = await err({ op: "update_clip", id: "c1", set: { reverse: true, loop: true } }), pair = both.details?.issues?.[0];
+  check("a clip with reverse and loop both set is a validation error that says to set one", both.code === "validation_failed" && pair?.level === "error" && pair.path.endsWith(".loop") && /reverse/.test(pair.message) && /one of/.test(pair.hint), { code: both.code, issues: both.details?.issues });
+  const RL = join(tmp, "revloop-proj");
+  api.create(RL, { preset: "720p" });
+  await applyLatest(RL, [{ op: "add_clip", track: "main", src: join(m, "a.mp4"), duration: 3, id: "r1", reverse: true }]);
+  const rlBefore = readFileSync(join(RL, "project.json"), "utf8"), rlRej = await applyLatest(RL, [{ op: "update_clip", id: "r1", set: { loop: true } }]).catch((e: any) => e);
+  check("a batch that sets loop on a reversed clip is rejected whole and the project file is unchanged", rlRej.code === "validation_failed" && readFileSync(join(RL, "project.json"), "utf8") === rlBefore, { code: rlRej.code });
+
   const pop = join(tmp, "pop-proj");
   api.create(pop, { preset: "720p" });
   await applyLatest(pop, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 2, id: "p1", keyframes: { scale: [[0, 0], [0.3, 1]] } }]).catch(() => {}); // refused: the row below fails, the later rows still run

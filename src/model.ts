@@ -267,8 +267,8 @@ export const MEDIA_FIELDS: F = {
   crop: [T("object"), "{left, right, top, bottom} fractions removed"],
   filters: [T("array"), "FFmpeg filters applied at decode: " + Object.keys(FILTERS).join(",")],
   color: [T("object"), "colour grade (decode-time, after filters): {look, exposure, contrast, saturation, vibrance, temperature, tint, lift, gamma, gain, curves, hsl}"],
-  loop: [T("boolean"), "loop the source when the clip is longer (only mp4/mov, mkv/webm, flv, avi, gif; any other format, e.g. .ts/.m2ts/.mpg: remux to mp4 or mkv)"],
-  reverse: [T("boolean"), "play backwards (video+audio)"],
+  loop: [T("boolean"), "loop the source when the clip is longer (only mp4/mov, mkv/webm, flv, avi, gif; any other format, e.g. .ts/.m2ts/.mpg: remux to mp4 or mkv); not together with reverse"],
+  reverse: [T("boolean"), "play backwards (video+audio); not together with loop"],
   freeze: [T("boolean"), "hold the frame at 'in' for the whole clip"],
 };
 /** Audio processing on video/audio clips and on tracks (see audiofx.ts). */
@@ -909,6 +909,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         else if (hasSound(c, assets) && Number(c.volume ?? 1) * tf.gain > 0) flow.sink.audio = true;
       }
       if (MEDIA_TYPES.has(c.type)) {
+        if ((c.type === "video" || c.type === "audio") && c.reverse && c.loop) issues.push({ level: "error", path: `${p}.loop`, message: "reverse and loop cannot both be set on one clip", hint: "set only one of them (loop false or reverse false)" });
         const aid = c.asset;
         if (!aid) issues.push({ level: "error", path: `${p}.asset`, message: "media clip needs 'asset' (or 'src' when adding)" });
         else if (!own(assets, aid)) {
