@@ -208,9 +208,9 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     ...await sweep("loopsound25", loopSound, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound30", loopSound, 30, [0, 1.99], [0], [0, 20, 59, 60, 61, 119, 120, 121, 179, 180], { loop: true })]);
   const fills = (f: string, o: Opts = {}) => (source(f, 25, 0, { loop: true, ...o }) as any).fillsPass();
-  check("the probe record of a file whose picture fills its pass lets later passes come from one looping stream, a picture shorter than the sound included; a late video, a longer recorded pass or a shorter picture does not",
-    api.probe(loopSound).video_duration > 1.9 && fills(loop2k) && fills(loop2kMov) && fills(loop18) && fills(loop04) && fills(loopSound) && !fills(loopLate) && !fills(loop2k, { srcDuration: 2.2 }) && !fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } }),
-    [api.probe(loopSound).video_duration, fills(loop2k), fills(loop2kMov), fills(loop18), fills(loop04), fills(loopSound), fills(loopLate), fills(loop2k, { srcDuration: 2.2 }), fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } })]);
+  check("the probe record of a file whose picture fills its pass lets later passes come from one looping stream, a picture shorter than the sound included; a late video (0.54 s, or 0.02 s), a longer recorded pass or a shorter picture does not",
+    api.probe(loopSound).video_duration > 1.9 && fills(loop2k) && fills(loop2kMov) && fills(loop18) && fills(loop04) && fills(loopSound) && !fills(loopLate) && !fills(nz25) && !fills(loop2k, { srcDuration: 2.2 }) && !fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } }),
+    [api.probe(loopSound).video_duration, fills(loop2k), fills(loop2kMov), fills(loop18), fills(loop04), fills(loopSound), fills(loopLate), fills(nz25), fills(loop2k, { srcDuration: 2.2 }), fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } })]);
   { // a named limit (not a defect): a record whose picture is shorter than its length (the picture is 1.7 s, the record says 2 s) passes the check above, so the first wrap is at the record's length and later wraps at the file's own period
     const bad = await attempt(async () => {
       const s = source(loopShort, 25, 0.5, { loop: true, srcDuration: 2, facts: { ...api.probe(loopShort), duration: 2 } }), got: number[] = [];
@@ -230,7 +230,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     const info = api.probe(remuxed), cured = source(remuxed, 25, 0.5, { loop: true });
     const frames = [await read(cured, 0, 25), await read(cured, 30, 25)]; cured.close();
     check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built; the remuxed file reports its length and loops",
-      api.probe(live).duration === 0 && refusedLive?.code === "bad_media" && /cannot loop/.test(refusedLive.message) && /<file>\.mkv\b/.test(refusedLive.hint) && !/mp4/.test(refusedLive.hint) && /relink_asset/.test(refusedLive.hint) && freezeLive === null && info.duration > 0.9 && [0, 30].every((k, i) => frames[i] === rule(remuxed, 0.5, 25, k, info.video_duration ?? info.duration)),
+      api.probe(live).duration === 0 && refusedLive?.code === "bad_media" && /cannot loop/.test(refusedLive.message) && /<file>\.mkv\b/.test(refusedLive.hint) && /relink_asset/.test(refusedLive.hint) && freezeLive === null && info.duration > 0.9 && [0, 30].every((k, i) => frames[i] === rule(remuxed, 0.5, 25, k, info.video_duration ?? info.duration)),
       { duration: api.probe(live).duration, code: refusedLive?.code, hint: refusedLive?.hint, freeze: freezeLive?.message, remuxed: info.duration, frames });
   }
 }

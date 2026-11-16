@@ -56,8 +56,9 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
 
 /** A video stream shorter than the container by less than this (s) is the container's own rounding, not a longer sound. Same slack as the 'clip needs more source' warning. */
 const VIDEO_END_SLACK = 0.05;
-/** The probe records its lengths to the millisecond (`toFixed(3)`): two lengths that differ by no more than this are the same length. */
-const RECORD_ROUNDING = 1e-3;
+/** How far (s) the period of an un-sought loop may differ from the pass length (FrameSource.fillsPass). In a render both come from the same recorded length, so they cancel and what this bounds is `video_start`:
+ *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is the record's own rounding (`toFixed(3)`), so any real start offset is read pass by pass. */
+const PERIOD_TOLERANCE = 1e-3;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -328,10 +329,11 @@ export class FrameSource {
   }
   /** Whether the passes after a stream's first may come from one un-sought `-stream_loop -1` stream: only when the period such a stream would have is the pass length.
    *  That period runs from the video's first packet to the picture's end: the picture's recorded length (`video_duration`, else the container's `duration`) less `video_start`. It must equal `srcDuration` within
-   *  the record's own rounding (RECORD_ROUNDING); a record that leaves the length out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
+   *  PERIOD_TOLERANCE. In a render `srcDuration` is that same recorded length, so the two lengths cancel and the live test is `video_start` within the tolerance; the length comparison only bites for a `srcDuration`
+   *  passed by hand, and a record that leaves the length out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
   private fillsPass() {
     const f = this.o.facts as VideoFacts & { duration?: number; video_duration?: number | null };
-    return Math.abs((f.video_duration ?? f.duration)! - f.video_start - this.o.srcDuration!) <= RECORD_ROUNDING;
+    return Math.abs((f.video_duration ?? f.duration)! - f.video_start - this.o.srcDuration!) <= PERIOD_TOLERANCE;
   }
 
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
