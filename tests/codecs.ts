@@ -718,6 +718,22 @@ console.log("decode and render failures");
     check("a looped video clip of a file with longer sound wraps at the picture's length (3.5 s and 9.5 s show the picture of 0.5 s), so no cycle holds a frozen frame", f35.equals(f05) && f95.equals(f05) && !f35.equals(f29), [f05.length, f29.length]);
   }
   {
+    // a looping clip over a file with a keyframe at 1 s (every frame carries its number): a render shows the file's frames in order across three wraps, and the second worker's segment (it starts inside a pass) shows the same
+    const W2 = 160, H2 = 120, numbered = `color=c=gray:s=${W2}x${H2}:r=25:d=2,format=yuv420p,geq=lum='if(lt(Y,${H2 >> 3}),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128`;
+    ff("-f", "lavfi", "-i", numbered, "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-g", "25", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", join(m, "loop-kf.mp4"));
+    const LK = join(tmp, "loop-kf");
+    api.create(LK, { width: W2, height: H2, fps: 25 });
+    await applyLatest(LK, [{ op: "add_clip", track: "main", src: join(m, "loop-kf.mp4"), at: 0, in: 1.5, duration: 5.2, loop: true }]);
+    const shown = async (workers: number) => {
+      const out = join(tmp, `loop-kf-${workers}.mp4`);
+      await api.render(LK, { out, workers, sheet: false });
+      const raw = spawnSync("ffmpeg", ["-v", "error", "-i", out, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { maxBuffer: 1 << 28 }).stdout, fb = W2 * H2 * 4;
+      return Array.from({ length: Math.floor(raw.length / fb) }, (_, k) => { let n = 0; for (let i = 0; i < 16; i++) if (raw[k * fb + (Math.floor(H2 / 16) * W2 + i * 10 + 5) * 4] > 128) n |= 1 << i; return n; });
+    };
+    const one = await shown(1), two = await shown(2), want = Array.from({ length: 130 }, (_, k) => (37 + k) % 50); // in 1.5 = frame 37.5: the older frame at the tie
+    check("a render of a looping clip over a file with a keyframe inside shows the file's frames across three wraps, with one worker and with two", one.length === 130 && JSON.stringify(one) === JSON.stringify(want) && JSON.stringify(two) === JSON.stringify(one), { one: one.slice(0, 40), two: two.slice(0, 40) });
+  }
+  {
     // a record without video_duration (written by hand) on a 2 s picture with 4 s of sound: the early end is decode_failed, and its hint names the action that works
     ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-pix_fmt", "yuv420p", join(m, "p2s4.mp4"));
     const H = join(tmp, "hint-early");

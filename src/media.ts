@@ -265,8 +265,15 @@ export class FrameSource {
   private input: string[];
   private dec: string | null;
   private pre = 0; // seconds of source decoded before a stream's first slot
+  private passEnd = Infinity; // a loop clip: the last slot of the pass the running stream reads (Infinity: it is the un-sought looping stream, which wraps by itself)
+  private dry = false; // a loop clip: the running stream ended before its pass did, so the slots up to the pass's end hold `hold`
+  private hold: Buffer | null = null;
   constructor(private o: SourceOpts) {
     if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
+    // a pass of a loop ends at the picture's length: without it there is no slot where a pass ends (a freeze reads no pass)
+    if (o.loop && o.kind === "video" && !o.reverse && !o.freeze && !(o.srcDuration! > 0))
+      throw new EditError(`${o.path} cannot loop: its probe record has no picture length, so there is no point where a pass ends`, "bad_media",
+        "remux the file to mkv or mp4 so that it reports its length (ffmpeg -i <file> -c copy <file>.mkv), then relink_asset with the new path; or set loop false");
     if (o.kind !== "image") {
       const miss = missingFacts(o.facts ?? {});
       if (miss.length) throw new EditError(`the probe record of ${o.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
@@ -305,12 +312,33 @@ export class FrameSource {
    *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS), and the FFmpeg that decodes. */
   get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, ffmpegVersion()]); }
 
+  /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
+  private get wraps() { return !!this.o.loop && !this.o.reverse && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
+  /** The first slot of pass n of a loop: the slot of the picture's first frame, `n` lengths of the picture after the clip's in-point (the rule of `TIE_BIAS`, with the frame at `video_start`). */
+  private passStart(n: number) { const o = this.o; return Math.floor((o.facts!.video_start + n * o.srcDuration! - (o.srcIn ?? 0)) * o.rate + 0.5 + TIE_BIAS); }
+  /** The pass slot k belongs to: the last whose first slot is at or before k. Every stream is bounded by these slots, never by where it happens to end. */
+  private passOf(k: number) {
+    const o = this.o, D = o.srcDuration!;
+    let n = Math.ceil(((k + 0.5 - TIE_BIAS) / o.rate + (o.srcIn ?? 0) - o.facts!.video_start) / D) - 1;
+    while (this.passStart(n + 1) <= k) n++;
+    while (this.passStart(n) > k) n--;
+    return n;
+  }
+  /** Whether the passes after a stream's first may come from one un-sought `-stream_loop -1` stream, which restarts at the file's own length: only when the probe record shows that the picture fills its pass.
+   *  The video starts where the container starts (`video_start` within VIDEO_END_SLACK), the record names no shorter picture (`video_duration` unset), and the container's length (`duration`) is the pass length
+   *  (`srcDuration`, within VIDEO_END_SLACK). A record that leaves one of them out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
+  private fillsPass() {
+    const f = this.o.facts as VideoFacts & { duration?: number; video_duration?: number | null };
+    return f.video_start <= VIDEO_END_SLACK && f.video_duration == null && typeof f.duration === "number" && Math.abs(f.duration - this.o.srcDuration!) <= VIDEO_END_SLACK;
+  }
+
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
    *  It seeks to the keyframe before `pre` seconds ahead of the slot (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
-   *  clip's clock (container start and in-point subtracted, TIE_BIAS added, a loop's finished passes added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
+   *  clip's clock (container start and in-point subtracted, TIE_BIAS added, the passes of a loop before the slot's added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
    *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
-   *  from a whole number of slots before the slot, which keeps the grid's phase. */
-  private args(k: number, mode: "stream" | "still" | "tail" | "reach", at?: number): string[] {
+   *  from a whole number of slots before the slot, which keeps the grid's phase. A loop clip's stream reads the pass of its first slot and no loop, except `unsought`: a read from the file's start
+   *  (no seek, so ffmpeg's loop restarts at 0) that carries on through the passes after. */
+  private args(k: number, mode: "stream" | "still" | "tail" | "reach", at?: number, unsought = false): string[] {
     // still: the first frame only, as a forward clip (a freeze holds the frame the clip's first slot shows). tail: the clip read to the end of the picture without looping,
     // from at most two slots before it, whose last frame is the one a running clip holds there. reach: the still at source time `at` (default: a loop clip's in-point inside one pass),
     // with no wrap, to see whether the file really holds that stretch.
@@ -318,11 +346,10 @@ export class FrameSource {
     const srcIn = mode === "tail" && D ? this.tailIn(D) : mode === "reach" && D ? at ?? (o.srcIn ?? 0) % D : (o.srcIn ?? 0);
     const a = ["-v", "error", "-nostdin"];
     if (mode === "stream" && this.hw) a.push("-hwaccel", "videotoolbox");
-    const tk = srcIn + k / r - this.pre; // the source time the seek aims at
-    let n0 = 0, ss = Math.max(0, tk); // n0: passes of a loop finished before the seek point
-    if (loop && D) { n0 = Math.floor(tk / D); ss = tk - n0 * D; }
-    if (loop) a.push("-stream_loop", "-1"); // a still wraps like the clip does: its slot 0 may sit in the pre-roll of the pass before, or within half a source frame of the pass end
-    const shift = n0 * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
+    let n = 0, ss = Math.max(0, srcIn + k / r - this.pre); // n: the pass of the slot; ss: where the seek aims, inside that pass
+    if (loop && D) { n = this.passOf(k); ss = unsought ? 0 : Math.max(0, srcIn + k / r - n * D - this.pre); } // a slot's pre-roll in the pass before is not read: the fill below stands in for it
+    if (unsought) a.push("-stream_loop", "-1");
+    const shift = n * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
     const fill = ss <= f.video_start || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
       ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
@@ -340,7 +367,14 @@ export class FrameSource {
 
   private spawnAt(k: number) {
     this.close();
-    this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, "stream"), { stdio: ["ignore", "pipe", "pipe"] });
+    this.passEnd = Infinity; this.dry = false; this.hold = null;
+    let unsought = false;
+    if (this.wraps) { // a stream that starts at a pass's first slot may carry on through the later passes by itself; any other reads its own pass only
+      const n = this.passOf(k);
+      unsought = k === this.passStart(n) && this.fillsPass();
+      if (!unsought) this.passEnd = this.passStart(n + 1) - 1;
+    }
+    this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, "stream", undefined, unsought), { stdio: ["ignore", "pipe", "pipe"] });
     const proc = this.proc;
     if (!this.lengthCheck) { this.lengthCheck = this.checkLoopLength(); this.lengthCheck.catch(() => {}); } // awaited by readAt; this keeps a read that fails first from leaving it unhandled
     // Decoder text printed before the first frame is out belongs to the frames decoded ahead of the first slot (after a seek into a format whose seek can land mid-GOP, they miss their references)
@@ -466,6 +500,8 @@ export class FrameSource {
       if (o.reverse && this.proc && k > this.pos) { /* keep streaming */ } else this.spawnAt(k);
     }
     while (this.pos < k) {
+      if (this.pos + 1 > this.passEnd) { this.spawnAt(this.pos + 1); continue; } // a loop clip: the next pass starts at its own first slot
+      if (this.dry) { this.pos++; this.tip = this.hold; if (this.pos === k) this.last = this.hold; continue; }
       const f = await this.stream!.read();
       if (!f) {
         const end = await this.ended!;
@@ -475,9 +511,15 @@ export class FrameSource {
         // a source that ends well inside its probed length is damaged or was replaced, and a hold would hide that
         const at = (o.srcIn ?? 0) + k / o.rate;
         if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at, end.all);
+        if (this.wraps) { // a loop clip: the stream ended before its pass did (a file shorter than the pass, or a pass that starts after the picture): its last frame holds to the pass's end
+          const held = this.tip ?? await this.tailFrame();
+          if (!held) throw this.gone("the source has no frame", at, end.all);
+          this.dry = true; this.hold = held;
+          continue;
+        }
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
-        this.last = this.tip ?? (o.reverse || o.loop ? null : await this.tailFrame());
+        this.last = this.tip ?? (o.reverse ? null : await this.tailFrame());
         if (!this.last) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
         return this.last;
