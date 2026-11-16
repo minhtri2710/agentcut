@@ -751,9 +751,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       check("  and those four, the arrow key, the zoom slider and the Ctrl+wheel throw no page exception", consoleErrors.length === errsBefore, consoleErrors.slice(errsBefore));
       // the second tab keeps asking for its refusal while it has no state (a click only then: once the state is there Undo would really undo), so the box holds the refusal when the state arrives.
       // The first ask is made while the entry is still there, so `before` is seeded from a page that surely has no state.
-      let before = await hands.on(`(async function () { if (!document.getElementById("rev").textContent) document.getElementById("undo").click(); await new Promise(function (ok) { setTimeout(ok, 0); }); return document.getElementById("msg").textContent; })()`) as string;
+      let before = await hands.on(`(async function () { if (!document.getElementById("rev").textContent) document.getElementById("undo").click(); await null; await null; return document.getElementById("msg").textContent; })()`) as string;
       rmSync(entry);
-      let after = { msg: "", cls: "", rev: "" }; // before: the box as last read while the page had no state
+      let after = { msg: "", cls: "", rev: "" };
       for (let t0 = Date.now(); !after.rev && Date.now() - t0 < 12000; await sleep(40)) {
         await hands.on(`if (!document.getElementById("rev").textContent) document.getElementById("undo").click()`);
         after = await hands.on(`({ msg: document.getElementById("msg").textContent, cls: document.getElementById("msg").className, rev: document.getElementById("rev").textContent })`);
