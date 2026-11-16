@@ -696,6 +696,27 @@ console.log("decode and render failures");
     const fr = await api.frameImage(F, 2.5, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame at the end of a clip that runs to the end of its file renders", fr?.data?.length > 100, fr?.code ?? fr?.message);
   }
+  {
+    // matroska and webm give no per-stream length: the picture's end comes from the stream's own tag (when it starts with the container) or its packets, and a file written to a pipe has no length anywhere
+    const pic = ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2"], sine = (d: number) => ["-f", "lavfi", "-i", `sine=frequency=440:duration=${d}`];
+    const VP9 = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8"], MKV = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"], WEBM = [...VP9, "-c:a", "libopus"];
+    const made = (name: string, args: string[]) => { ff(...args, join(m, name)); return api.probe(join(m, name)); };
+    const piped = (name: string, args: string[]) => { writeFileSync(join(m, name), spawnSync("ffmpeg", ["-v", "error", "-y", ...args, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout); return api.probe(join(m, name)); };
+    const is = (x: number | undefined, want: number) => x !== undefined && Math.abs(x - want) < 0.01;
+    const longer = [made("mk-long.mkv", [...pic, ...sine(2.5), ...MKV]), made("mk-long.webm", [...pic, ...sine(2.5), ...WEBM])];
+    check("an mkv and a webm whose sound outlasts the picture record the picture's length and the container's", longer.every((i) => is(i.video_duration, 2) && i.duration > 2.4), longer.map((i) => [i.video_duration, i.duration]));
+    const shorter = [made("mk-short.mkv", [...pic, ...sine(1.5), ...MKV]), made("mk-short.webm", [...pic, ...sine(1.5), ...WEBM])];
+    check("an mkv and a webm whose sound is shorter record no picture length: the container's is the picture's", shorter.every((i) => i.video_duration === undefined && is(i.duration, 2)), shorter.map((i) => [i.video_duration, i.duration]));
+    const late = made("mk-late.mkv", ["-itsoffset", "1", ...pic, ...sine(3.5), ...MKV]); // the stream's tag is an end time here, not a length: the picture ends at 3 s
+    check("an mkv whose picture starts 1 s late and ends before its sound records where the picture ends on the container's clock", is(late.video_start, 1) && is(late.video_duration, 3) && late.duration > 3.4, late);
+    const live = [piped("pipe-video.webm", [...pic, ...VP9]), piped("pipe-sound.webm", [...pic, ...sine(2.5), ...WEBM]), piped("pipe-audio.webm", [...sine(1), "-c:a", "libopus"])];
+    check("a webm written to a pipe records the length its packets show: the picture's, the longer sound's with the picture's apart, an audio-only file's",
+      is(live[0].duration, 2) && live[0].video_duration === undefined && live[1].duration > 2.4 && is(live[1].video_duration, 2) && live[2].kind === "audio" && is(live[2].duration, 1), live.map((i) => [i.kind, i.duration, i.video_duration]));
+    const P = join(tmp, "mkv-longer");
+    api.create(P, { width: 64, height: 64, fps: 25 });
+    const added = (await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "mk-long.mkv"), id: "v" }])).results;
+    check("a video clip of the mkv whose sound is longer is as long as its picture", is(added[0].duration, 2), added[0]);
+  }
   // audio longer than video: srcDuration is the picture's length (the asset's video_duration), not the container's
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
   const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });

@@ -135,6 +135,7 @@ const loop2k = make("loop2k.mp4", "25", 2, X264_KEY(25), { audio: true }), loop2
 const loop18 = make("loop18.mp4", "25", 2, X264_KEY(18)), loop04 = make("loop04.mp4", "25", 0.4, X264_KEY(5));
 const loopLate = make("looplate.mp4", "25", 2, X264_KEY(25), { audio: true, late: 0.54 }), loopShort = make("loopshort.mp4", "25", 1.7, X264);
 const loopSound = make("loopsound.mp4", "25", 2, X264_KEY(25), { audio: true, sound: 3 }); // 2 s of picture over 3 s of sound: the record has video_duration
+const loopSoundMkv = make("loopsound.mkv", "25", 2, X264_KEY(25), { audio: true, sound: 3 }); // matroska keeps no per-stream length: the record's video_duration comes from the stream's own tag
 const gif = join(m, "loop.gif");
 ff("-f", "lavfi", "-i", pic("10", 2), gif);
 
@@ -204,7 +205,8 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   row("a loop whose video starts 0.54 s after the sound (the pass is the container's length, the gap holds the last frame): fresh, streamed and the rule agree across wraps at 25 and 30 fps", [
     ...await sweep("looplate25", loopLate, 25, [0, 1.5], [0, 0.5], [0, 12, 13, 14, 25, 49, 63, 64, 65, 100, 126, 127, 128, 150], { loop: true }),
     ...await sweep("looplate30", loopLate, 30, [0, 1.99], [0], [0, 16, 17, 18, 40, 76, 77, 78, 120, 152, 153, 154, 180], { loop: true })]);
-  row("a loop over a picture shorter than its sound (the record has video_duration, the pass is the picture): fresh, streamed and the rule agree across three wraps at 25 and 30 fps", [
+  row("a loop over a picture shorter than its sound (the record has video_duration, the pass is the picture; mp4 at 25 and 30 fps, mkv at 25): fresh, streamed and the rule agree across three wraps", [
+    ...await sweep("loopsoundmkv", loopSoundMkv, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound25", loopSound, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound30", loopSound, 30, [0, 1.99], [0], [0, 20, 59, 60, 61, 119, 120, 121, 179, 180], { loop: true })]);
   const fills = (f: string, o: Opts = {}) => (source(f, 25, 0, { loop: true, ...o }) as any).fillsPass();
@@ -221,17 +223,32 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     });
     row("NAMED LIMIT, pinned as it is: a clip whose record says 2 s over a 1.7 s picture holds the last frame to the first wrap at the record's length, and wraps at the file's own length after", bad);
   }
-  { // a looping video whose record has no picture length (a webm written to a pipe has none) is refused; remuxed, it reports its length and loops
-    const live = join(m, "live.webm"), remuxed = join(m, "live.mkv");
+  { // a webm written to a pipe has no length in the file: the probe measures it from the packets, and the clip loops; a record without a length (written by hand) is still refused
+    const live = join(m, "live.webm");
     writeFileSync(live, spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", pic("25", 1), ...VP9, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout);
-    ff("-i", live, "-c", "copy", remuxed);
     const err = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e; } };
-    const refusedLive: any = err(() => source(live, 25, 0, { loop: true })), freezeLive = err(() => source(live, 25, 0, { loop: true, freeze: true }));
-    const info = api.probe(remuxed), cured = source(remuxed, 25, 0.5, { loop: true });
-    const frames = [await read(cured, 0, 25), await read(cured, 30, 25)]; cured.close();
-    check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built; the remuxed file reports its length and loops",
-      api.probe(live).duration === 0 && refusedLive?.code === "bad_media" && /cannot loop/.test(refusedLive.message) && /<file>\.mkv\b/.test(refusedLive.hint) && /relink_asset/.test(refusedLive.hint) && freezeLive === null && info.duration > 0.9 && [0, 30].every((k, i) => frames[i] === rule(remuxed, 0.5, 25, k, info.video_duration ?? info.duration)),
-      { duration: api.probe(live).duration, code: refusedLive?.code, hint: refusedLive?.hint, freeze: freezeLive?.message, remuxed: info.duration, frames });
+    const bare = { srcDuration: 0, facts: { ...api.probe(live), duration: 0 } };
+    const refused: any = err(() => source(live, 25, 0, { loop: true, ...bare })), freezeBare = err(() => source(live, 25, 0, { loop: true, freeze: true, ...bare }));
+    check("a webm written to a pipe records its length (1 s)", Math.abs(api.probe(live).duration - 1) < 0.01, api.probe(live).duration);
+    row("a loop over a webm written to a pipe: fresh, streamed and the rule agree across three wraps", await sweep("live", live, 25, [0, 0.5], [0, 0.5], [0, 12, 24, 25, 26, 49, 50, 51, 74, 75, 76], { loop: true }));
+    check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built",
+      refused?.code === "bad_media" && /cannot loop/.test(refused.message) && /<file>\.mkv\b/.test(refused.hint) && /relink_asset/.test(refused.hint) && freezeBare === null,
+      { code: refused?.code, hint: refused?.hint, freeze: freezeBare?.message });
+  }
+  { // a picture whose length is not a whole millisecond (7 frames at 29.97 fps, 0.233567 s): the record keeps it to the microsecond, and a read that starts in a late pass shows the frame the file's own period gives
+    const f7 = make("ntsc7.mp4", "30000/1001", 1, [...X264, "-frames:v", "7"]);
+    const exact = Number(spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f7], { encoding: "utf8" }).stdout);
+    const bad = await attempt(async () => {
+      const out: string[] = [];
+      for (let n = 60; n < 64; n++) for (const k of [-1, 0, 1].map((d) => Math.round(n * exact * 30) + d)) {
+        const s = source(f7, 30, 0, { loop: true }), got = await read(s, k, 30); s.close();
+        const want = rule(f7, 0, 30, k, exact);
+        if (got !== want) out.push(`pass ${n} slot ${k}: ${got} want ${want}`);
+      }
+      return out;
+    });
+    check("the record of a picture that is not a whole millisecond long holds ffprobe's length to the microsecond", Math.abs(api.probe(f7).duration - exact) <= 1e-6, { record: api.probe(f7).duration, exact });
+    row("a fresh read in the 60th to 63rd pass of that loop (the pass starts and a slot either side) shows the frame of the file's own period", bad);
   }
 }
 {
