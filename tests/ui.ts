@@ -484,6 +484,45 @@ if (process.platform !== "win32") {
   check("default port in use -> port_in_use naming 4810", e?.code === "port_in_use" && /4810/.test(e.message) && !/undefined/.test(e.message), e && { code: e.code, message: e.message });
 }
 
+// the event stream over a state that cannot be read: it carries the named error and ends (the page shows an error event; an ended stream with no event is a blank page that reconnects without a word)
+console.log("event stream over an unreadable history entry");
+{
+  const d = join(tmp, "unreadable-entry");
+  api.create(d, { preset: "reels" });
+  await applyLatest(d, [{ op: "add_marker", t: 1 }]);
+  await applyLatest(d, [{ op: "add_marker", t: 2 }]);
+  const undoDir = join(d, ".agentcut", "history", "undo"), entry = join(undoDir, readdirSync(undoDir).sort().pop()!), name = entry.slice(entry.lastIndexOf("/") + 1);
+  const noRev = JSON.parse(readFileSync(entry, "utf8")); delete noRev.revision;
+  writeFileSync(entry, JSON.stringify(noRev));
+  const us = await startUi(d, { port: 0 });
+  /** GET /api/events: the head, the events seen, and whether the server ended the stream (the first `state` event also stops the read, as a page would have what it needs) */
+  const stream = (port: number) => new Promise<{ status?: number; type: string; events: { event: string; data: any }[]; ended: boolean }>((ok) => {
+    const out = { status: undefined as number | undefined, type: "", events: [] as { event: string; data: any }[], ended: false };
+    const rq = request({ host: "127.0.0.1", port, path: "/api/events", headers: { host: `127.0.0.1:${port}` } }, (res) => {
+      out.status = res.statusCode; out.type = String(res.headers["content-type"]);
+      let buf = "";
+      res.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\n\n")) >= 0) { const m = /^event: (\w+)\ndata: (.*)$/s.exec(buf.slice(0, i)); buf = buf.slice(i + 2); if (m) out.events.push({ event: m[1], data: JSON.parse(m[2]) }); } if (out.events.some((e) => e.event === "state")) { rq.destroy(); ok(out); } });
+      res.on("end", () => { out.ended = true; ok(out); });
+    });
+    rq.on("error", () => ok(out));
+    setTimeout(() => { rq.destroy(); ok(out); }, 5000);
+    rq.end();
+  });
+  const sj = await jget("/api/state", { port: us.port });
+  check("/api/state over an entry with no revision: 400 bad_json naming the entry", sj.status === 400 && sj.j.error.code === "bad_json" && sj.j.error.message.includes(name), sj);
+  const s1 = await stream(us.port);
+  check("/api/events over the same entry: 200 event-stream, one `error` event with the same code and the entry's name, then the stream ends",
+    s1.status === 200 && s1.type === "text/event-stream" && s1.events.length === 1 && s1.events[0].event === "error" && s1.events[0].data.code === "bad_json" && s1.events[0].data.message.includes(name) && s1.ended, s1);
+  rmSync(entry);
+  const s2 = await stream(us.port);
+  check("a new stream after the entry is removed carries the state again", s2.events[0]?.event === "state" && typeof s2.events[0].data.revision === "number", s2);
+  const pj = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); delete pj.revision; writeFileSync(join(d, "project.json"), JSON.stringify(pj));
+  const s3 = await stream(us.port);
+  check("over a project.json with no valid revision the stream carries that file's own error and ends", s3.events.length === 1 && s3.events[0].event === "error" && s3.events[0].data.code === "bad_revision" && s3.ended, s3);
+  us.server.closeAllConnections?.();
+  await new Promise((ok) => us.server.close(ok));
+}
+
 // a listen that fails leaves nothing running: the child must end by itself (a live project.json watcher would keep it alive)
 {
   const script = join(tmp, "listen-fails.ts");

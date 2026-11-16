@@ -6,7 +6,7 @@
 // Chrome only ever starts through tests/chrome.ts, inside its sandbox-exec containment (no update helper, no network but loopback); on a host
 // that cannot give that containment this suite fails rather than starting Chrome uncontained.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EXEC_DENY, SANDBOX_EXEC, accountHome, bundledUpdaterHelpers, chromeHint, containOrExit, launchChrome, refusedAtOnce, resolveChrome } from "./chrome.ts";
@@ -692,6 +692,35 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await cdp("Target.closeTarget", { targetId: other }).catch(() => {});
       empty.server.closeAllConnections?.();
       await new Promise((ok) => empty.server.close(ok));
+    }
+  }
+  // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in.
+  console.log("page, unreadable history entry");
+  {
+    const badDir = join(tmp, "unreadable-entry");
+    api.create(badDir, { preset: "square" });
+    await applyLatest(badDir, [{ op: "add_marker", t: 1 }]);
+    await applyLatest(badDir, [{ op: "add_marker", t: 2 }]);
+    const stack = join(badDir, ".agentcut", "history", "undo"), entryName = readdirSync(stack).sort().pop()!, entry = join(stack, entryName);
+    const noRev = JSON.parse(readFileSync(entry, "utf8")); delete noRev.revision;
+    writeFileSync(entry, JSON.stringify(noRev));
+    const bad = await startUi(badDir, { port: 0 });
+    const { targetId: other } = await cdp("Target.createTarget", { url: "about:blank" });
+    const sid = (await cdp("Target.attachToTarget", { targetId: other, flatten: true })).sessionId;
+    const on = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sid)).result?.value;
+    const onUntil = async (expr: string, ms: number) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await on(expr).catch(() => false)) return true; await sleep(80); } return false; };
+    try {
+      await cdp("Runtime.enable", {}, sid);
+      await cdp("Page.enable", {}, sid);
+      await cdp("Page.navigate", { url: bad.url }, sid);
+      const shown = await onUntil(`document.getElementById("msg").className === "err" && document.getElementById("msg").textContent.indexOf("[bad_json]") >= 0 && document.getElementById("msg").textContent.indexOf(${JSON.stringify(entryName)}) >= 0 && document.getElementById("rev").textContent === ""`, 8000);
+      check("over an unreadable history entry the page shows the named error and has no state", shown, await on(`document.getElementById("msg").textContent`));
+      rmSync(entry);
+      check("  and after the entry is removed the page's reconnect fills it in", await onUntil(`document.getElementById("rev").textContent.indexOf("rev ") === 0`, 12000), await on(`document.getElementById("rev").textContent`));
+    } finally {
+      await cdp("Target.closeTarget", { targetId: other }).catch(() => {});
+      bad.server.closeAllConnections?.();
+      await new Promise((ok) => bad.server.close(ok));
     }
   }
   // An HD h264 export played in the browser shows the colours the editor drew. Chrome reads an untagged HD h264 file as BT.709 and honours tags, so an export whose pixels
