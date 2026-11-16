@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, attach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, sourceLen, type Timeline, type Track } from "./model.ts";
+import { canLoop, type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, sourceLen, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -205,7 +205,7 @@ export function registerEditOps(h: OpHelpers) {
         const out: Dict = { id: v.id, audio: aud.id, detached };
         if (s > limit + EPS) {
           if (limit < 0.01) throw new EditError(`cannot ${lead ? "lead" : "extend"} the audio of '${v.id}': ${lead && clipStart(aud) < 0.01 ? "it already starts at 0" : "no more source media"}`, "out_of_range",
-            lead ? "a J-cut needs source before the clip's in-point and a clip that does not start at 0; trim_clip trim_start on it first" : "an L-cut needs source after the clip's out-point; trim_clip trim_end first or set loop");
+            lead ? "a J-cut needs source before the clip's in-point and a clip that does not start at 0; trim_clip trim_start on it first" : `an L-cut needs source after the clip's out-point; trim_clip trim_end first${canLoop(tl.assets, aud, v) ? " or set loop" : ""}`);
           s = round6(limit);
           out.clamped = { requested: req, applied: s, reason: lead && clipStart(aud) <= room(tl, aud, side) ? "timeline start" : "source media" };
         }
@@ -234,7 +234,7 @@ export function registerEditOps(h: OpHelpers) {
         hi = Math.min(hi, (srcLen(tl, x) - cin(x) - (x.freeze ? 0 : clipDur(x) * spd(x))) / spd(x));
       }
       if (by < lo - EPS || by > hi + EPS) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
-        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source; or set loop: true, mp4/mov, mkv/webm, flv, avi, gif only)`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source${canLoop(tl.assets, ...list) ? "; or set loop: true" : ""})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };

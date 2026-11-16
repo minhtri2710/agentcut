@@ -594,6 +594,21 @@ console.log("match_duration by clip reference");
     const [x, [sn]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2, 3, 4, 5, 6] }]);
     check("snap_to_beats keeps computed clips and lists them", JSON.stringify(sn.kept_computed) === '["img2"]' && x && at(x, "img2").match_duration === "vo1" && at(x, "img2").duration === 3, sn);
     check("  and retimed lists the values that were applied", sn.retimed.length > 0 && sn.retimed.every((r: any) => at(x, r.id).duration === r.duration) && !sn.retimed.some((r: any) => r.id === "img2"), sn);
+    // a short list: a clip named in neither list is exactly one the list did not reach, and it is untouched
+    const ids = (x: any) => x.tracks.find((tr: any) => tr.id === "main").clips.map((c: any) => c.id);
+    const [sx, [ss]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2] }]);
+    const named = [...ss.retimed.map((r: any) => r.id), ...ss.kept_computed], rest = ids(sx).filter((id: string) => !named.includes(id));
+    check("snap_to_beats with a short list: the clips named in neither retimed nor kept_computed are the ones it did not reach, and keep their length", ids(sx).length === 4 && named.length === 2 && rest.length === 2 && rest.every((id: string) => at(sx, id).duration === at(fol, id).duration), ss);
+  }
+  {
+    const code = (beats: number[], t: any = fol) => { try { run(t, [{ op: "snap_to_beats", track: "main", beats }]); return "accepted"; } catch (e: any) { return e.code === "bad_beats" ? `bad_beats ${e.hint}` : `${e.code}: ${e.message}`; } };
+    check("snap_to_beats refuses a descent past the track, and accepts a close pair past it", /^bad_beats/.test(code([0, 1, 2, 3, 4, 3.5, 5])) && code([0, 1, 2, 3, 4, 4.01, 5]) === "accepted");
+    const rising = run(fol, [{ op: "update_clip", id: "img4", transition: { type: "crossfade", duration: 0.5 } }])[0];
+    const refused = [code([0, 1, 2, 2.04, 5], rising), code([0, 1, 1, 3, 4]), code([-1, 0, 1, 2, 3]), code([0, 1, 2, 3, -2])];
+    const kept = (() => { try { const [x, [n]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 1.03, 3] }]); return { x, n }; } catch (e: any) { return { err: e.code }; } })();
+    check("snap_to_beats does not judge the beat pair of a clip that keeps its computed length", JSON.stringify(kept.n?.kept_computed) === '["img2"]' && at(kept.x, "img2").duration === at(fol, "img2").duration, kept.err ?? kept.n);
+    check("snap_to_beats refuses a reached pair 0.05 s or less apart even with a transition to cover it, a repeat, a negative time, and a negative past the track; the hint names every and not --full",
+      refused.every((r) => /^bad_beats/.test(r) && /every/.test(r) && !/--full/.test(r)), refused);
   }
 
   // match_duration:true without attach_to is a plain length, so a clip can follow it
@@ -1490,6 +1505,20 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   pastEnd.tracks = [{ id: "a", kind: "audio", clips: [{ id: "pe", type: "audio", asset: "au", start: 0, duration: 1, in: 3 }] }] as any;
   const pe = w(pastEnd).find((i: any) => /<pe>/.test(i.path) && /of source/.test(i.message))?.message ?? "";
   check("an audio clip whose 'in' is past the source end says the clip is silent, with no negative time", /the clip is silent/.test(pe) && !/-\d/.test(pe.split("; ")[1] ?? "-"), pe);
+
+  { // a hint offers loop only where validate accepts it on every clip the hint is given for
+    const mk = (clips: any[], extra: any = {}) => { const t = base(); t.assets.va = { path: "x.mp4", kind: "video", duration: 2, has_audio: true, ...VF, ...extra }; t.tracks[0].clips = clips; return t; };
+    const vid = (o: any = {}) => ({ id: "y", type: "video", asset: "va", in: 0, duration: 2, ...o });
+    const refusedHint = (t: any, ops: any[]) => { try { applyOps(null as any, t, ops); return "no error"; } catch (e: any) { return e.code === "out_of_range" ? String(e.hint) : `${e.code}: ${e.message}`; } };
+    const warnHint = (t: any) => String(w(t).find((i: any) => /of source/.test(i.message))?.hint);
+    const slip = [{ op: "slip_clip", id: "y", by: 1 }], lcut = [{ op: "l_cut", id: "y", seconds: 1 }];
+    const reversedSound = applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }, { op: "update_clip", id: "aud1", set: { reverse: true } }])[0]; // an op builds the state: the picture plays forward, its detached sound backwards
+    check("slip_clip out of range offers loop on a forward clip, and not on a reversed one", /set loop: true/.test(refusedHint(mk([vid()]), slip)) && /allowed by/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && !/loop/.test(refusedHint(mk([vid({ reverse: true })]), slip)));
+    check("  nor when only its detached sound is reversed, nor on a source whose format cannot loop", !/loop/.test(refusedHint(reversedSound, slip)) && /allowed by/.test(refusedHint(reversedSound, slip)) && !/loop/.test(refusedHint(mk([vid()], { format: "mpegts", key_gap: 1 }), slip)));
+    check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
+    check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
+      /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
+  }
 
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps
     const F = join(tmp, `oneframe-${fps}`);

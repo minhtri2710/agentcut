@@ -158,12 +158,13 @@ console.log("a project.json with no valid revision: the number its hint gives is
   // an entry is read only with its revision: one without is refused by name, over a readable file or a damaged one, and nothing is written
   const tree = (dir: string) => { const h = join(dir, ".agentcut", "history"); return JSON.stringify([readFileSync(join(dir, "project.json"), "utf8"), (readdirSync(h, { recursive: true }) as string[]).sort().map((f) => [f, lstatSync(join(h, f)).isFile() ? readFileSync(join(h, f), "utf8") : null])]); };
   // the hint of a refusal over a damaged file names the entry's path and does not call project.json fine
-  for (const [what, damaged, pick, text] of [
-    ["has no revision: the one undo restores", false, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }],
-    ["has no revision: one undo does not restore, over a project.json with no valid revision", true, 0, (en: any) => { delete en.revision; return JSON.stringify(en); }],
-    ["is not an object: one undo does not restore, over a project.json with no valid revision", true, 0, () => "null"],
-    ["has no revision: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }],
-    ["holds text that is not JSON: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => JSON.stringify({ ...en, timeline: "{ not json" })],
+  // listed: the history act runs for this case (history lists every entry the same way, so one sound and one damaged case hold the rest; an entry that only holds bad timeline text reads, and history never opens that text)
+  for (const [what, damaged, pick, text, listed] of [
+    ["has no revision: the one undo restores", false, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }, true],
+    ["has no revision: one undo does not restore, over a project.json with no valid revision", true, 0, (en: any) => { delete en.revision; return JSON.stringify(en); }, false],
+    ["is not an object: one undo does not restore, over a project.json with no valid revision", true, 0, () => "null", false],
+    ["has no revision: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }, true],
+    ["holds text that is not JSON: the one undo restores, over a project.json with no valid revision", true, -1, (en: any) => JSON.stringify({ ...en, timeline: "{ not json" }), false],
   ] as const) {
     const d = await fresh(`rev-entry-${what.replace(/\W+/g, "-")}`, 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(pick)!);
     writeFileSync(file, text(JSON.parse(readFileSync(file, "utf8"))));
@@ -171,6 +172,27 @@ console.log("a project.json with no valid revision: the number its hint gives is
     const before = tree(d), e: any = await Promise.resolve().then(async () => api.undo(d, 1, damaged ? undefined : (await api.info(d)).revision)).catch((x: any) => x);
     check(`an entry that ${what} is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
     if (damaged) check("  and its hint names the entry's path, not a file that is fine", (e.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && !(e.hint ?? "").includes("is fine"), { hint: e.hint });
+    // history reads the same entries: it says the file is fine only when its own read of the file passed
+    if (!listed) continue;
+    const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
+    check(`history over an entry that ${what} is refused by name, and its hint ${damaged ? "does not call project.json fine" : "says project.json itself is fine"}`,
+      h.code === "bad_json" && h.message.includes(basename(file)) && (h.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && (/project\.json itself is fine/.test(h.hint ?? "") === !damaged) && tree(d) === before, { code: h.code, hint: h.hint });
+  }
+  // a project.json of another schema version fails its read too: history over an unreadable entry does not call it fine
+  {
+    const d = await fresh("rev-entry-version", 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(-1)!);
+    writeFileSync(file, "{ not json");
+    const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); t.version = 2; writeFileSync(join(d, "project.json"), JSON.stringify(t));
+    const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
+    check("history over a project.json of another schema version and an unreadable entry: named by path, not called fine, no undo prescribed (an undo cannot run over that file), and the entry is to be moved, not deleted (it may still hold a timeline)",
+      h.code === "bad_json" && (h.hint ?? "").includes(basename(file)) && !(h.hint ?? "").includes("is fine") && !/undo again/.test(h.hint ?? "") && /\bmove\b/.test(h.hint ?? "") && !/delete/.test(h.hint ?? ""), { code: h.code, hint: h.hint });
+  }
+  // a damaged project.json alone refuses nothing: history still lists entries that all read
+  {
+    const d = await fresh("rev-entry-all-read", 3);
+    setRevision(d);
+    const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
+    check("history over a project.json with no valid revision lists entries that all read", h.undo?.length === 3 && h.redo?.length === 0, h);
   }
 }
 

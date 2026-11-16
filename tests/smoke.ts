@@ -119,7 +119,7 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
   // a saved result that was cut (count above its list) is refused whatever its flag is called; one with no count is taken as it is
   const cutFile = writeBeats("beats-cut.json", cli(["beats", join(m, "beat-long.wav")]));
   const cutMcp = writeBeats("beats-cut-mcp.json", { ok: true, count: 5, beats: [0, 1, 2], truncated: true });
-  const refused = (beats: string) => { const was = cli(["info"], C).revision; const r = cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, "--revision", was], { ...C, ok: false }); return { r, kept: cli(["info"], C).revision === was }; };
+  const refused = (beats: string, ...more: string[]) => { const was = cli(["info"], C).revision; const r = cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, ...more, "--revision", was], { ...C, ok: false }); return { r, kept: cli(["info"], C).revision === was }; };
   for (const [what, path] of [["the cut `beats F` printed", cutFile], ["a cut MCP result", cutMcp]]) {
     const { r, kept } = refused(path);
     check(`snap_to_beats with ${what}: bad_beats naming --full, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /--full/.test(r.error.hint) && /remove count/.test(r.error.hint) && /\d+ of \d+/.test(r.error.message) && kept, r);
@@ -129,6 +129,11 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
   for (const [what, list] of [["a non-number", '[0,"x",2]'], ["numbers in strings", '["0","2"]']]) {
     const { r, kept } = refused(list);
     check(`snap_to_beats with an inline list of ${what}: bad_beats, with a hint for a typed list, and nothing saved`, r.ok === false && r.error.code === "bad_beats" && /seconds/.test(r.error.hint) && !/--full/.test(r.error.hint) && kept, r);
+  }
+  // every and offset count beats: only a whole number is taken, text included
+  for (const [what, arg] of [["a word", "every=abc"], ["a number as text", 'every="2"'], ["0", "every=0"], ["a fraction", "every=1.5"], ["a negative offset", "offset=-1"]]) {
+    const { r, kept } = refused("[0,1,2,3]", arg);
+    check(`snap_to_beats with ${what} for ${arg.split("=")[0]}: bad_value naming the value, with a hint, and nothing saved`, r.ok === false && r.error.code === "bad_value" && r.error.message.includes(arg.split("=")[1]) && new RegExp(`^pass a whole number, e\\.g\\. ${arg.split("=")[0]}=\\d$`).test(r.error.hint) && kept, r);
   }
 }
 { // the help names every flag the guide tells an agent to use on beats

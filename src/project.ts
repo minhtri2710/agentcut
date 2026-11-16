@@ -25,18 +25,24 @@ function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: 
   return tl;
 }
 
-/** What to do about a history entry that cannot be used (`at` is stack/name). `damaged`: the call is an undo over a project.json with no valid revision, where the file is not fine. The one place these two texts are built. */
-const entryFix = (at: string, damaged: boolean) => damaged
-  ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
-  : `project.json itself is fine: delete .agentcut/history/${at}`;
+/** The state of project.json a history entry is read beside: "sound" (the file passed its own read, or the hint is never shown: changesSince and the non-strict highestStored skip every error they meet), "undo" (an undo over a project.json with no valid revision),
+ *  "unfit" (a history listing over a project.json that failed its read). */
+type Beside = "sound" | "undo" | "unfit";
 
-/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `damaged`: see entryFix */
-function parse(text: string, snapshot?: string, damaged = false): Timeline {
+/** What to do about a history entry that cannot be used (`at` is stack/name), by the state of project.json beside it. The one place these three texts are built. */
+const entryFix = (at: string, beside: Beside) => beside === "undo"
+  ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
+  : beside === "unfit"
+    ? `project.json has its own error (info shows it); this entry cannot be read either: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`
+    : `project.json itself is fine: delete .agentcut/history/${at}`;
+
+/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `beside`: see entryFix */
+function parse(text: string, snapshot?: string, beside: Beside = "sound"): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
-  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? entryFix(snapshot, damaged) : DAMAGED_FIX); }
-  return checkVersion(tl, source, snapshot ? `there is no upgrade; ${entryFix(snapshot, damaged)}` : undefined);
+  catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? entryFix(snapshot, beside) : DAMAGED_FIX); }
+  return checkVersion(tl, source, snapshot ? `there is no upgrade; ${entryFix(snapshot, beside)}` : undefined);
 }
 
 /** The way out of a project.json that cannot be read: undo restores the last good version, and it is the one history call that needs no revision there (no revision can be read). */
@@ -321,9 +327,9 @@ export class Project {
   }
   /** A history entry (label, author, revision, timeline text, and who last moved it between the stacks); an entry that is not valid JSON, has no revision that is a
    *  whole number >= 0, or names an author that is not plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR,
-   *  and the only reader of an entry's revision (never its timeline text). `damaged`: the read is part of an undo over a project.json with no valid revision, where the hint cannot call the file fine. */
-  private static readEntry(file: string, stack: string, damaged = false): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
-    const at = `${stack}/${basename(file)}`, hint = entryFix(at, damaged);
+   *  and the only reader of an entry's revision (never its timeline text). `beside`: the state of project.json the hint may speak of (see entryFix); only a read that knows the file is fine, or never looked, says "sound". */
+  private static readEntry(file: string, stack: string, beside: Beside = "sound"): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
+    const at = `${stack}/${basename(file)}`, hint = entryFix(at, beside);
     let d: any;
     try { d = JSON.parse(readFileSync(file, "utf8")); }
     catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", hint); }
@@ -341,7 +347,7 @@ export class Project {
       try {
         if (!existsSync(join(this.root, ".agentcut", "history", name))) continue;
         for (const f of this.entries(name)) {
-          try { top = Math.max(top, Project.readEntry(f, name, strict).revision); } catch (e) { skip(e); }
+          try { top = Math.max(top, Project.readEntry(f, name, strict ? "undo" : "sound").revision); } catch (e) { skip(e); }
         }
       } catch (e) { skip(e); }
     }
@@ -359,9 +365,10 @@ export class Project {
       else if (from !== "undo") throw damage; // an unreadable project.json has no revision to name, and only undo may run there (it is the way out); redo fails with the file's own error
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
+      const beside: Beside = rev === undefined ? "undo" : "sound";
       for (let i = 0; i < steps && i < e.length; i++) {
-        const file = e[e.length - 1 - i], d = Project.readEntry(file, from, rev === undefined);
-        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`, rev === undefined) });
+        const file = e[e.length - 1 - i], d = Project.readEntry(file, from, beside);
+        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`, beside) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       // the damaged file is taken to have the number the hint gives (the history's highest + 1), and the entry that keeps it records that number: the undone state lands on the next one
@@ -381,8 +388,11 @@ export class Project {
   /** base: the revision the caller saw, required (missing_revision), except for an undo while project.json is unreadable (a redo there fails with the file's error); any other revision on disk is a conflict. `author` is who undoes or redoes: the moved entry keeps its own author and records this one as movedBy. */
   undo(steps = 1, base?: number, author?: string) { return this.step("undo", "redo", steps, base, author); }
   redo(steps = 1, base?: number, author?: string) { return this.step("redo", "undo", steps, base, author); }
+  /** The last 20 entries of each stack. An entry that cannot be read is a named error whose hint speaks of project.json only as far as this call's own read of it: any failure of that read is "unfit". */
   history() {
-    const list = (n: string) => this.entries(n).slice(-20).map((p): HistoryEntry => { const { label, author, movedBy } = Project.readEntry(p, n); return { label, author, ...(movedBy === undefined ? {} : { movedBy }) }; });
+    let beside: Beside = "sound";
+    try { revisionOf(parse(readFileSync(this.file, "utf8"))); } catch { beside = "unfit"; }
+    const list = (n: string) => this.entries(n).slice(-20).map((p): HistoryEntry => { const { label, author, movedBy } = Project.readEntry(p, n, beside); return { label, author, ...(movedBy === undefined ? {} : { movedBy }) }; });
     return { undo: list("undo"), redo: list("redo") };
   }
 
