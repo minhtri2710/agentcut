@@ -1523,9 +1523,11 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     const noLen = { duration: 0 }, refuse = loopErr(mk([vid({ loop: true })], noLen));
     check("validate refuses a looping video over an asset with no recorded length and names the mkv remux; a freeze, an audio clip and a clip without loop pass",
       /no picture length/.test(String(refuse?.message)) && /<file>\.mkv/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
-    // no op hint can reach canLoop with such an asset (the source length is then unlimited), so the helper is checked on its own: it must say what validate says
-    const { canLoop } = await import("../src/model.ts"), loopOf = (c: any) => { const t = mk([c], noLen); return canLoop(t.assets, t.tracks[0].clips[0]); };
-    check("canLoop is false for a video clip over an asset with no recorded length, and true for a freeze and an audio clip", !loopOf(vid()) && loopOf(vid({ freeze: true })) && loopOf({ ...vid(), type: "audio" }));
+    // such an asset has an unlimited source length, so no upper bound trips a hint; slip_clip's lower bound (the in-point must stay >= 0) does, and its hint asks canLoop
+    const slipBack = [{ op: "slip_clip", id: "y", by: -1 }];
+    check("slip_clip's lower bound offers no loop over an asset with no recorded length, and still offers it to a freeze",
+      /allowed by/.test(refusedHint(mk([vid()], noLen), slipBack)) && !/loop/.test(refusedHint(mk([vid()], noLen), slipBack)) && /set loop: true/.test(refusedHint(mk([vid({ freeze: true })], noLen), slipBack)),
+      [refusedHint(mk([vid()], noLen), slipBack), refusedHint(mk([vid({ freeze: true })], noLen), slipBack)]);
   }
 
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps

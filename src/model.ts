@@ -142,7 +142,7 @@ const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: st
   if (typeof a.format === "string" && !seeksBefore(a.format))
     return { message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" };
   if (!c.freeze && !(sourceLen(a, "video") > 0))
-    return { message: `loop is not available on '${aid}': its probe record has no picture length (duration 0), so there is no point where a pass ends`, hint: "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), relink_asset the new file, or set loop false" };
+    return { message: `loop is not available on '${aid}': its probe record has no picture length, so there is no point where a pass ends`, hint: "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), relink_asset the new file, or set loop false" };
   return null;
 };
 /** Whether validate accepts `loop` on every one of these clips: not reversed, and no `loopRefusal`. A hint offers loop only when this holds. */
