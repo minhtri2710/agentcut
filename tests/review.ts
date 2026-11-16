@@ -150,20 +150,25 @@ console.log("a project.json with no valid revision: the number its hint gives is
   setRevision(u);
   const again: any = await api.info(u).catch((x: any) => x);
   check("damaged again before any save: the hint gives the number the file had", Number(/"revision" to (\d+)/.exec(again.hint ?? "")?.[1]) === undone.revision, { hint: again.hint, had: undone.revision });
-  const r = await fresh("rev-redo", 3);
+  const r = await fresh("rev-redo", 3), had = (await api.info(r)).revision, hadMarks = marks(r);
   setRevision(r);
   const back: any = await api.redo(r, 1, (await api.undo(r, 1, undefined) as any).revision);
-  check("redo after it restores the damaged file's content at a fresh number", back.revision === held + 2 && marks(r) === held, { held, back: back.revision });
+  check("redo after it restores the damaged file's content at a fresh number", back.revision === had + 2 && marks(r) === hadMarks, { had, back: back.revision });
 
   // an entry is read only with its revision: one without is refused by name, over a readable file or a damaged one, and nothing is written
   const tree = (dir: string) => { const h = join(dir, ".agentcut", "history"); return JSON.stringify([readFileSync(join(dir, "project.json"), "utf8"), (readdirSync(h, { recursive: true }) as string[]).sort().map((f) => [f, lstatSync(join(h, f)).isFile() ? readFileSync(join(h, f), "utf8") : null])]); };
-  for (const [what, damaged, pick] of [["the one undo restores", false, -1], ["one undo does not restore, over a project.json with no valid revision", true, 0]] as const) {
-    const d = await fresh(`rev-entry-${pick}`, 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(pick)!), entry = JSON.parse(readFileSync(file, "utf8"));
-    delete entry.revision;
-    writeFileSync(file, JSON.stringify(entry));
+  // the hint of a refusal over a damaged file names the entry's path and does not call project.json fine
+  for (const [what, damaged, pick, text] of [
+    ["has no revision: the one undo restores", false, -1, (en: any) => { delete en.revision; return JSON.stringify(en); }],
+    ["has no revision: one undo does not restore, over a project.json with no valid revision", true, 0, (en: any) => { delete en.revision; return JSON.stringify(en); }],
+    ["is not an object: one undo does not restore, over a project.json with no valid revision", true, 0, () => "null"],
+  ] as const) {
+    const d = await fresh(`rev-entry-${what.replace(/\W+/g, "-")}`, 3), dir = join(d, ".agentcut", "history", "undo"), file = join(dir, readdirSync(dir).sort().at(pick)!);
+    writeFileSync(file, text(JSON.parse(readFileSync(file, "utf8"))));
     if (damaged) setRevision(d);
     const before = tree(d), e: any = await Promise.resolve().then(async () => api.undo(d, 1, damaged ? undefined : (await api.info(d)).revision)).catch((x: any) => x);
-    check(`an entry with no revision (${what}) is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
+    check(`an entry that ${what} is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
+    if (damaged) check("  and its hint names the entry's path, not a file that is fine", (e.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && !(e.hint ?? "").includes("is fine"), { hint: e.hint });
   }
 }
 

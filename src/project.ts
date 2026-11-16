@@ -302,7 +302,7 @@ export class Project {
     return out.sort((a, b) => (n(a) < n(b) ? -1 : n(a) > n(b) ? 1 : a < b ? -1 : a > b ? 1 : 0)); // equal values (1.json, 01.json) fall back to the name text, so readdir order never shows
   }
   /** The next name is one more than the highest in the stack (padded to 19 digits): the order is the numeric value and never depends on the clock. Returns the new path.
-   *  `revision` is the revision of the state `content` holds (for a project.json with no valid revision, the number it is taken to have): the one place a revision is read from an entry. */
+   *  `revision` is the revision of the state `content` holds (for a project.json with no valid revision, the number it is taken to have): the field is written here and read only in readEntry. */
   private push(name: string, content: string, revision: number, label: string, author: string, movedBy?: string) {
     const last = this.entries(name).reduce((m, f) => { const n = BigInt(basename(f, ".json")); return n > m ? n : m; }, 0n);
     const file = join(this.stack(name), `${(last + 1n).toString().padStart(19, "0")}.json`);
@@ -316,13 +316,15 @@ export class Project {
   }
   /** A history entry (label, author, revision, timeline text, and who last moved it between the stacks); an entry that is not valid JSON, has no revision that is a
    *  whole number >= 0, or names an author that is not plain text, is a named error. The one place that reads an entry without an author as UNKNOWN_AUTHOR,
-   *  and the only reader of an entry's revision (never its timeline text). */
-  private static readEntry(file: string, stack: string): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
-    const at = `${stack}/${basename(file)}`, hint = `project.json itself is fine: delete .agentcut/history/${at}`;
+   *  and the only reader of an entry's revision (never its timeline text). `damaged`: the read is part of an undo over a project.json with no valid revision, where the hint cannot call the file fine. */
+  private static readEntry(file: string, stack: string, damaged = false): { label: string; author: string; movedBy?: string; timeline: string; revision: number } {
+    const at = `${stack}/${basename(file)}`, hint = damaged
+      ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
+      : `project.json itself is fine: delete .agentcut/history/${at}`;
     let d: any;
     try { d = JSON.parse(readFileSync(file, "utf8")); }
     catch (e: any) { throw new EditError(`history snapshot ${at} is not valid JSON: ${e.message}`, "bad_json", hint); }
-    if (!Number.isInteger(d.revision) || d.revision < 0) throw new EditError(`history snapshot ${at} has no valid revision (got ${JSON.stringify(d.revision)})`, "bad_json", hint);
+    if (typeof d !== "object" || d === null || !Number.isInteger(d.revision) || d.revision < 0) throw new EditError(`history snapshot ${at} has no valid revision (got ${JSON.stringify(d?.revision)})`, "bad_json", hint);
     const who = (field: string, v: unknown) => { try { return checkAuthor(v); } catch (e: any) { throw new EditError(`history snapshot ${at} has an invalid ${field}: ${e.message}`, "bad_json", hint); } };
     return { ...d, author: d.author === undefined ? UNKNOWN_AUTHOR : who("author", d.author), ...(d.movedBy === undefined ? {} : { movedBy: who("movedBy", d.movedBy) }) };
   }
@@ -336,7 +338,7 @@ export class Project {
       try {
         if (!existsSync(join(this.root, ".agentcut", "history", name))) continue;
         for (const f of this.entries(name)) {
-          try { top = Math.max(top, Project.readEntry(f, name).revision); } catch (e) { skip(e); }
+          try { top = Math.max(top, Project.readEntry(f, name, strict).revision); } catch (e) { skip(e); }
         }
       } catch (e) { skip(e); }
     }
@@ -355,7 +357,7 @@ export class Project {
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
       for (let i = 0; i < steps && i < e.length; i++) {
-        const file = e[e.length - 1 - i], d = Project.readEntry(file, from);
+        const file = e[e.length - 1 - i], d = Project.readEntry(file, from, rev === undefined);
         snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
