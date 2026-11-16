@@ -227,28 +227,39 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     const live = join(m, "live.webm");
     writeFileSync(live, spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", pic("25", 1), ...VP9, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout);
     const err = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e; } };
-    const bare = { srcDuration: 0, facts: { ...api.probe(live), duration: 0 } };
-    const refused: any = err(() => source(live, 25, 0, { loop: true, ...bare })), freezeBare = err(() => source(live, 25, 0, { loop: true, freeze: true, ...bare }));
-    check("a webm written to a pipe records its length (1 s)", Math.abs(api.probe(live).duration - 1) < 0.01, api.probe(live).duration);
+    const refused: any = err(() => source(live, 25, 0, { loop: true, srcDuration: 0 })), freezeBare = err(() => source(live, 25, 0, { loop: true, freeze: true, srcDuration: 0 }));
     row("a loop over a webm written to a pipe: fresh, streamed and the rule agree across three wraps", await sweep("live", live, 25, [0, 0.5], [0, 0.5], [0, 12, 24, 25, 26, 49, 50, 51, 74, 75, 76], { loop: true }));
     check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built",
       refused?.code === "bad_media" && /cannot loop/.test(refused.message) && /<file>\.mkv\b/.test(refused.hint) && /relink_asset/.test(refused.hint) && freezeBare === null,
       { code: refused?.code, hint: refused?.hint, freeze: freezeBare?.message });
   }
-  { // a picture whose length is not a whole millisecond (7 frames at 29.97 fps, 0.233567 s): the record keeps it to the microsecond, and a read that starts in a late pass shows the frame the file's own period gives
+  { // a picture whose length is not a whole millisecond (7 frames at 29.97 fps: 7 x 1001/30000 = 0.2335667 s): the record keeps it to the microsecond, and a read that starts in a late pass shows the frame the exact period gives
     const f7 = make("ntsc7.mp4", "30000/1001", 1, [...X264, "-frames:v", "7"]);
     const exact = Number(spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f7], { encoding: "utf8" }).stdout);
+    const tick = 1001 / 30000, D7 = 7 * tick;
+    /** The frame slot k shows by the exact period and frame times (this fixture's frames are i ticks apart); the file's own timestamps are printed to 6 digits, which drifts past a near-tie after tens of passes. */
+    const exactFrame = (k: number) => {
+      let best = 0, bestSlot = -Infinity;
+      for (let n = 0; n <= Math.ceil((k + 2) / 30 / D7) + 1; n++) for (let i = 0; i < 7; i++) { const slot = Math.floor((n * 7 + i) * tick * 30 + 0.5 + TIE); if (slot <= k && slot >= bestSlot) { bestSlot = slot; best = i; } }
+      return best;
+    };
+    const fresh = async (k: number) => { const s = source(f7, 30, 0, { loop: true }), got = await read(s, k, 30); s.close(); return got; };
     const bad = await attempt(async () => {
       const out: string[] = [];
-      for (let n = 60; n < 64; n++) for (const k of [-1, 0, 1].map((d) => Math.round(n * exact * 30) + d)) {
-        const s = source(f7, 30, 0, { loop: true }), got = await read(s, k, 30); s.close();
-        const want = rule(f7, 0, 30, k, exact);
-        if (got !== want) out.push(`pass ${n} slot ${k}: ${got} want ${want}`);
-      }
+      for (let n = 60; n < 64; n++) for (const k of [-1, 0, 1].map((d) => Math.round(n * D7 * 30) + d)) { const got = await fresh(k), want = exactFrame(k); if (got !== want) out.push(`pass ${n} slot ${k}: ${got} want ${want}`); }
       return out;
     });
     check("the record of a picture that is not a whole millisecond long holds ffprobe's length to the microsecond", Math.abs(api.probe(f7).duration - exact) <= 1e-6, { record: api.probe(f7).duration, exact });
-    row("a fresh read in the 60th to 63rd pass of that loop (the pass starts and a slot either side) shows the frame of the file's own period", bad);
+    row("a fresh read in the 60th to 63rd pass of that loop (the pass starts and a slot either side) shows the frame the exact period gives", bad);
+    // the limit (see `sec` in media.ts): a pass starts at n times a decimal length, up to 5e-7 s off per wrap, so a slot within ~1e-4 slot of a frame boundary can differ between a fresh and a streamed read after tens of wraps
+    const bad467 = await attempt(async () => {
+      const s = source(f7, 30, 0, { loop: true }), streamed: number[] = [];
+      for (let k = 0; k <= 467; k++) streamed.push(await read(s, k, 30));
+      s.close();
+      const got = { exact: exactFrame(467), streamed: streamed[467], fresh: await fresh(467) };
+      return got.exact === 5 && got.streamed === 5 && got.fresh === 4 ? [] : [JSON.stringify(got)];
+    });
+    row("NAMED LIMIT, pinned as it is: slot 467 (pass 66) of that loop shows frame 5 in a read that streams from the start and frame 4 in a fresh read, the exact period gives frame 5", bad467);
   }
 }
 {

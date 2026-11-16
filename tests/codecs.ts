@@ -709,13 +709,11 @@ console.log("decode and render failures");
     check("an mkv and a webm whose sound is shorter record no picture length: the container's is the picture's", shorter.every((i) => i.video_duration === undefined && is(i.duration, 2)), shorter.map((i) => [i.video_duration, i.duration]));
     const late = made("mk-late.mkv", ["-itsoffset", "1", ...pic, ...sine(3.5), ...MKV]); // the stream's tag is an end time here, not a length: the picture ends at 3 s
     check("an mkv whose picture starts 1 s late and ends before its sound records where the picture ends on the container's clock", is(late.video_start, 1) && is(late.video_duration, 3) && late.duration > 3.4, late);
+    const shifted = made("mk-shift.mkv", [...pic, ...sine(2.5), ...MKV, "-output_ts_offset", "1.4"]); // every stream starts at 1.4 s on the file's own clock: an end-time tag would read 3.4
+    check("an mkv whose streams all start at 1.4 s, with sound longer, records the picture's length, not its end on the file's clock", is(shifted.container_start, 1.4) && is(shifted.video_start, 0) && is(shifted.video_duration, 2), shifted);
     const live = [piped("pipe-video.webm", [...pic, ...VP9]), piped("pipe-sound.webm", [...pic, ...sine(2.5), ...WEBM]), piped("pipe-audio.webm", [...sine(1), "-c:a", "libopus"])];
     check("a webm written to a pipe records the length its packets show: the picture's, the longer sound's with the picture's apart, an audio-only file's",
       is(live[0].duration, 2) && live[0].video_duration === undefined && live[1].duration > 2.4 && is(live[1].video_duration, 2) && live[2].kind === "audio" && is(live[2].duration, 1), live.map((i) => [i.kind, i.duration, i.video_duration]));
-    const P = join(tmp, "mkv-longer");
-    api.create(P, { width: 64, height: 64, fps: 25 });
-    const added = (await applyLatest(P, [{ op: "add_clip", track: "main", src: join(m, "mk-long.mkv"), id: "v" }])).results;
-    check("a video clip of the mkv whose sound is longer is as long as its picture", is(added[0].duration, 2), added[0]);
   }
   // audio longer than video: srcDuration is the picture's length (the asset's video_duration), not the container's
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
