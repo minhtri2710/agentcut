@@ -775,24 +775,36 @@ function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   return path.endsWith(".json") ? beatsFile(path) : AN.analysis(p, { kind: "beats", path }).beats;
 }
 
+const MIN_SPAN = 0.05; // a clip between two beats lasts more than this
+
+/** every and offset count beats: a whole number of at least `lo` (a number as text is refused too); absent or null is the default */
+function wholeNumber(v: unknown, name: string, d: number, lo: number): number {
+  if (v === undefined || v === null) return d;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < lo) throw new EditError(`${name} must be a whole number of at least ${lo}, got ${typeof v === "number" ? v : JSON.stringify(v)}`, "bad_value", `pass a number, e.g. ${name}=${Math.max(d, lo)}`);
+  return v;
+}
+
 op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. Clips with a computed length (match_duration) are kept as they are (kept_computed).",
   { track: "main", beats: "required", every: "cut every N beats (1)", offset: "first beat index (0)" }, (p, tl, a) => {
     const tr = findTrack(tl, a.track ?? "main");
     if (!tr.magnetic) throw new EditError("snap_to_beats works on magnetic tracks", "magnetic");
     const beats = beatList(p, tl, a.beats);
-    const every = +(a.every ?? 1), off = +(a.offset ?? 0);
+    const every = wholeNumber(a.every, "every", 1, 1), off = wholeNumber(a.offset, "offset", 0, 0);
     const cuts = beats.filter((_, i) => i >= off && (i - off) % every === 0);
     if (cuts.length < 2) throw new EditError("not enough beats", "not_enough");
+    const rise = "give the beats in rising order from 0 s, or a larger every to skip close ones (typed list: leave the beat out)";
+    // order is judged over the whole selected list; closeness only over the pairs a clip reaches (an analysis can put two beats a few ms apart far past the track)
+    cuts.forEach((t, i) => { if (t < 0 || (i && t <= cuts[i - 1])) throw new EditError(`cut ${i + 1} of the selected beats is ${t} s${i ? `, not after ${cuts[i - 1]} s` : ""}: beats must be 0 s or more and rise`, "bad_beats", rise); });
+    const starts = [0, ...cuts.slice(1, tr.clips.length)]; // the first clip starts at 0, so its span ends at the second cut
+    starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
     resolve(tl);
-    const starts = [0, ...cuts.slice(1, tr.clips.length)];
     const changed: Clip[] = [], kept: string[] = [];
     tr.clips.forEach((c, i) => {
       if (i + 1 >= starts.length) return;
       if (computedDuration(c)) { kept.push(c.id); return; } // its length is computed; retiming it would be overwritten
       const nxt = tr.clips[i + 1];
       const td = nxt?.transition ? normAnim(nxt.transition, 0.5)!.duration : 0;
-      const dur = starts[i + 1] - starts[i] + td;
-      if (dur > 0.05) { c.duration = round6(dur); delete c.until_end; changed.push(c); }
+      c.duration = round6(starts[i + 1] - starts[i] + td); delete c.until_end; changed.push(c);
     });
     resolve(tl);
     return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };

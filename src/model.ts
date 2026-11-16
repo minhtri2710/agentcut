@@ -135,6 +135,11 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
  *  A format off this list is read with the file's longest keyframe gap as pre-roll, and its clips cannot loop (`-stream_loop` restarts such a file past the target). */
 const SEEK_BEFORE_FORMATS = new Set(["mov", "matroska", "flv", "avi", "gif"]);
 export const seeksBefore = (format: string) => format.split(",").some((f) => SEEK_BEFORE_FORMATS.has(f));
+/** Whether validate accepts `loop` on every one of these clips: not reversed, and a video clip needs a format that seeks before its target (an audio clip loops in any format). A hint offers loop only when this holds. */
+export const canLoop = (assets: Dict, ...clips: Clip[]) => clips.every((c) => {
+  const a = own(assets, c.asset) ? assets[c.asset] : undefined;
+  return !c.reverse && !(c.type === "video" && a?.kind === "video" && typeof a.format === "string" && !seeksBefore(a.format));
+});
 /** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
 export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; key_gap?: number }
 /** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
@@ -857,8 +862,8 @@ function overshootIssues(kfs: any[], path: string, issues: Issue[]) {
 }
 
 /** The warning for a clip that needs `need` s of a source that is shorter (`ends`: what happens at the end). */
-export function pastEnd(issues: Issue[], p: string, aid: string, len: number, need: number, ends: string) {
-  if (need > len + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${len.toFixed(2)}s; ${ends}`, hint: "shorten duration, lower 'in', or set loop: true (mp4/mov, mkv/webm, flv, avi, gif only)" });
+export function pastEnd(issues: Issue[], p: string, aid: string, len: number, need: number, ends: string, loopable = false) {
+  if (need > len + 0.05) issues.push({ level: "warning", path: `${p}.duration`, message: `clip needs ${need.toFixed(2)}s of source but '${aid}' is ${len.toFixed(2)}s; ${ends}`, hint: loopable ? "shorten duration, lower 'in', or set loop: true" : "shorten duration or lower 'in'" });
 }
 
 /** Track + clip checks for one timeline level; compound clips recurse with their nested tracks (clip ids are project-wide). */
@@ -921,7 +926,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
             issues.push({ level: "error", path: `${p}.loop`, message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" });
           if ((c.type === "video" || c.type === "audio") && typeof a.duration === "number" && a.duration > 0 && !c.loop && !(c.keyframes?.speed)) {
             const inn = parseTime(c.in ?? 0), left = a.duration - inn; // source left for an audio clip; <= 0: 'in' is at or past the end
-            pastEnd(issues, p, aid, sourceLen(a, c.type), inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`);
+            pastEnd(issues, p, aid, sourceLen(a, c.type), inn + (c.freeze ? 0 : dur * Number(c.speed ?? 1)), c.type !== "audio" ? "the last frame is held" : left <= 0 ? "the clip is silent ('in' is at or past the end of the source)" : `the sound ends at ${(left / Number(c.speed ?? 1)).toFixed(2)}s into the clip and is silent after that`, canLoop(assets, c));
           }
           if (c.type === "audio" && a.kind === "video" && !a.has_audio) issues.push({ level: "warning", path: `${p}.asset`, message: `asset '${aid}' has no audio track: the clip is silent`, hint: "point the clip at a file with sound (relink_asset, or update_clip asset=<id>), or remove it" });
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
@@ -999,7 +1004,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
               : `attach_audio id=${c.id} puts the sound back on the video with its processing, and the video's own sound follows the ramp; if attach_audio refuses because the audio no longer lines up, make the field it names match the video's, or remove_clip id=${la[0]} to drop that audio and its processing` });
           if (parsed) overshootIssues(kfs as any[], `${p}.keyframes.speed`, issues);
           const ra = own(assets, c.asset) && assets[c.asset];
-          if (parsed && ra && c.type === "video" && typeof ra.duration === "number" && ra.duration > 0 && !c.loop && !c.freeze) pastEnd(issues, p, c.asset, sourceLen(ra, c.type), parseTime(c.in ?? 0) + speedIntegral(kfs as any[], dur), "the last frame is held");
+          if (parsed && ra && c.type === "video" && typeof ra.duration === "number" && ra.duration > 0 && !c.loop && !c.freeze) pastEnd(issues, p, c.asset, sourceLen(ra, c.type), parseTime(c.in ?? 0) + speedIntegral(kfs as any[], dur), "the last frame is held", canLoop(assets, c));
         }
       }
       if (o.fontCheck && (c.type === "text" || c.type === "captions")) {
