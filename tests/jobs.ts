@@ -549,12 +549,13 @@ for (const mode of ["silent", "stubborn", "deaf"]) {
 
 // DL-02 / DL-07: a tool call the server has accepted around the stop always gets its reply before the server exits (exit code unchanged).
 // A second `prepare` sent around the stop is always answered `aborted` before the exit. Whether it starts a helper depends on what it computes:
-// on the running job's project it joins that computation (one helper); on another project it needs its own, so the server's refusal to start
+// on the running job's project the row counts one helper whether the late job joins the running computation or starts its own helper that
+// dies before it logs, so that row does not pin the join; on another project the late job needs its own, so the server's refusal to start
 // work once it is stopping is what keeps the count at one. The row after the stop is sent only once the helper has been told to stop (the
 // `.term` line), which the server writes after it began its stop: a signal and a stdin line a few ms apart have no order. A request sent
-// 2 ms before the signal may be read before it (then it starts a helper the stop aborts: 2) or after (1). Independent of the helper's 1.5 s kill window.
+// 2 ms before the signal may be read before it (then it starts a helper the stop aborts: 1 or 2, by whether that helper logged before it was signalled) or after (1).
 for (const [shift, own, name] of [
-  [-30, false, "a second prepare on the running job's project, sent 30 ms before SIGTERM, joins its computation and is answered `aborted` before the server exits (143), one helper"],
+  [-30, false, "a second prepare on the running job's project, sent 30 ms before SIGTERM, is answered `aborted` before the server exits (143)"],
   [-2, true, "a prepare on another project, sent 2 ms before SIGTERM, is answered `aborted` before the server exits (143), at most 2 helpers"],
   [null, true, "a prepare on another project, sent once the helper has been told to stop, is answered `aborted` before the server exits (143) and starts no helper"],
 ] as const) {
