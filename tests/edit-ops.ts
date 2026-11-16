@@ -14,7 +14,7 @@ const api = await import("./author-api.ts");
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
 const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project, "json")).revision }); // "json": the text summary cannot print a clip without an id, which some rows save on purpose
 const { applyOps } = await import("../src/ops.ts");
-const { newTimeline, validate, resolve } = await import("../src/model.ts");
+const { newTimeline, validate, resolve, canLoop } = await import("../src/model.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -1513,21 +1513,27 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     const warnHint = (t: any) => String(w(t).find((i: any) => /of source/.test(i.message))?.hint);
     const slip = [{ op: "slip_clip", id: "y", by: 1 }], lcut = [{ op: "l_cut", id: "y", seconds: 1 }];
     const reversedSound = applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }, { op: "update_clip", id: "aud1", set: { reverse: true } }])[0]; // an op builds the state: the picture plays forward, its detached sound backwards
-    check("slip_clip out of range offers loop on a forward clip, and not on a reversed one", /set loop: true/.test(refusedHint(mk([vid()]), slip)) && /allowed by/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && !/loop/.test(refusedHint(mk([vid({ reverse: true })]), slip)));
+    // loop lifts only the source end: it is offered when the upper bound tripped and the lower did not (a clip longer than its source trips the upper bound alone at by -0.5, both at by -2)
+    const longer = mk([vid({ in: 1, duration: 5 })]), slipBy = (by: number) => [{ op: "slip_clip", id: "y", by }];
+    check("slip_clip past the source end offers loop on a forward clip, and not on a reversed one, nor when the in-point would pass 0",
+      /set loop: true/.test(refusedHint(mk([vid()]), slip)) && /allowed by/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && !/loop/.test(refusedHint(mk([vid({ reverse: true })]), slip))
+      && /allowed by/.test(refusedHint(mk([vid()]), slipBy(-1))) && !/loop/.test(refusedHint(mk([vid()]), slipBy(-1)))
+      && /set loop: true/.test(refusedHint(longer, slipBy(-0.5))) && /allowed by/.test(refusedHint(longer, slipBy(-2))) && !/loop/.test(refusedHint(longer, slipBy(-2))),
+      [refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-0.5)), refusedHint(longer, slipBy(-2))]);
     check("  nor when only its detached sound is reversed, nor on a source whose format cannot loop", !/loop/.test(refusedHint(reversedSound, slip)) && /allowed by/.test(refusedHint(reversedSound, slip)) && !/loop/.test(refusedHint(mk([vid()], { format: "mpegts", key_gap: 1 }), slip)));
     check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
-    // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint offers loop there
+    // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint reaches that case
     const loopErr = (t: any) => validate(t).find((i: any) => i.level === "error" && /\.loop$/.test(i.path));
     const noLen = { duration: 0 }, refuse = loopErr(mk([vid({ loop: true })], noLen));
     check("validate refuses a looping video over an asset with no recorded length and names the mkv remux; a freeze, an audio clip and a clip without loop pass",
       /no picture length/.test(String(refuse?.message)) && /<file>\.mkv/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
-    // such an asset has an unlimited source length, so no upper bound trips a hint; slip_clip's lower bound (the in-point must stay >= 0) does, and its hint asks canLoop
-    const slipBack = [{ op: "slip_clip", id: "y", by: -1 }];
-    check("slip_clip's lower bound offers no loop over an asset with no recorded length, and still offers it to a freeze",
-      /allowed by/.test(refusedHint(mk([vid()], noLen), slipBack)) && !/loop/.test(refusedHint(mk([vid()], noLen), slipBack)) && /set loop: true/.test(refusedHint(mk([vid({ freeze: true })], noLen), slipBack)),
-      [refusedHint(mk([vid()], noLen), slipBack), refusedHint(mk([vid({ freeze: true })], noLen), slipBack)]);
+    // no hint reaches the no-length case: such an asset has an unlimited source length, so no upper bound trips one; canLoop is still the predicate "validate accepts loop on these clips" for every refusal
+    const agrees = (clip: any, extra: any = {}) => { const t = mk([clip], extra); return canLoop(t.assets, t.tracks[0].clips[0]) === !loopErr(t); };
+    check("canLoop equals validate's acceptance of loop: plain, no recorded length (video, freeze, audio), a format that cannot loop, reversed",
+      [agrees(vid({ loop: true })), agrees(vid({ loop: true }), noLen), agrees(vid({ loop: true, freeze: true }), noLen), agrees({ ...vid({ loop: true }), type: "audio" }, noLen), agrees(vid({ loop: true }), { format: "mpegts", key_gap: 1 }), agrees(vid({ loop: true, reverse: true }))].every(Boolean)
+      && !canLoop(mk([vid()], noLen).assets, vid() as any) && canLoop(mk([vid()]).assets, vid() as any));
   }
 
   for (const fps of [30, 23.976]) { // a duration made by an op is stored through round6, up to 5e-7 below 1/fps

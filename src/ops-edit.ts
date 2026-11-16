@@ -233,8 +233,9 @@ export function registerEditOps(h: OpHelpers) {
         lo = Math.max(lo, -cin(x) / spd(x));
         hi = Math.min(hi, (srcLen(tl, x) - cin(x) - (x.freeze ? 0 : clipDur(x) * spd(x))) / spd(x));
       }
-      if (by < lo - EPS || by > hi + EPS) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
-        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source${canLoop(tl.assets, ...list) ? "; or set loop: true" : ""})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+      const low = by < lo - EPS, high = by > hi + EPS; // loop lifts only the source end, so it is offered for that bound alone
+      if (low || high) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
+        `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source${high && !low && canLoop(tl.assets, ...list) ? "; or set loop: true" : ""})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };
