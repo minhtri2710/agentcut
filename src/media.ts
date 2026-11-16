@@ -219,6 +219,7 @@ class FrameStream {
   }
 }
 
+const LOOP_REACH = new Map<string, Promise<boolean>>(); // FrameSource.checkLoopLength: does the file hold a frame at the point, by file and point
 const HWACCEL = process.env.AGENTCUT_HWACCEL !== "0" && process.platform === "darwin";
 
 export interface SourceOpts {
@@ -254,8 +255,11 @@ export class FrameSource {
   private last: Buffer | null = null;
   private tip: Buffer | null = null; // the newest frame the running stream produced (`last` is only the frame asked for)
   private eof = false;
-  private ended: Promise<string> | null = null; // what the running ffmpeg reports once it is done: "" for a clean exit, else why it failed
+  // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
+  // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
+  private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
   private still: Buffer | null = null;
+  private lengthCheck: Promise<void> | undefined; // a loop source: does the file hold its probed length (the first spawn starts it)
   private tail: { frame: Buffer | null } | undefined; // tailFrame's answer, constant for the source: back-seeks into a held region do not decode again
   private hw = HWACCEL;
   private input: string[];
@@ -306,12 +310,12 @@ export class FrameSource {
    *  clip's clock (container start and in-point subtracted, TIE_BIAS added, a loop's finished passes added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
    *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
    *  from a whole number of slots before the slot, which keeps the grid's phase. */
-  private args(k: number, mode: "stream" | "still" | "tail" | "reach"): string[] {
+  private args(k: number, mode: "stream" | "still" | "tail" | "reach", at?: number): string[] {
     // still: the first frame only, as a forward clip (a freeze holds the frame the clip's first slot shows). tail: the clip read to the end of the picture without looping,
-    // from at most two slots before it, whose last frame is the one a running clip holds there. reach: the still of a loop clip's in-point inside one pass, with no wrap, to see
-    // whether the file really holds that stretch.
+    // from at most two slots before it, whose last frame is the one a running clip holds there. reach: the still at source time `at` (default: a loop clip's in-point inside one pass),
+    // with no wrap, to see whether the file really holds that stretch.
     const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && mode !== "reach" && !reverse;
-    const srcIn = mode === "tail" && D ? this.tailIn(D) : mode === "reach" && D ? (o.srcIn ?? 0) % D : (o.srcIn ?? 0);
+    const srcIn = mode === "tail" && D ? this.tailIn(D) : mode === "reach" && D ? at ?? (o.srcIn ?? 0) % D : (o.srcIn ?? 0);
     const a = ["-v", "error", "-nostdin"];
     if (mode === "stream" && this.hw) a.push("-hwaccel", "videotoolbox");
     const tk = srcIn + k / r - this.pre; // the source time the seek aims at
@@ -338,23 +342,32 @@ export class FrameSource {
     this.close();
     this.proc = spawn("ffmpeg", this.args(this.o.reverse ? 0 : k, "stream"), { stdio: ["ignore", "pipe", "pipe"] });
     const proc = this.proc;
-    let err = "";
-    proc.stderr?.on("data", (d) => { if (err.length < 2000) err += d; });
+    if (!this.lengthCheck) { this.lengthCheck = this.checkLoopLength(); this.lengthCheck.catch(() => {}); } // awaited by readAt; this keeps a read that fails first from leaving it unhandled
+    // Decoder text printed before the first frame is out belongs to the frames decoded ahead of the first slot (after a seek into a format whose seek can land mid-GOP, they miss their references)
+    // and is never shown: on a clean exit only the text after it fails the read. A run that put out no frame showed nothing, so no text fails it: the length checks and the held last frame decide.
+    const frameBytes = this.w * this.h * 4;
+    let before = "", after = "", seen = 0, framed = false;
+    proc.stderr?.on("data", (d) => { if (framed ? after.length < 2000 : before.length < 2000) { if (framed) after += d; else before += d; } });
+    proc.stdout?.on("data", (d: Buffer) => { seen += d.length; if (seen >= frameBytes) framed = true; });
     // a spawn failure ('error') and a non-zero exit both count as a failed decode, before or after the first frame
     this.ended = new Promise((res) => {
-      proc.once("error", (e) => res(`${err}${e}`.trim()));
-      proc.once("close", (code, sig) => res(code === 0 ? err.trim() : `${err}ffmpeg exited with ${code ?? sig}`.trim()));
+      proc.once("error", (e) => { const t = `${before}${after}${e}`.trim(); res({ fail: t, retry: t, all: t }); });
+      proc.once("close", (code, sig) => {
+        const text = `${before}${after}`;
+        if (code !== 0) { const t = `${text}ffmpeg exited with ${code ?? sig}`.trim(); res({ fail: t, retry: t, all: t }); }
+        else res({ fail: after.trim(), retry: (framed ? after : before).trim(), all: text.trim() });
+      });
     });
-    this.stream = new FrameStream(this.proc, this.w * this.h * 4);
+    this.stream = new FrameStream(this.proc, frameBytes);
     this.pos = this.o.reverse ? -1 : k - 1;
     this.tip = null;
     this.eof = false;
   }
 
   /** One frame: an image, or the clip's first slot (the frame its first slot shows when it plays). endOk: a clean ffmpeg exit with no frame (the in-point is at or past the video's end) answers null instead of an error. */
-  private async decodeStill(endOk = false, mode: "still" | "reach" = "still"): Promise<Buffer | null> {
+  private async decodeStill(endOk = false, mode: "still" | "reach" = "still", at?: number): Promise<Buffer | null> {
     const o = this.o;
-    const a = o.kind === "image" ? ["-v", "error", "-nostdin", ...this.input, "-frames:v", "1", "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"] : this.args(0, mode);
+    const a = o.kind === "image" ? ["-v", "error", "-nostdin", ...this.input, "-frames:v", "1", "-vf", this.vf.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"] : this.args(0, mode, at);
     const n = this.w * this.h * 4;
     // async so several layers / contact-sheet tiles decode concurrently
     const r = await new Promise<{ status: number | null; out: Buffer; err: string }>((res) => {
@@ -395,8 +408,28 @@ export class FrameSource {
     return (absolute || (!o.reverse && !o.loop)) && !!o.srcDuration && at < o.srcDuration - 0.5 - 1 / o.rate;
   }
 
-  private gone(why: string, at: number) {
-    return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s`, "decode_failed", "relink_asset with the same path probes the file again, which records a shorter picture when the file reports one; otherwise trim the clip to the picture's length. The file may be truncated or have changed");
+  private gone(why: string, at: number, text = "") { // text: what the run printed, so a check that throws after a clean exit keeps the decoder's words
+    return new EditError(`decode failed for ${this.o.path}: ${why} at ${at.toFixed(2)}s${text ? `: ${text.slice(0, 300)}` : ""}`, "decode_failed", "relink_asset with the same path probes the file again, which records a shorter picture when the file reports one; otherwise trim the clip to the picture's length. The file may be truncated or have changed");
+  }
+
+  /** A loop clip repeats the probed length: a source that holds no frame at the point where a plain clip would call it ended early (`endedEarly`) loops at its real length and shows other frames than the clip's slots name. */
+  private async checkLoopLength(): Promise<void> {
+    const o = this.o, D = o.srcDuration, at = D ? D - 0.5 - 1 / o.rate : 0;
+    if (!o.loop || o.reverse || !D || at <= 0) return;
+    // the answer is the file's: a preview or a render segment builds a new FrameSource per read, so it is kept per file, size, mtime and point (a failed read is not kept)
+    let key: string | null = null;
+    try { const st = statSync(o.path); key = `${o.path}|${st.size}|${st.mtimeMs}|${at}`; } catch { /* a path that cannot be stat'ed (a missing file, a URL): no key, the answer is not kept */ }
+    let held = key ? LOOP_REACH.get(key) : undefined;
+    if (!held) {
+      held = this.decodeStill(true, "reach", at).then((f) => !!f);
+      if (key) {
+        if (LOOP_REACH.size >= 256) LOOP_REACH.delete(LOOP_REACH.keys().next().value!);
+        LOOP_REACH.set(key, held);
+        held.catch(() => LOOP_REACH.delete(key!));
+      }
+    }
+    if (!(await held)) throw new EditError(`decode failed for ${o.path}: the source ended before its probed length at ${at.toFixed(2)}s (the project records ${D.toFixed(2)}s of picture)`, "decode_failed",
+      "relink_asset with the same path probes the file again. If the error stays, the file's recorded length is longer than its picture (a truncated file, or an mkv/webm whose sound outlasts its picture): remux it to mp4 and relink, or set loop false");
   }
 
   /** The frame a freeze holds: the one at the in-point (wrapped into the source for a loop clip); at or past the video's end, its last frame, as a playing clip holds it (a source that ends well inside its probed length stays decode_failed). */
@@ -419,6 +452,13 @@ export class FrameSource {
     const o = this.o;
     if (o.kind === "image") return (this.still ??= (await this.decodeStill())!);
     if (o.freeze) return (this.still ??= await this.frozenFrame());
+    const frame = await this.readFrame(u);
+    await this.lengthCheck; // started beside the first spawn: no frame of a loop source is handed out before its length is known to hold
+    return frame;
+  }
+
+  private async readFrame(u: number): Promise<Buffer> {
+    const o = this.o;
     const k = Math.max(0, Math.round(u * o.rate));
     if (this.eof && k > this.pos) return this.last!;
     if (k === this.pos && this.last) return this.last;
@@ -428,17 +468,17 @@ export class FrameSource {
     while (this.pos < k) {
       const f = await this.stream!.read();
       if (!f) {
-        const bad = await this.ended!;
-        if (bad && this.hw) { this.hw = false; this.spawnAt(k); continue; } // retry once in software
-        if (bad) throw new EditError(`decode failed for ${o.path}: ${bad.slice(0, 300)}`, "decode_failed");
+        const end = await this.ended!;
+        if (end.retry && this.hw) { this.hw = false; this.spawnAt(k); continue; } // retry once in software
+        if (end.fail) throw new EditError(`decode failed for ${o.path}: ${end.fail.slice(0, 300)}`, "decode_failed");
         // a clean end: past the probed length the last frame is held (the documented 'clip needs more source' warning);
         // a source that ends well inside its probed length is damaged or was replaced, and a hold would hide that
         const at = (o.srcIn ?? 0) + k / o.rate;
-        if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at);
+        if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at, end.all);
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
         this.last = this.tip ?? (o.reverse || o.loop ? null : await this.tailFrame());
-        if (!this.last) throw this.gone("the source has no frame", at);
+        if (!this.last) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
         return this.last;
       }

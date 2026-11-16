@@ -754,12 +754,20 @@ function beatsFile(path: string): number[] {
   try { d = JSON.parse(readFileSync(path, "utf8")); }
   catch (e: any) { throw new EditError(`${path} cannot be read: ${e.message}`, "bad_beats", hint); }
   if (d?.ok === false) throw new EditError(`${path} holds a failed result (${d.error?.code ?? "no code"}), not beats`, "bad_beats", hint);
-  if (!Array.isArray(d?.beats) || !d.beats.every((t: unknown) => typeof t === "number" && Number.isFinite(t))) throw new EditError(`${path} has no 'beats' list of numbers`, "bad_beats", hint);
-  return d.beats;
+  const beats = seconds(d?.beats, `${path} has no 'beats' list of numbers`, hint);
+  // both producers cut `beats` after the analysis and leave `count`: a result whose count is above its list was cut, whatever its flag is called
+  if (typeof d.count === "number" && d.count > beats.length) throw new EditError(`${path} holds ${beats.length} of ${d.count} beats (a cut list)`, "bad_beats", `${hint}; if you shortened the list yourself, remove count`);
+  return beats;
+}
+
+/** A beats list is finite numbers of seconds, from a file or typed in the call: a NaN would drop clips from the retime unseen. */
+function seconds(list: unknown, message: string, hint: string): number[] {
+  if (!Array.isArray(list) || !list.every((t) => typeof t === "number" && Number.isFinite(t))) throw new EditError(message, "bad_beats", hint);
+  return list;
 }
 
 function beatList(p: Project, tl: Timeline, b: unknown): number[] {
-  if (Array.isArray(b)) return b.map(Number);
+  if (Array.isArray(b)) return seconds(b, "an inline beats list must hold only numbers", "give seconds as numbers, e.g. [0.5,1,1.5], or pass the audio path or a beats .json");
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
   const asset = own(tl.assets, b);
   const path = asset ? p.abs(tl.assets[b].path) : absPath(b);

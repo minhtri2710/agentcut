@@ -613,6 +613,42 @@ console.log("decode and render failures");
   const fresh = short(), held = await fresh.readAt(5).catch(() => Buffer.alloc(0));
   check("a fresh source read past the end returns the held last frame", held.length === 64 * 64 * 4 && held.some((x) => x !== 0) && held.equals(await b.readAt(2)), held.length);
   fresh.close();
+  // an H.264 ts read after a seek prints decoder text about frames it decodes ahead of the first slot (they miss their references): that is no failure of the clip
+  const ts264 = join(m, "h264.ts");
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=4", "-c:v", "libx264", "-preset", "veryfast", "-g", "12", "-bf", "2", "-x264-params", "open-gop=0", "-pix_fmt", "yuv420p", "-f", "mpegts", ts264);
+  const h264 = (path: string, srcIn: number) => new FrameSource({ path, kind: "video", srcW: 64, srcH: 64, rate: 25, fit: "fill", box: [64, 64], srcIn, srcDuration: 4, facts: api.probe(path) });
+  const streamed = h264(ts264, 0);
+  for (let k = 0; k <= 108; k++) await streamed.readAt(k / 25);
+  const heldTs = await streamed.readAt(4.4);
+  streamed.close();
+  for (const srcIn of [0, 3]) {
+    const f = h264(ts264, srcIn), got = await f.readAt((4.4 - srcIn)).catch((e) => e?.code); f.close();
+    check(`a fresh H.264 ts read past the end (in ${srcIn}) holds the last frame the stream shows`, Buffer.isBuffer(got) && got.equals(heldTs), Buffer.isBuffer(got) ? got.length : got);
+  }
+  // a source that gives no frame well inside its probed length still fails (a ts cut after its first packets, read from a seek), and keeps the decoder's text in the message;
+  // text from a frame that is shown fails the read (40 packets overwritten after the first second, read from the file's start)
+  const tsBytes = readFileSync(ts264), packets = Math.floor(tsBytes.length / 188);
+  writeFileSync(join(m, "h264-head.ts"), tsBytes.subarray(0, 188 * 12));
+  const broken = Buffer.from(tsBytes);
+  for (let i = 150; i < 190 && i < packets; i++) broken.fill(0x55, i * 188 + 8, i * 188 + 188); // which packets make the decoder print is a property of this stream: the row checks that it did
+  writeFileSync(join(m, "h264-damaged.ts"), broken);
+  const noFrame = h264(join(m, "h264-head.ts"), 1.5), noFrameErr: any = await noFrame.readAt(0).catch((x) => x); noFrame.close();
+  check("a plain clip whose ts gives no frame inside its probed length is decode_failed, with the decoder's text kept in the message", noFrameErr?.code === "decode_failed" && /the source ended after 0 frames at 1\.50s: [\s\S]*\[h264/.test(noFrameErr.message), noFrameErr?.message ?? "no error");
+  const damaged = h264(join(m, "h264-damaged.ts"), 0), damagedErr: any = await (async () => { for (let k = 0; k <= 108; k++) await damaged.readAt(k / 25); })().catch((x) => x); damaged.close();
+  check("a ts whose packets are damaged in a shown frame is decode_failed with the decoder's words", damagedErr?.code === "decode_failed" && /\[h264/.test(damagedErr.message), damagedErr?.message ?? "no error");
+  // a loop clip repeats the probed length (2 s here): a source that ends well inside it fails as a plain clip's does, within the plain clip's allowance it is read
+  for (const [name, secs] of [["loop-short", 1], ["loop-near", 1.7]] as const) ff("-f", "lavfi", "-i", `testsrc2=size=64x64:rate=30:duration=${secs}`, "-pix_fmt", "yuv420p", join(m, `${name}.mp4`));
+  const looped = (name: string, srcIn: number) => new FrameSource({ path: join(m, `${name}.mp4`), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcIn, srcDuration: 2, loop: true, facts: api.probe(join(m, `${name}.mp4`)) });
+  const short1 = looped("loop-short", 0), shortErr: any = await short1.readAt(0).catch((x) => x); short1.close(); // the check reads at D - 0.5 - 1/r whatever the in-point: one in-point runs the same branch as any
+  check("a loop source that ends well inside its probed length is decode_failed, naming the recorded length, with the relink, remux and loop false hint",
+    shortErr?.code === "decode_failed" && /the project records 2\.00s of picture/.test(shortErr.message) && /relink_asset/.test(shortErr.hint) && /remux/.test(shortErr.hint) && /loop false/.test(shortErr.hint), shortErr?.message ?? "no error");
+  // a source whose frame interval (1 s) is above the allowance: its last frame starts before the check's point, and the loop must still read across the wrap
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1:duration=4", "-pix_fmt", "yuv420p", join(m, "loop-slow.mp4"));
+  const slowInfo = api.probe(join(m, "loop-slow.mp4")), slow = new FrameSource({ path: join(m, "loop-slow.mp4"), kind: "video", srcW: 64, srcH: 64, srcFps: slowInfo.fps, rate: 30, fit: "fill", box: [64, 64], srcDuration: slowInfo.video_duration ?? slowInfo.duration, loop: true, facts: slowInfo });
+  const slowWrap = await slow.readAt(4.5).catch((x) => x?.code); slow.close();
+  check("a 1 fps loop source is read across the wrap, not refused by the length check", Buffer.isBuffer(slowWrap), slowWrap);
+  const near = looped("loop-near", 0), nearFrame = await near.readAt(0).catch((x) => x?.code); near.close();
+  check("a loop source short by less than the allowance of a plain clip (0.5 s) is read", Buffer.isBuffer(nearFrame), nearFrame);
   // a freeze at or past the video's end holds its last frame, as a playing clip does (the seek of a still lands past the last frame's interval)
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "endclip.mp4"));
   const frz = (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, facts: api.probe(join(m, "endclip.mp4")), ...mode });
