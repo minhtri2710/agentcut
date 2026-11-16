@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { CONTAINED_FLAGS, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
@@ -491,7 +491,7 @@ console.log("event stream over an unreadable history entry");
   api.create(d, { preset: "reels" });
   await applyLatest(d, [{ op: "add_marker", t: 1 }]);
   await applyLatest(d, [{ op: "add_marker", t: 2 }]);
-  const undoDir = join(d, ".agentcut", "history", "undo"), entry = join(undoDir, readdirSync(undoDir).sort().pop()!), name = entry.slice(entry.lastIndexOf("/") + 1);
+  const undoDir = join(d, ".agentcut", "history", "undo"), entry = join(undoDir, readdirSync(undoDir).sort().pop()!), name = basename(entry);
   const noRev = JSON.parse(readFileSync(entry, "utf8")); delete noRev.revision;
   writeFileSync(entry, JSON.stringify(noRev));
   const us = await startUi(d, { port: 0 });

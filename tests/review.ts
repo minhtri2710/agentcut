@@ -172,7 +172,7 @@ console.log("a project.json with no valid revision: the number its hint gives is
     check(`an entry that ${what} is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
     if (damaged) check("  and its hint names the entry's path, not a file that is fine", (e.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && !(e.hint ?? "").includes("is fine"), { hint: e.hint });
     // history reads the same entries: it says the file is fine only when its own read of the file passed
-    if (what.startsWith("holds text")) continue; // the entry itself reads: history never opens the timeline text it holds
+    if (damaged && !what.startsWith("has no revision: the one undo restores")) continue; // history lists every entry the same way, so one damaged case holds the rest; an entry that only holds bad timeline text reads, and history never opens that text
     const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
     check(`history over an entry that ${what} is refused by name, and its hint ${damaged ? "does not call project.json fine" : "says project.json itself is fine"}`,
       h.code === "bad_json" && h.message.includes(basename(file)) && (h.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && (/project\.json itself is fine/.test(h.hint ?? "") === !damaged) && tree(d) === before, { code: h.code, hint: h.hint });
@@ -183,7 +183,7 @@ console.log("a project.json with no valid revision: the number its hint gives is
     writeFileSync(file, "{ not json");
     const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); t.version = 2; writeFileSync(join(d, "project.json"), JSON.stringify(t));
     const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
-    check("history over a project.json of another schema version and an unreadable entry: named by path, not called fine", h.code === "bad_json" && (h.hint ?? "").includes(basename(file)) && !(h.hint ?? "").includes("is fine"), { code: h.code, hint: h.hint });
+    check("history over a project.json of another schema version and an unreadable entry: named by path, not called fine, and no undo prescribed (an undo cannot run over that file)", h.code === "bad_json" && (h.hint ?? "").includes(basename(file)) && !(h.hint ?? "").includes("is fine") && !/undo again/.test(h.hint ?? ""),{ code: h.code, hint: h.hint });
   }
   // a damaged project.json alone refuses nothing: history still lists entries that all read
   {

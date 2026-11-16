@@ -25,7 +25,7 @@ function checkVersion(tl: Timeline, source: string, fix = "there is no upgrade: 
   return tl;
 }
 
-/** The state of project.json a history entry is read beside: "sound" (the file passed its own read, or the call never looked), "undo" (an undo over a project.json with no valid revision),
+/** The state of project.json a history entry is read beside: "sound" (the file passed its own read, or the hint is never shown: changesSince and the non-strict highestStored skip every error they meet), "undo" (an undo over a project.json with no valid revision),
  *  "unfit" (a history listing over a project.json that failed its read). */
 type Beside = "sound" | "undo" | "unfit";
 
@@ -36,10 +36,9 @@ const entryFix = (at: string, beside: Beside) => beside === "undo"
     ? `project.json has its own error (info shows it); this entry cannot be read either: delete .agentcut/history/${at}`
     : `project.json itself is fine: delete .agentcut/history/${at}`;
 
-/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `damaged`: the call is an undo over a project.json with no valid revision (see entryFix) */
-function parse(text: string, snapshot?: string, damaged = false): Timeline {
+/** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `beside`: see entryFix */
+function parse(text: string, snapshot?: string, beside: Beside = "sound"): Timeline {
   const source = snapshot ? `history snapshot ${snapshot}` : "project.json";
-  const beside = damaged ? "undo" : "sound";
   let tl: Timeline;
   try { tl = JSON.parse(text); }
   catch (e: any) { throw new EditError(`${source} is not valid JSON: ${e.message}`, "bad_json", snapshot ? entryFix(snapshot, beside) : DAMAGED_FIX); }
@@ -366,9 +365,10 @@ export class Project {
       else if (from !== "undo") throw damage; // an unreadable project.json has no revision to name, and only undo may run there (it is the way out); redo fails with the file's own error
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
       const e = this.entries(from), snaps: { file: string; label: string; author: string; tl: Timeline }[] = [];
+      const beside: Beside = rev === undefined ? "undo" : "sound";
       for (let i = 0; i < steps && i < e.length; i++) {
-        const file = e[e.length - 1 - i], d = Project.readEntry(file, from, rev === undefined ? "undo" : "sound");
-        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`, rev === undefined) });
+        const file = e[e.length - 1 - i], d = Project.readEntry(file, from, beside);
+        snaps.push({ file, label: d.label, author: d.author, tl: parse(d.timeline, `${from}/${basename(file)}`, beside) });
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       // the damaged file is taken to have the number the hint gives (the history's highest + 1), and the entry that keeps it records that number: the undone state lands on the next one
