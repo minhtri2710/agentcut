@@ -28,6 +28,9 @@ function check(name: string, cond: unknown, info?: unknown) {
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const code = async (f: () => unknown) => { try { await f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
 
+/** a hint about a history entry that cannot be read advises moving it out, never deleting it (it may be the only copy of a timeline) */
+const moves = (hint = "") => /\bmove\b/.test(hint) && !/delete/.test(hint);
+
 const m = join(tmp, "media"); mkdirSync(m);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4", "-f", "lavfi", "-i", "sine=f=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", join(m, "av.mp4"));
 ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
@@ -171,12 +174,12 @@ console.log("a project.json with no valid revision: the number its hint gives is
     if (damaged) setRevision(d);
     const before = tree(d), e: any = await Promise.resolve().then(async () => api.undo(d, 1, damaged ? undefined : (await api.info(d)).revision)).catch((x: any) => x);
     check(`an entry that ${what} is refused by name and nothing is written`, e.code === "bad_json" && !!e.hint && e.message.includes(basename(file)) && tree(d) === before, { code: e.code, message: e.message });
-    if (damaged) check("  and its hint names the entry's path, not a file that is fine", (e.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && !(e.hint ?? "").includes("is fine"), { hint: e.hint });
+    if (damaged) check("  and its hint names the entry's path, not a file that is fine, and says to move the entry out and undo again", (e.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && !(e.hint ?? "").includes("is fine") && moves(e.hint) && /undo again/.test(e.hint ?? ""), { hint: e.hint });
     // history reads the same entries: it says the file is fine only when its own read of the file passed
     if (!listed) continue;
     const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
-    check(`history over an entry that ${what} is refused by name, and its hint ${damaged ? "does not call project.json fine" : "says project.json itself is fine"}`,
-      h.code === "bad_json" && h.message.includes(basename(file)) && (h.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && (/project\.json itself is fine/.test(h.hint ?? "") === !damaged) && tree(d) === before, { code: h.code, hint: h.hint });
+    check(`history over an entry that ${what} is refused by name, and its hint ${damaged ? "does not call project.json fine" : "says project.json itself is fine"}, and says to move the entry out`,
+      h.code === "bad_json" && h.message.includes(basename(file)) && (h.hint ?? "").includes(`.agentcut/history/undo/${basename(file)}`) && (/project\.json itself is fine/.test(h.hint ?? "") === !damaged) && moves(h.hint) && tree(d) === before, { code: h.code, hint: h.hint });
   }
   // a project.json of another schema version fails its read too: history over an unreadable entry does not call it fine
   {
@@ -185,7 +188,7 @@ console.log("a project.json with no valid revision: the number its hint gives is
     const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); t.version = 2; writeFileSync(join(d, "project.json"), JSON.stringify(t));
     const h: any = await Promise.resolve().then(() => api.history(d)).catch((x: any) => x);
     check("history over a project.json of another schema version and an unreadable entry: named by path, not called fine, no undo prescribed (an undo cannot run over that file), and the entry is to be moved, not deleted (it may still hold a timeline)",
-      h.code === "bad_json" && (h.hint ?? "").includes(basename(file)) && !(h.hint ?? "").includes("is fine") && !/undo again/.test(h.hint ?? "") && /\bmove\b/.test(h.hint ?? "") && !/delete/.test(h.hint ?? ""), { code: h.code, hint: h.hint });
+      h.code === "bad_json" && (h.hint ?? "").includes(basename(file)) && !(h.hint ?? "").includes("is fine") && !/undo again/.test(h.hint ?? "") && moves(h.hint), { code: h.code, hint: h.hint });
   }
   // a damaged project.json alone refuses nothing: history still lists entries that all read
   {
@@ -283,8 +286,8 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
     const e = await caught(() => (stack === "undo" ? undoLatest(d) : redoLatest(d)));
     check(`${stack}: a snapshot of another version -> bad_version`, e?.code === "bad_version", e ? { code: e.code, message: e.message } : "ok");
     check(`${stack}: the message names the snapshot, not project.json`, e?.message.includes(basename(f)) && /history snapshot/.test(e.message) && !e.message.startsWith("project.json"), e?.message);
-    check(`${stack}: the hint says to remove that entry and that project.json is fine, not to recreate the project`,
-      e?.hint?.includes(basename(f)) && /project\.json itself is fine/.test(e.hint) && !/agentcut init/.test(e.hint), e?.hint);
+    check(`${stack}: the hint says to move that entry out and that project.json is fine, not to recreate the project`,
+      e?.hint?.includes(basename(f)) && /project\.json itself is fine/.test(e.hint) && moves(e.hint) && !/agentcut init/.test(e.hint), e?.hint);
     check(`${stack}: project.json and the snapshot are untouched`, readFileSync(join(d, "project.json"), "utf8") === before && existsSync(f) && readFileSync(f, "utf8") === snapBefore);
   }
 }
