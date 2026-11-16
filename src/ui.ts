@@ -66,7 +66,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
       let ping: ReturnType<typeof setInterval> | undefined;
       req.on("close", () => { clearInterval(ping); clients.delete(res); });
-      const s = await state(); // added to the clients only once the state is in hand, so no newer broadcast is followed by this older one
+      // added to the clients only once the state is in hand, so no newer broadcast is followed by this older one
+      let s: Dict;
+      try { s = await state(); }
+      catch (e) { // the stream ends after the named error: the cure (an entry removed) does not touch project.json, so only a new connection finds the state again
+        if (!res.destroyed) { send(res, "error", errJson(e)); res.end(); }
+        return;
+      }
       if (res.destroyed) return;
       clients.add(res);
       send(res, "state", s);
