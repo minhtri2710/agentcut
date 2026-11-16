@@ -94,12 +94,32 @@ cliLatest(["op", "set_keyframes", "id=vid3", "prop=speed", 'keyframes=[[0,1],[1,
 cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, "every=2"], C);
 { // beats analysed first and passed in: the object `beats --full` prints is accepted as it is, and a cut list retimes only the first clips
   const file = join(tmp, "beats-full.json");
+  const writeBeats = (name: string, content: unknown) => { const f = join(tmp, name); writeFileSync(f, typeof content === "string" ? content : JSON.stringify(content)); return f; };
   writeFileSync(file, JSON.stringify(cli(["beats", join(m, "beat.wav"), "--full"])));
   const snap = (beats: string) => cli(["op", "snap_to_beats", "track=main", `beats=${beats}`, "every=2", "--dry-run"], C).results[0];
   const fromFile = snap(file), fromAudio = snap(join(m, "beat.wav"));
   check("snap_to_beats takes the file `beats --full` printed and retimes what the audio path does", fromFile.retimed.length > 0 && JSON.stringify(fromFile.retimed) === JSON.stringify(fromAudio.retimed), { fromFile, fromAudio });
   const cut = cli(["op", "snap_to_beats", "track=main", "beats=[0,1,2]", "--dry-run"], C);
   check("snap_to_beats with a 3-beat list retimes 2 clips, with no error", cut.results[0].retimed.length === 2 && cut.errors === 0 && cut.warnings === 0, cut);
+  // a beats .json that cannot be used is a named error with a hint, and nothing is saved
+  const dir = join(tmp, "beats-dir.json"); mkdirSync(dir);
+  const bad: [string, string, string][] = [
+    ["a failed result saved in its place", writeBeats("beats-failed.json", { ok: false, error: { code: "bad_media", message: "x" } }), "bad_beats"],
+    ["not JSON", writeBeats("beats-text.json", "not json {"), "bad_beats"],
+    ["a directory", dir, "bad_beats"],
+    ["no beats list", writeBeats("beats-none.json", { ok: true }), "bad_beats"],
+    ["beats that is not a list", writeBeats("beats-str.json", { beats: "abc" }), "bad_beats"],
+    ["a non-number among the beats", writeBeats("beats-mixed.json", { beats: [0, "x", 2] }), "bad_beats"],
+    ["a file that does not exist", join(tmp, "beats-missing.json"), "not_found"]];
+  const rev0 = cli(["info"], C).revision;
+  for (const [what, path, want] of bad) {
+    const r = cli(["op", "snap_to_beats", "track=main", `beats=${path}`, "--revision", rev0], { ...C, ok: false });
+    check(`snap_to_beats with a beats .json that is ${what}: ${want}, with a hint, and nothing saved`, r.ok === false && r.error.code === want && !!r.error.hint && cli(["info"], C).revision === rev0, r);
+  }
+}
+{ // the help names every flag the guide tells an agent to use on beats
+  const help = spawnSync(CLI[0], [...CLI.slice(1), "--help"], { encoding: "utf8" });
+  check("--help lists --full on the beats line", help.status === 0 && /beats F[^·\n]*--full/.test(help.stdout), help.stdout.slice(0, 200));
 }
 cliLatest(["op", "move_clip", "id=col1", "index=0"], C);
 cliLatest(["op", "duplicate_clip", "id=txt1", "at=end-3"], C);

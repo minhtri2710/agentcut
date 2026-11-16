@@ -31,7 +31,7 @@ Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--start S
              (the result has has_audio, contact_sheet in previews/ and loudness; a timeline with no audible clip gets no audio track)
              captions -o subs.srt|subs.vtt [--ids cap1,cap2]  (subtitle file from captions clips, timeline times)
              export -o edit.fcpxml|edit.otio  (hand off to Final Cut Pro / DaVinci Resolve / Premiere)
-Analyze:     probe F · beats F [--markers] · scenes F · silence F · loudness F · transcribe F [--language vi] [--model M] [--start S --end S] · subject F [--fps 6] [--allow-download]
+Analyze:     probe F · beats F [--markers] [--full] (--full: every beat, else the first 64) · scenes F · silence F · loudness F · transcribe F [--language vi] [--model M] [--start S --end S] · subject F [--fps 6] [--allow-download]
              (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download;
              cached in the project when one is found, so auto_reframe on a clip covering the same range at the same fps reuses it)
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
