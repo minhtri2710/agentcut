@@ -133,7 +133,7 @@ cliLatest(["op", "snap_to_beats", "track=main", `beats=${join(m, "beat.wav")}`, 
   // every and offset count beats: only a whole number is taken, text included
   for (const [what, arg] of [["a word", "every=abc"], ["a number as text", 'every="2"'], ["0", "every=0"], ["a fraction", "every=1.5"], ["a negative offset", "offset=-1"]]) {
     const { r, kept } = refused("[0,1,2,3]", arg);
-    check(`snap_to_beats with ${what} for ${arg.split("=")[0]}: bad_value naming the value, with a hint, and nothing saved`, r.ok === false && r.error.code === "bad_value" && r.error.message.includes(arg.split("=")[1]) && !!r.error.hint && kept, r);
+    check(`snap_to_beats with ${what} for ${arg.split("=")[0]}: bad_value naming the value, with a hint, and nothing saved`, r.ok === false && r.error.code === "bad_value" && r.error.message.includes(arg.split("=")[1]) && new RegExp(`^pass a whole number, e\\.g\\. ${arg.split("=")[0]}=\\d$`).test(r.error.hint) && kept, r);
   }
 }
 { // the help names every flag the guide tells an agent to use on beats

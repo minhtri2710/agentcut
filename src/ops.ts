@@ -780,7 +780,7 @@ const MIN_SPAN = 0.05; // a clip between two beats lasts more than this
 /** every and offset count beats: a whole number of at least `lo` (a number as text is refused too); absent or null is the default */
 function wholeNumber(v: unknown, name: string, d: number, lo: number): number {
   if (v === undefined || v === null) return d;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < lo) throw new EditError(`${name} must be a whole number of at least ${lo}, got ${typeof v === "number" ? v : JSON.stringify(v)}`, "bad_value", `pass a whole number, e.g.${name}=${Math.max(d, lo)}`);
+  if (typeof v !== "number" || !Number.isInteger(v) || v < lo) throw new EditError(`${name} must be a whole number of at least ${lo}, got ${typeof v === "number" ? v : JSON.stringify(v)}`, "bad_value", `pass a whole number, e.g. ${name}=${Math.max(d, lo)}`);
   return v;
 }
 
