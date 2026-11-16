@@ -31,10 +31,10 @@ type Beside = "sound" | "undo" | "unfit";
 
 /** What to do about a history entry that cannot be used (`at` is stack/name), by the state of project.json beside it. The one place these three texts are built. */
 const entryFix = (at: string, beside: Beside) => beside === "undo"
-  ? `an undo over a project.json with no valid revision counts every history entry: delete .agentcut/history/${at} and undo again`
+  ? `an undo over a project.json with no valid revision counts every history entry: move .agentcut/history/${at} out of the history folder (it may still hold a timeline) and undo again`
   : beside === "unfit"
     ? `project.json has its own error (info shows it); this entry cannot be read either: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`
-    : `project.json itself is fine: delete .agentcut/history/${at}`;
+    : `project.json itself is fine: move .agentcut/history/${at} out of the history folder (it may still hold a timeline)`;
 
 /** `snapshot`: the history entry (stack/name) the text came from; without it the text is project.json. `beside`: see entryFix */
 function parse(text: string, snapshot?: string, beside: Beside = "sound"): Timeline {
