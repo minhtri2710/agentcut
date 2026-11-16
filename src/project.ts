@@ -37,8 +37,16 @@ function parse(text: string, snapshot?: string): Timeline {
 /** The way out of a project.json that cannot be read: undo restores the last good version, and it is the one history call that needs no revision there (no revision can be read). */
 const DAMAGED_FIX = "undo restores the last good version (undo needs no revision while project.json is damaged), or fix the file";
 
-function revisionOf(tl: Timeline): number {
-  if (!Number.isInteger(tl.revision) || tl.revision < 0) throw new EditError(`project.json has no valid 'revision' (got ${JSON.stringify(tl.revision)})`, "bad_revision", `set "revision": 0 at the top level of project.json; or ${DAMAGED_FIX}`);
+/** `highest`: the history's highest revision (Project.highestStored), asked only when the revision is invalid, for the number the hint gives to set by hand. */
+function revisionOf(tl: Timeline, highest?: () => number | undefined): number {
+  if (!Number.isInteger(tl.revision) || tl.revision < 0) {
+    let top: number | undefined;
+    try { top = highest?.(); } catch { /* the hint falls back to words */ }
+    const byHand = top === undefined
+      ? `if you set "revision" by hand, use a whole number above every revision any agent has read (0 only if the project was never edited): a lower one makes an old revision valid again`
+      : `to set it by hand, set "revision" to ${top + 1} (the history's last revision + 1): a lower number makes an old revision valid again`;
+    throw new EditError(`project.json has no valid 'revision' (got ${JSON.stringify(tl.revision)})`, "bad_revision", `${DAMAGED_FIX}; ${byHand}`);
+  }
   return tl.revision;
 }
 
@@ -203,7 +211,7 @@ export class Project {
   }
 
   /** project.json as a timeline; a file with no valid revision is bad_revision here, so every command names the damage (its hint points to undo). */
-  load(): Timeline { const tl = parse(readFileSync(this.file, "utf8")); revisionOf(tl); return tl; }
+  load(): Timeline { const tl = parse(readFileSync(this.file, "utf8")); revisionOf(tl, () => this.highestStored()); return tl; }
 
   /** Optimistic concurrency: a write based on revision `base` may only land while the project is still at `base`. The one conflict text, shared by api.apply, save, undo/redo and the page:
    *  it names who changed the project since `base` (changesSince), so the caller can judge whether its edit still makes sense. */
@@ -241,7 +249,7 @@ export class Project {
     resolve(tl);
     return this.locked(() => {
       const cur = readFileSync(this.file, "utf8");
-      const disk = revisionOf(parse(cur));
+      const disk = revisionOf(parse(cur), () => this.highestStored());
       this.checkRevision(revisionOf(tl), disk);
       this.entries("undo"); this.entries("redo"); // both stacks verified before the first write
       const pushed = this.push("undo", cur, label, by);
@@ -315,6 +323,19 @@ export class Project {
     const who = (field: string, v: unknown) => { try { return checkAuthor(v); } catch (e: any) { throw new EditError(`history snapshot ${at} has an invalid ${field}: ${e.message}`, "bad_json", hint); } };
     return { ...d, author: d.author === undefined ? UNKNOWN_AUTHOR : who("author", d.author), ...(d.movedBy === undefined ? {} : { movedBy: who("movedBy", d.movedBy) }) };
   }
+  /** The highest revision any readable entry of either stack holds; undefined when none is readable (an empty history and a deleted one look the same). Never throws and creates nothing. */
+  private highestStored(): number | undefined {
+    let top = -1;
+    for (const name of ["undo", "redo"]) {
+      try {
+        if (!existsSync(join(this.root, ".agentcut", "history", name))) continue;
+        for (const f of this.entries(name)) {
+          try { const r = parse(Project.readEntry(f, name).timeline).revision; if (Number.isInteger(r)) top = Math.max(top, r); } catch { /* an unreadable entry is skipped */ }
+        }
+      } catch { /* an unreadable stack is skipped */ }
+    }
+    return top < 0 ? undefined : top;
+  }
   // restored snapshots get a fresh revision, so the revision only ever increases
   private step(from: string, to: string, steps: number, base: number | undefined, mover: string | undefined) {
     if (!Number.isInteger(steps) || steps < 1) throw new EditError(`steps must be a whole number >= 1, got ${JSON.stringify(steps) ?? steps}`, "bad_value", `e.g. ${from} 1; asking for more than the history holds ${from}s what is there and reports it`);
@@ -322,7 +343,7 @@ export class Project {
     return this.locked(() => {
       let cur = readFileSync(this.file, "utf8"), rev: number | undefined, damage: unknown;
       // a damaged project.json must not block the recovery its error promises: it is kept in the other stack, and the revision continues from the history
-      try { rev = revisionOf(parse(cur)); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
+      try { rev = revisionOf(parse(cur), () => this.highestStored()); } catch (e) { if (!(e instanceof EditError && ["bad_json", "bad_revision"].includes(e.code))) throw e; damage = e; }
       if (rev !== undefined) { requireRevision(base); this.checkRevision(base, rev); }
       else if (from !== "undo") throw damage; // an unreadable project.json has no revision to name, and only undo may run there (it is the way out); redo fails with the file's own error
       // every snapshot this call will use is read and version-checked before anything is written: all or nothing
@@ -333,10 +354,7 @@ export class Project {
       }
       if (!snaps.length) throw damage ?? new EditError(`nothing to ${from}`, "empty_history"); // nothing to restore from: the file's own error is the useful one
       this.entries(to); // the stack this call writes to is verified before the first write
-      if (rev === undefined) { // highest revision any readable entry of either stack holds
-        const seen = [...snaps.map((sn) => sn.tl.revision), ...this.entries(to).map((f) => { try { return parse(Project.readEntry(f, to).timeline).revision; } catch { return 0; } })];
-        rev = Math.max(0, ...seen.filter(Number.isInteger));
-      }
+      if (rev === undefined) rev = this.highestStored() ?? 0; // the revision continues from the history
       for (const sn of snaps) {
         const pushed = this.push(to, cur, sn.label, sn.author, by);
         sn.tl.revision = ++rev;
@@ -433,7 +451,7 @@ export function summarize(tl: Timeline): string {
       if (c.attach_to) x.push(`attached→${c.attach_to}${c.offset ? `+${c.offset}` : ""}`);
       if (typeof c.match_duration === "string") { const eo = round6(parseTime(c.end_offset ?? 0)); x.push(`length→${c.match_duration}${eo ? `${eo > 0 ? "-" : "+"}${Math.abs(eo)}` : ""}`); }
       if (c.enabled === false) x.push("DISABLED");
-      L.push(`      ${s.toFixed(2).padStart(7)}–${(s + d).toFixed(2).padStart(7)}  ${c.id.padEnd(8)} ${desc}${x.length ? `  [${x.join(" ")}]` : ""}`);
+      L.push(`      ${s.toFixed(2).padStart(7)}–${(s + d).toFixed(2).padStart(7)}  ${String(c.id ?? "?").padEnd(8)} ${desc}${x.length ? `  [${x.join(" ")}]` : ""}`);
     }
   });
   if (tl.markers?.length) L.push("markers: " + tl.markers.slice(0, 40).map((m) => `${m.t}s ${m.label ?? ""}`.trim()).join(", "));

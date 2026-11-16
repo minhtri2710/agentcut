@@ -747,13 +747,24 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     return result;
   });
 
+/** A beats .json as `agentcut beats F --full` writes it: an object whose `beats` is a list of seconds. */
+function beatsFile(path: string): number[] {
+  const hint = "write it again with `agentcut beats AUDIO --full > beats.json` (check that the command succeeded), or pass the audio path";
+  let d: any;
+  try { d = JSON.parse(readFileSync(path, "utf8")); }
+  catch (e: any) { throw new EditError(`${path} cannot be read: ${e.message}`, "bad_beats", hint); }
+  if (d?.ok === false) throw new EditError(`${path} holds a failed result (${d.error?.code ?? "no code"}), not beats`, "bad_beats", hint);
+  if (!Array.isArray(d?.beats) || !d.beats.every((t: unknown) => typeof t === "number" && Number.isFinite(t))) throw new EditError(`${path} has no 'beats' list of numbers`, "bad_beats", hint);
+  return d.beats;
+}
+
 function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   if (Array.isArray(b)) return b.map(Number);
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
-  const path = own(tl.assets, b) ? p.abs(tl.assets[b].path) : absPath(b);
-  if (path.endsWith(".json")) return JSON.parse(readFileSync(path, "utf8")).beats;
-  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
-  return AN.analysis(p, { kind: "beats", path }).beats;
+  const asset = own(tl.assets, b);
+  const path = asset ? p.abs(tl.assets[b].path) : absPath(b);
+  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found", asset ? undefined : "use an absolute path or a path relative to the current directory");
+  return path.endsWith(".json") ? beatsFile(path) : AN.analysis(p, { kind: "beats", path }).beats;
 }
 
 op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. Clips with a computed length (match_duration) are kept as they are (kept_computed).",

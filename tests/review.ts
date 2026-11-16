@@ -115,6 +115,44 @@ check("fractional revision -> bad_revision", await code(() => api.apply(P, [{ op
 check("NaN revision -> bad_revision", await code(() => api.apply(P, [{ op: "add_marker", t: 1 }], { revision: Number("abc") })) === "bad_revision");
 check("undo with NaN revision -> bad_revision", await code(() => api.undo(P, 1, NaN)) === "bad_revision");
 
+console.log("a project.json with no valid revision: the number its hint gives is safe to follow");
+{
+  const fresh = async (name: string, saves: number) => {
+    const d = join(tmp, name);
+    api.create(d, { preset: "reels" });
+    for (let i = 0; i < saves; i++) await applyLatest(d, [{ op: "add_marker", t: i + 1 }]);
+    return d;
+  };
+  const setRevision = (d: string, rev?: number) => { const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8")); if (rev === undefined) delete t.revision; else t.revision = rev; writeFileSync(join(d, "project.json"), JSON.stringify(t)); };
+  const d = await fresh("rev-hint", 3); // an agent that read revision 0, 1 or 2 may still hold it
+  const lost = (await api.info(d)).revision; // the revision the file loses: the hint must give exactly this one
+  setRevision(d);
+  const err: any = await api.info(d).catch((x: any) => x), n = /"revision" to (\d+)/.exec(err.hint ?? "")?.[1];
+  check("no revision: bad_revision, the hint keeps undo and gives the revision the file lost", err.code === "bad_revision" && /undo/.test(err.hint) && Number(n) === lost, { code: err.code, hint: err.hint, lost });
+  setRevision(d, Number(n));
+  check("after the number is set, a write at the newest revision an agent may still hold is a conflict", (await code(() => api.apply(d, [{ op: "add_marker", t: 9 }], { revision: lost - 1 }))) === "conflict");
+  check("and a write at the number itself lands", (await code(() => api.apply(d, [{ op: "add_marker", t: 9 }], { revision: Number(n) }))) === "ok");
+  const none = await fresh("rev-hint-empty", 0);
+  setRevision(none);
+  const e0: any = await api.info(none).catch((x: any) => x);
+  check("a project with no history gets bad_revision and a hint with no number", e0.code === "bad_revision" && /undo/.test(e0.hint) && !/"revision" to \d/.test(e0.hint), { code: e0.code, hint: e0.hint });
+  rmSync(join(none, ".agentcut"), { recursive: true, force: true }); // a deleted history looks the same as an empty one
+  const e1: any = await api.info(none).catch((x: any) => x);
+  check("a deleted history gets no number either, and reading the error creates no history", e1.code === "bad_revision" && !/"revision" to \d/.test(e1.hint) && !existsSync(join(none, ".agentcut")), { code: e1.code, hint: e1.hint });
+}
+
+console.log("info prints a project that has a clip with no id (validate names it)");
+{
+  const d = join(tmp, "no-id");
+  api.create(d, { preset: "reels" });
+  await applyLatest(d, [{ op: "add_clip", track: "text", type: "text", text: "hello", at: 0, duration: 2 }]);
+  const t = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+  for (const tr of t.tracks) for (const c of tr.clips) delete c.id;
+  writeFileSync(join(d, "project.json"), JSON.stringify(t));
+  const r: any = await api.info(d).catch((x: any) => x);
+  check("info resolves with a summary of the clip and the validation error", typeof r.summary === "string" && r.summary.includes("hello") && r.errors >= 1, { code: r.code, message: r.message });
+}
+
 console.log("render -o subs.srt writes captions (CLI and MCP agree)");
 {
   await applyLatest(P, [{ op: "add_captions", words: [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "world", start: 0.6, end: 1 }] }]);
