@@ -214,17 +214,18 @@ export function registerEditOps(h: OpHelpers) {
         const out: Dict = { id: v.id, audio: aud.id, detached };
         if (s > limit + EPS) {
           if (limit < 0.01) {
-            const pieces = detached ? [] : linkedAudio(tl, v).map(([, x]) => x), vt = tl.tracks.find((t) => t.clips.includes(v));
-            const trim = (end: "trim_start" | "trim_end") => { // trim_clip carries the audio of a forward video with one audio clip; a reversed video's audio it leaves alone, and a video with several it refuses
+            const own = linkedAudio(tl, v).map(([, x]) => x), pieces = detached ? [] : own, vt = tl.tracks.find((t) => t.clips.includes(v));
+            const trim = (end: "trim_start" | "trim_end") => { // trim_clip carries the audio of a forward video with one audio clip; a reversed video's audio it leaves alone, a video with several it refuses, and an attached clip that is not the video's own sound it never reaches
+              if (!detached && !own.includes(aud)) return `'${aud.id}' is not the sound of '${v.id}', so trimming '${v.id}' gives it no source`;
               if (pieces.length < 2) return pieces.length && v.reverse ? alongReversed(end, v, aud) : `trim_clip ${end} on '${v.id}' first`;
               if (v.reverse) return end === "trim_end" ? alongReversed(end, v, aud) : `'${v.id}' is reversed and has ${pieces.length} audio clips, which no trim_start keeps in line`;
               // shortcut: assumes the audio clips tile the video, so the refusing one is the last (tail) or the first (head) and a split at its inner edge gives it a picture of its own
-              return `'${v.id}' has ${pieces.length} audio clips, so trim_clip refuses it: split_clip '${v.id}' at ${fmt(lead ? clipEnd(aud) : clipStart(aud))} first so that '${aud.id}' has a picture of its own, and repeat`;
+              return `'${v.id}' has ${pieces.length} audio clips, so trim_clip refuses it: split_clip '${v.id}' at ${round6(lead ? clipEnd(aud) : clipStart(aud))} first so that '${aud.id}' has a picture of its own, then repeat the ${lead ? "j_cut" : "l_cut"}`; // the stored edge: splitAt gives a piece starting there to the right half whole, a rounded time would split it
             };
             const jcures = () => [room(tl, aud, side) < 0.01 && `spare source at the audio's head: ${trim("trim_start")}`, // each bound that tripped gets its own cure
               clipStart(aud) < 0.01 && `a clip that starts after timeline 0: ${vt?.magnetic ? `add a clip before it (add_clip track='${vt.id}' before='${v.id}'), or move_clip '${v.id}' to a non-magnetic track at a later time` : `move_clip '${v.id}' to a later time`}`].filter(Boolean).join("; and ");
             throw new EditError(`cannot ${lead ? "lead" : "extend"} the audio of '${v.id}': ${lead && clipStart(aud) < 0.01 ? "it already starts at 0" : "no more source media"}`, "out_of_range",
-              lead ? `a J-cut needs ${jcures()}` : `an L-cut needs source after the clip's out-point; ${trim("trim_end")}${canLoop(tl.assets, aud, v) ? ` or set loop: true on '${detached ? v.id : aud.id}'` : ""}`); // a refused batch discards the audio clip made here; detach copied the video's loop to it
+              lead ? `a J-cut needs ${jcures()}` : `an L-cut needs source after the clip's out-point; ${trim("trim_end")}${canLoop(tl.assets, aud, v) ? `; or set loop: true on '${detached ? v.id : aud.id}'` : ""}`); // a refused batch discards the audio clip made here; detach copied the video's loop to it
           }
           s = round6(limit);
           out.clamped = { requested: req, applied: s, reason: lead && clipStart(aud) <= room(tl, aud, side) ? "timeline start" : "source media" };
