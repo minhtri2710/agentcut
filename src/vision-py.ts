@@ -1,6 +1,8 @@
 // Python helper for the vision features, run through `uv run --with <pkgs>` (see vision.ts). Kept as a TS string so the
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
+import { CONVERSIONS, conversionChain } from "./model.ts";
+
 export const VISION_PY = String.raw`
 import json, os, signal, stat, subprocess, sys, tempfile, threading
 
@@ -35,12 +37,15 @@ if stat.S_ISFIFO(_m) or stat.S_ISSOCK(_m): threading.Thread(target=_stop_on_eof,
 
 _MATRICES = ("gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2")  # the project's COLOR_SPACES (a test compares them)
 
-def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None):  # matrix: the picture is tagged with it before the conversion, as FrameSource reads it; only a name in the list above
+_CONVERT = ${JSON.stringify(Object.fromEntries(CONVERSIONS.map((k) => [k, conversionChain(k).join(",")])))}  # the project's conversion to BT.709 for each key (conversionChain in model.ts): the filters FrameSource runs
+
+def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None):  # matrix: the picture is tagged with it before the conversion, as FrameSource reads it; only a name in the list above. convert: a key of _CONVERT, run right after
     if matrix is not None and matrix not in _MATRICES: raise SystemExit("matrix is not a name this helper reads with: %r" % (matrix,))
+    if convert is not None and convert not in _CONVERT: raise SystemExit("convert is not a conversion this helper has: %r" % (convert,))
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if start is not None: args += ["-ss", "%.6f" % start]
     if dur is not None: args += ["-t", "%.6f" % dur]
-    vf = ("setparams=colorspace=%s," % matrix if matrix else "") + ("fps=%.6f," % float(fps) if fps else "") + "scale=%d:%d:flags=bicubic" % (w, h)
+    vf = ("fps=%.6f," % float(fps) if fps else "") + ("setparams=colorspace=%s," % matrix if matrix else "") + (_CONVERT[convert] + "," if convert else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
     p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)
@@ -135,7 +140,7 @@ def matte(j):
         m = np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
         return np.dstack([f, m])
     if j["kind"] == "image":
-        f = next(frames(j["path"], None, None, None, w, h, "rgb24", j.get("matrix")))
+        f = next(frames(j["path"], None, None, None, w, h, "rgb24", j.get("matrix"), j.get("convert")))
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset
         return {"out": j["out"], "frames": 1}
     # MATTE_FACTS in media.ts assumes this writer: an intra-only prores_ks mov that starts at 0
@@ -145,7 +150,7 @@ def matte(j):
     errf = tempfile.TemporaryFile()
     e = _spawn(enc, stdin=subprocess.PIPE, stderr=errf)
     n = 0
-    for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24", j.get("matrix")):
+    for f in frames(j["path"], None, None, j["fps"], w, h, "rgb24", j.get("matrix"), j.get("convert")):
         e.stdin.write(rgba(f).tobytes()); n += 1
     e.stdin.close(); e.wait(); errf.seek(0); err = errf.read().decode("utf8", "replace")
     if e.returncode != 0: raise SystemExit("ffmpeg encode: " + err[:400])

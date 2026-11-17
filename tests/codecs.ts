@@ -969,7 +969,7 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
 {
   const { FrameSource, MATTE_FACTS } = await import("../src/media.ts");
   // flat green, converted to YUV with the named matrix, then the tags are set or cleared: "none" writes no tag, "709" and "601" write the set that goes with that matrix
-  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv", "2020": "colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv" };
+  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv", "2020": "colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv", dci: "colorspace=bt709:color_primaries=bt709:color_trc=smpte428:range=tv" };
   const mk = (name: string, size: string, matrix: "bt709" | "bt601" | "bt2020", tags: keyof typeof SET) => {
     const f = join(m, `${name}.mp4`);
     ff("-f", "lavfi", "-i", `color=c=0x00ff00:s=${size}:r=24:d=1,format=rgba`, "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,setparams=${SET[tags]},format=yuv420p`, "-c:v", "libx264", f);
@@ -977,10 +977,13 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   };
   const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
   const hd709t = mk("hd709-tagged", "1280x720", "bt709", "709"), hd601t = mk("hd601-tagged", "1280x720", "bt601", "601"), hd601 = mk("hd601-untagged", "1280x720", "bt601", "none");
-  const hd2020t = mk("hd2020-tagged", "1280x720", "bt2020", "2020");
+  const hd2020t = mk("hd2020-tagged", "1280x720", "bt2020", "2020"), hdDci = mk("hd-dci", "1280x720", "bt709", "dci");
   check("the probe records the stream's own matrix tag, and one fixed word when it has none",
     [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space).join() === "unknown,unknown,bt709,smpte170m,bt2020nc", [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space));
-  // a render names a BT.2020 source in its warnings (the export is tagged BT.709 over colours that are not converted); a BT.709 source adds nothing
+  check("the probe records the stream's own primaries and transfer tags, and one fixed word when it has none",
+    [hd709, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`).join() === "unknown/unknown,bt709/bt709,smpte170m/smpte170m,bt2020/bt709,bt709/smpte428",
+    [hd709, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`));
+  // a render names a source whose colours are not converted in its warnings (the export is tagged BT.709); a BT.709 source, and a BT.2020 one that is converted, add nothing
   const warnsOf = async (name: string, src: string) => {
     const D = join(tmp, `warn-${name}`);
     api.create(D, { width: W, height: H, fps: 10 });
@@ -989,11 +992,11 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     return [((await renderVideo(dp.absolutized(dp.load()), dp.root, join(D, "renders", "o.mp4"), { workers: 1 })) as any).warnings as string[],
       ((await api.render(D, { out: join(D, "renders", "o.png"), sheet: false })) as any).warnings as string[] | undefined ?? []];
   };
-  const [[warn709, still709], [warn2020, still2020]] = [await warnsOf("ctl", hd709t), await warnsOf("wide", hd2020t)];
-  check("a render of a BT.2020 source warns once, naming the asset; the BT.709 control gets no such warning",
-    warn2020.length === warn709.length + 1 && warn2020.filter((w) => w.includes("'wide'")).length === 1 && !warn709.some((w) => w.includes("'ctl'")), { warn709, warn2020 });
-  check("so does a still render of it (.png), and the control's still gets none",
-    still2020.filter((w) => w.includes("'wide'")).length === 1 && still709.length === 0, { still709, still2020 });
+  const [[warn709, still709], [warnDci, stillDci], [warn2020, still2020]] = [await warnsOf("ctl", hd709t), await warnsOf("dci", hdDci), await warnsOf("wide", hd2020t)];
+  check("a render of a source with an unconverted transfer warns once, naming the asset; the BT.709 control and a converted BT.2020 source get no such warning",
+    warnDci.length === warn709.length + 1 && warnDci.filter((w) => w.includes("'dci'")).length === 1 && !warn709.some((w) => w.includes("'ctl'")) && !warn2020.some((w) => w.includes("'wide'")), { warn709, warnDci, warn2020 });
+  check("so does a still render of it (.png), and the control's and the converted source's stills get none",
+    stillDci.filter((w) => w.includes("'dci'")).length === 1 && still709.length === 0 && still2020.length === 0, { still709, stillDci, still2020 });
   const centre = async (f: string, facts: Record<string, unknown> = {}) => {
     const info = api.probe(f), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
     try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }
@@ -1028,6 +1031,43 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-frames:v", "2", gifHd);
   const gifInfo = api.probe(gifHd), gifPx = await centre(gifHd).catch((e) => String(e?.message ?? e).slice(0, 200));
   check("an HD gif (probe: kind video, color_space recorded as given) decodes through FrameSource to the colour drawn", gifInfo.kind === "video" && Array.isArray(gifPx) && green(gifPx), { kind: gifInfo.kind, color_space: gifInfo.color_space, gifPx });
+
+  // PQ, HLG and BT.2020 with an SDR curve are converted to BT.709 before anything else: six flat patches of known SDR colour are authored into each
+  // (SDR RGB -> linear light -> BT.2020 primaries -> the curve, from the published formulas; 8-bit signal in a 10-bit 4:4:4 ProRes file), and each comes back as the colour it was made from.
+  const PATCHES = [[0xc0, 0x30, 0x30], [0x30, 0xa0, 0x60], [0x30, 0x50, 0xe0], [0x80, 0x80, 0x80], [0xff, 0xff, 0xff], [0x20, 0x20, 0x20]];
+  const TO2020 = [[0.627404, 0.329283, 0.043313], [0.069097, 0.919540, 0.011362], [0.016391, 0.088013, 0.895595]]; // linear BT.709 to BT.2020 (BT.2087)
+  const pqInv = (nit: number) => { const y = (nit / 10000) ** 0.1593017578125; return ((0.8359375 + 18.8515625 * y) / (1 + 18.6875 * y)) ** 78.84375; };
+  const hlgOetf = (e: number) => (e <= 1 / 12 ? Math.sqrt(3 * e) : 0.17883277 * Math.log(12 * e - 0.28466892) + 0.55991073);
+  const TRC = { pq: "smpte2084", hlg: "arib-std-b67", sdr: "bt709" };
+  const signal = (kind: keyof typeof TRC, rgb: number[]) => {
+    const lin = TO2020.map((r) => r.reduce((s, v, j) => s + v * (rgb[j] / 255) ** 2.4, 0)), nit = lin.map((v) => v * 203); // 1.0 = SDR white = 203 nit
+    if (kind === "sdr") return lin.map((v) => v ** (1 / 2.4));
+    if (kind === "pq") return nit.map(pqInv);
+    const k = 1000 * ((0.2627 * nit[0] + 0.678 * nit[1] + 0.0593 * nit[2]) / 1000) ** (0.2 / 1.2); // BT.2100: display light = 1000 * Ys^0.2 * Es (Y from the BT.2020 luma weights), inverted
+    return nit.map((n) => hlgOetf(n / k));
+  };
+  const authored = (kind: keyof typeof TRC) => {
+    const f = join(m, `patches-${kind}.mov`), box = PATCHES.map((p, i) => `drawbox=x=${i * 16}:y=0:w=16:h=32:c=0x${signal(kind, p).map((v) => Math.round(Math.min(Math.max(v, 0), 1) * 255).toString(16).padStart(2, "0")).join("")}:t=fill`).join(",");
+    ff("-f", "lavfi", "-i", `color=c=black:s=96x32:r=24:d=1,format=gbrp,${box}`, "-vf", `scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${TRC[kind]}:range=tv,format=yuv444p10le`, "-c:v", "prores_ks", "-profile:v", "4", f);
+    return f;
+  };
+  const bandsOf = async (f: string, facts: Record<string, unknown> = {}) => {
+    const src = new FrameSource({ path: f, kind: "video", srcW: 96, srcH: 32, rate: 24, fit: "fill", box: [96, 32], facts: { ...api.probe(f), ...facts } as any });
+    try { const b = await src.readAt(0); return PATCHES.map((_, i) => [0, 1, 2].map((c) => b[(16 * 96 + i * 16 + 8) * 4 + c])); } finally { src.close(); }
+  };
+  const off = (got: number[][]) => Math.max(...got.flatMap((p, i) => p.map((v, c) => Math.abs(v - PATCHES[i][c]))));
+  const files = { pq: authored("pq"), hlg: authored("hlg"), sdr: authored("sdr") };
+  check("the probe records PQ, HLG and BT.2020 primaries as the file tags them", `${api.probe(files.pq).color_primaries}/${api.probe(files.pq).color_transfer}` === "bt2020/smpte2084"
+    && `${api.probe(files.hlg).color_primaries}/${api.probe(files.hlg).color_transfer}` === "bt2020/arib-std-b67" && `${api.probe(files.sdr).color_primaries}/${api.probe(files.sdr).color_transfer}` === "bt2020/bt709");
+  for (const [kind, what] of [["pq", "PQ"], ["hlg", "HLG"], ["sdr", "BT.2020 with an SDR curve"]] as const) {
+    const got = await bandsOf(files[kind]), raw = await bandsOf(files[kind], { color_primaries: "unknown", color_transfer: "unknown" });
+    check(`a ${what} source is read as the BT.709 colours it was made from (within 6 per channel); with its tags unknown it is not (the same file, off by tens)`, off(got) <= 6 && off(raw) > 20, { got, off: off(got), unconverted: off(raw) });
+  }
+  const keyOf = (color_space: string, color_primaries: string, color_transfer: string) =>
+    new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space, color_primaries, color_transfer } as any }).pixelKey;
+  const keys = [keyOf("bt2020nc", "bt2020", "smpte2084"), keyOf("bt2020nc", "bt2020", "arib-std-b67"), keyOf("bt2020nc", "bt2020", "bt709"), keyOf("bt2020nc", "unknown", "smpte2084"), keyOf("bt2020nc", "unknown", "unknown")];
+  check("the pixel key follows the conversion: PQ, HLG, BT.2020 with an SDR curve and PQ without BT.2020 primaries differ from each other and from an unconverted source; an SDR BT.709 source and an untagged one share a key",
+    new Set(keys).size === 5 && keyOf("bt709", "bt709", "bt709") === keyOf("bt709", "unknown", "unknown"), keys.map((k) => k.length));
 }
 
 console.log("the JPEG side limit render.ts refuses at");

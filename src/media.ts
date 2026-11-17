@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
-import { COLOR_SPACES, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
+import { COLOR_SPACES, conversionChain, conversionFor, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
@@ -158,7 +158,8 @@ export function probe(path: string): any {
         // a matrix name ffprobe prints that the decode filter has no word for is refused here, so the record only ever holds a name matrixFor accepts
         const cs = String(v.color_space ?? "unknown");
         if (!COLOR_SPACES.includes(cs) && !NO_MATRIX.includes(cs)) throw new EditError(`${path} names the colour matrix '${cs}', which AgentCut cannot read with`, "bad_media", `supported: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}; re-encode the file with a tag from that list`);
-        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs });
+        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs,
+          color_primaries: String(v.color_primaries ?? "unknown"), color_transfer: String(v.color_transfer ?? "unknown") });
         if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
       }
     } else if (a || AUDIO_EXT.has(ext)) {
@@ -273,7 +274,7 @@ export interface SourceOpts {
 }
 
 /** The facts of a background-removal matte: AgentCut writes it as intra-only ProRes in a mov file that starts at 0 (vision-py.ts), so nothing is held back or starts late. */
-export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, format: "mov,mp4,m4a,3gp,3g2,mj2", reorder: 0, color_space: "smpte170m" }; // the writer converts with the BT.601 matrix and writes no tag: named here, so the picture is read as it was written, at any size
+export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, format: "mov,mp4,m4a,3gp,3g2,mj2", reorder: 0, color_space: "smpte170m", color_primaries: "unknown", color_transfer: "unknown" }; // the writer converts with the BT.601 matrix and writes no tag: named here, so the picture is read as it was written, at any size, and as it is (SDR RGB, nothing to convert)
 
 /** The tie rule of the slot grid. The stream's timestamps are shifted by TIE_BIAS slots before `fps` rounds them to slots, so slot j shows the latest source frame at or
  *  before the slot's time plus (0.5 - TIE_BIAS) slots: the nearest frame, and a frame exactly halfway between two slots belongs to the later slot (the slot before it keeps the older frame).
@@ -324,9 +325,10 @@ export class FrameSource {
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
-    // the picture is tagged with the matrix it is read with first (the asset's own name, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix
-    const matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH) : undefined;
-    const vf: string[] = matrix ? [`setparams=colorspace=${matrix}`] : [];
+    // the picture is tagged with the matrix it is read with first (the asset's own name, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix;
+    // PQ, HLG and BT.2020 primaries are then converted to BT.709 (conversionChain), before crop, the clip's filters and the grade
+    const matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH) : undefined, convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined;
+    const vf: string[] = [...(matrix ? [`setparams=colorspace=${matrix}`] : []), ...(convert ? conversionChain(convert) : [])];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
     vf.push(...filterChain(o.filters), ...gradeChain(o.color));
     const fb = fitBox(cw, ch, Math.max(1, Math.round(o.box[0])), Math.max(1, Math.round(o.box[1])), o.fit);

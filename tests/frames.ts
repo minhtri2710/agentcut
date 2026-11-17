@@ -184,8 +184,8 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
 {
   const p = (f: string) => api.probe(f);
   check("the probe records what a read needs: the video's start, the reorder delay, and the keyframe gap only where a seek may land late",
-    Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif" && p(v25.plain).color_space === "unknown",
-    { cs: p(v25.plain).color_space, late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
+    Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif" && p(v25.plain).color_space === "unknown" && p(v25.plain).color_primaries === "unknown" && p(v25.plain).color_transfer === "unknown",
+    { cs: p(v25.plain).color_space, prim: p(v25.plain).color_primaries, trc: p(v25.plain).color_transfer, late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
 }
 
 console.log("loops, reverse, freeze and the held last frame");
@@ -353,10 +353,10 @@ console.log("exports, validation and relinking");
 
   const fixed = JSON.parse(readFileSync(join(P, "project.json"), "utf8"));
   const ids = Object.keys(fixed.assets), first = ids[0];
-  for (const k of ["container_start", "video_start", "format", "reorder", "color_space"]) delete fixed.assets[first][k];
+  for (const k of ["container_start", "video_start", "format", "reorder", "color_space", "color_primaries", "color_transfer"]) delete fixed.assets[first][k];
   writeFileSync(join(P, "project.json"), JSON.stringify(fixed, null, 2));
   const bare: any = await api.validate(P);
-  check("a video asset without the probe fields is a validation error that names them and points at relink_asset", !bare.valid && /container_start, video_start, format, reorder, color_space/.test(JSON.stringify(bare)) && /relink_asset id=\S+ path=/.test(JSON.stringify(bare)), bare);
+  check("a video asset without the probe fields is a validation error that names them and points at relink_asset", !bare.valid && /container_start, video_start, format, reorder, color_space, color_primaries, color_transfer/.test(JSON.stringify(bare)) && /relink_asset id=\S+ path=/.test(JSON.stringify(bare)), bare);
   const rendered = await api.render(P, { out: join(tmp, "bare.mp4"), sheet: false }).then(() => "rendered", (e: any) => e?.code ?? String(e));
   check("and it does not render", rendered !== "rendered", rendered);
   const again: any = JSON.parse(readFileSync(join(P, "project.json"), "utf8")).assets[first];
@@ -380,21 +380,36 @@ console.log("exports, validation and relinking");
   const refusedNames: (readonly [unknown, any])[] = [];
   for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", 709, null]) refusedNames.push([v, await withName(v)] as const);
   check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
-  check("a BT.2020 matrix on a video asset gives one warning on its color_space, naming the asset; the other names give none",
-    warned.every(([v, paths]) => (["bt2020nc", "bt2020c", "ictcp"].includes(v) ? paths.join() === `$.assets.${first}.color_space` : paths.length === 0)), warned);
+  check("a BT.2020 matrix on a video asset with no primaries or transfer tag gives one warning on its color_space, naming the asset; the other names give none",
+    warned.every(([v, paths]) => (v === "bt2020nc" ? paths.join() === `$.assets.${first}.color_space` : paths.length === 0)), warned);
   check("any other name or an empty one is a validation error naming color_space and the list; another type is an error naming color_space",
     refusedNames.every(([v, r]) => !r.valid && /color_space/.test(JSON.stringify(r)) && (typeof v !== "string" || (r.issues ?? []).some((i: any) => i.path?.endsWith("color_space") && /bt709/.test(i.message)))), refusedNames.map(([v, r]) => [v, r.valid, JSON.stringify(r).slice(0, 160)]));
   await withName(was);
-  const wideFile = join(m, "bt2020.mp4");
-  ff("-f", "lavfi", "-i", "color=c=0x30a060:s=160x120:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv,format=yuv420p", "-c:v", "libx264", wideFile);
-  const WP = join(tmp, "wide-import"), wq = api.create(WP, { width: W, height: H, fps: 24 });
-  const imported: any = await api.apply(WP, [{ op: "import_media", path: wideFile, id: "wide" }], { revision: wq.revision });
-  check("import_media of a BT.2020 file lists the warning in its issues", imported.results[0].color_space === "bt2020nc"
-    && imported.issues.filter((i: any) => i.level === "warning" && i.path === "$.assets.wide.color_space" && i.message.includes("'wide'")).length === 1, imported.issues);
+  // the colour tags a warning goes by: [matrix, primaries, transfer, the field the warning is on, or null for none]. Converted: PQ, HLG, BT.2020 primaries with an SDR curve.
+  const tagged: [string, string, string, string | null][] = [["bt709", "bt709", "smpte428", "color_transfer"], ["bt709", "smpte432", "bt709", "color_primaries"], ["bt2020nc", "unknown", "unknown", "color_space"],
+    ["unknown", "bt2020", "smpte2084", "color_space"], ["bt2020nc", "bt2020", "smpte2084", null], ["bt2020nc", "bt2020", "arib-std-b67", null], ["bt2020nc", "bt2020", "bt709", null], ["bt709", "bt709", "bt709", null]];
+  const seen: unknown[] = [], wasTags = [named.assets[first].color_primaries, named.assets[first].color_transfer];
+  for (const [cs, prim, trc, field] of tagged) {
+    named.assets[first].color_space = cs; named.assets[first].color_primaries = prim; named.assets[first].color_transfer = trc;
+    writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+    const r: any = await api.validate(P), paths = (r.issues ?? []).filter((i: any) => i.level === "warning" && i.message.includes(`'${first}' `) && /colo|BT\.2020/.test(i.message)).map((i: any) => i.path);
+    seen.push([cs, prim, trc, r.valid, paths.join()]);
+    if (!r.valid || paths.join() !== (field ? `$.assets.${first}.${field}` : "")) seen.push("WRONG");
+  }
+  check("a colour the conversion does not cover warns once on the field to fix: an unconverted transfer, unconverted primaries, a BT.2020 matrix with no tags, and PQ read through another matrix; PQ, HLG and BT.2020 primaries do not",
+    !seen.includes("WRONG"), seen);
+  [named.assets[first].color_space, named.assets[first].color_primaries, named.assets[first].color_transfer] = [was, ...wasTags];
+  writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
+  const dciFile = join(m, "dci.mp4");
+  ff("-f", "lavfi", "-i", "color=c=0x30a060:s=160x120:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=bt709:color_primaries=bt709:color_trc=smpte428:range=tv,format=yuv420p", "-c:v", "libx264", dciFile);
+  const WP = join(tmp, "dci-import"), wq = api.create(WP, { width: W, height: H, fps: 24 });
+  const imported: any = await api.apply(WP, [{ op: "import_media", path: dciFile, id: "dci" }], { revision: wq.revision });
+  check("import_media records the file's primaries and transfer, and lists the warning for an unconverted one in its issues", imported.results[0].color_primaries === "bt709" && imported.results[0].color_transfer === "smpte428"
+    && imported.issues.filter((i: any) => i.level === "warning" && i.path === "$.assets.dci.color_transfer" && i.message.includes("'dci'")).length === 1, imported.issues);
   // the colour warning is listed after the clip warnings, so a cut list (apply shows 15) drops its repeats first: here a clip longer than the 1 s file warns
-  await api.apply(WP, [{ op: "add_clip", track: "main", asset: "wide", duration: 2 }], { revision: imported.revision });
-  const ordered: any = (await api.validate(WP)).issues, colourAt = ordered.findIndex((i: any) => i.path === "$.assets.wide.color_space"), clipAt = ordered.findIndex((i: any) => i.level === "warning" && /^\$\.tracks.*\.duration$/.test(i.path));
-  check("a clip's warning comes before the BT.2020 colour warning in validate's issues", clipAt >= 0 && colourAt > clipAt, ordered.map((i: any) => `${i.level} ${i.path}`));
+  await api.apply(WP, [{ op: "add_clip", track: "main", asset: "dci", duration: 2 }], { revision: imported.revision });
+  const ordered: any = (await api.validate(WP)).issues, colourAt = ordered.findIndex((i: any) => i.path === "$.assets.dci.color_transfer"), clipAt = ordered.findIndex((i: any) => i.level === "warning" && /^\$\.tracks.*\.duration$/.test(i.path));
+  check("a clip's warning comes before the colour warning in validate's issues", clipAt >= 0 && colourAt > clipAt, ordered.map((i: any) => `${i.level} ${i.path}`));
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {

@@ -124,6 +124,8 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   reorder: [["number"], "video file: frames the decoder holds back before output (has_b_frames), an integer >= 0"],
   key_gap: [["number"], "video file in a format whose seek may land after the target: the longest stretch between keyframes, seconds, a number > 0"],
   color_space: [["string"], "video file: the matrix its picture is read with, as ffprobe names it, one of COLOR_SPACES; 'unknown' or 'reserved' when the file has no tag (then HD is read as bt709, smaller as the decoder's default); import_media records the file's own tag, a name set by hand replaces it"],
+  color_primaries: [["string"], "video file: the primaries the picture is tagged with, as ffprobe names it ('unknown' when untagged); bt2020 is converted to BT.709"],
+  color_transfer: [["string"], "video file: the transfer curve the picture is tagged with, as ffprobe names it ('unknown' when untagged); smpte2084 (PQ) and arib-std-b67 (HLG) are converted to BT.709"],
 };
 const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
 const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> = {
@@ -150,10 +152,10 @@ const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: st
 /** Whether validate accepts `loop` on every one of these clips: not reversed, and no `loopRefusal`. A hint offers loop only when this holds. */
 export const canLoop = (assets: Dict, ...clips: Clip[]) => clips.every((c) => !c.reverse && !(own(assets, c.asset) && loopRefusal(c, c.asset, assets[c.asset])));
 /** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
-export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; key_gap?: number }
+export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; color_primaries: string; color_transfer: string; key_gap?: number }
 /** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
 export function missingFacts(a: Dict): string[] {
-  const miss = ["container_start", "video_start", "format", "reorder", "color_space"].filter((k) => a[k] === undefined || a[k] === null);
+  const miss = ["container_start", "video_start", "format", "reorder", "color_space", "color_primaries", "color_transfer"].filter((k) => a[k] === undefined || a[k] === null);
   if (typeof a.format === "string" && !seeksBefore(a.format) && (a.key_gap === undefined || a.key_gap === null)) miss.push("key_gap");
   return miss;
 }
@@ -161,20 +163,45 @@ export function missingFacts(a: Dict): string[] {
  *  'unknown' and 'reserved' (ffprobe prints it, the filter has no such name) say the file names no matrix. Nothing else reaches an ffmpeg argument. */
 export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2"];
 export const NO_MATRIX = ["unknown", "reserved"];
-/** The matrix names of BT.2020 colour (wide gamut, and the HDR a phone records): the picture's curve and primaries are not converted, yet an export is tagged BT.709. */
-export const BT2020_SPACES = ["bt2020nc", "bt2020c", "ictcp"];
-/** The warning for a video asset in BT.2020 colour (undefined for any other asset); validate and a render's warnings print it. */
-export function wideColourIssue(id: string, a: Dict | undefined): { message: string; hint: string } | undefined {
-  if (a?.kind !== "video" || !BT2020_SPACES.includes(a.color_space)) return undefined;
-  return {
-    message: `'${id}' is BT.2020 colour (a wide-gamut or HDR source, such as phone HDR video): its colours are not converted, so the export, made as BT.709, can look washed out or dim`,
-    hint: "convert the file to SDR BT.709 first (tone-map it with a video tool), then relink_asset to the copy",
-  };
+/** The conversion to BT.709 a picture with these primaries and transfer gets before anything else is done to it (undefined: none): PQ, HLG, and BT.2020 primaries with an SDR curve.
+ *  The key names the curve (pq, hlg, sdr) and, after a +, the primaries step (only for BT.2020 primaries). */
+const SDR_CURVES = ["bt709", "smpte170m", "bt2020-10", "bt2020-12", "unknown"];
+export const CONVERSIONS = ["pq", "pq+2020", "hlg", "hlg+2020", "sdr+2020"];
+export function conversionFor(primaries: string, transfer: string): string | undefined {
+  const wide = primaries === "bt2020", curve = transfer === "smpte2084" ? "pq" : transfer === "arib-std-b67" ? "hlg" : wide && SDR_CURVES.includes(transfer) ? "sdr" : undefined;
+  return curve && (wide ? `${curve}+2020` : curve);
 }
-/** The warning text for each BT.2020 video asset a clip of the timeline uses: what a video or still render adds to its `warnings`. */
-export function wideColourWarnings(tl: Timeline): string[] {
+/** The filters of a conversion, run on the picture after its matrix is tagged (FrameSource and the vision helper both build their chains from this). In 16-bit planar RGB:
+ *  the curve to linear light with 1.0 = 1000 nit (PQ: the ST 2084 EOTF; HLG: the inverse OETF, then the BT.2100 system gamma 1.2 on the luma, 1000 nit; SDR: gamma 2.4),
+ *  BT.2087 for BT.2020 to BT.709 primaries, then SDR white (203 nit; 1.0 for an SDR curve) clipped hard to 1.0 and the BT.1886 inverse curve. */
+export function conversionChain(key: string): string[] {
+  const [curve, wide] = key.split("+"), e = "(val/maxval)", lut = (x: string) => `lutrgb=r='${x}':g='${x}':b='${x}'`, luma = "rr=0.2627:rg=0.678:rb=0.0593:gr=0.2627:gg=0.678:gb=0.0593:br=0.2627:bg=0.678:bb=0.0593";
+  const f = ["format=gbrp16le"];
+  if (curve === "pq") { const p = `pow(${e},0.012683313515625)`; f.push(lut(`pow(max(${p}-0.8359375,0)/(18.8515625-18.6875*${p}),6.277394636015326)*10*maxval`)); }
+  else if (curve === "hlg") f.push(lut(`if(lte(${e},0.5),${e}*${e}/3,(exp((${e}-0.55991073)/0.17883277)+0.28466892)/12)*maxval`), `split[a][b];[b]colorchannelmixer=${luma},${lut("pow(val/maxval,0.2)*maxval")}[g];[a][g]blend=all_mode=multiply`);
+  else f.push(lut(`pow(${e},2.4)*maxval`));
+  if (wide) f.push("colorchannelmixer=rr=1.660491:rg=-0.587641:rb=-0.072850:gr=-0.124550:gg=1.132900:gb=-0.008349:br=-0.018151:bg=-0.100579:bb=1.118730");
+  f.push(lut(`pow(min(${e}/${curve === "sdr" ? 1 : 0.203},1),0.4166666667)*maxval`));
+  return f;
+}
+const UNCONVERTED_TRANSFERS = ["linear", "log100", "log316", "log", "log_sqrt", "smpte428", "iec61966-2-4", "bt1361e", "vlog"];
+const UNCONVERTED_PRIMARIES = ["smpte431", "smpte432", "vgamut"];
+/** The warning for a video asset whose colours the conversion leaves wrong, on the field to fix (undefined: the asset is converted, or SDR and left as it is); validate and a render's warnings print it. */
+export function colourIssue(id: string, a: Dict | undefined): { field: string; message: string; hint: string } | undefined {
+  if (a?.kind !== "video") return undefined;
+  const { color_space: matrix, color_primaries: primaries, color_transfer: transfer } = a, hint = "convert the file to SDR BT.709 first (tone-map it with a video tool), then relink_asset to the copy";
+  const left = "AgentCut does not convert these colours to BT.709, and the export is tagged BT.709, so they can look wrong";
+  if (UNCONVERTED_TRANSFERS.includes(transfer)) return { field: "color_transfer", message: `'${id}' is tagged ${primaries}/${transfer}: ${left}`, hint };
+  if (UNCONVERTED_PRIMARIES.includes(primaries)) return { field: "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer}: ${left}`, hint };
+  if ((transfer === "smpte2084" || transfer === "arib-std-b67") && matrix !== "bt2020nc")
+    return { field: "color_space", message: `'${id}' is ${transfer} with the ${NO_MATRIX.includes(matrix) ? "unnamed" : matrix} matrix: its curve is converted but read through that matrix, so the colours can look wrong`, hint };
+  if (matrix === "bt2020nc" && primaries === "unknown" && transfer === "unknown") return { field: "color_space", message: `'${id}' has a BT.2020 matrix but no primaries or transfer tag: ${left}`, hint };
+  return undefined;
+}
+/** The warning text for each video asset a clip of the timeline uses whose colours are left wrong: what a video or still render adds to its `warnings`. */
+export function colourWarnings(tl: Timeline): string[] {
   // shortcut: warns for every asset a clip uses, also audio-only, disabled, hidden or outside the section; filter by the drawn clips if it proves noisy
-  return [...new Set([...allClips(tl.tracks)].map((c) => c.asset))].flatMap((id) => wideColourIssue(id, tl.assets[id])?.message ?? []);
+  return [...new Set([...allClips(tl.tracks)].map((c) => c.asset))].flatMap((id) => colourIssue(id, tl.assets[id])?.message ?? []);
 }
 /** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one; else BT.709 when the picture is HD, a short side of 720 or more
  *  or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
@@ -816,15 +843,15 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   if (typeof st.sample_rate === "number" && !(Number.isInteger(st.sample_rate) && st.sample_rate >= SAMPLE_RATE_MIN && st.sample_rate <= SAMPLE_RATE_MAX))
     issues.push({ level: "error", path: "$.settings.sample_rate", message: `sample_rate must be an integer ${SAMPLE_RATE_MIN}..${SAMPLE_RATE_MAX} Hz`, hint: "48000 (default) or 44100" });
   const assets = tl.assets || {};
-  const wideColour: Issue[] = []; // pushed last, so a cut list drops these repeats before a clip's warning
+  const colour: Issue[] = []; // pushed last, so a cut list drops these repeats before a clip's warning
   for (const [aid, a] of Object.entries(assets)) {
     const ap = `$.assets.${aid}`;
     if (!a || typeof a !== "object" || Array.isArray(a)) { issues.push({ level: "error", path: ap, message: "asset must be an object" }); continue; }
     checkFields(a, ASSET_FIELDS, ap, issues, "asset");
     if (typeof a.color_space === "string" && !COLOR_SPACES.includes(a.color_space) && !NO_MATRIX.includes(a.color_space))
       issues.push({ level: "error", path: `${ap}.color_space`, message: `color_space must be one of ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}`, hint: `relink_asset id=${aid} path=${a.path} records the file's own tag` });
-    const wide = wideColourIssue(aid, a);
-    if (wide) wideColour.push({ level: "warning", path: `${ap}.color_space`, ...wide });
+    const left = colourIssue(aid, a);
+    if (left) colour.push({ level: "warning", path: `${ap}.${left.field}`, message: left.message, hint: left.hint });
     if (typeof a.path !== "string" || !a.path) issues.push({ level: "error", path: `${ap}.path`, message: "asset needs a path" });
     if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
@@ -836,7 +863,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$", ROOT);
   if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
-  return [...issues, ...wideColour];
+  return [...issues, ...colour];
 }
 
 /** The text a font check looks at: a text clip's text, a captions clip's words (upper-cased when the clip is); null for any other clip. */
@@ -1102,7 +1129,7 @@ export function schemaDoc() {
     timeline: {
       version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
       settings: f(SETTINGS_FIELDS),
-      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, color_space (the matrix its picture is read with: a name from COLOR_SPACES, or unknown), key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, color_space (the matrix its picture is read with: a name from COLOR_SPACES, or unknown), color_primaries and color_transfer (as the file tags them, or unknown), key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
     },
