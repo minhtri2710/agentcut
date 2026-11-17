@@ -187,6 +187,31 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
     Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif" && p(v25.plain).color_space === "unknown" && p(v25.plain).color_primaries === "unknown" && p(v25.plain).color_transfer === "unknown",
     { cs: p(v25.plain).color_space, prim: p(v25.plain).color_primaries, trc: p(v25.plain).color_transfer, late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
 }
+{
+  // an avi's stream header can start a stream late (1/rate units): ffprobe still reports 0, the packets carry the shift. ffmpeg cannot write one, so the test sets the video header's start in a copy of its own avi
+  const headerStart = (src: string, dst: string, stream: number, start: number) => {
+    const b = readFileSync(src), end = b.indexOf("movi");
+    let n = 0;
+    for (let i = b.indexOf("strh"); i >= 0 && i < end; i = b.indexOf("strh", i + 4)) if (n++ === stream) b.writeUInt32LE(start, i + 36);
+    writeFileSync(dst, b);
+    return dst;
+  };
+  const MPEG4 = ["-c:v", "mpeg4", "-q:v", "2"];
+  const aviPlain = make("av.avi", "25", 4, MPEG4, { audio: true }), aviLate = headerStart(aviPlain, join(m, "av-late.avi"), 0, 35); // 35 frames of 1/25 s: the picture starts at 1.4 s, the sound at 0
+  const aviVideo = make("v.avi", "25", 4, MPEG4), aviVideoLate = headerStart(aviVideo, join(m, "v-late.avi"), 0, 35); // video only: the whole file starts at 1.4 s
+  row("an avi whose picture starts 1.4 s after its sound: fresh, streamed and the rule agree, before the picture, at its start and at its end", await sweep("late-avi", aviLate, 24, [0, 0.9], [0, 0.5], [0, 1, 2, 12, 24, 35, 36, 60, 90]));
+  const a = api.probe(aviLate), vo = api.probe(aviVideoLate), pl = api.probe(aviPlain), last = timingOf(aviVideoLate).pts.length - 1;
+  check("the probe reads an avi's starts from its first packets: the picture late over sound, a video-only file starting late, and an avi with no shift unchanged",
+    Math.abs(a.container_start) < 0.05 && Math.abs(a.video_start - 1.4) < 0.05 && Math.abs(a.duration - 5.44) < 0.05
+    && Math.abs(vo.container_start - 1.4) < 0.05 && vo.video_start === 0 && Math.abs(vo.duration - 4.04) < 0.05
+    && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - 4.1) < 0.1, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]));
+  row("a video-only avi that starts at 1.4 s shows its first frame at the first slot and its last frame at the last", await attempt(async () => {
+    const f = source(aviVideoLate, 25, 0), l = source(aviVideoLate, 25, 0);
+    const first = await read(f, 0, 25), end = await read(l, last, 25);
+    f.close(); l.close();
+    return first === 0 && end === last ? [] : [`first slot frame ${first}, last slot (${last}) frame ${end}`];
+  }));
+}
 
 console.log("loops, reverse, freeze and the held last frame");
 row("a loop over mp4, video only and with AAC: fresh, streamed and the rule agree across the wrap", [...await sweep("loop", loop2, 24, [0, 1.5], [0, 0.5], [0, 20, 47, 48, 49, 50, 51, 60, 95, 96, 97], { loop: true }),

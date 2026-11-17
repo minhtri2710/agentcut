@@ -717,6 +717,11 @@ console.log("decode and render failures");
       made("ao-shift.nut", [...sine(2.5), "-c:a", "pcm_s16le", ...offset]), made("ao-shift.wma", [...sine(2.5), "-c:a", "wmav2", ...offset])];
     check("a webm, an audio-only mkv, ogg, nut and asf whose streams all start at 1.4 s record the length of the sound (2.5 s), not its end on the file's clock",
       is(shiftedWebm.duration, 2.5) && is(shiftedWebm.video_duration, 2) && shiftedAudio.every((i) => i.kind === "audio" && Math.abs(i.duration - 2.5) < 0.05), [shiftedWebm.duration, shiftedWebm.video_duration, ...shiftedAudio.map((i) => i.duration)]);
+    // a stream that starts before 0 on the file's clock (a cut, an edit list): the end on the clock is that much shorter than the length
+    const early = ["-output_ts_offset", "-0.5", "-avoid_negative_ts", "disabled"], earlySound = made("ao-early.mka", [...sine(2.5), "-c:a", "libopus", ...early]), earlyOgg = made("ao-early.ogg", [...sine(2.5), "-c:a", "libopus", ...early]);
+    const earlyMkv = made("mk-early.mkv", [...pic, "-itsoffset", "-0.5", ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", "-avoid_negative_ts", "disabled"]); // the sound starts at -0.5 s, the picture at 0 s
+    check("an mka and an ogg whose sound starts at -0.5 s, and an mkv whose sound does, record the 2.5 s of sound, not its end on the file's clock",
+      [earlySound, earlyOgg, earlyMkv].every((i) => Math.abs(i.duration - 2.5) < 0.05) && is(earlyMkv.container_start, -0.5) && is(earlyMkv.video_start, 0.5), [earlySound.duration, earlyOgg.duration, earlyMkv]);
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
     const shiftedMp4 = made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]);
     check("an mp4 whose streams all start at 1.4 s records its length (2.5 s), the container's start is not taken from it", Math.abs(shiftedMp4.duration - 2.5) < 0.05 && Math.abs(shiftedMp4.container_start - 1.4) < 0.05, shiftedMp4);
