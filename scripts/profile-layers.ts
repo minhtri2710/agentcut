@@ -8,7 +8,9 @@ Layer.prototype.frame = async function (tl, m) { const a = performance.now(); co
 const ra = FrameSource.prototype.readAt;
 FrameSource.prototype.readAt = async function (u) { const a = performance.now(); const r = await ra.call(this, u); add("  (decode wait)", performance.now() - a); return r; };
 const p = new Project(process.argv[2]);
-const r = new Renderer(p.absolutized(p.load()), p.root, 1);
+const tl = p.load();
+p.requireValid(tl);
+const r = new Renderer(p.absolutized(tl), p.root, 1);
 const od = (r as any).draw.bind(r);
 (r as any).draw = (img: any, c: any, ...rest: any[]) => { const a = performance.now(); od(img, c, ...rest); add(`draw:${c.id}`, performance.now() - a); };
 const n = Math.round(r.duration * r.fps);
