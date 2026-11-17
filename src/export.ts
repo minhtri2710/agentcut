@@ -28,7 +28,9 @@ export function rateOf(fps: unknown): Rate {
   const den = Math.round(f * 100);
   return { fps: den / 100, num: 100, den, ntsc: false };
 }
-const gcd = (a: number, b: number): number => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a || 1; };
+/** The whole frames in a recorded length: the probe keeps seconds to the microsecond, so a length may fall short of its frames by half a microsecond. */
+const wholeFrames = (sec: number, fps: number) => Math.floor(sec * fps + fps * 5e-7 + 1e-9);
+const gcd =(a: number, b: number): number => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a || 1; };
 /** Rational seconds string "n/ds" (reduced; whole seconds as "ns"). */
 function rat(n: number, d: number): string {
   if (!n) return "0s";
@@ -322,7 +324,7 @@ export function exportFcpxml(tl: Timeline, o: { name?: string } = {}): { xml: st
     const id = `r${rid++}`;
     assetIds.set(aid, id);
     const isAudio = a.kind === "audio", isImage = a.kind === "image", hasAudio = isAudio || !!a.has_audio;
-    const dur = isImage ? "0s" : T(Math.floor(Number(a.duration ?? 0) * rate.fps + 1e-6));
+    const dur = isImage ? "0s" : T(wholeFrames(Number(a.duration ?? 0), rate.fps));
     resources.push(X("asset", {
       id, name: basename(a.path, extname(a.path)), start: "0s", duration: dur,
       hasVideo: isAudio ? undefined : "1", format: isAudio ? undefined : formatFor(Number(a.width) || W, Number(a.height) || H, isImage ? null : Number(a.fps) || null),
@@ -457,7 +459,7 @@ export function exportOtio(tl: Timeline, o: { name?: string } = {}): { json: str
     ({ OTIO_SCHEMA: "Gap.1", metadata, name, source_range: TR(0, d), effects: [], markers: [], enabled, color: null });
   const ref = (aid: string) => {
     const a = tl.assets[aid];
-    const range = a.kind === "image" || !a.duration ? null : TR(0, Math.floor(Number(a.duration) * R + 1e-6));
+    const range = a.kind === "image" || !a.duration ? null : TR(0, wholeFrames(Number(a.duration), R));
     return { OTIO_SCHEMA: "ExternalReference.1", metadata: { agentcut: { asset: aid, kind: a.kind, width: a.width ?? null, height: a.height ?? null } },
       name: basename(a.path), available_range: range, available_image_bounds: null, target_url: fileUrl(a.path) };
   };

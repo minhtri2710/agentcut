@@ -193,6 +193,16 @@ weird.tracks[0].clips.splice(1, 0, { id: "cmp1", type: "compound", duration: 1, 
 weird.tracks[1].clips.push({ id: "zz1", type: "hologram", duration: 1, start: 0 } as any);
 const wf = exportFcpxml(weird), wo = exportOtio(weird);
 check("unknown types skipped, not fatal", wf.skipped.some((s) => s.id === "cmp1") && wo.skipped.some((s) => s.id === "zz1"));
+{ // a picture of 8 frames at 30000/1001 lasts 0.2669333 s, recorded as 0.266933: the whole frames of that record are still 8
+  const N8 = join(m, "ntsc8.mp4"), dirN = join(tmp, "proj-ntsc");
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30000/1001", "-frames:v", "8", "-pix_fmt", "yuv420p", N8);
+  const cN = api.create(dirN, { width: 64, height: 64, fps: 30000 / 1001 });
+  await api.apply(dirN, [{ op: "add_clip", track: "main", src: N8 }], { revision: cN.revision });
+  const pN = new Project(dirN), tlN = pN.absolutized(resolve(pN.load()));
+  const xmlN = exportFcpxml(tlN).xml, otioN = JSON.parse(exportOtio(tlN).json);
+  const rangeN = otioN.tracks.children.flatMap((t: any) => t.children).find((x: any) => x.media_references)?.media_references?.DEFAULT_MEDIA?.available_range?.duration?.value;
+  check("an NTSC picture of exactly 8 frames exports 8 frames in fcpxml (8008/30000s) and in otio", /<asset [^>]*duration="8008\/30000s"/.test(xmlN) && rangeN === 8, { asset: /<asset [^>]*duration="([^"]*)"/.exec(xmlN)?.[1], otio: rangeN });
+}
 
 // ---------------------------------------------------------------- real roundtrip through OpenTimelineIO (optional)
 const PY = process.env.AGENTCUT_OTIO_PY;

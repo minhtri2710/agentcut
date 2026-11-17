@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
-import { COLOR_SPACES, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
+import { COLOR_SPACES, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
@@ -59,6 +59,10 @@ const VIDEO_END_SLACK = 0.05;
 /** How far (s) the period of an un-sought loop may differ from the pass length (FrameSource.fillsPass). In a render both come from the same recorded length, so they cancel and what this bounds is `video_start`:
  *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is one tick of a matroska clock (1 ms), so a start offset above it is read pass by pass. */
 const PERIOD_TOLERANCE = 1e-3;
+/** The demuxers whose format duration is the end of the file's streams on the file's own clock, not their length (measured: a 2.5 s file whose streams start at 1.4 s reports 3.9 s). Every other demuxer measured (mov/mp4, mpegts, flv, mpeg-ps) reports the length.
+ *  shortcut: a demuxer off this list keeps the value ffprobe gives; add it when one is measured to report an end. */
+const END_ON_CLOCK_FORMATS = new Set(["matroska", "ogg", "nut", "asf"]);
+const endsOnClock = (format: string) => format.split(",").some((f) => END_ON_CLOCK_FORMATS.has(f));
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -117,8 +121,10 @@ export function probe(path: string): any {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
+    // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
     const cStart = Number(j.format?.start_time) || 0;
+    if (cStart > 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
     let ends: Map<number, number> | undefined;
     const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
     // a file with no length in it (a webm written to a pipe): the packets give it
@@ -306,7 +312,7 @@ export class FrameSource {
     // a pass of a loop ends at the picture's length: without it there is no slot where a pass ends (a freeze reads no pass)
     if (o.loop && o.kind === "video" && !o.reverse && !o.freeze && !(o.srcDuration! > 0))
       throw new EditError(`${o.path} cannot loop: its probe record has no picture length, so there is no point where a pass ends`, "bad_media",
-        "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), then relink_asset with the new path; or set loop false");
+        NO_LENGTH_HINT);
     if (o.kind !== "image") {
       const miss = missingFacts(o.facts ?? {});
       if (miss.length) throw new EditError(`the probe record of ${o.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");

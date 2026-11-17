@@ -135,6 +135,8 @@ const ASSET_NUMBERS: Record<string, readonly [(n: number) => boolean, string]> =
  *  A format off this list is read with the file's longest keyframe gap as pre-roll, and its clips cannot loop (a loop pass is read from a seek, and a seek in such a format can land after the frame asked for). */
 const SEEK_BEFORE_FORMATS = new Set(["mov", "matroska", "flv", "avi", "gif"]);
 export const seeksBefore = (format: string) => format.split(",").some((f) => SEEK_BEFORE_FORMATS.has(f));
+/** The cure for a video record with no picture length: the probe measures a file's packets, so a record without one is old, edited by hand, or of a file that holds no frames. */
+export const NO_LENGTH_HINT = "relink_asset the file to probe it again; if its length stays 0 the file holds no frames, so export it again from its source; or set loop false";
 /** Why `loop` is refused on a video clip over this video asset (null: it is accepted; reverse is its own rule). An audio clip loops in any format and over any length. A pass of a loop ends at the picture's length,
  *  so a video asset with none recorded has no point where a pass ends; a freeze reads no pass. */
 const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: string } | null => {
@@ -142,7 +144,7 @@ const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: st
   if (typeof a.format === "string" && !seeksBefore(a.format))
     return { message: `loop is not available on '${aid}' (${a.format}): a seek in that format can land after the frame asked for, so a looped pass would show the wrong frames`, hint: "remux the file to mp4 or mkv (ffmpeg -i <file> -c copy <file>.mp4), relink_asset the new file, or set loop false" };
   if (!c.freeze && !(sourceLen(a, "video") > 0))
-    return { message: `loop is not available on '${aid}': its probe record has no picture length, so there is no point where a pass ends`, hint: "remux the file to mkv (ffmpeg -i <file> -c copy <file>.mkv), relink_asset the new file, or set loop false" };
+    return { message: `loop is not available on '${aid}': its probe record has no picture length, so there is no point where a pass ends`, hint: NO_LENGTH_HINT };
   return null;
 };
 /** Whether validate accepts `loop` on every one of these clips: not reversed, and no `loopRefusal`. A hint offers loop only when this holds. */

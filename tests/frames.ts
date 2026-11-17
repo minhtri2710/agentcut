@@ -147,7 +147,7 @@ for (const [name, plain, aac, src, tl] of [["25 fps", v25.plain, v25.aac, 25, 24
   row(`${name} source on a ${tl} fps timeline, in-points at phases 0, .3, .5, .77 of a slot and at the file's start, video only and with AAC: fresh reads, a stream read in order and the rule agree`, bad);
 }
 row("a file whose container starts at 10 s (video and AAC): fresh, streamed and the rule agree at 24 and 30", [...await sweep("nz24", nz25, 24, [1], PHASES, SLOTS), ...await sweep("nz30", nz25, 30, [1], [0, 0.5], SLOTS)]);
-check("the probe records the container's start (10 s, less the AAC priming)", Math.abs(api.probe(nz25).container_start - 10) < 0.05 &&api.probe(v25.plain).container_start === 0, [api.probe(nz25).container_start, api.probe(v25.plain).container_start]);
+check("the probe records the container's start (10 s, less the AAC priming) and the length of the file (an mp4 reports its length, not its end)", Math.abs(api.probe(nz25).container_start - 10) < 0.05 && Math.abs(api.probe(nz25).duration - 6) < 0.05 && api.probe(v25.plain).container_start === 0, [api.probe(nz25).container_start, api.probe(nz25).duration, api.probe(v25.plain).container_start]);
 
 console.log("millisecond containers, NTSC rates, ties and the highest timeline rate");
 for (const [label, file] of [["mkv", mkv24], ["webm", webm24]] as const) for (const tl of [30, 60, 120])
@@ -229,9 +229,15 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     const err = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e; } };
     const refused: any = err(() => source(live, 25, 0, { loop: true, srcDuration: 0 })), freezeBare = err(() => source(live, 25, 0, { loop: true, freeze: true, srcDuration: 0 }));
     row("a loop over a webm written to a pipe: fresh, streamed and the rule agree across three wraps", await sweep("live", live, 25, [0, 0.5], [0, 0.5], [0, 12, 24, 25, 26, 49, 50, 51, 74, 75, 76], { loop: true }));
-    check("a looping video whose record has no length is refused with bad_media and a hint that names the remux; a freeze reads no pass and is built",
-      refused?.code === "bad_media" && /cannot loop/.test(refused.message) && /<file>\.mkv\b/.test(refused.hint) && /relink_asset/.test(refused.hint) && freezeBare === null,
+    check("a looping video whose record has no length is refused with bad_media and a hint that names the cure; a freeze reads no pass and is built",
+      refused?.code === "bad_media" && /cannot loop/.test(refused.message) && /relink_asset the file to probe it again/.test(refused.hint) && /export it again from its source/.test(refused.hint) && freezeBare === null,
       { code: refused?.code, hint: refused?.hint, freeze: freezeBare?.message });
+    // the one file that gives a record with no length: a stream with no frames (a remux of it to mkv cannot be read, so the old hint's cure fails)
+    const empty = join(m, "empty.avi");
+    ff("-f", "lavfi", "-i", pic("25", 1), "-frames:v", "0", "-an", "-c:v", "mpeg4", "-pix_fmt", "yuv420p", empty);
+    const emptyInfo = api.probe(empty), emptyRefused: any = err(() => source(empty, 25, 0, { loop: true }));
+    check("a video file with no frames records no length, and a loop over it is refused with the hint that names the cure",
+      emptyInfo.kind === "video" && emptyInfo.duration === 0 && emptyRefused?.code === "bad_media" && /export it again from its source/.test(emptyRefused.hint), { duration: emptyInfo.duration, code: emptyRefused?.code, hint: emptyRefused?.hint });
   }
   { // a picture whose length is not a whole millisecond (7 frames at 29.97 fps: 7 x 1001/30000 = 0.2335667 s): the record keeps it to the microsecond, and a read that starts in a late pass shows the frame the exact period gives
     const f7 = make("ntsc7.mp4", "30000/1001", 1, [...X264, "-frames:v", "7"]);
