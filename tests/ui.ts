@@ -323,7 +323,7 @@ process.exit(1);
   await new Promise((ok) => uc.server.close(ok));
 }
 
-// a long session does not keep every finished job: past JOBS_KEPT the oldest finished ones answer not_found, a running one is never dropped
+// a long session does not keep every finished job: past JOBS_KEPT the earliest-ended finished ones answer not_found, a running one is never dropped
 console.log("job retention");
 {
   const bin = join(tmp, "stub-keep-bin"), started = join(tmp, "stub-keep.started");
@@ -355,7 +355,7 @@ console.log("job retention");
     const stopped = await cancel(held.id); // the job that started first now ends last
     await prepared();
     const ended = await get(held.id);
-    check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job starts", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
+    check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job ends", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
     mkdirSync(join(dirJ, "previews", "ui"), { recursive: true });
     writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-0.00-3.00.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
     const hits: string[] = [];
