@@ -147,7 +147,7 @@ for (const [name, plain, aac, src, tl] of [["25 fps", v25.plain, v25.aac, 25, 24
   row(`${name} source on a ${tl} fps timeline, in-points at phases 0, .3, .5, .77 of a slot and at the file's start, video only and with AAC: fresh reads, a stream read in order and the rule agree`, bad);
 }
 row("a file whose container starts at 10 s (video and AAC): fresh, streamed and the rule agree at 24 and 30", [...await sweep("nz24", nz25, 24, [1], PHASES, SLOTS), ...await sweep("nz30", nz25, 30, [1], [0, 0.5], SLOTS)]);
-check("the probe records the container's start (10 s, less the AAC priming)", Math.abs(api.probe(nz25).container_start - 10) < 0.05 &&api.probe(v25.plain).container_start === 0, [api.probe(nz25).container_start, api.probe(v25.plain).container_start]);
+check("the probe records the container's start (10 s, less the AAC priming)", Math.abs(api.probe(nz25).container_start - 10) < 0.05 && api.probe(v25.plain).container_start === 0, [api.probe(nz25).container_start, api.probe(v25.plain).container_start]);
 
 console.log("millisecond containers, NTSC rates, ties and the highest timeline rate");
 for (const [label, file] of [["mkv", mkv24], ["webm", webm24]] as const) for (const tl of [30, 60, 120])
