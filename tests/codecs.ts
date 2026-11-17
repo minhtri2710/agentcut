@@ -978,11 +978,9 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
   const hd709t = mk("hd709-tagged", "1280x720", "bt709", "709"), hd601t = mk("hd601-tagged", "1280x720", "bt601", "601"), hd601 = mk("hd601-untagged", "1280x720", "bt601", "none");
   const hd2020t = mk("hd2020-tagged", "1280x720", "bt2020", "2020"), hdDci = mk("hd-dci", "1280x720", "bt709", "dci");
-  check("the probe records the stream's own matrix tag, and one fixed word when it has none",
-    [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space).join() === "unknown,unknown,bt709,smpte170m,bt2020nc", [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space));
-  check("the probe records the stream's own primaries and transfer tags, and one fixed word when it has none",
-    [hd709, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`).join() === "unknown/unknown,bt709/bt709,smpte170m/smpte170m,bt2020/bt709,bt709/smpte428",
-    [hd709, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`));
+  const tagsRecorded = [hd709, sd601, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_space} ${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`);
+  check("the probe records the stream's own matrix, primaries and transfer tags, and one fixed word for each it has not",
+    tagsRecorded.join() === "unknown unknown/unknown,unknown unknown/unknown,bt709 bt709/bt709,smpte170m smpte170m/smpte170m,bt2020nc bt2020/bt709,bt709 bt709/smpte428", tagsRecorded);
   // a render names a source whose colours are not converted in its warnings (the export is tagged BT.709); a BT.709 source, and a BT.2020 one that is converted, add nothing
   const warnsOf = async (name: string, src: string) => {
     const D = join(tmp, `warn-${name}`);
@@ -1065,9 +1063,9 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   }
   const keyOf = (color_space: string, color_primaries: string, color_transfer: string) =>
     new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space, color_primaries, color_transfer } as any }).pixelKey;
-  const keys = [keyOf("bt2020nc", "bt2020", "smpte2084"), keyOf("bt2020nc", "bt2020", "arib-std-b67"), keyOf("bt2020nc", "bt2020", "bt709"), keyOf("bt2020nc", "unknown", "smpte2084"), keyOf("bt2020nc", "unknown", "unknown")];
-  check("the pixel key follows the conversion: PQ, HLG, BT.2020 with an SDR curve and PQ without BT.2020 primaries differ from each other and from an unconverted source; an SDR BT.709 source and an untagged one share a key",
-    new Set(keys).size === 5 && keyOf("bt709", "bt709", "bt709") === keyOf("bt709", "unknown", "unknown"), keys.map((k) => k.length));
+  const keys = [keyOf("bt2020nc", "bt2020", "smpte2084"), keyOf("bt2020nc", "bt2020", "arib-std-b67"), keyOf("bt2020nc", "bt2020", "bt709"), keyOf("bt2020nc", "bt709", "smpte2084"), keyOf("bt2020nc", "unknown", "unknown")];
+  check("the pixel key follows the conversion: PQ, HLG, BT.2020 with an SDR curve and PQ on BT.709 primaries differ from each other and from an unconverted source; PQ and HLG with no primaries tag are read as BT.2020; an SDR BT.709 source and an untagged one share a key",
+    new Set(keys).size === 5 && keyOf("bt2020nc", "unknown", "smpte2084") === keys[0] && keyOf("bt2020nc", "unknown", "arib-std-b67") === keys[1] && keyOf("bt709", "bt709", "bt709") === keyOf("bt709", "unknown", "unknown"), keys.map((k) => k.length));
 }
 
 console.log("the JPEG side limit render.ts refuses at");

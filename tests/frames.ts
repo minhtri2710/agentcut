@@ -375,19 +375,19 @@ console.log("exports, validation and relinking");
   for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "ictcp", "gbr", "reserved", "unknown"]) {
     const r = await withName(v);
     accepted.push([v, r.valid] as const);
-    warned.push([v, (r.issues ?? []).filter((i: any) => i.level === "warning" && i.path?.endsWith("color_space") && i.message.includes(`'${first}'`)).map((i: any) => i.path)] as const);
+    warned.push([v, (r.issues ?? []).filter((i: any) => i.level === "warning" && /\.color_(space|primaries|transfer)$/.test(i.path) && i.message.includes(`'${first}'`)).map((i: any) => i.path)] as const);
   }
   const refusedNames: (readonly [unknown, any])[] = [];
   for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", 709, null]) refusedNames.push([v, await withName(v)] as const);
   check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
-  check("a BT.2020 matrix on a video asset with no primaries or transfer tag gives one warning on its color_space, naming the asset; the other names give none",
-    warned.every(([v, paths]) => (v === "bt2020nc" ? paths.join() === `$.assets.${first}.color_space` : paths.length === 0)), warned);
+  check("a BT.2020 matrix on a video asset with no primaries or transfer tag gives one warning on its color_primaries, naming the asset; the other names give none",
+    warned.every(([v, paths]) => (v === "bt2020nc" ? paths.join() === `$.assets.${first}.color_primaries` : paths.length === 0)), warned);
   check("any other name or an empty one is a validation error naming color_space and the list; another type is an error naming color_space",
     refusedNames.every(([v, r]) => !r.valid && /color_space/.test(JSON.stringify(r)) && (typeof v !== "string" || (r.issues ?? []).some((i: any) => i.path?.endsWith("color_space") && /bt709/.test(i.message)))), refusedNames.map(([v, r]) => [v, r.valid, JSON.stringify(r).slice(0, 160)]));
   await withName(was);
   // the colour tags a warning goes by: [matrix, primaries, transfer, the field the warning is on, or null for none]. Converted: PQ, HLG, BT.2020 primaries with an SDR curve.
-  const tagged: [string, string, string, string | null][] = [["bt709", "bt709", "smpte428", "color_transfer"], ["bt709", "smpte432", "bt709", "color_primaries"], ["bt2020nc", "unknown", "unknown", "color_space"],
-    ["unknown", "bt2020", "smpte2084", "color_space"], ["bt2020nc", "bt2020", "smpte2084", null], ["bt2020nc", "bt2020", "arib-std-b67", null], ["bt2020nc", "bt2020", "bt709", null], ["bt709", "bt709", "bt709", null]];
+  const tagged: [string, string, string, string | null][] = [["bt709", "bt709", "smpte428", "color_transfer"], ["bt709", "smpte432", "bt709", "color_primaries"], ["bt2020nc", "unknown", "bt709", "color_primaries"], ["bt2020nc", "bt2020", "bt470bg", "color_transfer"],
+    ["unknown", "bt2020", "smpte2084", "color_space"], ["bt2020nc", "bt2020", "smpte2084", null], ["bt2020nc", "unknown", "arib-std-b67", null], ["bt2020nc", "bt2020", "bt709", null], ["bt709", "bt709", "bt709", null]];
   const seen: unknown[] = [], wasTags = [named.assets[first].color_primaries, named.assets[first].color_transfer];
   for (const [cs, prim, trc, field] of tagged) {
     named.assets[first].color_space = cs; named.assets[first].color_primaries = prim; named.assets[first].color_transfer = trc;
@@ -396,7 +396,7 @@ console.log("exports, validation and relinking");
     seen.push([cs, prim, trc, r.valid, paths.join()]);
     if (!r.valid || paths.join() !== (field ? `$.assets.${first}.${field}` : "")) seen.push("WRONG");
   }
-  check("a colour the conversion does not cover warns once on the field to fix: an unconverted transfer, unconverted primaries, a BT.2020 matrix with no tags, and PQ read through another matrix; PQ, HLG and BT.2020 primaries do not",
+  check("a colour the conversion does not cover warns once on the field to fix: an unconverted transfer, unconverted primaries, BT.2020 signalled (by the primaries, or by the matrix with no primaries tag) with a curve that has no conversion, and PQ read through another matrix; PQ, HLG (with or without a primaries tag) and BT.2020 primaries with an SDR curve do not",
     !seen.includes("WRONG"), seen);
   [named.assets[first].color_space, named.assets[first].color_primaries, named.assets[first].color_transfer] = [was, ...wasTags];
   writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));

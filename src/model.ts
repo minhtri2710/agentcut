@@ -124,7 +124,7 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   reorder: [["number"], "video file: frames the decoder holds back before output (has_b_frames), an integer >= 0"],
   key_gap: [["number"], "video file in a format whose seek may land after the target: the longest stretch between keyframes, seconds, a number > 0"],
   color_space: [["string"], "video file: the matrix its picture is read with, as ffprobe names it, one of COLOR_SPACES; 'unknown' or 'reserved' when the file has no tag (then HD is read as bt709, smaller as the decoder's default); import_media records the file's own tag, a name set by hand replaces it"],
-  color_primaries: [["string"], "video file: the primaries the picture is tagged with, as ffprobe names it ('unknown' when untagged); bt2020 is converted to BT.709"],
+  color_primaries: [["string"], "video file: the primaries the picture is tagged with, as ffprobe names it ('unknown' when untagged); bt2020 is converted to BT.709, and so is unknown under a PQ or HLG transfer (both are defined on BT.2020 primaries)"],
   color_transfer: [["string"], "video file: the transfer curve the picture is tagged with, as ffprobe names it ('unknown' when untagged); smpte2084 (PQ) and arib-std-b67 (HLG) are converted to BT.709"],
 };
 const posInt = [(n: number) => Number.isInteger(n) && n > 0, "a positive integer"] as const;
@@ -164,12 +164,13 @@ export function missingFacts(a: Dict): string[] {
 export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2"];
 export const NO_MATRIX = ["unknown", "reserved"];
 /** The conversion to BT.709 a picture with these primaries and transfer gets before anything else is done to it (undefined: none): PQ, HLG, and BT.2020 primaries with an SDR curve.
- *  The key names the curve (pq, hlg, sdr) and, after a +, the primaries step (only for BT.2020 primaries). */
+ *  The key names the curve (pq, hlg, sdr) and, after a +, the primaries step (BT.2020 primaries; PQ and HLG are defined only on them, so with no primaries tag they are read as BT.2020). */
 const SDR_CURVES = ["bt709", "smpte170m", "bt2020-10", "bt2020-12", "unknown"];
 export const CONVERSIONS = ["pq", "pq+2020", "hlg", "hlg+2020", "sdr+2020"];
 export function conversionFor(primaries: string, transfer: string): string | undefined {
-  const wide = primaries === "bt2020", curve = transfer === "smpte2084" ? "pq" : transfer === "arib-std-b67" ? "hlg" : wide && SDR_CURVES.includes(transfer) ? "sdr" : undefined;
-  return curve && (wide ? `${curve}+2020` : curve);
+  const hdr = transfer === "smpte2084" ? "pq" : transfer === "arib-std-b67" ? "hlg" : undefined;
+  if (hdr) return primaries === "bt2020" || primaries === "unknown" ? `${hdr}+2020` : hdr;
+  return primaries === "bt2020" && SDR_CURVES.includes(transfer) ? "sdr+2020" : undefined;
 }
 /** The filters of a conversion, run on the picture after its matrix is tagged (FrameSource and the vision helper both build their chains from this). In 16-bit planar RGB:
  *  the curve to linear light with 1.0 = 1000 nit (PQ: the ST 2084 EOTF; HLG: the inverse OETF, then the BT.2100 system gamma 1.2 on the luma, 1000 nit; SDR: gamma 2.4),
@@ -184,7 +185,7 @@ export function conversionChain(key: string): string[] {
   f.push(lut(`pow(min(${e}/${curve === "sdr" ? 1 : 0.203},1),0.4166666667)*maxval`));
   return f;
 }
-const UNCONVERTED_TRANSFERS = ["linear", "log100", "log316", "log", "log_sqrt", "smpte428", "iec61966-2-4", "bt1361e", "vlog"];
+const UNCONVERTED_TRANSFERS = ["linear", "log100", "log316", "smpte428", "vlog"];
 const UNCONVERTED_PRIMARIES = ["smpte431", "smpte432", "vgamut"];
 /** The warning for a video asset whose colours the conversion leaves wrong, on the field to fix (undefined: the asset is converted, or SDR and left as it is); validate and a render's warnings print it. */
 export function colourIssue(id: string, a: Dict | undefined): { field: string; message: string; hint: string } | undefined {
@@ -192,10 +193,12 @@ export function colourIssue(id: string, a: Dict | undefined): { field: string; m
   const { color_space: matrix, color_primaries: primaries, color_transfer: transfer } = a, hint = "convert the file to SDR BT.709 first (tone-map it with a video tool), then relink_asset to the copy";
   const left = "AgentCut does not convert these colours to BT.709, and the export is tagged BT.709, so they can look wrong";
   if (UNCONVERTED_TRANSFERS.includes(transfer)) return { field: "color_transfer", message: `'${id}' is tagged ${primaries}/${transfer}: ${left}`, hint };
-  if (UNCONVERTED_PRIMARIES.includes(primaries)) return { field: "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer}: ${left}`, hint };
+  if (UNCONVERTED_PRIMARIES.includes(primaries)) return { field: "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer}: its primaries are not converted to BT.709, and the export is tagged BT.709, so its colours can look wrong`, hint };
+  const matrixName = NO_MATRIX.includes(matrix) ? "unnamed" : matrix;
   if ((transfer === "smpte2084" || transfer === "arib-std-b67") && matrix !== "bt2020nc")
-    return { field: "color_space", message: `'${id}' is ${transfer} with the ${NO_MATRIX.includes(matrix) ? "unnamed" : matrix} matrix: its curve is converted but read through that matrix, so the colours can look wrong`, hint };
-  if (matrix === "bt2020nc" && primaries === "unknown" && transfer === "unknown") return { field: "color_space", message: `'${id}' has a BT.2020 matrix but no primaries or transfer tag: ${left}`, hint };
+    return { field: "color_space", message: `'${id}' is ${transfer} with the ${matrixName} matrix: its curve is converted but read through that matrix, so the colours can look wrong`, hint };
+  if ((primaries === "bt2020" || (matrix === "bt2020nc" && primaries === "unknown")) && !conversionFor(primaries, transfer))
+    return { field: primaries === "bt2020" ? "color_transfer" : "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer} with the ${matrixName} matrix: AgentCut has no conversion of that to BT.709, and the export is tagged BT.709, so its colours can look wrong`, hint };
   return undefined;
 }
 /** The warning text for each video asset a clip of the timeline uses whose colours are left wrong: what a video or still render adds to its `warnings`. */
