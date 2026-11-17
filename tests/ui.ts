@@ -340,17 +340,21 @@ console.log("job retention");
   try {
     const held = (await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 1 } })).j; // the oldest job, and running throughout
     for (let i = 0; i < 200 && !existsSync(started); i++) await Bun.sleep(50);
-    const ids: string[] = [];
-    for (let i = 0; i < JOBS_KEPT + 2; i++) { // nothing is pending, so each prepare settles at once
+    const prepared = async () => { // nothing is pending, so a prepare settles at once
       const id = (await jget("/api/prepare", { method: "POST", port: uj.port, body: {} })).j.id;
       for (let k = 0; k < 200 && (await get(id)).j.status === "running"; k++) await Bun.sleep(20);
-      ids.push(id);
-    }
+      return id;
+    };
+    const ids: string[] = [];
+    for (let i = 0; i < JOBS_KEPT + 2; i++) ids.push(await prepared());
     const [oldest, oldestCancel, newest, running] = [await get(ids[0]), await cancel(ids[0]), await get(ids.at(-1)!), await get(held.id)];
     check(`the oldest of ${JOBS_KEPT + 2} finished jobs is forgotten: GET and cancel answer 404 not_found`, oldest.status === 404 && oldest.j.error?.code === "not_found" && oldestCancel.status === 404 && oldestCancel.j.error?.code === "not_found", { oldest, oldestCancel });
     check("  the newest finished job is kept", newest.status === 200 && newest.j.status === "done", newest);
     check("  a job still running is kept, older than all of them", existsSync(started) && running.status === 200 && running.j.status === "running", { started: existsSync(started), running });
-    await cancel(held.id);
+    const stopped = await cancel(held.id); // the job that started first now ends last
+    await prepared();
+    const ended = await get(held.id);
+    check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job starts", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
   } finally { process.env.PATH = was; }
   uj.server.closeAllConnections?.();
   await new Promise((ok) => uj.server.close(ok));

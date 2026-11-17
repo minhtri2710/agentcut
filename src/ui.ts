@@ -19,7 +19,7 @@ const MIME: Record<string, string> = {
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
-export const JOBS_KEPT = 64; // finished jobs a session remembers, so a long `agentcut ui` does not grow without bound; older ids answer not_found
+export const JOBS_KEPT = 64; // the newest finished jobs (by end) a session remembers, so a long `agentcut ui` does not grow without bound; older ids answer not_found
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
   if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
@@ -131,7 +131,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
 
-  /** before a job is added: the oldest finished jobs beyond JOBS_KEPT go (a Map iterates in insertion order); a running job stays */
+  /** a job that ends moves to the end of the map, so the map lists finished jobs oldest-ended first (a Map iterates in insertion order) */
+  function endJob(job: Dict) { if (jobs.has(job.id)) { jobs.delete(job.id); jobs.set(job.id, job); } }
+
+  /** before a job is added: the earliest-ended finished jobs beyond JOBS_KEPT go; a running job stays */
   function forgetOldJobs() {
     const finished = [...jobs].filter(([, j]) => j.status !== "running");
     for (const [id] of finished.slice(0, Math.max(0, finished.length - JOBS_KEPT))) jobs.delete(id);
@@ -158,7 +161,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
       .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
-      .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); }) });
+      .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); endJob(job); }) });
     return job;
   }
 
@@ -174,7 +177,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, author: UI_AUTHOR, signal: ctl.signal, progress: (d, n, download) => { job.progress = n ? +(d / n).toFixed(3) : 0; const changed = download?.model !== job.download?.model; /* appears, disappears or names another model: the page must hear it now */ if (download) job.download = download; else delete job.download; const now = Date.now(); if (changed || now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
-      .finally(() => { delete job.download; preparing = null; running.delete(job.id); broadcast("job", job); }) });
+      .finally(() => { delete job.download; preparing = null; running.delete(job.id); endJob(job); broadcast("job", job); }) });
     return job;
   }
 
