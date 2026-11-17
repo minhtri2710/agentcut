@@ -63,13 +63,14 @@ const PERIOD_TOLERANCE = 1e-3;
  *  shortcut: a demuxer off this list keeps the value ffprobe gives; add it when one is measured to report an end. */
 const END_ON_CLOCK_FORMATS = new Set(["matroska", "ogg", "nut", "asf"]);
 const endsOnClock = (format: string) => format.split(",").some((f) => END_ON_CLOCK_FORMATS.has(f));
-/** The demuxers that shift a stream's packets by the header's start field but report `start_time` 0 (measured: an avi whose video header starts at 1.4 s has its first packet at 1.4 s). Their streams start where the first packet is.
+/** The demuxers that shift the video's packets by the header's start field but report `start_time` 0 for it (measured: an avi whose video header starts at 1.4 s has its first packet at 1.4 s). The container's start stays what ffmpeg applies;
+ *  the picture's start is where its first packet is.
  *  shortcut: a demuxer off this list keeps the start ffprobe gives; add it when one is measured to report 0 for a shifted first packet. */
 const FIRST_PACKET_START_FORMATS = new Set(["avi"]);
 const startsOnFirstPacket = (format: string) => format.split(",").some((f) => FIRST_PACKET_START_FORMATS.has(f));
-/** Where the first packet of a stream starts (s, the file's own clock), or null when it shows no time. One packet is read, nothing is scanned. */
-function firstPacketStart(path: string, stream: "v:0" | "a:0"): number | null {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", stream, "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8" });
+/** Where the first packet of the first video stream is (s, the file's own clock), or null when it shows no time. One packet is read, nothing is scanned. */
+function firstVideoPacket(path: string): number | null {
+  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8" });
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const [pts, dts] = r.stdout.split("\n")[0].split(",");
   const t = pts !== "" && Number.isFinite(Number(pts)) ? Number(pts) : Number(dts);
@@ -135,10 +136,10 @@ export function probe(path: string): any {
     const a = streams.find((s) => s.codec_type === "audio");
     // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
-    let cStart = Number(j.format?.start_time) || 0, vAbs = Number(v?.start_time) || 0; // vAbs: where the picture starts on the file's clock
+    const cStart = Number(j.format?.start_time) || 0;
+    let vAbs = Number(v?.start_time) || 0; // where the picture starts on the file's clock
     if (v && startsOnFirstPacket(String(j.format?.format_name))) {
-      vAbs = firstPacketStart(path, "v:0") ?? vAbs;
-      cStart = Math.min(vAbs, a ? firstPacketStart(path, "a:0") ?? cStart : vAbs);
+      vAbs = firstVideoPacket(path) ?? vAbs;
       if (Number(v.duration) > 0) dur = Math.max(dur, vAbs + Number(v.duration) - cStart); // the format's length counts from the picture's first frame, not from the container's start
     }
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
@@ -413,8 +414,7 @@ export class FrameSource {
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
       ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
       : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
-    // ffmpeg adds the demuxer's own start to the seek, which is 0 where the shift is in the packets (FIRST_PACKET_START_FORMATS), and a seek before the first packet lands one frame late
-    const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) + f.container_start : ss;
+    const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) : ss; // an avi seek aimed before its first packet lands one frame late
     a.push("-noaccurate_seek", "-copyts", "-ss", seek.toFixed(6), ...this.input, "-an", "-sn",
       "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));

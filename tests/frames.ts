@@ -198,18 +198,22 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
   };
   const MPEG4 = ["-c:v", "mpeg4", "-q:v", "2"];
   const aviPlain = make("av.avi", "25", 4, MPEG4, { audio: true }), aviLate = headerStart(aviPlain, join(m, "av-late.avi"), 0, 35); // 35 frames of 1/25 s: the picture starts at 1.4 s, the sound at 0
-  const aviVideo = make("v.avi", "25", 4, MPEG4), aviVideoLate = headerStart(aviVideo, join(m, "v-late.avi"), 0, 35); // video only: the whole file starts at 1.4 s
-  row("an avi whose picture starts 1.4 s after its sound: fresh, streamed and the rule agree, before the picture, at its start and at its end", await sweep("late-avi", aviLate, 24, [0, 0.9], [0, 0.5], [0, 1, 2, 12, 24, 35, 36, 60, 90]));
+  const aviVideo = make("v.avi", "25", 4, MPEG4), aviVideoLate = headerStart(aviVideo, join(m, "v-late.avi"), 0, 35); // video only: the picture starts at 1.4 s
+  row("an avi whose picture starts 1.4 s after its sound: fresh, streamed and the rule agree, before the picture, at its start, at its last frame and on the held frame after it",
+    [...await sweep("late-avi", aviLate, 24, [0, 0.9], [0, 0.5], [0, 1, 2, 12, 24, 35, 36, 60, 90]), ...await sweep("late-avi-end", aviLate, 25, [0, 0.9], [0, 0.3], [0, 36, 100, 133, 134, 135, 136, 140])]);
+  row("a video-only avi whose picture starts at 1.4 s: fresh, streamed and the rule agree, from the first slot to the held frame after the last", await sweep("late-avi-v", aviVideoLate, 25, [0, 0.9], [0, 0.5], [0, 1, 34, 35, 36, 100, 133, 134, 135, 140]));
+  row("a loop over a video-only avi whose picture starts at 1.4 s: fresh, streamed and the rule agree across the wrap", await sweep("loop-avi-v", aviVideoLate, 25, [0, 0.9], [0, 0.5], [0, 1, 134, 135, 136, 137, 138, 170, 171, 172, 270, 271], { loop: true }));
   const a = api.probe(aviLate), vo = api.probe(aviVideoLate), pl = api.probe(aviPlain), last = timingOf(aviVideoLate).pts.length - 1;
-  check("the probe reads an avi's starts from its first packets: the picture late over sound, a video-only file starting late, and an avi with no shift unchanged",
-    Math.abs(a.container_start) < 0.05 && Math.abs(a.video_start - 1.4) < 0.05 && Math.abs(a.duration - 5.44) < 0.05
-    && Math.abs(vo.container_start - 1.4) < 0.05 && vo.video_start === 0 && Math.abs(vo.duration - 4.04) < 0.05
-    && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - 4.1) < 0.1, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]));
-  row("a video-only avi that starts at 1.4 s shows its first frame at the first slot and its last frame at the last", await attempt(async () => {
-    const f = source(aviVideoLate, 25, 0), l = source(aviVideoLate, 25, 0);
-    const first = await read(f, 0, 25), end = await read(l, last, 25);
-    f.close(); l.close();
-    return first === 0 && end === last ? [] : [`first slot frame ${first}, last slot (${last}) frame ${end}`];
+  const close = (x: number, want: number) => Math.abs(x - want) < 0.01;
+  const pictureLen = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout); // the unshifted file's own picture length: the avi header's, which counts a frame more than the file holds when it has sound
+  check("the probe reads an avi's picture start from its first packet: the container keeps the start ffmpeg applies, the picture starts 1.4 s in and the length counts from there; an avi with no shift is unchanged",
+    a.container_start === 0 && close(a.video_start, 1.4) && close(a.duration, 1.4 + pictureLen(aviPlain)) && vo.container_start === 0 && close(vo.video_start, 1.4) && close(vo.duration, 1.4 + pictureLen(aviVideo))
+    && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - 4.1) < 0.1, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]).concat([[pictureLen(aviPlain), pictureLen(aviVideo)]]));
+  row("a video-only avi that starts at 1.4 s holds its first frame to the picture's start and shows its last frame at the slot after the picture's", await attempt(async () => {
+    const f = source(aviVideoLate, 25, 0), l = source(aviVideoLate, 25, 0), h = source(aviVideoLate, 25, 0);
+    const first = await read(f, 0, 25), end = await read(l, 35 + last, 25), held = await read(h, 35 + last + 5, 25);
+    f.close(); l.close(); h.close();
+    return first === 0 && end === last && held === last ? [] : [`first slot frame ${first}, slot ${35 + last} frame ${end}, slot ${35 + last + 5} frame ${held}; want 0, ${last}, ${last}`];
   }));
 }
 
