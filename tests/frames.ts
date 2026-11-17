@@ -205,10 +205,11 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
   row("a loop over a video-only avi whose picture starts at 1.4 s: fresh, streamed and the rule agree across the wrap", await sweep("loop-avi-v", aviVideoLate, 25, [0, 0.9], [0, 0.5], [0, 1, 134, 135, 136, 137, 138, 170, 171, 172, 270, 271], { loop: true }));
   const a = api.probe(aviLate), vo = api.probe(aviVideoLate), pl = api.probe(aviPlain), last = timingOf(aviVideoLate).pts.length - 1;
   const close = (x: number, want: number) => Math.abs(x - want) < 0.01;
+  const formatLen = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout);
   const pictureLen = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout); // the unshifted file's own picture length: the avi header's, which counts a frame more than the file holds when it has sound
   check("the probe reads an avi's picture start from its first packet: the container keeps the start ffmpeg applies, the picture starts 1.4 s in and the length counts from there; an avi with no shift is unchanged",
     a.container_start === 0 && close(a.video_start, 1.4) && close(a.duration, 1.4 + pictureLen(aviPlain)) && vo.container_start === 0 && close(vo.video_start, 1.4) && close(vo.duration, 1.4 + pictureLen(aviVideo))
-    && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - 4.1) < 0.1, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]).concat([[pictureLen(aviPlain), pictureLen(aviVideo)]]));
+    && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - formatLen(aviPlain)) < 0.001, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]).concat([[pictureLen(aviPlain), pictureLen(aviVideo), formatLen(aviPlain)]])); // an unshifted avi records the length ffprobe gives (the sound encoder varies it between runs)
   row("a video-only avi that starts at 1.4 s holds its first frame to the picture's start and shows its last frame at the slot after the picture's", await attempt(async () => {
     const f = source(aviVideoLate, 25, 0), l = source(aviVideoLate, 25, 0), h = source(aviVideoLate, 25, 0);
     const first = await read(f, 0, 25), end = await read(l, 35 + last, 25), held = await read(h, 35 + last + 5, 25);
