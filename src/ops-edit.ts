@@ -1,6 +1,6 @@
 // Pro trimming/audio ops: detach_audio, attach_audio, j_cut, l_cut, slip_clip, roll_edit, slide_clip.
 // Content stays locked to the source: growing a clip's head moves its in-point back and shifts its keyframes.
-import { canLoop, type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, sourceLen, type Timeline, type Track } from "./model.ts";
+import { canLoop, type Clip, clipDur, clipEnd, clipStart, computedDuration, type Dict, EditError, findClip, hasSourceTime, linkedAudio, newId, ownDuration, parseTime, resolve, round6, soleAudio, sourceLen, type Timeline, type Track } from "./model.ts";
 import { AUDIO_FX_KEYS } from "./audiofx.ts";
 import type { OpHelpers } from "./ops.ts";
 
@@ -67,6 +67,9 @@ function extend(c: Clip, side: Side, e: number) {
 /** no non-zero amount lies in lo..hi (the ops refuse by 0), so a hint must not offer it as a range */
 const noFit = (lo: number, hi: number) => hi < lo - EPS || (lo > -EPS && hi < EPS);
 const named = (xs: Clip[]) => { const ids = xs.map((x) => `'${x.id}'`); return ids.length > 1 ? `each of ${ids.join(", ")}` : ids[0]; };
+/** a piece that plays the other way round from its video: a trim of either moves its source the wrong way, so no trim cure is named */
+const opposed = (v: Clip, aud: Clip) => !!aud.reverse !== !!v.reverse;
+const opposedText = (v: Clip, aud: Clip) => { const way = (c: Clip) => c.reverse ? "backwards" : "forwards"; return `'${aud.id}' plays ${way(aud)} but '${v.id}' plays ${way(v)}`; };
 const REVERSED_AUDIO = "trim_clip on a reversed video does not reach its audio"; // ops.ts: `c.reverse ? undefined : soleAudio`
 /** the trim that lifts a source bound of a reversed video with one detached audio clip, trimming both clips so they stay in line:
  *  trim_end moves `in` on each; trim_start would also move the audio's start (its offset), so the audio's head is cut by a shorter duration instead */
@@ -217,6 +220,7 @@ export function registerEditOps(h: OpHelpers) {
             const own = linkedAudio(tl, v).map(([, x]) => x), pieces = detached ? [] : own, vt = tl.tracks.find((t) => t.clips.includes(v));
             const trim = (end: "trim_start" | "trim_end") => { // trim_clip carries the audio of a forward video with one audio clip; a reversed video's audio it leaves alone, a video with several it refuses, and an attached clip that is not the video's own sound it never reaches
               if (!detached && !own.includes(aud)) return `'${aud.id}' is not the sound of '${v.id}', so trimming '${v.id}' gives it no source`;
+              if (opposed(v, aud)) return `${opposedText(v, aud)}, so trimming '${v.id}' gives it no source`;
               if (pieces.length < 2) return pieces.length && v.reverse ? alongReversed(end, v, aud) : `trim_clip ${end} on '${v.id}' first`;
               if (v.reverse) return end === "trim_end" ? alongReversed(end, v, aud) : `'${v.id}' is reversed and has ${pieces.length} audio clips, which no trim_start keeps in line`;
               // shortcut: assumes the audio clips tile the video, so the refusing one is the last (tail) or the first (head) and a split at its inner edge gives it a picture of its own
@@ -225,7 +229,7 @@ export function registerEditOps(h: OpHelpers) {
             const jcures = () => [room(tl, aud, side) < 0.01 && `spare source at the audio's head: ${trim("trim_start")}`, // each bound that tripped gets its own cure
               clipStart(aud) < 0.01 && `a clip that starts after timeline 0: ${vt?.magnetic ? `add a clip before it (add_clip track='${vt.id}' before='${v.id}'), or move_clip '${v.id}' to a non-magnetic track at a later time` : `move_clip '${v.id}' to a later time`}`].filter(Boolean).join("; and ");
             throw new EditError(`cannot ${lead ? "lead" : "extend"} the audio of '${v.id}': ${lead && clipStart(aud) < 0.01 ? "it already starts at 0" : "no more source media"}`, "out_of_range",
-              lead ? `a J-cut needs ${jcures()}` : `an L-cut needs source after the clip's out-point; ${trim("trim_end")}${canLoop(tl.assets, aud, v) ? `; or set loop: true on '${detached ? v.id : aud.id}'` : ""}`); // a refused batch discards the audio clip made here; detach copied the video's loop to it
+              lead ? `a J-cut needs ${jcures()}` : `an L-cut needs source after the clip's out-point; ${trim("trim_end")}${canLoop(tl.assets, detached ? v : aud) ? `; or set loop: true on '${detached ? v.id : aud.id}'` : ""}`); // a refused batch discards the audio clip made here; detach copied the video's loop to it
           }
           s = round6(limit);
           out.clamped = { requested: req, applied: s, reason: lead && clipStart(aud) <= room(tl, aud, side) ? "timeline start" : "source media" };
@@ -260,7 +264,10 @@ export function registerEditOps(h: OpHelpers) {
       // each trim end opens one bound: a forward clip's trim_end opens the later source (high) and its trim_start the earlier (low); a reversed clip is the other way round
       const ends = [low && (c.reverse ? "trim_end" : "trim_start"), high && (c.reverse ? "trim_start" : "trim_end")].filter(Boolean) as ("trim_start" | "trim_end")[];
       // trim_clip refuses a video with several audio clips, and no trim keeps them in line with a reversed one, so then no trim is offered
-      const trims = pieces.length > 1 ? `it has ${pieces.length} audio clips, which no trim_clip keeps in line` : pieces.length && c.reverse ? ends.map((e) => alongReversed(e, c, pieces[0])).join("; and ") : `trim_clip ${ends.join(" and ")} first`;
+      const mixed = pieces.find((x) => opposed(c, x));
+      // a computed length is not reached by a trim of a reversed video, nor by one of a video the length does not follow: clear the rule first (a piece that follows the video forward is trimmed with it, and keeps the link)
+      const clear = pieces.length === 1 && !mixed && computedDuration(pieces[0]) && (c.reverse || (typeof pieces[0].match_duration === "string" && pieces[0].match_duration !== c.id)) ? `update_clip id=${pieces[0].id} match_duration=null first, then ` : "";
+      const trims = pieces.length > 1 ? `it has ${pieces.length} audio clips, which no trim_clip keeps in line` : mixed ? `${opposedText(c, mixed)}, so no trim_clip keeps them in line` : clear + (pieces.length && c.reverse ? ends.map((e) => alongReversed(e, c, pieces[0])).join("; and ") : `trim_clip ${ends.join(" and ")} first`);
       if (low || high) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
         `${noFit(lo, hi) ? `no slip fits: the clip${pieces.length ? " or its audio" : ""} has no spare source to slide over (${trims}` : `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source`}${loopTail})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
