@@ -1545,11 +1545,29 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     const trimEnd = (id: string): any => ({ op: "trim_clip", id, trim_end: 0.5 }), trimStart = (id: string): any => ({ op: "trim_clip", id, trim_start: 1 });
     // each trim end opens one bound: a forward clip's trim_end opens the later source (by > 0) and its trim_start the earlier (by < 0); a reversed clip is the other way round
     const revUp = refusedHint(revDet, slip);
+    // where the audio sits against the picture after ops: lead = audio start - picture start, tail = audio end - picture end, dev = largest difference of the source time they play at the same timeline time (Infinity: they do not overlap)
+    const after = (t: any, ops: any[], aud = "aud1", pic = "y") => {
+      try {
+        const all = applyOps(null as any, structuredClone(t), ops)[0].tracks.flatMap((x: any) => x.clips), p = all.find((c: any) => c.id === pic), a = all.find((c: any) => c.id === aud);
+        const src = (c: any, s: number) => c.reverse ? c.in + c.duration - (s - c.start) : c.in + (s - c.start), lo = Math.max(p.start, a.start), hi = Math.min(p.start + p.duration, a.start + a.duration);
+        return JSON.stringify({ lead: +(a.start - p.start).toFixed(3), tail: +(a.start + a.duration - p.start - p.duration).toFixed(3), dev: hi > lo ? +Math.max(...[0, 0.5, 1].map((k) => Math.abs(src(a, lo + (hi - lo) * k) - src(p, lo + (hi - lo) * k)))).toFixed(3) : "apart" });
+      } catch (e: any) { return `refused ${e.code}`; }
+    };
+    const inLine = (lead: number, tail: number) => JSON.stringify({ lead, tail, dev: 0 });
+    const shorten = (id: string, by: number, d: number): any => ({ op: "trim_clip", id, duration: d - by }); // the audio's share of a trim_start on a reversed video: its head, with no move
+    const detachY = (t: any) => applyOps(null as any, t, [{ op: "detach_audio", id: "y" }])[0];
+    const revBoth = detachY(mk([vid({ reverse: true, duration: 5 })]));
+    const manyAudio = (t: any, at: number) => applyOps(null as any, detachY(t), [{ op: "split_clip", id: "aud1", at }])[0];
+    const slipMany = [refusedHint(manyAudio(mk([vid()]), 1), slip), refusedHint(manyAudio(mk([vid({ reverse: true })]), 1), slip), refusedHint(manyAudio(mk([vid({ reverse: true })]), 1), slipBy(-0.5))];
     check("slip_clip on a reversed video with detached audio says the clip or its audio has no spare source, names each clip and the end to trim from the bound that tripped, and trimming those clips lets the same slip pass; a lone clip keeps the plain text",
       /^no slip fits: the clip or its audio /.test(revHint) && revNamed.join() === "y,aud1" && /trim_clip trim_end first/.test(revHint) && follows(revDet, slipBy(-0.5), revNamed, trimEnd) && !follows(revDet, slipBy(-0.5), ["y"], trimEnd)
-      && /trim_clip trim_start first/.test(revUp) && named(revUp).join() === "y,aud1" && follows(revDet, slip, named(revUp), trimStart) && !follows(revDet, slip, named(revUp), trimEnd)
+      && /trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount/.test(revUp) && !follows(revDet, slip, ["y", "aud1"], trimEnd)
+      && after(revDet, [trimStart("y"), shorten("aud1", 1, 2), ...slip]) === inLine(0, 0) // the audio stays with the picture: trim_start on both would leave it 1 s late
+      && /\(trim_clip trim_end first, on each of 'y', 'aud1' \([^)]*\); and trim_clip trim_start on 'y' first, then shorten 'aud1'/.test(refusedHint(revBoth, slipBy(-2)))
       && /\(trim_clip trim_end first\)$/.test(refusedHint(mk([vid({ reverse: true })]), slipBy(-0.5))) && /^no slip fits: the clip has no spare source/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && /\(trim_clip trim_end first; or set loop: true on 'aud1' \(/.test(refusedHint(yLooped, slip))
-      && /trim_clip trim_start first/.test(refusedHint(mk([vid()]), slipBy(-1))) && /trim_clip trim_start and trim_end first/.test(refusedHint(longer, slipBy(-2))), [revHint, revUp, refusedHint(yLooped, slip), refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-2))]);
+      && /trim_clip trim_start first/.test(refusedHint(mk([vid()]), slipBy(-1))) && /trim_clip trim_start and trim_end first/.test(refusedHint(longer, slipBy(-2)))
+      && slipMany.every((h) => /^no slip fits: the clip or its audio has no spare source to slide over \(it has 2 audio clips, which no trim_clip keeps in line/.test(h) && !/trim_clip trim_(start|end)/.test(h)) && /set loop: true on each of 'y', 'aud1', 'aud2'/.test(slipMany[0]),
+      [revHint, revUp, refusedHint(yLooped, slip), refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-2)), refusedHint(revBoth, slipBy(-2)), slipMany]);
     const lcutName = (t: any) => named(refusedHint(t, lcut).split("set loop")[1] ?? ""), lcutNamed = lcutName(det), linked = mk([vid({ in: 1, duration: 1 })]); // the audio clip an l_cut makes is thrown away with its refused batch: there the video is the clip to set
     check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
     // trim_clip leaves a reversed picture's audio alone, so on such a video with detached audio the trim cure names each clip; trimming the video alone is refused again
@@ -1558,24 +1576,43 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     check("l_cut names the audio clip to set loop on when the video already has one, the video when the l_cut would make the audio, and setting the named clip lets the same l_cut pass; on a reversed video with detached audio it names each clip to trim",
       lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed) && lcutName(linked).join() === "y" && follows(linked, lcut, lcutName(linked))
       && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first/.test(lcutRev) && cured(lcutRev).join() === "y,aud1" && cured(refusedHint(revDet, [{ op: "l_cut", id: "aud1", seconds: 1 }])).join() === "y,aud1"
-      && follows(revDet, lcut, cured(lcutRev), trimEnd) && !follows(revDet, lcut, ["y"], trimEnd) && /trim_clip trim_end on 'y' first/.test(refusedHint(det, lcut)), [refusedHint(det, lcut), refusedHint(linked, lcut), lcutRev]);
+      && after(revDet, [trimEnd("y"), trimEnd("aud1"), { op: "l_cut", id: "y", seconds: 0.5 }]) === inLine(0, 0.5) &&!follows(revDet, lcut, ["y"], trimEnd) && /trim_clip trim_end on 'y' first/.test(refusedHint(det, lcut)), [refusedHint(det, lcut), refusedHint(linked, lcut), lcutRev]);
     // j_cut: each bound that tripped names its own cure, and following it lets the same j_cut pass
-    const jcut = [{ op: "j_cut", id: "y", seconds: 0.5 }], behind = (o: any = {}) => mk([vid({ id: "x1", duration: 1 }), vid(o)]), detachY = (t: any) => applyOps(null as any, t, [{ op: "detach_audio", id: "y" }])[0];
+    const jcut = [{ op: "j_cut", id: "y", seconds: 0.5 }], behind = (o: any = {}) => mk([vid({ id: "x1", duration: 1 }), vid(o)]);
     const addBefore = (id: string): any => ({ op: "add_clip", track: "main", asset: "va", id: "pre", in: 0, duration: 1, before: id }), trimHalf = (id: string): any => ({ op: "trim_clip", id, trim_start: 0.5 });
     const jRev = detachY(behind({ reverse: true })), jRevHint = refusedHint(jRev, jcut), jFwd = refusedHint(behind(), jcut), jLinked = behind({ reverse: true });
     const atZero = mk([vid({ in: 1, duration: 1 })]), zeroHint = refusedHint(atZero, jcut), zeroDet = detachY(atZero), overlay = mk([]), bothHint = refusedHint(mk([vid()]), jcut);
     overlay.tracks[1].clips = [vid({ in: 1, duration: 1 })];
-    const ovHint = refusedHint(overlay, jcut);
-    check("j_cut with no source at the audio's head names the video, and each clip when the video is reversed with detached audio; trimming the video alone is refused again there",
+    const ovHint = refusedHint(overlay, jcut), onM2 = applyOps(null as any, structuredClone(atZero), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "move_clip", id: "y", track: "m2" }])[0]; // a magnetic track other than main
+    // on a reversed video trim_start on the audio would also move it, so the hint cuts its head by a shorter duration; the J-cut then leads the picture by what was asked, and the two stay in line (also on a track that is not magnetic, and after an earlier J-cut)
+    const onOverlay = (c: any) => { const t = mk([]); t.tracks[1].clips = [c]; return t; };
+    const jRevOv = detachY(onOverlay(vid({ reverse: true, start: 1 }))), jLed = applyOps(null as any, detachY(behind({ reverse: true, duration: 1.5 })), [{ op: "j_cut", id: "y", seconds: 0.5 }])[0];
+    const jTrim = [{ op: "trim_clip", id: "y", trim_start: 0.5 }, shorten("aud1", 0.5, 2), ...jcut];
+    check("j_cut with no source at the audio's head names the video, and for a reversed video with detached audio cuts the audio's head by a shorter duration; the J-cut then leads by what was asked with the audio in line, and trimming the video alone is refused again",
       /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first/.test(jFwd) && cured(jFwd).join() === "y" && follows(behind(), jcut, ["y"], trimStart)
-      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start first/.test(jRevHint) && cured(jRevHint).join() === "y,aud1" && follows(jRev, jcut, cured(jRevHint), trimStart) && !follows(jRev, jcut, ["y"], trimStart)
-      && cured(refusedHint(jLinked, jcut)).join() === "y" && follows(jLinked, jcut, ["y"], trimStart), [jFwd, jRevHint, refusedHint(jLinked, jcut)]);
+      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount \(trim_clip id='aud1' duration=/.test(jRevHint) && !follows(jRev, jcut, ["y"], trimStart)
+      && after(jRev, jTrim) === inLine(-0.5, 0) && after(jRevOv, jTrim) === inLine(-0.5, 0) && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten/.test(refusedHint(jLed, jcut)) && after(jLed, jTrim) === inLine(-1, 0)
+      && cured(refusedHint(jLinked, jcut)).join() === "y" && follows(jLinked, jcut, ["y"], trimStart), [jFwd, jRevHint, refusedHint(jLinked, jcut), after(jRev, jTrim), after(jRevOv, jTrim), after(jLed, jTrim)]);
     check("j_cut on a clip that starts at 0 offers a clip before it and a move to a non-magnetic track on a magnetic track, a move to a later time on any other, and not trim_start; each cure lets the same j_cut pass",
-      /^a J-cut needs a clip that starts after timeline 0: add a clip before it \(add_clip before='y'\), or move_clip 'y' to a non-magnetic track/.test(zeroHint) && !/trim_clip/.test(zeroHint)
+      /^a J-cut needs a clip that starts after timeline 0: add a clip before it \(add_clip track='main' before='y'\), or move_clip 'y' to a non-magnetic track/.test(zeroHint) && !/trim_clip/.test(zeroHint)
+      && /add_clip track='m2' before='y'/.test(refusedHint(onM2, jcut)) && follows(onM2, jcut, ["y"], (id) => ({ ...addBefore(id), track: "m2" }))
       && follows(atZero, jcut, ["y"], addBefore) && follows(zeroDet, jcut, ["y"], addBefore) && follows(atZero, jcut, ["y"], (id) => ({ op: "move_clip", id, track: "overlay", at: 1 })) && !follows(atZero, jcut, ["y"], trimHalf)
       && /^a J-cut needs a clip that starts after timeline 0: move_clip 'y' to a later time/.test(ovHint) && !/add_clip/.test(ovHint) && follows(overlay, jcut, ["y"], (id) => ({ op: "move_clip", id, shift: 1 }))
       && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first; and a clip that starts after timeline 0: add a clip before it/.test(bothHint)
       && /^a J-cut needs spare source at the audio's head/.test(refusedHint(applyOps(null as any, mk([vid()]), [addBefore("y")])[0], jcut)), [zeroHint, ovHint, bothHint]);
+    // several audio clips: trim_clip refuses such a video, so a forward cut splits it at the inner edge of the clip that was refused (that clip then has a picture of its own, and the repeat names the trim); a reversed one has no trim_start that keeps them in line
+    const lTwo = manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5), lCut = { op: "l_cut", id: "aud2", seconds: 0.25 }, lSplit = { op: "split_clip", id: "y", at: 0.5 };
+    const half = /trim_clip trim_end on '(\w+)' first/.exec(refusedHint(lTwo, [lSplit, lCut]))?.[1] ?? "";
+    const jTwo = manyAudio(behind(), 2), jAud = { op: "j_cut", id: "aud1", seconds: 0.5 }, jSplit = { op: "split_clip", id: "y", at: 2 };
+    const revL = manyAudio(mk([vid({ reverse: true })]), 1), revJ = manyAudio(behind({ reverse: true }), 2);
+    check("a cut on a video with several audio clips splits it at the edge of the clip refused, and the repeat then passes with the audio in line; for a reversed video the tail cut trims both clips and the head cut offers no trim",
+      /^an L-cut needs source after the clip's out-point; 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 0.5 first so that 'aud2' has a picture of its own, and repeat/.test(refusedHint(lTwo, [lCut]))
+      && half !== "" && half !== "y" && after(lTwo, [lSplit, { op: "trim_clip", id: half, trim_end: 0.25 }, lCut], "aud2", half) === inLine(0, 0.25)
+      && /^a J-cut needs spare source at the audio's head: 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 2 first so that 'aud1' has a picture of its own, and repeat/.test(refusedHint(jTwo, [jAud]))
+      && /trim_clip trim_start on 'y' first/.test(refusedHint(jTwo, [jSplit, jAud])) && after(jTwo, [jSplit, { op: "trim_clip", id: "y", trim_start: 0.5 }, jAud]) === inLine(-0.5, 0)
+      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first, on each of 'y', 'aud2'/.test(refusedHint(revL, [{ ...lCut, seconds: 0.5 }])) && after(revL, [trimEnd("y"), trimEnd("aud2"), { ...lCut, seconds: 0.5 }], "aud2") === inLine(1, 0.5)
+      && /^a J-cut needs spare source at the audio's head: 'y' is reversed and has 2 audio clips, which no trim_start keeps in line/.test(refusedHint(revJ, [jAud])) && !/trim_clip|split_clip/.test(refusedHint(revJ, [jAud])),
+      [refusedHint(lTwo, [lCut]), refusedHint(lTwo, [lSplit, lCut]), refusedHint(jTwo, [jAud]), refusedHint(jTwo, [jSplit, jAud]), refusedHint(revL, [{ ...lCut, seconds: 0.5 }]), refusedHint(revJ, [jAud])]);
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
     // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint reaches that case

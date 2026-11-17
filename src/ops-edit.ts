@@ -67,8 +67,12 @@ function extend(c: Clip, side: Side, e: number) {
 /** no non-zero amount lies in lo..hi (the ops refuse by 0), so a hint must not offer it as a range */
 const noFit = (lo: number, hi: number) => hi < lo - EPS || (lo > -EPS && hi < EPS);
 const named = (xs: Clip[]) => { const ids = xs.map((x) => `'${x.id}'`); return ids.length > 1 ? `each of ${ids.join(", ")}` : ids[0]; };
-/** the tail of a trim cure on a reversed video with detached audio: trim_clip leaves that audio alone (ops.ts, `c.reverse ? undefined : soleAudio`), so each clip is trimmed */
-const unreached = (xs: Clip[]) => `, on ${named(xs)} (trim_clip on a reversed video does not reach its audio)`;
+const REVERSED_AUDIO = "trim_clip on a reversed video does not reach its audio"; // ops.ts: `c.reverse ? undefined : soleAudio`
+/** the trim that lifts a source bound of a reversed video with one detached audio clip, trimming both clips so they stay in line:
+ *  trim_end moves `in` on each; trim_start would also move the audio's start (its offset), so the audio's head is cut by a shorter duration instead */
+const alongReversed = (end: "trim_start" | "trim_end", v: Clip, aud: Clip) => end === "trim_end"
+  ? `trim_clip trim_end first, on ${named([v, aud])} (${REVERSED_AUDIO})`
+  : `trim_clip trim_start on '${v.id}' first, then shorten '${aud.id}' by the same amount (trim_clip id='${aud.id}' duration=<its duration minus that amount>); ${REVERSED_AUDIO}`;
 function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
   for (const [c] of edges) ownDuration(c); // a computed length would be overwritten
   for (const [c, side, sg] of edges) {
@@ -210,9 +214,15 @@ export function registerEditOps(h: OpHelpers) {
         const out: Dict = { id: v.id, audio: aud.id, detached };
         if (s > limit + EPS) {
           if (limit < 0.01) {
-            const trim = (end: string) => `trim_clip ${end} ${!detached && v.reverse ? `first${unreached([v, aud])}` : `on '${v.id}' first`}`; // the audio of a reversed video that already has one is not carried by trim_clip
+            const pieces = detached ? [] : linkedAudio(tl, v).map(([, x]) => x), vt = tl.tracks.find((t) => t.clips.includes(v));
+            const trim = (end: "trim_start" | "trim_end") => { // trim_clip carries the audio of a forward video with one audio clip; a reversed video's audio it leaves alone, and a video with several it refuses
+              if (pieces.length < 2) return pieces.length && v.reverse ? alongReversed(end, v, aud) : `trim_clip ${end} on '${v.id}' first`;
+              if (v.reverse) return end === "trim_end" ? alongReversed(end, v, aud) : `'${v.id}' is reversed and has ${pieces.length} audio clips, which no trim_start keeps in line`;
+              // shortcut: assumes the audio clips tile the video, so the refusing one is the last (tail) or the first (head) and a split at its inner edge gives it a picture of its own
+              return `'${v.id}' has ${pieces.length} audio clips, so trim_clip refuses it: split_clip '${v.id}' at ${fmt(lead ? clipEnd(aud) : clipStart(aud))} first so that '${aud.id}' has a picture of its own, and repeat`;
+            };
             const jcures = () => [room(tl, aud, side) < 0.01 && `spare source at the audio's head: ${trim("trim_start")}`, // each bound that tripped gets its own cure
-              clipStart(aud) < 0.01 && `a clip that starts after timeline 0: ${tl.tracks.find((t) => t.clips.includes(v))?.magnetic ? `add a clip before it (add_clip before='${v.id}'), or move_clip '${v.id}' to a non-magnetic track at a later time` : `move_clip '${v.id}' to a later time`}`].filter(Boolean).join("; and ");
+              clipStart(aud) < 0.01 && `a clip that starts after timeline 0: ${vt?.magnetic ? `add a clip before it (add_clip track='${vt.id}' before='${v.id}'), or move_clip '${v.id}' to a non-magnetic track at a later time` : `move_clip '${v.id}' to a later time`}`].filter(Boolean).join("; and ");
             throw new EditError(`cannot ${lead ? "lead" : "extend"} the audio of '${v.id}': ${lead && clipStart(aud) < 0.01 ? "it already starts at 0" : "no more source media"}`, "out_of_range",
               lead ? `a J-cut needs ${jcures()}` : `an L-cut needs source after the clip's out-point; ${trim("trim_end")}${canLoop(tl.assets, aud, v) ? ` or set loop: true on '${detached ? v.id : aud.id}'` : ""}`); // a refused batch discards the audio clip made here; detach copied the video's loop to it
           }
@@ -247,10 +257,11 @@ export function registerEditOps(h: OpHelpers) {
       // a loop flag is the clip's own: update_clip on the video does not reach its pieces
       const loopTail = high && !low && canLoop(tl.assets, ...list) ? `; or set loop: true${pieces.length ? ` on ${named(list.filter((x) => !x.loop))} (update_clip on the video does not reach its audio)` : ""}` : "";
       // each trim end opens one bound: a forward clip's trim_end opens the later source (high) and its trim_start the earlier (low); a reversed clip is the other way round
-      const trimEnds = [low && (c.reverse ? "trim_end" : "trim_start"), high && (c.reverse ? "trim_start" : "trim_end")].filter(Boolean).join(" and ");
-      const trimTail = pieces.length && c.reverse ? unreached(list) : "";
+      const ends = [low && (c.reverse ? "trim_end" : "trim_start"), high && (c.reverse ? "trim_start" : "trim_end")].filter(Boolean) as ("trim_start" | "trim_end")[];
+      // trim_clip refuses a video with several audio clips, and no trim keeps them in line with a reversed one, so then no trim is offered
+      const trims = pieces.length > 1 ? `it has ${pieces.length} audio clips, which no trim_clip keeps in line` : pieces.length && c.reverse ? ends.map((e) => alongReversed(e, c, pieces[0])).join("; and ") : `trim_clip ${ends.join(" and ")} first`;
       if (low || high) throw new EditError(`slip_clip: by=${by} is out of range`, "out_of_range",
-        `${noFit(lo, hi) ? `no slip fits: the clip${pieces.length ? " or its audio" : ""} has no spare source to slide over (trim_clip ${trimEnds} first${trimTail}` : `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source`}${loopTail})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
+        `${noFit(lo, hi) ? `no slip fits: the clip${pieces.length ? " or its audio" : ""} has no spare source to slide over (${trims}` : `allowed by: ${fmt(lo)} .. ${fmt(hi)} s (in-point must stay >= 0 and the clip within its source`}${loopTail})`, undefined, { min_by: fmt(lo), max_by: fmt(hi) });
       for (const x of list) x.in = round6(Math.max(0, cin(x) + by * spd(x)));
       resolve(tl);
       const out: Dict = { id: c.id, in: c.in, start: c.start, duration: c.duration };
