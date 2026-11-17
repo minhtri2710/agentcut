@@ -13,7 +13,7 @@ import { inp } from "./ffinput.ts";
 import { own } from "./own.ts";
 import { hasCodec, needFfmpeg } from "./media.ts";
 import { run, stopOnAbort } from "./proc.ts";
-import { allClips, EditError, parseColor, resolve, type Timeline, totalDuration, wideColourIssue } from "./model.ts";
+import { EditError, parseColor, resolve, type Timeline, totalDuration, wideColourWarnings } from "./model.ts";
 import { Renderer } from "./render.ts";
 import { alive, refuseSource } from "./project.ts";
 import { commit, createFile, ensureDir, HOST_TAG, partSibling } from "./safe-write.ts";
@@ -254,7 +254,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const quality = o.quality ?? "standard";
   const plan = planOutput(ext, tl, { codec: o.codec, alpha: o.alpha, quality, hwEncode: o.hwEncode });
   const { v, mux, a } = plan;
-  for (const id of new Set([...allClips(tl.tracks)].map((c) => c.asset))) { const wide = wideColourIssue(id, tl.assets[id]); if (wide) plan.warnings.push(wide.message); }
+  plan.warnings.push(...wideColourWarnings(tl));
   // alpha dropped: render on opaque black so semi-transparent edges are composited, not shown at full strength
   const rtl = plan.transparent && !plan.alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
   const scale = gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1;

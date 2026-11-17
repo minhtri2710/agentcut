@@ -391,6 +391,10 @@ console.log("exports, validation and relinking");
   const imported: any = await api.apply(WP, [{ op: "import_media", path: wideFile, id: "wide" }], { revision: wq.revision });
   check("import_media of a BT.2020 file lists the warning in its issues", imported.results[0].color_space === "bt2020nc"
     && imported.issues.filter((i: any) => i.level === "warning" && i.path === "$.assets.wide.color_space" && i.message.includes("'wide'")).length === 1, imported.issues);
+  // the colour warning is listed after the clip warnings, so a cut list (apply shows 15) drops its repeats first: here a clip longer than the 1 s file warns
+  await api.apply(WP, [{ op: "add_clip", track: "main", asset: "wide", duration: 2 }], { revision: imported.revision });
+  const ordered: any = (await api.validate(WP)).issues, colourAt = ordered.findIndex((i: any) => i.path === "$.assets.wide.color_space"), clipAt = ordered.findIndex((i: any) => i.level === "warning" && /^\$\.tracks.*\.duration$/.test(i.path));
+  check("a clip's warning comes before the BT.2020 colour warning in validate's issues", clipAt >= 0 && colourAt > clipAt, ordered.map((i: any) => `${i.level} ${i.path}`));
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {

@@ -167,9 +167,14 @@ export const BT2020_SPACES = ["bt2020nc", "bt2020c", "ictcp"];
 export function wideColourIssue(id: string, a: Dict | undefined): { message: string; hint: string } | undefined {
   if (a?.kind !== "video" || !BT2020_SPACES.includes(a.color_space)) return undefined;
   return {
-    message: `'${id}' is BT.2020 colour (a wide-gamut or HDR source, such as phone HDR video): its colours are not converted, so the export, tagged BT.709, can look washed out or dim`,
+    message: `'${id}' is BT.2020 colour (a wide-gamut or HDR source, such as phone HDR video): its colours are not converted, so the export, made as BT.709, can look washed out or dim`,
     hint: "convert the file to SDR BT.709 first (tone-map it with a video tool), then relink_asset to the copy",
   };
+}
+/** The warning text for each BT.2020 video asset a clip of the timeline uses: what a video or still render adds to its `warnings`. */
+export function wideColourWarnings(tl: Timeline): string[] {
+  // shortcut: warns for every asset a clip uses, also audio-only, disabled, hidden or outside the section; filter by the drawn clips if it proves noisy
+  return [...new Set([...allClips(tl.tracks)].map((c) => c.asset))].flatMap((id) => wideColourIssue(id, tl.assets[id])?.message ?? []);
 }
 /** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one; else BT.709 when the picture is HD, a short side of 720 or more
  *  or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
@@ -811,6 +816,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   if (typeof st.sample_rate === "number" && !(Number.isInteger(st.sample_rate) && st.sample_rate >= SAMPLE_RATE_MIN && st.sample_rate <= SAMPLE_RATE_MAX))
     issues.push({ level: "error", path: "$.settings.sample_rate", message: `sample_rate must be an integer ${SAMPLE_RATE_MIN}..${SAMPLE_RATE_MAX} Hz`, hint: "48000 (default) or 44100" });
   const assets = tl.assets || {};
+  const wideColour: Issue[] = []; // pushed last, so a cut list drops these repeats before a clip's warning
   for (const [aid, a] of Object.entries(assets)) {
     const ap = `$.assets.${aid}`;
     if (!a || typeof a !== "object" || Array.isArray(a)) { issues.push({ level: "error", path: ap, message: "asset must be an object" }); continue; }
@@ -818,7 +824,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     if (typeof a.color_space === "string" && !COLOR_SPACES.includes(a.color_space) && !NO_MATRIX.includes(a.color_space))
       issues.push({ level: "error", path: `${ap}.color_space`, message: `color_space must be one of ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}`, hint: `relink_asset id=${aid} path=${a.path} records the file's own tag` });
     const wide = wideColourIssue(aid, a);
-    if (wide) issues.push({ level: "warning", path: `${ap}.color_space`, ...wide });
+    if (wide) wideColour.push({ level: "warning", path: `${ap}.color_space`, ...wide });
     if (typeof a.path !== "string" || !a.path) issues.push({ level: "error", path: `${ap}.path`, message: "asset needs a path" });
     if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
@@ -830,7 +836,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
   if (!Array.isArray(tl.tracks)) return [...issues, { level: "error", path: "$.tracks", message: "tracks must be a list" }];
   validateTracks(tl, o, issues, new Map(), "$", ROOT);
   if (!tl.tracks.some((t) => t.clips?.length)) issues.push({ level: "warning", path: "$.tracks", message: "timeline is empty" });
-  return issues;
+  return [...issues, ...wideColour];
 }
 
 /** The text a font check looks at: a text clip's text, a captions clip's words (upper-cased when the clip is); null for any other clip. */

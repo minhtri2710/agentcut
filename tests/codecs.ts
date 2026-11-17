@@ -986,11 +986,14 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     api.create(D, { width: W, height: H, fps: 10 });
     await applyLatest(D, [{ op: "import_media", path: src, id: name }, { op: "add_clip", track: "main", asset: name, duration: 0.5 }]);
     const dp = openProject(D);
-    return ((await renderVideo(dp.absolutized(dp.load()), dp.root, join(D, "renders", "o.mp4"), { workers: 1 })) as any).warnings as string[];
+    return [((await renderVideo(dp.absolutized(dp.load()), dp.root, join(D, "renders", "o.mp4"), { workers: 1 })) as any).warnings as string[],
+      ((await api.render(D, { out: join(D, "renders", "o.png"), sheet: false })) as any).warnings as string[] | undefined ?? []];
   };
-  const [warn709, warn2020] = [await warnsOf("ctl", hd709t), await warnsOf("wide", hd2020t)];
+  const [[warn709, still709], [warn2020, still2020]] = [await warnsOf("ctl", hd709t), await warnsOf("wide", hd2020t)];
   check("a render of a BT.2020 source warns once, naming the asset; the BT.709 control gets no such warning",
     warn2020.length === warn709.length + 1 && warn2020.filter((w) => w.includes("'wide'")).length === 1 && !warn709.some((w) => w.includes("'ctl'")), { warn709, warn2020 });
+  check("so does a still render of it (.png), and the control's still gets none",
+    still2020.filter((w) => w.includes("'wide'")).length === 1 && still709.length === 0, { still709, still2020 });
   const centre = async (f: string, facts: Record<string, unknown> = {}) => {
     const info = api.probe(f), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
     try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }

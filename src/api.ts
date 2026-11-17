@@ -352,7 +352,8 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   const img = await stillFrame(flat, p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
   o.signal?.throwIfAborted();
   writeOut(p, out, img.data);
-  return { output: out, t, width: img.width, height: img.height, alpha, bytes: img.data.length, ...(alpha && !transparent ? { warnings: [ALPHA_ON_OPAQUE] } : {}) };
+  const warnings = [...(alpha && !transparent ? [ALPHA_ON_OPAQUE] : []), ...M.wideColourWarnings(tl)];
+  return { output: out, t, width: img.width, height: img.height, alpha, bytes: img.data.length, ...(warnings.length ? { warnings } : {}) };
 }
 
 export async function render(project: string | undefined, o: {
