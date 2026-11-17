@@ -140,7 +140,7 @@ export function buildServer() {
     inputSchema: { project: P, beats: z.union([z.literal("music"), z.array(z.number())]).optional(), min_shot: z.number().default(0.4), max_shot: z.number().optional(), cps: z.number().default(15), black_frames: z.boolean().default(true) },
   }, wrap((a, signal) => api.review(proj(a.project), { beats: a.beats, minShot: a.min_shot, maxShot: a.max_shot, cps: a.cps, black: a.black_frames, signal })));
 
-  const noJob = (id: string) => ({ content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", "jobs live in the server process and are lost when it restarts; re-run prepare (cached, idempotent) or render").toJSON() })], isError: true });
+  const noJob = (id: string) => ({ content: [text({ ok: false, error: new EditError(`no job ${id}`, "not_found", `jobs live in the server process: they are lost when it restarts, and only the newest ${JOBS_KEPT} finished ones are kept; a finished render's output file stays where it was written; re-run prepare (cached, idempotent) or render`).toJSON() })], isError: true });
   /** a job's state as the tool reply; `ok` is false for a job that failed or was cancelled unless the caller asked for the cancel */
   const jobReply = (j: any, ok = j.status === "done" || j.status === "running") => {
     const { promise, ctl, ...pub } = j;
