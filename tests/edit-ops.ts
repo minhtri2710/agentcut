@@ -1552,8 +1552,30 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
       && /trim_clip trim_start first/.test(refusedHint(mk([vid()]), slipBy(-1))) && /trim_clip trim_start and trim_end first/.test(refusedHint(longer, slipBy(-2))), [revHint, revUp, refusedHint(yLooped, slip), refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-2))]);
     const lcutName = (t: any) => named(refusedHint(t, lcut).split("set loop")[1] ?? ""), lcutNamed = lcutName(det), linked = mk([vid({ in: 1, duration: 1 })]); // the audio clip an l_cut makes is thrown away with its refused batch: there the video is the clip to set
     check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
-    check("l_cut names the audio clip to set loop on when the video already has one, the video when the l_cut would make the audio, and setting the named clip lets the same l_cut pass",
-      lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed) && lcutName(linked).join() === "y" && follows(linked, lcut, lcutName(linked)), [refusedHint(det, lcut), refusedHint(linked, lcut)]);
+    // trim_clip leaves a reversed picture's audio alone, so on such a video with detached audio the trim cure names each clip; trimming the video alone is refused again
+    const cured = (h: string) => named(h.replace(/^[^;:]*[;:]/, "")); // the clip ids of the cure: the lead-in holds an apostrophe that `named` would read as a quote
+    const lcutRev = refusedHint(revDet, lcut);
+    check("l_cut names the audio clip to set loop on when the video already has one, the video when the l_cut would make the audio, and setting the named clip lets the same l_cut pass; on a reversed video with detached audio it names each clip to trim",
+      lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed) && lcutName(linked).join() === "y" && follows(linked, lcut, lcutName(linked))
+      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first/.test(lcutRev) && cured(lcutRev).join() === "y,aud1" && cured(refusedHint(revDet, [{ op: "l_cut", id: "aud1", seconds: 1 }])).join() === "y,aud1"
+      && follows(revDet, lcut, cured(lcutRev), trimEnd) && !follows(revDet, lcut, ["y"], trimEnd) && /trim_clip trim_end on 'y' first/.test(refusedHint(det, lcut)), [refusedHint(det, lcut), refusedHint(linked, lcut), lcutRev]);
+    // j_cut: each bound that tripped names its own cure, and following it lets the same j_cut pass
+    const jcut = [{ op: "j_cut", id: "y", seconds: 0.5 }], behind = (o: any = {}) => mk([vid({ id: "x1", duration: 1 }), vid(o)]), detachY = (t: any) => applyOps(null as any, t, [{ op: "detach_audio", id: "y" }])[0];
+    const addBefore = (id: string): any => ({ op: "add_clip", track: "main", asset: "va", id: "pre", in: 0, duration: 1, before: id }), trimHalf = (id: string): any => ({ op: "trim_clip", id, trim_start: 0.5 });
+    const jRev = detachY(behind({ reverse: true })), jRevHint = refusedHint(jRev, jcut), jFwd = refusedHint(behind(), jcut), jLinked = behind({ reverse: true });
+    const atZero = mk([vid({ in: 1, duration: 1 })]), zeroHint = refusedHint(atZero, jcut), zeroDet = detachY(atZero), overlay = mk([]), bothHint = refusedHint(mk([vid()]), jcut);
+    overlay.tracks[1].clips = [vid({ in: 1, duration: 1 })];
+    const ovHint = refusedHint(overlay, jcut);
+    check("j_cut with no source at the audio's head names the video, and each clip when the video is reversed with detached audio; trimming the video alone is refused again there",
+      /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first/.test(jFwd) && cured(jFwd).join() === "y" && follows(behind(), jcut, ["y"], trimStart)
+      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start first/.test(jRevHint) && cured(jRevHint).join() === "y,aud1" && follows(jRev, jcut, cured(jRevHint), trimStart) && !follows(jRev, jcut, ["y"], trimStart)
+      && cured(refusedHint(jLinked, jcut)).join() === "y" && follows(jLinked, jcut, ["y"], trimStart), [jFwd, jRevHint, refusedHint(jLinked, jcut)]);
+    check("j_cut on a clip that starts at 0 offers a clip before it and a move to a non-magnetic track on a magnetic track, a move to a later time on any other, and not trim_start; each cure lets the same j_cut pass",
+      /^a J-cut needs a clip that starts after timeline 0: add a clip before it \(add_clip before='y'\), or move_clip 'y' to a non-magnetic track/.test(zeroHint) && !/trim_clip/.test(zeroHint)
+      && follows(atZero, jcut, ["y"], addBefore) && follows(zeroDet, jcut, ["y"], addBefore) && follows(atZero, jcut, ["y"], (id) => ({ op: "move_clip", id, track: "overlay", at: 1 })) && !follows(atZero, jcut, ["y"], trimHalf)
+      && /^a J-cut needs a clip that starts after timeline 0: move_clip 'y' to a later time/.test(ovHint) && !/add_clip/.test(ovHint) && follows(overlay, jcut, ["y"], (id) => ({ op: "move_clip", id, shift: 1 }))
+      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first; and a clip that starts after timeline 0: add a clip before it/.test(bothHint)
+      && /^a J-cut needs spare source at the audio's head/.test(refusedHint(applyOps(null as any, mk([vid()]), [addBefore("y")])[0], jcut)), [zeroHint, ovHint, bothHint]);
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));
     // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint reaches that case
