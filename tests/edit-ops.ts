@@ -1559,8 +1559,8 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     // a loop pass ends at the picture's length: over an asset with no recorded length validate refuses a looping video (a freeze reads no pass, an audio clip needs none), and no hint reaches that case
     const loopErr = (t: any) => validate(t).find((i: any) => i.level === "error" && /\.loop$/.test(i.path));
     const noLen = { duration: 0 }, refuse = loopErr(mk([vid({ loop: true })], noLen));
-    check("validate refuses a looping video over an asset with no recorded length and names the mkv remux; a freeze, an audio clip and a clip without loop pass",
-      /no picture length/.test(String(refuse?.message)) && /<file>\.mkv/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
+    check("validate refuses a looping video over an asset with no recorded length and names the cure; a freeze, an audio clip and a clip without loop pass",
+      /no picture length/.test(String(refuse?.message)) && /relink_asset the file to probe it again/.test(String(refuse?.hint)) && !loopErr(mk([vid({ loop: true, freeze: true })], noLen)) && !loopErr(mk([{ ...vid({ loop: true }), type: "audio" }], noLen)) && !loopErr(mk([vid()], noLen)), refuse);
     // no hint reaches the no-length case: such an asset has an unlimited source length, so no upper bound trips one; canLoop is still the predicate "validate accepts loop on these clips" for every refusal
     const agrees = (clip: any, extra: any = {}) => { const t = mk([clip], extra); return canLoop(t.assets, t.tracks[0].clips[0]) === !loopErr(t); };
     const agreed = { plain: agrees(vid({ loop: true })), noLength: agrees(vid({ loop: true }), noLen), noLengthFreeze: agrees(vid({ loop: true, freeze: true }), noLen), noLengthAudio: agrees({ ...vid({ loop: true }), type: "audio" }, noLen), mpegts: agrees(vid({ loop: true }), { format: "mpegts", key_gap: 1 }), reversed: agrees(vid({ loop: true, reverse: true })) };
