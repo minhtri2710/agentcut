@@ -27,7 +27,8 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 const api = await import("./author-api.ts");
-const { startUi, JOBS_KEPT } = await import("../src/ui.ts");
+const { startUi } = await import("../src/ui.ts");
+const { JOBS_KEPT } = await import("../src/jobs.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
@@ -355,6 +356,12 @@ console.log("job retention");
     await prepared();
     const ended = await get(held.id);
     check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job starts", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
+    mkdirSync(join(dirJ, "previews", "ui"), { recursive: true });
+    writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-0.00-3.00.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
+    const hits: string[] = [];
+    for (let i = 0; i < JOBS_KEPT + 2; i++) hits.push((await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 3 } })).j.id);
+    const [firstHit, lastHit] = [await get(hits[0]), await get(hits.at(-1)!)];
+    check(`the oldest of ${JOBS_KEPT + 2} plays answered from the cache is forgotten, the newest is kept`, firstHit.status === 404 && firstHit.j.error?.code === "not_found" && lastHit.status === 200 && lastHit.j.status === "done", { firstHit, lastHit });
   } finally { process.env.PATH = was; }
   uj.server.closeAllConnections?.();
   await new Promise((ok) => uj.server.close(ok));

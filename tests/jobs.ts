@@ -229,7 +229,7 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
     const stopped = await call("cancel_job", { job_id: s2.job_id }), after = await call("render_status", { job_id: s2.job_id, wait_seconds: 0 });
     check("a prepare cancelled mid-download is cancelled and shows no download field, in the cancel reply or later", stopped.status === "cancelled" && !("download" in stopped) && after.status === "cancelled" && !("download" in after) && nCalls() === runs0 + 1, { stopped, after });
     { // a long session does not keep every finished job: past JOBS_KEPT the earliest-ended ones answer not_found; a running one is never dropped
-      const { JOBS_KEPT } = await import("../src/mcp.ts");
+      const { JOBS_KEPT } = await import("../src/jobs.ts");
       const D3 = join(tmp, "proj-dl-keep");
       await dlProject(D3, "silueta");
       const held = await call("prepare", { project: D3, allow_download: true, wait_seconds: 0 }); // the oldest job, running throughout

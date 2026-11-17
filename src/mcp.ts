@@ -8,6 +8,7 @@ import { z } from "zod";
 import * as api from "./api.ts";
 import { GUIDE } from "./docs.ts";
 import { FEEDBACK_GUIDE, KINDS, recordCall, SEVERITIES } from "./feedback.ts";
+import { endJob, JOBS_KEPT } from "./jobs.ts";
 import { EditError } from "./model.ts";
 import { own } from "./own.ts";
 import type { DownloadProgress } from "./prepare.ts";
@@ -23,7 +24,6 @@ Help improve AgentCut: when something is slow, confusing, missing or broken, cal
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
-export const JOBS_KEPT = 64; // the newest finished jobs (by end) the server remembers, so a long session does not grow without bound; older ids answer not_found
 const jobs = new Map<string, any>();
 /** tool calls the server has accepted and not yet finished; shutdown answers them before it exits */
 const calls = new Set<Promise<unknown>>();
@@ -177,9 +177,7 @@ export function buildServer() {
       })
       .finally(() => {
         job.finished = Date.now();
-        jobs.delete(id); jobs.set(id, job); // the map lists finished jobs earliest-ended first (a Map iterates in insertion order)
-        const finished = [...jobs].filter(([, j]) => j.status !== "running");
-        for (const [old] of finished.slice(0, Math.max(0, finished.length - JOBS_KEPT))) jobs.delete(old);
+        endJob(jobs, id, job);
       });
     return id;
   };
