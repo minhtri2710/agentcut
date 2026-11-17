@@ -325,9 +325,9 @@ export class FrameSource {
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
-    // the picture is tagged with the matrix it is read with first (the asset's own name, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix;
+    // the picture is tagged with the matrix it is read with first (the asset's own name, else bt2020nc for an untagged one converted from BT.2020, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix;
     // PQ, HLG and BT.2020 primaries are then converted to BT.709 (conversionChain), before crop, the clip's filters and the grade
-    const matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH) : undefined, convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined;
+    const convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined, matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH, convert) : undefined;
     const vf: string[] = [...(matrix ? [`setparams=colorspace=${matrix}`] : []), ...(convert ? conversionChain(convert) : [])];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
     vf.push(...filterChain(o.filters), ...gradeChain(o.color));

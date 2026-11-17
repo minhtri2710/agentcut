@@ -372,13 +372,13 @@ console.log("exports, validation and relinking");
     return (await api.validate(P)) as any;
   };
   const accepted: (readonly [string, boolean])[] = [], warned: (readonly [string, string[]])[] = [];
-  for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "ictcp", "gbr", "reserved", "unknown"]) {
+  for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "gbr", "reserved", "unknown"]) {
     const r = await withName(v);
     accepted.push([v, r.valid] as const);
     warned.push([v, (r.issues ?? []).filter((i: any) => i.level === "warning" && /\.color_(space|primaries|transfer)$/.test(i.path) && i.message.includes(`'${first}'`)).map((i: any) => i.path)] as const);
   }
   const refusedNames: (readonly [unknown, any])[] = [];
-  for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", 709, null]) refusedNames.push([v, await withName(v)] as const);
+  for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", "bt2020c", "ictcp", 709, null]) refusedNames.push([v, await withName(v)] as const);
   check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
   check("a BT.2020 matrix on a video asset with no primaries or transfer tag gives one warning on its color_primaries, naming the asset; the other names give none",
     warned.every(([v, paths]) => (v === "bt2020nc" ? paths.join() === `$.assets.${first}.color_primaries` : paths.length === 0)), warned);
@@ -387,7 +387,7 @@ console.log("exports, validation and relinking");
   await withName(was);
   // the colour tags a warning goes by: [matrix, primaries, transfer, the field the warning is on, or null for none]. Converted: PQ, HLG, BT.2020 primaries with an SDR curve.
   const tagged: [string, string, string, string | null][] = [["bt709", "bt709", "smpte428", "color_transfer"], ["bt709", "smpte432", "bt709", "color_primaries"], ["bt2020nc", "unknown", "bt709", "color_primaries"], ["bt2020nc", "bt2020", "bt470bg", "color_transfer"],
-    ["unknown", "bt2020", "smpte2084", "color_space"], ["bt2020nc", "bt2020", "smpte2084", null], ["bt2020nc", "unknown", "arib-std-b67", null], ["bt2020nc", "bt2020", "bt709", null], ["bt709", "bt709", "bt709", null]];
+    ["unknown", "bt709", "smpte2084", "color_space"], ["unknown", "bt2020", "smpte2084", null], ["bt2020nc", "bt2020", "smpte2084", null], ["bt2020nc", "unknown", "arib-std-b67", null], ["bt2020nc", "bt2020", "bt709", null], ["bt709", "bt709", "bt709", null]];
   const seen: unknown[] = [], wasTags = [named.assets[first].color_primaries, named.assets[first].color_transfer];
   for (const [cs, prim, trc, field] of tagged) {
     named.assets[first].color_space = cs; named.assets[first].color_primaries = prim; named.assets[first].color_transfer = trc;

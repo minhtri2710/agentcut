@@ -123,7 +123,7 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   format: [["string"], "video file: the demuxer's format name (ffprobe format_name)"],
   reorder: [["number"], "video file: frames the decoder holds back before output (has_b_frames), an integer >= 0"],
   key_gap: [["number"], "video file in a format whose seek may land after the target: the longest stretch between keyframes, seconds, a number > 0"],
-  color_space: [["string"], "video file: the matrix its picture is read with, as ffprobe names it, one of COLOR_SPACES; 'unknown' or 'reserved' when the file has no tag (then HD is read as bt709, smaller as the decoder's default); import_media records the file's own tag, a name set by hand replaces it"],
+  color_space: [["string"], "video file: the matrix its picture is read with, as ffprobe names it, one of COLOR_SPACES; 'unknown' or 'reserved' when the file has no tag (then bt2020nc when its primaries are converted from BT.2020, else HD is read as bt709, smaller as the decoder's default); import_media records the file's own tag, a name set by hand replaces it"],
   color_primaries: [["string"], "video file: the primaries the picture is tagged with, as ffprobe names it ('unknown' when untagged); bt2020 is converted to BT.709, and so is unknown under a PQ or HLG transfer (both are defined on BT.2020 primaries)"],
   color_transfer: [["string"], "video file: the transfer curve the picture is tagged with, as ffprobe names it ('unknown' when untagged); smpte2084 (PQ) and arib-std-b67 (HLG) are converted to BT.709"],
 };
@@ -159,9 +159,10 @@ export function missingFacts(a: Dict): string[] {
   if (typeof a.format === "string" && !seeksBefore(a.format) && (a.key_gap === undefined || a.key_gap === null)) miss.push("key_gap");
   return miss;
 }
-/** The matrix names an asset's color_space may hold: the names ffprobe prints for a picture's matrix that the setparams filter's `colorspace` also takes (read from `ffmpeg -h filter=setparams`).
+/** The matrix names an asset's color_space may hold: the names ffprobe prints for a picture's matrix that this pipeline can convert to RGB (the setparams filter takes more names than FFmpeg's scaler then converts:
+ *  ycgco, bt2020c, smpte2085, chroma-derived-nc, chroma-derived-c, ictcp, ipt-c2 and the other ycgco forms fail with 'Impossible to convert between the formats', so a file with one is refused at import).
  *  'unknown' and 'reserved' (ffprobe prints it, the filter has no such name) say the file names no matrix. Nothing else reaches an ffmpeg argument. */
-export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2"];
+export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "bt2020nc"];
 export const NO_MATRIX = ["unknown", "reserved"];
 /** The conversion to BT.709 a picture with these primaries and transfer gets before anything else is done to it (undefined: none): PQ, HLG, and BT.2020 primaries with an SDR curve.
  *  The key names the curve (pq, hlg, sdr) and, after a +, the primaries step (BT.2020 primaries; PQ and HLG are defined only on them, so with no primaries tag they are read as BT.2020). */
@@ -195,7 +196,7 @@ export function colourIssue(id: string, a: Dict | undefined): { field: string; m
   if (UNCONVERTED_TRANSFERS.includes(transfer)) return { field: "color_transfer", message: `'${id}' is tagged ${primaries}/${transfer}: ${left}`, hint };
   if (UNCONVERTED_PRIMARIES.includes(primaries)) return { field: "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer}: its primaries are not converted to BT.709, and the export is tagged BT.709, so its colours can look wrong`, hint };
   const matrixName = NO_MATRIX.includes(matrix) ? "unnamed" : matrix;
-  if ((transfer === "smpte2084" || transfer === "arib-std-b67") && matrix !== "bt2020nc")
+  if ((transfer === "smpte2084" || transfer === "arib-std-b67") && namedMatrix(matrix, conversionFor(primaries, transfer)) !== "bt2020nc")
     return { field: "color_space", message: `'${id}' is ${transfer} with the ${matrixName} matrix: its curve is converted but read through that matrix, so the colours can look wrong`, hint };
   if ((primaries === "bt2020" || (matrix === "bt2020nc" && primaries === "unknown")) && !conversionFor(primaries, transfer))
     return { field: primaries === "bt2020" ? "color_transfer" : "color_primaries", message: `'${id}' is tagged ${primaries}/${transfer} with the ${matrixName} matrix: AgentCut has no conversion of that to BT.709, and the export is tagged BT.709, so its colours can look wrong`, hint };
@@ -206,11 +207,14 @@ export function colourWarnings(tl: Timeline): string[] {
   // shortcut: warns for every asset a clip uses, also audio-only, disabled, hidden or outside the section; filter by the drawn clips if it proves noisy
   return [...new Set([...allClips(tl.tracks)].map((c) => c.asset))].flatMap((id) => colourIssue(id, tl.assets[id])?.message ?? []);
 }
-/** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one; else BT.709 when the picture is HD, a short side of 720 or more
- *  or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
+/** The asset's matrix name, or bt2020nc when it names none and its conversion key has the primaries step (BT.2020 primaries, or PQ/HLG with no primaries tag: those files are made with the BT.2020 matrix). */
+const namedMatrix = (colorSpace: string, convert: string | undefined) => (NO_MATRIX.includes(colorSpace) && convert?.endsWith("+2020") ? "bt2020nc" : colorSpace);
+/** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one, else bt2020nc for a picture converted from BT.2020 primaries (`convert`, the key of conversionFor);
+ *  else BT.709 when the picture is HD, a short side of 720 or more or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
  *  A name outside the lists is refused, so no project string reaches an ffmpeg argument. */
-export function matrixFor(colorSpace: string, w: number, h: number): string | undefined {
-  if (COLOR_SPACES.includes(colorSpace)) return colorSpace;
+export function matrixFor(colorSpace: string, w: number, h: number, convert: string | undefined): string | undefined {
+  const name = namedMatrix(colorSpace, convert);
+  if (COLOR_SPACES.includes(name)) return name;
   if (!NO_MATRIX.includes(colorSpace)) throw new EditError(`color_space ${JSON.stringify(colorSpace)} is not a matrix name`, "bad_media", `use one of: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}`);
   return Math.min(w, h) >= 720 || Math.max(w, h) >= 1280 ? "bt709" : undefined;
 }

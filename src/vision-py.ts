@@ -1,7 +1,7 @@
 // Python helper for the vision features, run through `uv run --with <pkgs>` (see vision.ts). Kept as a TS string so the
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
-import { CONVERSIONS, conversionChain } from "./model.ts";
+import { COLOR_SPACES, CONVERSIONS, conversionChain } from "./model.ts";
 
 export const VISION_PY = String.raw`
 import json, os, signal, stat, subprocess, sys, tempfile, threading
@@ -35,7 +35,7 @@ try: _m = os.fstat(0).st_mode
 except OSError: _m = 0
 if stat.S_ISFIFO(_m) or stat.S_ISSOCK(_m): threading.Thread(target=_stop_on_eof, daemon=True).start()
 
-_MATRICES = ("gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2")  # the project's COLOR_SPACES (a test compares them)
+_MATRICES = ${JSON.stringify(COLOR_SPACES)}  # the project's COLOR_SPACES
 
 _CONVERT = ${JSON.stringify(Object.fromEntries(CONVERSIONS.map((k) => [k, conversionChain(k).join(",")])))}  # the project's conversion to BT.709 for each key (conversionChain in model.ts): the filters FrameSource runs
 

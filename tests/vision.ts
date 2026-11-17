@@ -728,14 +728,15 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     const full = calls.findIndex((c) => c.download && c.download.bytes === c.download.total_bytes), nextCall = calls[full + 1];
     check("prepare reports no download once the model is stored, before the helper runs: the call after the full-size one has no download, done 0, and the helper has not run yet",
       full >= 0 && !!nextCall && nextCall.download === undefined && nextCall.done === 0 && nextCall.ran === calls[full].ran, { calls });
-    { // the matrix a picture is read with reaches the helper's job as `matrix` for a video (the asset's own name, else bt709 for HD, else none) and is part of the cache key
+    { // the matrix a picture is read with reaches the helper's job as `matrix` for a video (the asset's own name, else bt2020nc for converted BT.2020 primaries, else bt709 for HD, else none) and is part of the cache key
       const mj = (w: number, h: number, colorSpace?: string, kind = "video", tags: [string?, string?] = ["unknown", "unknown"]) => V.matteJob(join(m, "rb.mp4"), { kind, fps: 30, duration: 2, srcW: w, srcH: h, model: MODEL, root: G, ...(colorSpace ? { colorSpace } : {}),
         ...(tags[0] ? { colorPrimaries: tags[0] } : {}), ...(tags[1] ? { colorTransfer: tags[1] } : {}) });
       const refuses = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
       const hdUntagged = mj(1920, 1080, "unknown"), hdNamed = mj(1920, 1080, "bt470bg"), sdNamed = mj(640, 360, "bt709"), sdUntagged = mj(640, 360, "unknown");
-      check("matte job: the job carries the matrix the picture is read with (untagged HD: bt709; a name on the asset: that name, at any size; untagged SD or an image: none)",
-        hdUntagged.job.matrix === "bt709" && hdNamed.job.matrix === "bt470bg" && sdNamed.job.matrix === "bt709" && !("matrix" in sdUntagged.job) && !("matrix" in mj(1920, 1080, "unknown", "image").job),
-        { hd: hdUntagged.job.matrix, named: hdNamed.job.matrix, sd: sdNamed.job.matrix, sdUntagged: sdUntagged.job.matrix });
+      const wideUntagged = mj(640, 360, "reserved", "video", ["bt2020", "bt709"]);
+      check("matte job: the job carries the matrix the picture is read with (untagged HD: bt709; untagged with BT.2020 primaries converted: bt2020nc at any size; a name on the asset: that name, at any size; untagged SD or an image: none)",
+        hdUntagged.job.matrix === "bt709" && wideUntagged.job.matrix === "bt2020nc" && hdNamed.job.matrix === "bt470bg" && sdNamed.job.matrix === "bt709" && !("matrix" in sdUntagged.job) && !("matrix" in mj(1920, 1080, "unknown", "image").job),
+        { hd: hdUntagged.job.matrix, wide: wideUntagged.job.matrix, named: hdNamed.job.matrix, sd: sdNamed.job.matrix, sdUntagged: sdUntagged.job.matrix });
       check("matte job: a different matrix is a different cache file, and an image's file does not depend on the colour name",
         new Set([hdUntagged.file, hdNamed.file, sdNamed.file, sdUntagged.file]).size === 4 && mj(1920, 1080, "bt709", "image").file === mj(1920, 1080, undefined, "image").file);
       check("matte job: a video without its color_space, or with a name outside the list, is refused before a job is made",
@@ -883,8 +884,6 @@ sys.path.insert(0, sys.argv[1])
 g = {"__name__": "helper"}
 exec(compile(open(sys.argv[2]).read().split("\\njob = json.loads(")[0], "helper", "exec"), g)
 a = json.loads(sys.argv[3])
-if a.get("list"):
-  sys.stdout.write(json.dumps(list(g["_MATRICES"]))); sys.exit(0)
 sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "rgb24", **a["kw"])).b)
 `);
         const read = (kw: Record<string, unknown>, path = hd) => {
@@ -899,11 +898,10 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
         const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 3);
         check("helper: the frame reader, told to read with bt709, gives the same RGB as FrameSource for an untagged HD source (green); told nothing it keeps the BT.601 read (R 20, B 9)",
           same(withRule) && Array.isArray(without) && without[0] >= 12 && without[2] >= 5, { fs: mine, withRule, without });
-        const { COLOR_SPACES } = await import("../src/model.ts");
         const run1 = (job: object) => spawnSync("python3", ["-I", "-S", "-B", driver, stubs, script, JSON.stringify({ path: hd, ...job })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
-        const listed = run1({ list: true }), bad = run1({ kw: { matrix: "bt709,format=gray" } });
-        check("helper: its list of matrix names is the project's, and a name outside it is refused before ffmpeg starts",
-          listed.status === 0 && JSON.stringify(JSON.parse(listed.stdout).sort()) === JSON.stringify([...COLOR_SPACES].sort()) && bad.status !== 0 && /matrix/.test(bad.stderr), { listed: listed.stdout, status: bad.status, err: bad.stderr.slice(-200) });
+        const refused = ["bt709,format=gray", "bt2020c"].map((matrix) => run1({ kw: { matrix } }));
+        check("helper: a matrix name outside the project's list (an injected filter, a name the scaler cannot convert) is refused before ffmpeg starts",
+          refused.every((r) => r.status !== 0 && /not a name this helper reads with/.test(r.stderr)), refused.map((r) => ({ status: r.status, err: r.stderr.slice(-200) })));
         // PQ: the same conversion, by the key the matte job carries; the real reader text against the real ffmpeg again
         const pqFile = join(m, "pq-flat.mp4");
         ff("-f", "lavfi", "-i", "color=c=0x7a9ec8:s=1280x720:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv,format=yuv420p", "-c:v", "libx264", pqFile);

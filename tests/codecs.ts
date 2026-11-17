@@ -969,10 +969,10 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
 {
   const { FrameSource, MATTE_FACTS } = await import("../src/media.ts");
   // flat green, converted to YUV with the named matrix, then the tags are set or cleared: "none" writes no tag, "709" and "601" write the set that goes with that matrix
-  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv", "2020": "colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv", dci: "colorspace=bt709:color_primaries=bt709:color_trc=smpte428:range=tv" };
-  const mk = (name: string, size: string, matrix: "bt709" | "bt601" | "bt2020", tags: keyof typeof SET) => {
+  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv", "2020": "colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv", dci: "colorspace=bt709:color_primaries=bt709:color_trc=smpte428:range=tv", "2020none": "colorspace=unknown:color_primaries=bt2020:color_trc=bt709:range=tv" };
+  const mk = (name: string, size: string, matrix: "bt709" | "bt601" | "bt2020", tags: keyof typeof SET, colour = "00ff00") => {
     const f = join(m, `${name}.mp4`);
-    ff("-f", "lavfi", "-i", `color=c=0x00ff00:s=${size}:r=24:d=1,format=rgba`, "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,setparams=${SET[tags]},format=yuv420p`, "-c:v", "libx264", f);
+    ff("-f", "lavfi", "-i", `color=c=0x${colour}:s=${size}:r=24:d=1,format=rgba`, "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,setparams=${SET[tags]},format=yuv420p`, "-c:v", "libx264", f);
     return f;
   };
   const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
@@ -981,6 +981,11 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   const tagsRecorded = [hd709, sd601, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_space} ${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`);
   check("the probe records the stream's own matrix, primaries and transfer tags, and one fixed word for each it has not",
     tagsRecorded.join() === "unknown unknown/unknown,unknown unknown/unknown,bt709 bt709/bt709,smpte170m smpte170m/smpte170m,bt2020nc bt2020/bt709,bt709 bt709/smpte428", tagsRecorded);
+  // a matrix the FFmpeg scaler cannot convert to RGB is refused when the file is probed: the tag is written into the stream directly, since the encoder cannot make a picture with it
+  const refusedTag = join(m, "matrix-bt2020c.mp4");
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=64x64:r=24:d=1,format=yuv420p", "-c:v", "libx264", "-bsf:v", "h264_metadata=matrix_coefficients=10", refusedTag);
+  const refusedProbe = (() => { try { api.probe(refusedTag); return "accepted"; } catch (e: any) { return `${e.code}: ${e.message}`; } })();
+  check("a file whose matrix tag the pipeline cannot convert (bt2020c) is refused when probed, naming the matrix", /^bad_media: .*bt2020c/.test(refusedProbe), refusedProbe);
   // a render names a source whose colours are not converted in its warnings (the export is tagged BT.709); a BT.709 source, and a BT.2020 one that is converted, add nothing
   const warnsOf = async (name: string, src: string) => {
     const D = join(tmp, `warn-${name}`);
@@ -1010,6 +1015,15 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   check("the asset naming bt709 reads an untagged HD file and an untagged SD file as BT.709 (green); the SD file with no name is still read as BT.601 (R 20, B 9)",
     green(got.hd709set) && green(got.sd709set) && got.sd709[0] >= 12 && got.sd709[2] >= 5, { hd: got.hd709set, sd: got.sd709set, sdUnnamed: got.sd709 });
   check("the asset naming the tag a file already has changes nothing", green(got.tagSame), got.tagSame);
+  // every matrix name an asset accepts is one a frame can be read with
+  const { COLOR_SPACES } = await import("../src/model.ts"), tiny = mk("tiny709", "64x64", "bt709", "709");
+  const unreadable: string[] = [];
+  for (const name of COLOR_SPACES) await centre(tiny, { color_space: name }).catch((e) => unreadable.push(`${name}: ${String(e?.message ?? e).slice(0, 80)}`));
+  check("every matrix name in the accepted list decodes a frame", unreadable.length === 0, unreadable);
+  // an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc: a mid-saturation picture comes back the same as with the matrix tagged (read as BT.709 it was 8 off in one channel)
+  const [wideTagged, wideUntagged] = [mk("wide-mid-tagged", "1280x720", "bt2020", "2020", "c03030"), mk("wide-mid-untagged", "1280x720", "bt2020", "2020none", "c03030")];
+  const [pxTagged, pxUntagged] = [await centre(wideTagged), await centre(wideUntagged)];
+  check("an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc (within 3 per channel of the same picture tagged bt2020nc)", pxTagged.every((v, i) => Math.abs(v - pxUntagged[i]) <= 3), { pxTagged, pxUntagged });
   // which matrix a picture is read with, from the decode chain (pixelKey), so no decode runs: the asset's own name; else BT.709 for HD (a short side from 720 or a long side from 1280); else none
   const read = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
     /setparams=colorspace=([a-z0-9-]+)/.exec(new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey)?.[1];
