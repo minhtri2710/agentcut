@@ -57,7 +57,7 @@ export function alphaDecoder(codec: string | undefined, alpha: boolean | undefin
 /** A video stream shorter than the container by less than this (s) is the container's own rounding, not a longer sound. Same slack as the 'clip needs more source' warning. */
 const VIDEO_END_SLACK = 0.05;
 /** How far (s) the period of an un-sought loop may differ from the pass length (FrameSource.fillsPass). In a render both come from the same recorded length, so they cancel and what this bounds is `video_start`:
- *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is the record's own rounding (`toFixed(3)`), so a start offset above it is read pass by pass. */
+ *  a video that starts up to this late after the container makes the one-stream loop drift that much per wrap. It is one tick of a matroska clock (1 ms), so a start offset above it is read pass by pass. */
 const PERIOD_TOLERANCE = 1e-3;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
@@ -76,6 +76,26 @@ function keyGap(path: string, whole: number): number {
   keys.sort((x, y) => x - y);
   const gap = Math.max(0, ...keys.map((t, i) => (i + 1 < keys.length ? keys[i + 1] : end) - t));
   return gap > 0 ? Math.ceil(gap * 1000) / 1000 : whole;
+}
+/** Seconds kept to the microsecond, the resolution ffprobe prints: a loop's passes are n times this length, so a millisecond of rounding shows as a wrong frame in a late pass.
+ *  shortcut: passes built from a decimal length drift by up to 5e-7 s per wrap, so a near-tie slot can differ between a fresh and a streamed read after tens of wraps; remove when the record holds the picture's length in its own time base. */
+const sec = (x: number) => +x.toFixed(6);
+/** The length a stream's own `DURATION` tag gives (matroska writers), or 0 when it has none. */
+function tagLength(tags: Record<string, unknown> | undefined): number {
+  const t = Object.entries(tags ?? {}).find(([k]) => /^duration(-.*)?$/i.test(k))?.[1];
+  const m = /^(\d+):(\d\d):(\d\d(?:\.\d+)?)$/.exec(String(t ?? ""));
+  return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : 0;
+}
+/** Where the packets of each stream end (largest pts + duration, s, on the file's own clock), by stream index. The whole file is read once, no packet decoded. */
+function packetEnds(path: string): Map<number, number> {
+  const r = spawnSync("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,dts_time,duration_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+  if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+  const ends = new Map<number, number>();
+  for (const line of r.stdout.split("\n")) {
+    const [idx, pts, dts, d] = line.split(","), t = Number.isFinite(Number(pts)) && pts !== "" ? Number(pts) : Number(dts); // a stream without pts is timed by its dts
+    if (Number.isFinite(t) && dts !== undefined) ends.set(+idx, Math.max(ends.get(+idx) ?? 0, t + (Number(d) || 0)));
+  }
+  return ends;
 }
 export function probe(path: string): any {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
@@ -97,7 +117,12 @@ export function probe(path: string): any {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
-    const dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
+    let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
+    const cStart = Number(j.format?.start_time) || 0;
+    let ends: Map<number, number> | undefined;
+    const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
+    // a file with no length in it (a webm written to a pipe): the packets give it
+    const measured = () => Math.max(v ? end(v) : 0, a ? end(a) : 0);
     info = { path, has_audio: !!a };
     if (v) {
       let w = +v.width, h = +v.height, rot = 0;
@@ -112,12 +137,16 @@ export function probe(path: string): any {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
-      if (!still) info.duration = +dur.toFixed(3);
+      if (!still && !(dur > 0)) dur = measured();
+      if (!still) info.duration = sec(dur);
       // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
-      // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. A container without a per-stream duration leaves the field out,
-      // and the container length stands for the picture.
-      const vd = Number(v.duration), cStart = Number(j.format?.start_time) || 0, vStart = (Number(v.start_time) || 0) - cStart, vEnd = vStart + vd;
-      if (!still && vd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = +vEnd.toFixed(3);
+      // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. Matroska gives no per-stream duration: then, for a file with sound,
+      // the stream's own DURATION tag counts when the picture and the container both start at 0 on the file's clock (a writer may put a length or an end time there, which differ by the stream's absolute start), else the packets' end.
+      // A file with no sound ends with its picture, so no field is recorded.
+      const vd = Number(v.duration), vStart = (Number(v.start_time) || 0) - cStart;
+      let vEnd = vd > 0 ? vStart + vd : 0;
+      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : end(v); }
+      if (!still && vEnd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = sec(vEnd);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
         // a matrix name ffprobe prints that the decode filter has no word for is refused here, so the record only ever holds a name matrixFor accepts
@@ -127,7 +156,8 @@ export function probe(path: string): any {
         if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
       }
     } else if (a || AUDIO_EXT.has(ext)) {
-      Object.assign(info, { kind: "audio", duration: +dur.toFixed(3), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
+      if (!(dur > 0) && a) dur = measured();
+      Object.assign(info, { kind: "audio", duration: sec(dur), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
   }
   probeCache.set(path, { mtime, size, info });
