@@ -19,6 +19,7 @@ const MIME: Record<string, string> = {
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
+export const JOBS_KEPT = 64; // finished jobs a session remembers, so a long `agentcut ui` does not grow without bound; older ids answer not_found
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
   if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
@@ -49,8 +50,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   });
 
   async function route(req: IncomingMessage, res: ServerResponse) {
-    const url = new URL(req.url ?? "/", "http://x");
-    const path = decodeURIComponent(url.pathname);
+    let url: URL, path: string;
+    try { url = new URL(req.url ?? "/", "http://x"); path = decodeURIComponent(url.pathname); }
+    catch { throw new EditError("the request target is not a valid URL path", "bad_request"); }
     // DNS-rebinding / cross-site guards: only our own host, same-origin JSON writes
     const port = (server.address() as any).port;
     if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
@@ -129,10 +131,17 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
 
+  /** before a job is added: the oldest finished jobs beyond JOBS_KEPT go (a Map iterates in insertion order); a running job stays */
+  function forgetOldJobs() {
+    const finished = [...jobs].filter(([, j]) => j.status !== "running");
+    for (const [id] of finished.slice(0, Math.max(0, finished.length - JOBS_KEPT))) jobs.delete(id);
+  }
+
   /** play=true: draft of [start,end) into previews/ui/ (cached per revision+range) for the viewer; else a normal render into renders/. */
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
+    forgetOldJobs();
     jobs.set(id, job);
     const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
     const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
@@ -157,6 +166,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   function prepare(allowDownload: boolean) {
     if (preparing) return preparing;
     const job: Dict = { id: Math.random().toString(36).slice(2, 10), kind: "prepare", status: "running", progress: 0, started: Date.now() };
+    forgetOldJobs();
     jobs.set(job.id, job);
     preparing = job;
     let last = 0;
