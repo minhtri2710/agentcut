@@ -27,7 +27,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 const api = await import("./author-api.ts");
-const { startUi } = await import("../src/ui.ts");
+const { startUi, JOBS_KEPT } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
@@ -206,6 +206,11 @@ for (const p of ["/files/../project.json", "/files/renders/../../project.json", 
 check("project.json outside renders/previews refused", (await raw("/files/project.json")).status === 403);
 check("unknown asset id -> 404", (await raw("/media/nope")).status === 404);
 check("foreign Host header refused (DNS rebinding)", (await raw("/api/state", { host: "evil.example:80" })).status === 403);
+for (const [method, p] of [["GET", "/%"], ["GET", "/api/state%"], ["GET", "/media/%E0%A4%A"], ["GET", "/files/renders/%zz"], ["GET", "/api/jobs/%"], ["GET", "//"], ["POST", "/api/render%"]]) {
+  const r = await raw(p, { method, body: method === "POST" ? {} : undefined });
+  check(`a request target that does not parse: ${method} ${p} -> 400 bad_request`, r.status === 400 && JSON.parse(r.body.toString()).error?.code === "bad_request", [r.status, r.body.toString().slice(0, 120)]);
+}
+check("  the server keeps serving", (await raw("/api/state")).status === 200);
 const xo = await new Promise<number>((ok) => {
   const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST",
     headers: { host: `127.0.0.1:${ui.port}`, origin: "http://evil.example", "content-type": "application/json" } }, (res) => { res.resume(); ok(res.statusCode!); });
@@ -315,6 +320,44 @@ process.exit(1);
   check("allow_download true reaches the model download once (the pinned URL), and the helper is not started", asked.join() === (await import("../src/model.ts")).MATTE_PINS.u2net_human_seg.url && yes.j.status === "failed" && yes.j.error?.code === "model_download_failed" && runs().length === 0, { asked, runs: runs(), yes });
   uc.server.closeAllConnections?.();
   await new Promise((ok) => uc.server.close(ok));
+}
+
+// a long session does not keep every finished job: past JOBS_KEPT the oldest finished ones answer not_found, a running one is never dropped
+console.log("job retention");
+{
+  const bin = join(tmp, "stub-keep-bin"), started = join(tmp, "stub-keep.started");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\ncase "$*" in *-version*|*-hide_banner*) exec ${JSON.stringify(spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim())} "$@" ;; esac\n: > ${JSON.stringify(started)}\ntrap 'kill $! 2>/dev/null; exit 1' TERM\nsleep 60 &\nwait $!\n`);
+  chmodSync(join(bin, "ffmpeg"), 0o755);
+  const dirJ = join(tmp, "retention");
+  api.create(dirJ, { preset: "720p" });
+  await applyLatest(dirJ, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), at: 0, duration: 1 }]);
+  const uj = await startUi(dirJ, { port: 0 });
+  const get = (id: string) => jget(`/api/jobs/${id}`, { port: uj.port });
+  const cancel = (id: string) => jget(`/api/jobs/${id}/cancel`, { method: "POST", port: uj.port, body: {} });
+  const was = process.env.PATH;
+  process.env.PATH = `${bin}:${was}`;
+  try {
+    const held = (await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 1 } })).j; // the oldest job, and running throughout
+    for (let i = 0; i < 200 && !existsSync(started); i++) await Bun.sleep(50);
+    const prepared = async () => { // nothing is pending, so a prepare settles at once
+      const id = (await jget("/api/prepare", { method: "POST", port: uj.port, body: {} })).j.id;
+      for (let k = 0; k < 200 && (await get(id)).j.status === "running"; k++) await Bun.sleep(20);
+      return id;
+    };
+    const ids: string[] = [];
+    for (let i = 0; i < JOBS_KEPT + 2; i++) ids.push(await prepared());
+    const [oldest, oldestCancel, newest, running] = [await get(ids[0]), await cancel(ids[0]), await get(ids.at(-1)!), await get(held.id)];
+    check(`the oldest of ${JOBS_KEPT + 2} finished jobs is forgotten: GET and cancel answer 404 not_found`, oldest.status === 404 && oldest.j.error?.code === "not_found" && oldestCancel.status === 404 && oldestCancel.j.error?.code === "not_found", { oldest, oldestCancel });
+    check("  the newest finished job is kept", newest.status === 200 && newest.j.status === "done", newest);
+    check("  a job still running is kept, older than all of them", existsSync(started) && running.status === 200 && running.j.status === "running", { started: existsSync(started), running });
+    const stopped = await cancel(held.id); // the job that started first now ends last
+    await prepared();
+    const ended = await get(held.id);
+    check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job starts", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
+  } finally { process.env.PATH = was; }
+  uj.server.closeAllConnections?.();
+  await new Promise((ok) => uj.server.close(ok));
 }
 
 // ---------------------------------------------------------------- cancel a job
