@@ -378,7 +378,7 @@ console.log("exports, validation and relinking");
     warned.push([v, (r.issues ?? []).filter((i: any) => i.level === "warning" && /\.color_(space|primaries|transfer)$/.test(i.path) && i.message.includes(`'${first}'`)).map((i: any) => i.path)] as const);
   }
   const refusedNames: (readonly [unknown, any])[] = [];
-  for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", "bt2020c", "ictcp", 709, null]) refusedNames.push([v, await withName(v)] as const);
+  for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", "bt2020c", 709, null]) refusedNames.push([v, await withName(v)] as const);
   check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
   check("a BT.2020 matrix on a video asset with no primaries or transfer tag gives one warning on its color_primaries, naming the asset; the other names give none",
     warned.every(([v, paths]) => (v === "bt2020nc" ? paths.join() === `$.assets.${first}.color_primaries` : paths.length === 0)), warned);

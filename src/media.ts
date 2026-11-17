@@ -155,7 +155,7 @@ export function probe(path: string): any {
       if (!still && vEnd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = sec(vEnd);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
-        // a matrix name ffprobe prints that the decode filter has no word for is refused here, so the record only ever holds a name matrixFor accepts
+        // a matrix name the pipeline cannot read (one not in COLOR_SPACES) is refused here, so the record only ever holds a name matrixFor accepts
         const cs = String(v.color_space ?? "unknown");
         if (!COLOR_SPACES.includes(cs) && !NO_MATRIX.includes(cs)) throw new EditError(`${path} names the colour matrix '${cs}', which AgentCut cannot read with`, "bad_media", `supported: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}; re-encode the file with a tag from that list`);
         Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs,

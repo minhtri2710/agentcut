@@ -159,8 +159,7 @@ export function missingFacts(a: Dict): string[] {
   if (typeof a.format === "string" && !seeksBefore(a.format) && (a.key_gap === undefined || a.key_gap === null)) miss.push("key_gap");
   return miss;
 }
-/** The matrix names an asset's color_space may hold: the names ffprobe prints for a picture's matrix that this pipeline can convert to RGB (the setparams filter takes more names than FFmpeg's scaler then converts:
- *  ycgco, bt2020c, smpte2085, chroma-derived-nc, chroma-derived-c, ictcp, ipt-c2 and the other ycgco forms fail with 'Impossible to convert between the formats', so a file with one is refused at import).
+/** The matrix names an asset's color_space may hold: the names ffprobe prints for a picture's matrix that this pipeline can convert to RGB (names setparams takes but FFmpeg's scaler cannot convert to RGB are left out, so a file with one is refused at import).
  *  'unknown' and 'reserved' (ffprobe prints it, the filter has no such name) say the file names no matrix. Nothing else reaches an ffmpeg argument. */
 export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "bt2020nc"];
 export const NO_MATRIX = ["unknown", "reserved"];
@@ -1136,7 +1135,7 @@ export function schemaDoc() {
     timeline: {
       version: SCHEMA_VERSION, revision: "integer, +1 on every save (optimistic concurrency: a write based on a stale revision fails with code conflict)",
       settings: f(SETTINGS_FIELDS),
-      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, color_space (the matrix its picture is read with: a name from COLOR_SPACES, or unknown), color_primaries and color_transfer (as the file tags them, or unknown), key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
+      assets: "{asset_id: {path, kind: video|image|audio|lottie, duration, video_duration (only when the sound outlasts the picture), width, height, fps, has_audio, alpha; a video also container_start, video_start, format, reorder, color_space (the matrix its picture is read with: a name from COLOR_SPACES, or unknown or reserved), color_primaries and color_transfer (as the file tags them, or unknown), key_gap (only for a format whose seek may land after the target)}} - filled by import_media; a video asset without them fails validation until relink_asset probes it again",
       tracks: "list; index 0 is drawn FIRST (bottom), later tracks on top",
       markers: "[{t, label}]",
     },

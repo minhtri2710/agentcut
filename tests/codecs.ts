@@ -1023,7 +1023,7 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   // an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc: a mid-saturation picture comes back the same as with the matrix tagged (read as BT.709 it was 8 off in one channel)
   const [wideTagged, wideUntagged] = [mk("wide-mid-tagged", "1280x720", "bt2020", "2020", "c03030"), mk("wide-mid-untagged", "1280x720", "bt2020", "2020none", "c03030")];
   const [pxTagged, pxUntagged] = [await centre(wideTagged), await centre(wideUntagged)];
-  check("an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc (within 3 per channel of the same picture tagged bt2020nc)", pxTagged.every((v, i) => Math.abs(v - pxUntagged[i]) <= 3), { pxTagged, pxUntagged });
+  check("an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc (within 3 per channel of the same picture tagged bt2020nc)", api.probe(wideUntagged).color_space === "unknown" && pxTagged.every((v, i) => Math.abs(v - pxUntagged[i]) <= 3), { untaggedMatrix: api.probe(wideUntagged).color_space, pxTagged, pxUntagged });
   // which matrix a picture is read with, from the decode chain (pixelKey), so no decode runs: the asset's own name; else BT.709 for HD (a short side from 720 or a long side from 1280); else none
   const read = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
     /setparams=colorspace=([a-z0-9-]+)/.exec(new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey)?.[1];
