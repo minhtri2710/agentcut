@@ -311,7 +311,7 @@ export class FrameSource {
   constructor(private o: SourceOpts) {
     if (!Number.isFinite(o.rate) || o.rate <= 0) throw new EditError(`frame rate must be a number > 0, got ${JSON.stringify(o.rate)}`, "bad_media", "check the asset's fps in project.json");
     // a pass of a loop ends at the picture's length: without it there is no slot where a pass ends (a freeze reads no pass)
-    if (o.loop && o.kind === "video" && !o.reverse && !o.freeze && !(o.srcDuration! > 0))
+    if (o.loop && o.kind === "video" && !o.freeze && !(o.srcDuration! > 0))
       throw new EditError(`${o.path} cannot loop: its probe record has no picture length, so there is no point where a pass ends`, "bad_media",
         NO_LENGTH_HINT);
     if (o.kind !== "image") {
@@ -354,7 +354,7 @@ export class FrameSource {
   get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, ffmpegVersion()]); }
 
   /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
-  private get wraps() { return !!this.o.loop && !this.o.reverse && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
+  private get wraps() { return !!this.o.loop && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
   /** The first slot of pass n of a loop: the slot of the picture's first frame, `n` lengths of the picture after the clip's in-point (the rule of `TIE_BIAS`, with the frame at `video_start`). */
   private passStart(n: number) { const o = this.o; return Math.floor((o.facts!.video_start + n * o.srcDuration! - (o.srcIn ?? 0)) * o.rate + 0.5 + TIE_BIAS); }
   /** The pass slot k belongs to: the last whose first slot is at or before k. Every stream is bounded by these slots, never by where it happens to end. */
@@ -384,7 +384,7 @@ export class FrameSource {
     // still: the first frame only, as a forward clip (a freeze holds the frame the clip's first slot shows). tail: the clip read to the end of the picture without looping,
     // from at most two slots before it, whose last frame is the one a running clip holds there. reach: the still at source time `at` (default: a loop clip's in-point inside one pass),
     // with no wrap, to see whether the file really holds that stretch.
-    const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && mode !== "reach" && !reverse;
+    const o = this.o, f = o.facts!, r = o.rate, D = o.srcDuration, reverse = !!o.reverse && mode === "stream", loop = !!o.loop && mode !== "tail" && mode !== "reach";
     const srcIn = mode === "tail" && D ? this.tailIn(D) : mode === "reach" && D ? at ?? (o.srcIn ?? 0) % D : (o.srcIn ?? 0);
     const a = ["-v", "error", "-nostdin"];
     if (mode === "stream" && this.hw) a.push("-hwaccel", "videotoolbox");
@@ -491,7 +491,7 @@ export class FrameSource {
   /** A loop clip repeats the probed length: a source that holds no frame at the point where a plain clip would call it ended early (`endedEarly`) loops at its real length and shows other frames than the clip's slots name. */
   private async checkLoopLength(): Promise<void> {
     const o = this.o, D = o.srcDuration, at = D ? D - 0.5 - 1 / o.rate : 0;
-    if (!o.loop || o.reverse || !D || at <= 0) return;
+    if (!o.loop || !D || at <= 0) return;
     // the answer is the file's: a preview or a render segment builds a new FrameSource per read, so it is kept per file, size, mtime and point (a failed read is not kept)
     let key: string | null = null;
     try { const st = statSync(o.path); key = `${o.path}|${st.size}|${st.mtimeMs}|${at}`; } catch { /* a path that cannot be stat'ed (a missing file, a URL): no key, the answer is not kept */ }
