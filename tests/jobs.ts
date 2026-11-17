@@ -228,6 +228,22 @@ globalThis.fetch = (async (u: unknown, init?: { signal?: AbortSignal }) => {
     await poll(s2.job_id, (r) => r.download?.bytes >= 1000);
     const stopped = await call("cancel_job", { job_id: s2.job_id }), after = await call("render_status", { job_id: s2.job_id, wait_seconds: 0 });
     check("a prepare cancelled mid-download is cancelled and shows no download field, in the cancel reply or later", stopped.status === "cancelled" && !("download" in stopped) && after.status === "cancelled" && !("download" in after) && nCalls() === runs0 + 1, { stopped, after });
+    { // a long session does not keep every finished job: past JOBS_KEPT the earliest-ended ones answer not_found; a running one is never dropped
+      const { JOBS_KEPT } = await import("../src/mcp.ts");
+      const D3 = join(tmp, "proj-dl-keep");
+      await dlProject(D3, "silueta");
+      const held = await call("prepare", { project: D3, allow_download: true, wait_seconds: 0 }); // the oldest job, running throughout
+      await poll(held.job_id, (r) => r.download?.bytes >= 1000);
+      const ids: string[] = [];
+      for (let i = 0; i < JOBS_KEPT + 2; i++) ids.push((await call("prepare", { project: P, wait_seconds: 10 })).job_id); // nothing is pending, so each settles at once
+      const [oldestStatus, oldestCancel, newest, running] = [await call("render_status", { job_id: ids[0], wait_seconds: 0 }), await call("cancel_job", { job_id: ids[0] }), await call("render_status", { job_id: ids.at(-1), wait_seconds: 0 }), await call("render_status", { job_id: held.job_id, wait_seconds: 0 })];
+      check(`the oldest of ${JOBS_KEPT + 2} finished jobs is forgotten: render_status and cancel_job answer not_found`, oldestStatus.ok === false && oldestStatus.error?.code === "not_found" && oldestCancel.ok === false && oldestCancel.error?.code === "not_found", { oldestStatus, oldestCancel });
+      check("  the newest finished job is kept", newest.ok === true && newest.status === "done", newest);
+      check("  a job still running is kept, older than all of them", running.ok === true && running.status === "running", running);
+      const stopped = await call("cancel_job", { job_id: held.job_id }); // the job that started first now ends last
+      const ended = await call("render_status", { job_id: held.job_id, wait_seconds: 0 });
+      check("a job is kept by when it ended: the first started, ended after the others, still answers", stopped.status === "cancelled" && ended.status === "cancelled", { stopped, ended });
+    }
     rmSync(slowFlag, { force: true });
     extraCalls = nCalls() - 1; // the one helper run of the download project (P ran it once)
   }
@@ -652,7 +668,7 @@ console.log("cancel a render or prepare job");
     check("cancel_job on a running render: status cancelled with code aborted; renders/ is empty and no render temp is left when it replies", sawPart && reserved && c.ok === true && c.status === "cancelled" && c.error?.code === "aborted" && !stray(R).length && !renderTmpLeft(P).length, { sawPart, reserved, c, left: stray(R), tmp: renderTmpLeft(P) });
     const fb = await tc("feedback_summary", {});
     const calls = cancelEvents().slice(cancels0);
-    check("a cancel_job of a running render is logged as a call that did not fail, and the feedback summary lists no error for it", c.ok === true && fb.ok === true && calls.length === 1 && calls[0].ok === true && !fb.errors.some((e: any) => e.cmds.includes("cancel_job")), { calls, errors: fb.errors });
+    check("a cancel_job of a running render is logged as a call that did not fail, and the feedback summary lists no error for it", c.ok === true && fb.ok === true && calls.length === 1 && calls[0].ok === true && !fb.errors.some((e: any) => e.code === "aborted" && e.cmds.includes("cancel_job")), { calls, errors: fb.errors });
     const st = await tc("render_status", { job_id: job.job_id, wait_seconds: 0 });
     const again = await tc("cancel_job", { job_id: job.job_id });
     check("a cancelled job stays listed as cancelled, and cancelling it again changes nothing", st.status === "cancelled" && again.status === "cancelled" && again.error?.code === "aborted", { st, again });

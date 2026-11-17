@@ -23,6 +23,7 @@ Help improve AgentCut: when something is slow, confusing, missing or broken, cal
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 const state: { project?: string } = { project: process.env.AGENTCUT_PROJECT };
+export const JOBS_KEPT = 64; // the newest finished jobs (by end) the server remembers, so a long session does not grow without bound; older ids answer not_found
 const jobs = new Map<string, any>();
 /** tool calls the server has accepted and not yet finished; shutdown answers them before it exits */
 const calls = new Set<Promise<unknown>>();
@@ -174,7 +175,12 @@ export function buildServer() {
         job.status = cancelled.has(job) && job.error.code === "aborted" ? "cancelled" : "failed";
         if (job.status === "failed" && job.error.code !== "aborted") recordCall("mcp", kind, Date.now() - job.started, { ok: false, error: job.error }, {}, "job");
       })
-      .finally(() => { job.finished = Date.now(); });
+      .finally(() => {
+        job.finished = Date.now();
+        jobs.delete(id); jobs.set(id, job); // the map lists finished jobs earliest-ended first (a Map iterates in insertion order)
+        const finished = [...jobs].filter(([, j]) => j.status !== "running");
+        for (const [old] of finished.slice(0, Math.max(0, finished.length - JOBS_KEPT))) jobs.delete(old);
+      });
     return id;
   };
   s.registerTool("render", {
@@ -209,7 +215,7 @@ export function buildServer() {
   }, wrap((a) => api.exportCaptions(proj(a.project), { out: a.output, format: a.format, ids: a.ids })));
   s.registerTool("render_status", { description: "Status/result of a background job: render or prepare (waits up to wait_seconds; cancelling this call leaves the job running). status is running, done, failed or cancelled. A prepare that is downloading a model shows download {model, bytes, total_bytes} while it runs.", inputSchema: { job_id: z.string(), wait_seconds: z.number().default(30) } }, (a) => waitJob(a.job_id, a.wait_seconds));
   s.registerTool("cancel_job", {
-    description: "Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. A cancel takes effect until a render's output is written; after that the render is done (the output stays, the contact sheet and loudness are skipped and marked), except that a cancel which lands in the subtitle mux ends the job cancelled and leaves the output without its subtitle stream (error.hint names the file). Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged; an unknown job_id is not_found.",
+    description: `Stop a running render or prepare job and wait until it has stopped: its part file, temp files and reserved output name are gone when this returns. A cancel takes effect until a render's output is written; after that the render is done (the output stays, the contact sheet and loudness are skipped and marked), except that a cancel which lands in the subtitle mux ends the job cancelled and leaves the output without its subtitle stream (error.hint names the file). Replies with the status the job reached: cancelled (error.code aborted), or done / failed if it finished first. A finished job is returned unchanged while the server keeps it (the newest ${JOBS_KEPT} finished jobs); an unknown or forgotten job_id is not_found.`,
     inputSchema: { job_id: z.string() },
   }, async (a) => {
     const j = jobs.get(a.job_id);
