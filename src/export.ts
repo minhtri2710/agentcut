@@ -30,7 +30,7 @@ export function rateOf(fps: unknown): Rate {
 }
 /** The whole frames in a recorded length: the probe keeps seconds to the microsecond, so a length may fall short of its frames by half a microsecond. */
 const wholeFrames = (sec: number, fps: number) => Math.floor(sec * fps + fps * 5e-7 + 1e-9);
-const gcd =(a: number, b: number): number => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a || 1; };
+const gcd = (a: number, b: number): number => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a || 1; };
 /** Rational seconds string "n/ds" (reduced; whole seconds as "ns"). */
 function rat(n: number, d: number): string {
   if (!n) return "0s";

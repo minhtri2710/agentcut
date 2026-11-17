@@ -713,9 +713,13 @@ console.log("decode and render failures");
     check("an mkv whose streams all start at 1.4 s, with sound longer, records the picture's length, not its end on the file's clock", is(shifted.container_start, 1.4) && is(shifted.video_start, 0) && is(shifted.video_duration, 2) && Math.abs(shifted.duration - 2.5) < 0.05, shifted); // the AAC track adds its priming (23 ms) to the 2.5 s of sound
     // matroska, ogg, nut and asf report the end on the file's clock as the length; the file's length is that less the container's start
     const offset = ["-output_ts_offset", "1.4"], shiftedWebm = made("mk-shift.webm", [...pic, ...sine(2.5), ...WEBM, ...offset]);
-    const shiftedAudio = [made("ao-shift.mkv", [...sine(2.5), "-c:a", "libopus", ...offset]), made("ao-shift.ogg", [...sine(2.5), "-c:a", "libopus", ...offset])];
-    check("a webm, an audio-only mkv and an ogg whose streams all start at 1.4 s record the length of the sound (2.5 s), not its end on the file's clock",
-      is(shiftedWebm.duration, 2.5) && is(shiftedWebm.video_duration, 2) && shiftedAudio.every((i) => i.kind === "audio" && is(i.duration, 2.5)), [shiftedWebm.duration, shiftedWebm.video_duration, ...shiftedAudio.map((i) => i.duration)]);
+    const shiftedAudio = [made("ao-shift.mkv", [...sine(2.5), "-c:a", "libopus", ...offset]), made("ao-shift.ogg", [...sine(2.5), "-c:a", "libopus", ...offset]),
+      made("ao-shift.nut", [...sine(2.5), "-c:a", "pcm_s16le", ...offset]), made("ao-shift.wma", [...sine(2.5), "-c:a", "wmav2", ...offset])];
+    check("a webm, an audio-only mkv, ogg, nut and asf whose streams all start at 1.4 s record the length of the sound (2.5 s), not its end on the file's clock",
+      is(shiftedWebm.duration, 2.5) && is(shiftedWebm.video_duration, 2) && shiftedAudio.every((i) => i.kind === "audio" && Math.abs(i.duration - 2.5) < 0.05), [shiftedWebm.duration, shiftedWebm.video_duration, ...shiftedAudio.map((i) => i.duration)]);
+    // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
+    const shiftedMp4 = made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]);
+    check("an mp4 whose streams all start at 1.4 s records its length (2.5 s), the container's start is not taken from it", Math.abs(shiftedMp4.duration - 2.5) < 0.05 && Math.abs(shiftedMp4.container_start - 1.4) < 0.05, shiftedMp4);
     const live = [piped("pipe-video.webm", [...pic, ...VP9]), piped("pipe-sound.webm", [...pic, ...sine(2.5), ...WEBM]), piped("pipe-audio.webm", [...sine(1), "-c:a", "libopus"])];
     check("a webm written to a pipe records the length its packets show: the picture's, the longer sound's with the picture's apart, an audio-only file's",
       is(live[0].duration, 2) && live[0].video_duration === undefined && live[1].duration > 2.4 && is(live[1].video_duration, 2) && live[2].kind === "audio" && is(live[2].duration, 1), live.map((i) => [i.kind, i.duration, i.video_duration]));
