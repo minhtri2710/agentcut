@@ -371,14 +371,26 @@ console.log("exports, validation and relinking");
     writeFileSync(join(P, "project.json"), JSON.stringify(named, null, 2));
     return (await api.validate(P)) as any;
   };
-  const accepted: (readonly [string, boolean])[] = [];
-  for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "gbr", "reserved", "unknown"]) accepted.push([v, (await withName(v)).valid] as const);
+  const accepted: (readonly [string, boolean])[] = [], warned: (readonly [string, string[]])[] = [];
+  for (const v of ["bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "ictcp", "gbr", "reserved", "unknown"]) {
+    const r = await withName(v);
+    accepted.push([v, r.valid] as const);
+    warned.push([v, (r.issues ?? []).filter((i: any) => i.level === "warning" && i.path?.endsWith("color_space") && i.message.includes(`'${first}'`)).map((i: any) => i.path)] as const);
+  }
   const refusedNames: (readonly [unknown, any])[] = [];
   for (const v of ["bt.709", "709", "BT709", "", "bt709,format=gray", 709, null]) refusedNames.push([v, await withName(v)] as const);
   check("a matrix named by hand on a video asset validates when it is in the list (or unknown, reserved)", accepted.every(([, ok]) => ok), accepted);
+  check("a BT.2020 matrix on a video asset gives one warning on its color_space, naming the asset; the other names give none",
+    warned.every(([v, paths]) => (["bt2020nc", "bt2020c", "ictcp"].includes(v) ? paths.join() === `$.assets.${first}.color_space` : paths.length === 0)), warned);
   check("any other name or an empty one is a validation error naming color_space and the list; another type is an error naming color_space",
     refusedNames.every(([v, r]) => !r.valid && /color_space/.test(JSON.stringify(r)) && (typeof v !== "string" || (r.issues ?? []).some((i: any) => i.path?.endsWith("color_space") && /bt709/.test(i.message)))), refusedNames.map(([v, r]) => [v, r.valid, JSON.stringify(r).slice(0, 160)]));
   await withName(was);
+  const wideFile = join(m, "bt2020.mp4");
+  ff("-f", "lavfi", "-i", "color=c=0x30a060:s=160x120:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv,format=yuv420p", "-c:v", "libx264", wideFile);
+  const WP = join(tmp, "wide-import"), wq = api.create(WP, { width: W, height: H, fps: 24 });
+  const imported: any = await api.apply(WP, [{ op: "import_media", path: wideFile, id: "wide" }], { revision: wq.revision });
+  check("import_media of a BT.2020 file lists the warning in its issues", imported.results[0].color_space === "bt2020nc"
+    && imported.issues.filter((i: any) => i.level === "warning" && i.path === "$.assets.wide.color_space" && i.message.includes("'wide'")).length === 1, imported.issues);
 
   const ops = (src: string, extra: object = {}) => [{ op: "add_clip", track: "main", src, duration: 1, ...extra }];
   const refused = async (name: string, src: string, loop: boolean) => {

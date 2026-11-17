@@ -969,16 +969,28 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
 {
   const { FrameSource, MATTE_FACTS } = await import("../src/media.ts");
   // flat green, converted to YUV with the named matrix, then the tags are set or cleared: "none" writes no tag, "709" and "601" write the set that goes with that matrix
-  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv" };
-  const mk = (name: string, size: string, matrix: "bt709" | "bt601", tags: keyof typeof SET) => {
+  const SET = { none: "colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown", "709": "colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv", "601": "colorspace=smpte170m:color_primaries=smpte170m:color_trc=smpte170m:range=tv", "2020": "colorspace=bt2020nc:color_primaries=bt2020:color_trc=bt709:range=tv" };
+  const mk = (name: string, size: string, matrix: "bt709" | "bt601" | "bt2020", tags: keyof typeof SET) => {
     const f = join(m, `${name}.mp4`);
     ff("-f", "lavfi", "-i", `color=c=0x00ff00:s=${size}:r=24:d=1,format=rgba`, "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,setparams=${SET[tags]},format=yuv420p`, "-c:v", "libx264", f);
     return f;
   };
   const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
   const hd709t = mk("hd709-tagged", "1280x720", "bt709", "709"), hd601t = mk("hd601-tagged", "1280x720", "bt601", "601"), hd601 = mk("hd601-untagged", "1280x720", "bt601", "none");
+  const hd2020t = mk("hd2020-tagged", "1280x720", "bt2020", "2020");
   check("the probe records the stream's own matrix tag, and one fixed word when it has none",
-    [hd709, sd601, hd709t, hd601t].map((f) => api.probe(f).color_space).join() === "unknown,unknown,bt709,smpte170m", [hd709, sd601, hd709t, hd601t].map((f) => api.probe(f).color_space));
+    [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space).join() === "unknown,unknown,bt709,smpte170m,bt2020nc", [hd709, sd601, hd709t, hd601t, hd2020t].map((f) => api.probe(f).color_space));
+  // a render names a BT.2020 source in its warnings (the export is tagged BT.709 over colours that are not converted); a BT.709 source adds nothing
+  const warnsOf = async (name: string, src: string) => {
+    const D = join(tmp, `warn-${name}`);
+    api.create(D, { width: W, height: H, fps: 10 });
+    await applyLatest(D, [{ op: "import_media", path: src, id: name }, { op: "add_clip", track: "main", asset: name, duration: 0.5 }]);
+    const dp = openProject(D);
+    return ((await renderVideo(dp.absolutized(dp.load()), dp.root, join(D, "renders", "o.mp4"), { workers: 1 })) as any).warnings as string[];
+  };
+  const [warn709, warn2020] = [await warnsOf("ctl", hd709t), await warnsOf("wide", hd2020t)];
+  check("a render of a BT.2020 source warns once, naming the asset; the BT.709 control gets no such warning",
+    warn2020.length === warn709.length + 1 && warn2020.filter((w) => w.includes("'wide'")).length === 1 && !warn709.some((w) => w.includes("'ctl'")), { warn709, warn2020 });
   const centre = async (f: string, facts: Record<string, unknown> = {}) => {
     const info = api.probe(f), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
     try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }

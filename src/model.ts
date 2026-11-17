@@ -161,6 +161,16 @@ export function missingFacts(a: Dict): string[] {
  *  'unknown' and 'reserved' (ffprobe prints it, the filter has no such name) say the file names no matrix. Nothing else reaches an ffmpeg argument. */
 export const COLOR_SPACES = ["gbr", "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco", "ycgco-re", "ycgco-ro", "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc", "chroma-derived-c", "ictcp", "ipt-c2"];
 export const NO_MATRIX = ["unknown", "reserved"];
+/** The matrix names of BT.2020 colour (wide gamut, and the HDR a phone records): the picture's curve and primaries are not converted, yet an export is tagged BT.709. */
+export const BT2020_SPACES = ["bt2020nc", "bt2020c", "ictcp"];
+/** The warning for a video asset in BT.2020 colour (undefined for any other asset); validate and a render's warnings print it. */
+export function wideColourIssue(id: string, a: Dict | undefined): { message: string; hint: string } | undefined {
+  if (a?.kind !== "video" || !BT2020_SPACES.includes(a.color_space)) return undefined;
+  return {
+    message: `'${id}' is BT.2020 colour (a wide-gamut or HDR source, such as phone HDR video): its colours are not converted, so the export, tagged BT.709, can look washed out or dim`,
+    hint: "convert the file to SDR BT.709 first (tone-map it with a video tool), then relink_asset to the copy",
+  };
+}
 /** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one; else BT.709 when the picture is HD, a short side of 720 or more
  *  or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
  *  A name outside the lists is refused, so no project string reaches an ffmpeg argument. */
@@ -807,6 +817,8 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     checkFields(a, ASSET_FIELDS, ap, issues, "asset");
     if (typeof a.color_space === "string" && !COLOR_SPACES.includes(a.color_space) && !NO_MATRIX.includes(a.color_space))
       issues.push({ level: "error", path: `${ap}.color_space`, message: `color_space must be one of ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}`, hint: `relink_asset id=${aid} path=${a.path} records the file's own tag` });
+    const wide = wideColourIssue(aid, a);
+    if (wide) issues.push({ level: "warning", path: `${ap}.color_space`, ...wide });
     if (typeof a.path !== "string" || !a.path) issues.push({ level: "error", path: `${ap}.path`, message: "asset needs a path" });
     if (!ASSET_KINDS.includes(a.kind)) issues.push({ level: "error", path: `${ap}.kind`, message: `asset kind must be one of ${ASSET_KINDS.join(", ")}` });
     for (const [k, [ok, what]] of Object.entries(ASSET_NUMBERS))
