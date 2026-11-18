@@ -18,7 +18,7 @@ const dotenvHome = join(tmp, "dotenv-home"); // where the working dir's .env wou
 const dotenvCache = join(tmp, "dotenv-cache"); // where the working dir's .env would send AGENTCUT_CACHE
 const marker = join(work, "preload-ran");
 let fails = 0;
-const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c ? "" : JSON.stringify(info ?? null).slice(0, 500)); if (!c) fails++; };
+const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c || info === undefined ? "" : JSON.stringify(info)); if (!c) fails++; };
 
 // launcher env: HOME at spawn; no AGENTCUT_HOME or AGENTCUT_CACHE (a set variable would win over .env), so both default under HOME
 const env = (): Record<string, string> => {

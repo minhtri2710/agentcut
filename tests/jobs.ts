@@ -16,7 +16,7 @@ let failures = 0;
 const t0 = performance.now();
 function check(name: string, cond: unknown, info?: unknown) {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 600) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 }
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const worker = resolve(import.meta.dir, "lock-worker.ts");

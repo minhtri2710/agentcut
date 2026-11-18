@@ -20,7 +20,7 @@ if (!CHROME || !existsSync(CHROME)) {
 let failures = 0;
 const check = (name: string, cond: unknown, info?: unknown) => {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
