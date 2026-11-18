@@ -315,10 +315,9 @@ export class FrameSource {
   private proc: ChildProcess | null = null;
   private stream: FrameStream | null = null;
   private pos = -1;
-  private last: Buffer | null = null;
-  private tip: Buffer | null = null; // the newest frame the running stream produced (`last` is only the frame asked for)
+  private tip: Buffer | null = null; // the newest frame the running stream produced: the frame at `pos` (null: the stream has produced none since it was spawned)
   private eof = false;
-  private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`last` stays the frame at `pos`)
+  private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`tip` stays the frame at `pos`)
   // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
   // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
   private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
@@ -565,13 +564,13 @@ export class FrameSource {
     const o = this.o;
     const k = Math.max(0, Math.round(u * o.rate));
     if (this.eof && k > this.pos) return this.ending!;
-    if (k === this.pos && this.last) return this.last;
-    if (!this.proc || k < this.pos || k - this.pos > Math.max(4, o.rate * 2)) {
+    if (k === this.pos && this.tip) return this.tip;
+    if (!this.proc || k < this.pos || (k === this.pos && !this.tip) || k - this.pos > Math.max(4, o.rate * 2)) { // k is pos with no frame: a stream that was empty from its first slot
       if (o.reverse && this.proc && k > this.pos) { /* keep streaming */ } else this.spawnAt(k);
     }
     while (this.pos < k) {
       if (this.pos + 1 > this.passEnd) { this.spawnAt(this.pos + 1); continue; } // a loop clip: the next pass starts at its own first slot
-      if (this.dry) { this.pos++; this.tip = this.hold; if (this.pos === k) this.last = this.hold; continue; }
+      if (this.dry) { this.pos++; this.tip = this.hold; continue; }
       const f = await this.stream!.read();
       if (!f) {
         const end = await this.ended!;
@@ -590,7 +589,7 @@ export class FrameSource {
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (the source's last frame, which the tail read keeps: `fps` gives a last frame that ends inside its own slot no slot of the stream, so the stream's newest is the one before it.
         // A source that ends before the tail's first slot (two slots before its probed length) has no tail and holds its stream's newest frame. A reverse clip has only its stream's.
-        // `last` stays the frame at `pos`)
+        // `tip` stays the frame at `pos`)
         this.ending = o.reverse ? this.tip : await this.tailFrame() ?? this.tip;
         if (!this.ending) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
@@ -598,9 +597,8 @@ export class FrameSource {
       }
       this.pos++;
       this.tip = f;
-      if (this.pos === k) this.last = f;
     }
-    return this.last!;
+    return this.tip!;
   }
 
   close() {

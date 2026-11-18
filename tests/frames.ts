@@ -225,7 +225,14 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
     const { pts, S } = timingOf(file), pl = pts[pts.length - 1] - S, kl = Math.floor((pl - 0.5) * r), w = 1 - r / api.probe(file).fps;
     endBad.push(...await sweep(`${file.split("/").pop()}->${r}${o ? " loop" : ""}`, file, r, [pl - (kl + w / 2 - 0.5 - TIE) / r], [0], [kl - 1, kl, kl + 1, kl + 2, kl + 8], o));
   }
+  const slack = api.probe(loopSlack), slackEnd = timingOf(loopSlack).pts.at(-1)! + 1 / slack.fps; // the loop pairs need a recorded length past the picture and no video_duration, which the sound encoder's length can change
+  if (slack.video_duration != null || !(slack.duration > slackEnd)) endBad.push(`loopslack.mp4 no longer runs dry: duration ${slack.duration}, video_duration ${slack.video_duration}, picture ends ${slackEnd}`);
   row("a last frame that ends inside its own slot is shown there and held after it: mp4, mkv and avi, 25 to 24 and 20, 30 to 24, 50 to 30, 24 to 20, and a loop pass that runs dry there", endBad);
+  row("a source read past its end and then at the slot before gives the held last frame, not nothing", await attempt(async () => {
+    const s = source(v25.plain, 24, 0), want = rule(v25.plain, 0, 24, 154), got = [await read(s, 154, 24), await read(s, 153, 24)];
+    s.close();
+    return got.every((n) => n === want) ? [] : [`slots 154, 153 read ${got}; want ${want}`];
+  }));
 }
 
 console.log("loops, reverse, freeze and the held last frame");
