@@ -3,7 +3,7 @@
 // never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
 // sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
 import { coverOffset, fitBox, preRoll } from "./media.ts";
-import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, missingFacts, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -79,7 +79,11 @@ function srcRange(c: Clip) {
   return { in0, speed, len: clipDur(c) * speed };
 }
 
-const preOf = (a: VAsset) => preRoll(a as Dict as VideoFacts, a.fps); // how far before its in-point a read of this video seeks
+function preOf(a: VAsset) { // how far before its in-point a read of this video seeks; a record without the file's facts has no rule to read by
+  const miss = missingFacts(a);
+  if (miss.length) throw new EditError(`the probe record of ${a.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
+  return preRoll(a as Dict as VideoFacts, a.fps);
+}
 /** Subject analysis job for a clip's source range. */
 function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
   const a = asset(tl, c), { in0, len } = srcRange(c);

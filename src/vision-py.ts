@@ -47,7 +47,7 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, 
     if fps and start is not None and pre is None: raise SystemExit("a read of a range needs the pre-roll to seek before its start")
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if fps: args += ["-copyts"]  # the file's own times stay; the filters below put them on the clip clock
-    # The seek aims pre seconds before the in-point (FrameSource's pre-roll), so a format whose seek can land after its target still lands on a keyframe at or before the in-point; the trim drops what comes before it.
+    # The seek aims pre seconds before the in-point (FrameSource's pre-roll), so a format whose seek can land after its target still lands on a keyframe at or before the in-point; fps with start_time=0 drops what comes before it.
     if start is not None: args += ["-ss", "%.6f" % max(0.0, start - (pre or 0))]
     # Sample i is the picture at start + i/fps on the clip clock (the container start and the in-point are subtracted), as FrameSource slots a clip: before the first picture, the first one holds.
     # A range has round(dur * fps) samples while the picture lasts. The read ends with the last slot that starts before the picture ends; eof_action=pass keeps that slot when the last frame rounds into it.
