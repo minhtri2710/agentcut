@@ -1,4 +1,6 @@
+// usage: profile-layers.ts <project> [ext]; draws what a render to ext (default .mp4) draws, in one process: worker segments and ranges are not taken
 import { drawable } from "../src/api.ts";
+import { outputDraw } from "../src/encode.ts";
 import { Project } from "../src/project.ts";
 import { Layer, Renderer } from "../src/render.ts";
 import { FrameSource } from "../src/media.ts";
@@ -11,7 +13,8 @@ FrameSource.prototype.readAt = async function (u) { const a = performance.now();
 const p = new Project(process.argv[2]);
 const tl = p.load();
 p.requireValid(tl);
-const r = new Renderer(drawable(p, tl), p.root, 1);
+const out = outputDraw(drawable(p, tl), process.argv[3] ?? ".mp4");
+const r = new Renderer(out.tl, p.root, out.scale);
 const od = (r as any).draw.bind(r);
 (r as any).draw = (img: any, c: any, ...rest: any[]) => { const a = performance.now(); od(img, c, ...rest); add(`draw:${c.id}`, performance.now() - a); };
 const n = Math.round(r.duration * r.fps);
