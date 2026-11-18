@@ -251,6 +251,20 @@ await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["vflip"] } }, 
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "stabilize" }] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter -> unsupported");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["stabilize"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter (string form) -> unsupported");
 
+// files whose picture starts after the sound (4 s of the numbered picture: frame N in the luma bits of the top rows): an mpegts that starts at the sound (container start 1.4 s) and an mkv with the picture 1.4 s late
+const lateTs = join(m, "late.ts"), lateMkv = join(m, "late.mkv");
+for (const [file, late, mux] of [[lateTs, 0.54, ["-f", "mpegts"]], [lateMkv, 1.4, []]] as const)
+  ff("-itsoffset", String(late), "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128", "-f", "lavfi", "-i", "sine=f=440:r=48000",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", ...mux, file);
+{ // the job carries the container start the asset records, since the helper cannot learn it from a read that drops the sound
+  const LP = join(tmp, "late-project");
+  api.create(LP, { preset: "youtube" });
+  process.env.FAKE_JOB_LOG = join(tmp, "late-jobs.jsonl");
+  await applyPrep(LP, [{ op: "add_clip", track: "main", src: lateTs, duration: 1, id: "late1" }, { op: "auto_reframe", id: "late1" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
+  const sj = readFileSync(join(tmp, "late-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((j) => j.cmd === "subject");
+  check("a subject job carries the container start the asset records (an mpegts that starts at its sound)", api.probe(lateTs).container_start > 1 && sj?.container_start === api.probe(lateTs).container_start, { job: sj, probe: api.probe(lateTs).container_start });
+}
+
 // ---------------------------------------------------------------- track_to
 console.log("track_to");
 await apply(Y, [{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", size: [40, 40], fill: "white", at: 1, duration: 2 }]);
@@ -655,7 +669,7 @@ console.log("asset record");
   check("the restored project prepares again", (await api.prepare(W)).ready === true);
   // 3. fail closed where the values are built, whatever validate saw
   const code = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
-  const base = { srcW: 640, srcH: 360 };
+  const base = { srcW: 640, srcH: 360, container_start: 0 };
   for (const bad of ["30,more", Number.NaN, Infinity, 0, -5]) {
     check(`matteJob refuses fps ${String(bad)}`, code(() => V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: bad as any, duration: 2, ...base })) === "bad_media");
     check(`subjectJob refuses fps ${String(bad)}`, code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: bad as any, ...base })) === "bad_media");
@@ -729,7 +743,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
     check("prepare reports no download once the model is stored, before the helper runs: the call after the full-size one has no download, done 0, and the helper has not run yet",
       full >= 0 && !!nextCall && nextCall.download === undefined && nextCall.done === 0 && nextCall.ran === calls[full].ran, { calls });
     { // the matrix a picture is read with reaches the helper's job as `matrix` for a video (the asset's own name, else bt2020nc for converted BT.2020 primaries, else bt709 for HD, else none) and is part of the cache key
-      const mj = (w: number, h: number, colorSpace?: string, kind = "video", tags: [string?, string?] = ["unknown", "unknown"]) => V.matteJob(join(m, "rb.mp4"), { kind, fps: 30, duration: 2, srcW: w, srcH: h, model: MODEL, root: G, ...(colorSpace ? { colorSpace } : {}),
+      const mj = (w: number, h: number, colorSpace?: string, kind = "video", tags: [string?, string?] = ["unknown", "unknown"]) => V.matteJob(join(m, "rb.mp4"), { kind, fps: 30, duration: 2, container_start: 0, srcW: w, srcH: h, model: MODEL, root: G, ...(colorSpace ? { colorSpace } : {}),
         ...(tags[0] ? { colorPrimaries: tags[0] } : {}), ...(tags[1] ? { colorTransfer: tags[1] } : {}) });
       const refuses = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
       const hdUntagged = mj(1920, 1080, "unknown"), hdNamed = mj(1920, 1080, "bt470bg"), sdNamed = mj(640, 360, "bt709"), sdUntagged = mj(640, 360, "unknown");
@@ -751,7 +765,7 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       check("matte job: a video without its primaries or its transfer is refused before a job is made",
         refuses(() => mj(1920, 1080, "bt709", "video", [undefined, "unknown"])) === "bad_media" && refuses(() => mj(1920, 1080, "bt709", "video", ["unknown", undefined])) === "bad_media");
     }
-    check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 30, duration: 2, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
+    check("allow_download is not part of the matte cache key", V.matteJob(join(m, "rb.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 30, duration: 2, container_start: 0, srcW: 640, srcH: 360, model: MODEL, root: G }).file === al.computed[0].file);
 
     // the CLI spelling reaches the same gate; its child runs with a stub fetch loaded by --preload (the test's own file): it records the URL and answers 404
     rmSync(join(G, ".agentcut", "cache"), { recursive: true }); rmSync(modelFile(MODEL));
@@ -861,7 +875,7 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       mkdirSync(bin);
       const fakeFfmpeg = (body: string) => { writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, "ffmpeg"), 0o755); };
       const decode = (timeout: number) => {
-        const job = JSON.stringify({ cmd: "track", path: "x", w: 2, h: 2, fps: 1, start: 0, duration: 2, at: 0, box: [0, 0, 0.5, 0.5] });
+        const job = JSON.stringify({ cmd: "track", path: "x", w: 2, h: 2, fps: 1, container_start: 0, start: 0, duration: 2, at: 0, box: [0, 0, 0.5, 0.5] });
         const r = spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout,
           env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
         return { status: r.status, signal: r.signal, stderr: r.stderr.slice(-300) };
@@ -905,7 +919,7 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
         // PQ: the same conversion, by the key the matte job carries; the real reader text against the real ffmpeg again
         const pqFile = join(m, "pq-flat.mp4");
         ff("-f", "lavfi", "-i", "color=c=0x7a9ec8:s=1280x720:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv,format=yuv420p", "-c:v", "libx264", pqFile);
-        const keyFor = (primaries: string, transfer: string) => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, srcW: 1280, srcH: 720, colorSpace: "bt2020nc", colorPrimaries: primaries, colorTransfer: transfer }).job.convert as string;
+        const keyFor = (primaries: string, transfer: string) => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, container_start: 0, srcW: 1280, srcH: 720, colorSpace: "bt2020nc", colorPrimaries: primaries, colorTransfer: transfer }).job.convert as string;
         const pqKey = keyFor("bt2020", "smpte2084"), pqInfo = api.probe(pqFile), pqSrc = new FrameSource({ path: pqFile, kind: "video", srcW: pqInfo.width, srcH: pqInfo.height, rate: 24, fit: "fill", box: [64, 36], facts: pqInfo as any });
         const pqFs = await pqSrc.readAt(0); pqSrc.close();
         const pqMine = [pqFs[(18 * 64 + 32) * 4], pqFs[(18 * 64 + 32) * 4 + 1], pqFs[(18 * 64 + 32) * 4 + 2]], pqHelper = read({ matrix: "bt2020nc", convert: pqKey }, pqFile), pqPlain = read({ matrix: "bt2020nc" }, pqFile);
@@ -916,6 +930,43 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
           keys.every((k) => typeof k === "string" && Array.isArray(read({ matrix: "bt2020nc", convert: k }, pqFile))) && unknownKey.status !== 0 && /convert/.test(unknownKey.err), { keys, unknownKey });
       }
 
+      { // samples carry the source time of the frame they read: the real reader text against the real ffmpeg, on files whose picture starts after the sound (lateTs, lateMkv above)
+        const sdriver = join(run, "slots.py");
+        writeFileSync(sdriver, `import json, sys
+sys.path.insert(0, sys.argv[1])
+g = {"__name__": "helper"}
+exec(compile(open(sys.argv[2]).read().split("\\njob = json.loads(")[0], "helper", "exec"), g)
+a = json.loads(sys.argv[3])
+print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 3] > 127) for f in g["frames"](a["path"], a["start"], a["dur"], a["fps"], 160, 120, container_start=a["cs"])]))
+`);
+        // the frame number each sample shows, the way the helper's subject job reads: start and duration in source seconds, fps samples a second
+        const slots = (path: string, start: number | null, dur: number | null, fps: number): number[] | string => {
+          const r = spawnSync("python3", ["-I", "-S", "-B", sdriver, stubs, script, JSON.stringify({ path, start, dur, fps, cs: api.probe(path).container_start })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
+          return r.status === 0 ? JSON.parse(r.stdout) : r.stderr.slice(-300);
+        };
+        // sample i is at start + i / fps on the clip clock; the picture's frame n is at video_start + n / 25 there, and the held first picture shows before it; a slot is within 3 frames of that
+        const wrong = (got: number[] | string, path: string, start: number, fps: number, count: number) => {
+          if (typeof got === "string") return got;
+          const vs = api.probe(path).video_start;
+          const bad = got.map((n, i) => ({ i, n, want: Math.min(99, Math.max(0, Math.round((start + i / fps - vs) * 25))) })).filter((x) => Math.abs(x.n - x.want) > 3);
+          return got.length === count && !bad.length ? null : { count: got.length, want: count, bad: bad.slice(0, 3) };
+        };
+        for (const [what, file, start] of [["an mpegts that starts at its sound", lateTs, 0], ["an mpegts that starts at its sound, in-point before the picture", lateTs, 0.3], ["an mkv with the picture 1.4 s late, in-point before the picture", lateMkv, 0.5], ["an mkv with the picture 1.4 s late, in-point after it", lateMkv, 2]] as const) {
+          const bad = wrong(slots(file, start, 2, 6), file, start, 6, 12);
+          check(`helper: ${what} (in ${start}): 12 samples at 6 a second for 2 s, each the frame of its own time`, bad === null, bad);
+        }
+        // a range's slots start at the in-point and there are round(duration * fps) of them: a half-slot start phase (15 a second from 0.5 s) and a length of 2.1 s at 6 a second (12.6 slots)
+        const half = wrong(slots(lateMkv, 0.5, 2, 15), lateMkv, 0.5, 15, 30), frac = wrong(slots(lateMkv, 0.5, 2.1, 6), lateMkv, 0.5, 6, 13);
+        check("helper: a range has round(duration * fps) samples: 30 for 2 s at 15 a second from 0.5 s, 13 for 2.1 s at 6 a second", half === null && frac === null, { half, frac });
+        // the end of the file: the picture's last frame (99, at 1.4 + 3.96 s) is the last sample of a range that reaches the end; fps's default drops the slot of a frame that ends the file
+        const tail = slots(lateMkv, 3, 2.5, 6);
+        check("helper: a range that reaches the end of the file keeps the slot of the last frame (3 s, 2.5 s long at 6 a second: 15 samples, the last is frame 99)", Array.isArray(tail) && tail.length === 15 && tail.at(-1) === 99, tail);
+        // the whole file, as the matte reads it (no start, no length): the gap before the picture is filled from 0, so the matte's frame i is at i / fps
+        const whole = slots(lateTs, null, null, 6), vsTs = api.probe(lateTs).video_start;
+        check("helper: a read of the whole file (the matte) starts at the clip clock's 0: the first samples are the first picture, held to its start, and the count covers the picture's end",
+          Array.isArray(whole) && whole[0] === 0 && whole[Math.floor(vsTs * 6) - 1] === 0 && Math.abs(whole.length - (vsTs + 4) * 6) <= 1, { n: Array.isArray(whole) ? whole.length : whole, head: Array.isArray(whole) ? whole.slice(0, 6) : null, vs: vsTs });
+      }
+
       // stdin closed while a decode and an encode are in flight: the helper stops both ffmpeg children before it exits, so the
       // encoder cannot finish writing `out` afterwards. The fake decoder never writes a frame; the fake encoder writes `out` one second after its stdin ends.
       writeFileSync(join(stubs, "rembg.py"), "def new_session(model): return None\ndef remove(*a, **k): raise SystemExit('stub rembg')\n");
@@ -923,7 +974,7 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
       fakeFfmpeg(`echo $$ >> ${JSON.stringify(pids)}\ncase " $* " in *" pipe:0 "*) cat >/dev/null; sleep 1; for a; do o=$a; done; echo late > "$o";; *) exec sleep 30;; esac`);
       const unused = join(run, "unused.onnx");
       writeFileSync(unused, "small model fixture");
-      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, path: "x", out: late, model_file: unused, model_sha256: (await import("node:crypto")).createHash("sha256").update("small model fixture").digest("hex") });
+      const matteJob = JSON.stringify({ cmd: "matte", kind: "video", model: "u2netp", w: 2, h: 2, fps: 1, container_start: 0, path: "x", out: late, model_file: unused, model_sha256: (await import("node:crypto")).createHash("sha256").update("small model fixture").digest("hex") });
       const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
       const kids = () => (existsSync(pids) ? readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number) : []);
       const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -1036,7 +1087,7 @@ console.log("the face model: descriptor, job, gate, download");
     const job = jobs()[before];
     check("the helper job carries face_model = the cached model's path and face_min = FACE_MIN", sub.cached === false && jobs().length === before + 1 && job?.cmd === "subject" && job.face_model === faceFile(mainCache) && typeof job.face_min === "number" && job.face_min === V.FACE_MIN, { job, want: faceFile(mainCache) });
     const A = fresh("key-a"), B = fresh("key-b"), R = join(tmp, "key-root");
-    const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, srcW: 640, srcH: 360, root: R }));
+    const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, container_start: 0, srcW: 640, srcH: 360, root: R }));
     const ja = await jobIn(A), jb = await jobIn(B);
     check("the cache key is the same under two cache roots, while face_model follows the root", basename(ja.file) === basename(jb.file) && ja.job.face_model === faceFile(A) && jb.job.face_model === faceFile(B), { a: ja.file, b: jb.file, fa: ja.job.face_model, fb: jb.job.face_model });
     { // the key is the hash of the job's own parameters (the path and the model file excluded), face_min among them
@@ -1233,9 +1284,9 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
   let n = 0;
   const root = () => { const d = join(tmp, `py-root-${n++}`); mkdirSync(d); return d; }; // a fresh project dir: nothing is cached
   const jobs = {
-    subject: () => V.subjectJob(rb, { fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
-    track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], srcW: 640, srcH: 360, root: root() }),
-    matte: () => V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, srcW: 640, srcH: 360, root: root() }),
+    subject: () => V.subjectJob(rb, { fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, root: root() }),
+    track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], container_start: 0, srcW: 640, srcH: 360, root: root() }),
+    matte: () => V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, root: root() }),
   };
   /** compute one job under the failing uv; the run it logged, and the error */
   const go = async (job: ReturnType<(typeof jobs)[keyof typeof jobs]>, allow: boolean) => {
@@ -1253,7 +1304,7 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       const jobOf = (r: PyRun) => JSON.parse(r.argv.at(-1)!);
       const u2netp = jobOf((await go(jobs.matte(), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
       check("the matte job reaching the helper carries the model's sha256 and file, and no allow_download", u2netp.model_sha256 === M.MATTE_PINS.u2netp.sha256 && u2netp.model_file === V.modelFile("u2netp") && !("allow_download" in u2netp), u2netp);
-      check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
+      check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
       check("every matte model has a pin: its own name, an https url ending /<name>.onnx, 64 hex sha256, bytes > 0, and a size in whole MB",
         M.MATTE_MODELS.length === 5 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(`/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
         && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 5);
@@ -1347,7 +1398,7 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
   }],
   ["real: video matte produced under the models dir layout and cached", async () => {
     await apply(real.Q, [{ op: "remove_background", id: "vid1" }]);
-    const mt: any = await api.prepare(real.Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 30, duration: 3, srcW: 640, srcH: 360, root: real.Q }));
+    const mt: any = await api.prepare(real.Q, { allowDownload: true }), again = await V.compute(V.matteJob(join(m, "mover.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 30, duration: 3, container_start: 0, srcW: 640, srcH: 360, root: real.Q }));
     return [existsSync(mt.computed[0].file) && again.cached === true && existsSync(V.modelFile("u2netp")), mt];
   }],
   ["real: image matte is a PNG with an alpha channel and is cached", async () => {
