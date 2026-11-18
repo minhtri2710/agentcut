@@ -318,6 +318,7 @@ export class FrameSource {
   private last: Buffer | null = null;
   private tip: Buffer | null = null; // the newest frame the running stream produced (`last` is only the frame asked for)
   private eof = false;
+  private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`last` stays the frame at `pos`)
   // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
   // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
   private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
@@ -563,7 +564,7 @@ export class FrameSource {
   private async readFrame(u: number): Promise<Buffer> {
     const o = this.o;
     const k = Math.max(0, Math.round(u * o.rate));
-    if (this.eof && k > this.pos) return this.last!;
+    if (this.eof && k > this.pos) return this.ending!;
     if (k === this.pos && this.last) return this.last;
     if (!this.proc || k < this.pos || k - this.pos > Math.max(4, o.rate * 2)) {
       if (o.reverse && this.proc && k > this.pos) { /* keep streaming */ } else this.spawnAt(k);
@@ -588,11 +589,12 @@ export class FrameSource {
         }
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
         // (the source's last frame, which the tail read keeps: `fps` gives a last frame that ends inside its own slot no slot of the stream, so the stream's newest is the one before it.
-        // The tail starts before the probed length: a source that ends inside the last two slots of it has no tail, and its stream's newest frame is its last. A reverse clip has only its stream's)
-        this.last = o.reverse ? this.tip : await this.tailFrame() ?? this.tip;
-        if (!this.last) throw this.gone("the source has no frame", at, end.all);
+        // A source that ends before the tail's first slot (two slots before its probed length) has no tail and holds its stream's newest frame. A reverse clip has only its stream's.
+        // `last` stays the frame at `pos`)
+        this.ending = o.reverse ? this.tip : await this.tailFrame() ?? this.tip;
+        if (!this.ending) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
-        return this.last;
+        return this.ending;
       }
       this.pos++;
       this.tip = f;
