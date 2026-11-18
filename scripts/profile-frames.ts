@@ -1,9 +1,10 @@
+import { drawable } from "../src/api.ts";
 import { Project } from "../src/project.ts";
 import { Renderer } from "../src/render.ts";
 const p = new Project(process.argv[2]);
 const tl = p.load();
 p.requireValid(tl);
-const r = new Renderer(p.absolutized(tl), p.root, Number(process.argv[3] ?? 1));
+const r = new Renderer(drawable(p, tl), p.root, Number(process.argv[3] ?? 1));
 let tf = 0, tp = 0;
 const n = Math.round(r.duration * r.fps);
 const t0 = performance.now();

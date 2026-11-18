@@ -35,7 +35,7 @@ const loadForText = async (tl: M.Timeline) => {
   await loadCanvas();
 };
 /** timeline ready to draw: absolute paths + prepared background mattes (EditError not_prepared if prepare is needed) */
-const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
+export const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
 function writeOut(p: Project | null, out: string, data: string | Uint8Array) {
   if (p) refuseSource(p.root, p.load(), out);
