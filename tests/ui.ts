@@ -356,6 +356,14 @@ console.log("job retention");
     await prepared();
     const ended = await get(held.id);
     check("a job is kept by when it ended: the first started, ended after the others, still answers after the next job ends", stopped.j.status !== "running" && ended.status === 200 && ended.j.status === stopped.j.status, { ended, stopped });
+    const pj = join(dirJ, "project.json"), saved = readFileSync(pj, "utf8"), realRandom = Math.random;
+    let failed: any;
+    try { // the project cannot be read: the play fails before it starts. Its client is never told a job id, so the row fixes the one the server draws ("i")
+      writeFileSync(pj, "{"); Math.random = () => 0.5;
+      failed = await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 3 } });
+    } finally { Math.random = realRandom; writeFileSync(pj, saved); }
+    const [ghost, ghostCancel] = [await get("i"), await cancel("i")];
+    check("a play request that fails before it starts leaves no job: GET and cancel on it answer 404 not_found", failed.status >= 400 && failed.j.ok === false && ghost.status === 404 && ghost.j.error?.code === "not_found" && ghostCancel.status === 404 && ghostCancel.j.error?.code === "not_found", { failed, ghost, ghostCancel });
     mkdirSync(join(dirJ, "previews", "ui"), { recursive: true });
     writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-0.00-3.00.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
     const hits: string[] = [];
