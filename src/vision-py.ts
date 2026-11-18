@@ -46,8 +46,8 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, 
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if fps: args += ["-copyts"]  # the file's own times stay; the filters below put them on the clip clock
     if start is not None: args += ["-ss", "%.6f" % start]
-    # Sample i is the picture at start + i/fps on the clip clock (the container start and the in-point are subtracted), as FrameSource slots a clip: before the first picture, and after the last one
-    # up to the end of the range, the nearest picture holds. A range has round(dur * fps) samples, and the last slot is kept when its frame ends the file (eof_action=pass).
+    # Sample i is the picture at start + i/fps on the clip clock (the container start and the in-point are subtracted), as FrameSource slots a clip: before the first picture, the first one holds.
+    # A range has round(dur * fps) samples while the picture lasts. The read ends at the picture's last frame, whose slot eof_action=pass keeps.
     clock = "settb=1/1000000,setpts=PTS-%.6f/TB,fps=%.6f:start_time=0:eof_action=pass," % (container_start + (start or 0), float(fps)) if fps else ""
     cut = "trim=end=%.6f," % ((int(dur * fps + 0.5) - 0.25) / fps) if fps and dur is not None else ""
     vf = clock + cut + ("setparams=colorspace=%s," % matrix if matrix else "") + (_CONVERT[convert] + "," if convert else "") + "scale=%d:%d:flags=bicubic" % (w, h)

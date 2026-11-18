@@ -677,6 +677,7 @@ console.log("asset record");
     check(`FrameSource refuses rate ${String(bad)}`, code(() => new FrameSource({ path: join(m, "green.mp4"), kind: "video", ...base, rate: bad as any, fit: "fill", box: [64, 64] })) === "bad_media");
   }
   check("subjectJob refuses a non-numeric start", code(() => V.subjectJob(join(m, "green.mp4"), { start: "1,more" as any, duration: 2, fps: 6, ...base })) === "bad_media");
+  check("subjectJob refuses a video read at a frame rate with no container_start", code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: 6, srcW: 640, srcH: 360 })) === "bad_media");
   check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: null, duration: 2, ...base }).job.fps === 30);
 }
 
