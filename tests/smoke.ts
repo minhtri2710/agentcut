@@ -25,7 +25,7 @@ function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: R
 const cliLatest = (args: (string | number)[], o: Parameters<typeof cli>[1] = {}) => cli([...args, "--revision", cli(["info"], { cwd: o.cwd }).revision], o);
 function check(name: string, cond: unknown, info?: unknown) {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 }
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-smoke-"));

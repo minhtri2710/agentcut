@@ -20,7 +20,7 @@ let failures = 0;
 const t0 = performance.now();
 function check(name: string, cond: unknown, info?: unknown) {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 500) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 }
 const near = (a: unknown, b: number, eps = 1e-3) => typeof a === "number" && Math.abs(a - b) < eps;
 function ff(...args: string[]) {

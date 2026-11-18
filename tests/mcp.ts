@@ -13,7 +13,7 @@ const env = { ...(process.env as Record<string, string>), AGENTCUT_HOME: join(tm
 spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=4", "-pix_fmt", "yuv420p", join(tmp, "a.mp4")]);
 spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "gradients=size=800x800", "-frames:v", "1", join(tmp, "p.png")]);
 let fails = 0;
-const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c ? "" : JSON.stringify(info).slice(0, 500)); if (!c) fails++; };
+const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c || info === undefined ? "" : JSON.stringify(info)); if (!c) fails++; };
 
 const client = new Client({ name: "agentcut-test", version: "1" });
 await client.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env }));

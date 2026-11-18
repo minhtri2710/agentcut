@@ -18,7 +18,7 @@ const { speedIntegral } = await import("../src/anim.ts");
 let failures = 0;
 function check(name: string, cond: unknown, info?: unknown) {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 500) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 }
 function ff(...args: string[]) {
   const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
