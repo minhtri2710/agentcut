@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
 import { inp } from "./ffinput.ts";
+import { endJob } from "./jobs.ts";
 import { EditError, type Dict } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
 import { PAGE } from "./ui/page.gen.ts";
@@ -19,7 +20,6 @@ const MIME: Record<string, string> = {
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
-export const JOBS_KEPT = 64; // the newest finished jobs (by end) a session remembers, so a long `agentcut ui` does not grow without bound; older ids answer not_found
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
   if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
@@ -131,25 +131,15 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     json(res, 404, { ok: false, error: { code: "not_found", message: `${req.method} ${path}` } });
   }
 
-  /** a job that ends moves to the end of the map, so the map lists finished jobs oldest-ended first (a Map iterates in insertion order) */
-  function endJob(job: Dict) { if (jobs.has(job.id)) { jobs.delete(job.id); jobs.set(job.id, job); } }
-
-  /** before a job is added: the earliest-ended finished jobs beyond JOBS_KEPT go; a running job stays */
-  function forgetOldJobs() {
-    const finished = [...jobs].filter(([, j]) => j.status !== "running");
-    for (const [id] of finished.slice(0, Math.max(0, finished.length - JOBS_KEPT))) jobs.delete(id);
-  }
-
   /** play=true: draft of [start,end) into previews/ui/ (cached per revision+range) for the viewer; else a normal render into renders/. */
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
-    forgetOldJobs();
     jobs.set(id, job);
     const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
     const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
-    if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); return job; }
+    if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
     const live = out ? playing.get(out) : undefined;
     if (live && !running.get(live.id)?.ctl.signal.aborted) { jobs.delete(id); return live; } // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
@@ -161,7 +151,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
       .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
-      .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); endJob(job); }) });
+      .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); endJob(jobs, id, job); }) });
     return job;
   }
 
@@ -169,7 +159,6 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   function prepare(allowDownload: boolean) {
     if (preparing) return preparing;
     const job: Dict = { id: Math.random().toString(36).slice(2, 10), kind: "prepare", status: "running", progress: 0, started: Date.now() };
-    forgetOldJobs();
     jobs.set(job.id, job);
     preparing = job;
     let last = 0;
@@ -177,7 +166,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     running.set(job.id, { ctl, settled: Promise.resolve().then(() => api.prepare(root, { allowDownload, author: UI_AUTHOR, signal: ctl.signal, progress: (d, n, download) => { job.progress = n ? +(d / n).toFixed(3) : 0; const changed = download?.model !== job.download?.model; /* appears, disappears or names another model: the page must hear it now */ if (download) job.download = download; else delete job.download; const now = Date.now(); if (changed || now - last > 200) { last = now; broadcast("job", job); } } }))
       .then((r: Dict) => Object.assign(job, { status: "done", progress: 1, result: r }))
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
-      .finally(() => { delete job.download; preparing = null; running.delete(job.id); endJob(job); broadcast("job", job); }) });
+      .finally(() => { delete job.download; preparing = null; running.delete(job.id); endJob(jobs, job.id, job); broadcast("job", job); }) });
     return job;
   }
 
