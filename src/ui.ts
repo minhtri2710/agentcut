@@ -135,14 +135,14 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
-    jobs.set(id, job);
     const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
     const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
     const live = out ? playing.get(out) : undefined;
-    if (live && !running.get(live.id)?.ctl.signal.aborted) { jobs.delete(id); return live; } // same range already rendering: share that job, unless it is being cancelled
+    if (live && !running.get(live.id)?.ctl.signal.aborted) return live; // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
+    jobs.set(id, job); // every call that can throw is above; from here to the promise chain nothing throws, so a job in `jobs` always reaches its end
     if (out) playing.set(out, job);
     let last = 0;
     const ctl = new AbortController();
