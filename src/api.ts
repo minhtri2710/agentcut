@@ -6,7 +6,7 @@ import { loadCanvas } from "./canvas.ts";
 import * as FB from "./feedback.ts";
 import { fontsKnown, listFonts, needsProbe } from "./fonts.ts";
 import { LOOKS } from "./color.ts";
-import { needFfmpeg, probe as probeMedia } from "./media.ts";
+import { needFfmpeg, preRoll, probe as probeMedia } from "./media.ts";
 import { own } from "./own.ts";
 import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
@@ -472,7 +472,7 @@ async function tts(text: string | undefined, out: string | undefined, voice?: st
   return AN.tts(text, path, voice, rate, p?.root, signal);
 }
 export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
-  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
+  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, pre: a.kind === "image" ? undefined : preRoll(a, a.fps), srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),

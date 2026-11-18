@@ -294,7 +294,7 @@ export interface Sample { t: number; x?: number; y?: number; w?: number; h?: num
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
 /** The numbers a job hands to the helper's ffmpeg commands must be real numbers: finite, and fps and the frame size positive. Every job builder goes through derived. */
 function checkJob(params: Dict) {
-  for (const k of ["fps", "start", "duration", "at", "container_start", "w", "h", "frames"]) {
+  for (const k of ["fps", "start", "duration", "at", "container_start", "pre", "w", "h", "frames"]) {
     const v = params[k];
     if (v === null || v === undefined) continue;
     if (typeof v !== "number" || !Number.isFinite(v) || (["fps", "w", "h"].includes(k) && v <= 0))
@@ -303,6 +303,9 @@ function checkJob(params: Dict) {
   // a read at a frame rate puts the picture on the clip clock, which starts at the file's container start
   if (typeof params.fps === "number" && typeof params.container_start !== "number")
     throw new EditError("vision job: container_start must be a finite number", "bad_media", "relink_asset with the file's path records it");
+  // a read of a range seeks this many seconds before its in-point (preRoll in media.ts)
+  if (typeof params.fps === "number" && typeof params.start === "number" && typeof params.pre !== "number")
+    throw new EditError("vision job: pre must be a finite number", "bad_media", "relink_asset with the file's path records it");
 }
 const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict, pkgs: string[], root: string | undefined, frames: number, extra: Partial<Derived> = {}): Derived => {
   checkJob({ ...params, frames });
@@ -311,10 +314,10 @@ const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict,
 
 /** Subject centre over time (the largest face YuNet finds, with its score, else the saliency centroid); x/y are 0..1 of the full source frame.
  *  The job carries the face model's path; the cache key carries only the model's hash and the score threshold. */
-export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; container_start?: number; srcW: number; srcH: number; root?: string }) {
+export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; container_start?: number; pre?: number; srcW: number; srcH: number; root?: string }) {
   const fps = o.still ? null : o.fps ?? 6, w = even(Math.min(480, o.srcW)), h = even((w * o.srcH) / o.srcW);
   // a still is one frame: no seek, no fps resampling (either would yield zero frames)
-  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, ...(o.still ? {} : { container_start: o.container_start }), w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
+  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, ...(o.still ? {} : { container_start: o.container_start, pre: o.pre }), w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
   const d = derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
   d.job.face_model = modelFile(FACE_MODEL.name);
   d.job.model_sha256 = FACE_MODEL.sha256; // the helper hashes the file it loads; neither field is part of the cache key
@@ -348,9 +351,9 @@ export async function analyzeSubject(path: string, o: Parameters<typeof subjectJ
 }
 
 /** OpenCV CSRT/KCF track of a box (fractions of the source frame) given at source time `at`, forwards and backwards. */
-export function trackJob(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; container_start: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
+export function trackJob(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; container_start: number; pre: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
   const fps = o.fps ?? 15, w = even(Math.min(640, o.srcW)), h = even((w * o.srcH) / o.srcW);
-  const params = { cmd: "track", start: o.start, duration: o.duration, at: o.at, box: o.box.map((v) => +v.toFixed(5)), fps, container_start: o.container_start, w, h, tracker: o.tracker ?? "csrt" };
+  const params = { cmd: "track", start: o.start, duration: o.duration, at: o.at, box: o.box.map((v) => +v.toFixed(5)), fps, container_start: o.container_start, pre: o.pre, w, h, tracker: o.tracker ?? "csrt" };
   return derived("track", ".json", path, params, CV, o.root, o.duration * fps);
 }
 

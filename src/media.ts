@@ -308,6 +308,11 @@ export const TIE_BIAS = 0.0327;
  *  stream's first slot, which `readFrame` takes for an empty stream (a source that ends well inside its probed length). It decides the frame the clip holds at the end, so `pixelKey` names it like TIE_BIAS. */
 export const FPS_END = "eof_action=pass";
 
+/** Seconds decoded before a stream's first slot, so the frames a slot depends on (the reorder delay and, after a seek, the open-GOP frames before its keyframe) are decoded:
+ *  at least a quarter second and the frames held back, plus, in a format whose seek can land after the target, the longest keyframe gap, so a keyframe lies in the stretch.
+ *  The vision helper seeks this far before its in-point too. */
+export const preRoll = (f: VideoFacts, srcFps?: number | null) => Math.max(0.25, srcFps ? (f.reorder + 1) / srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
+
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
   w: number; h: number; view: [number, number];
@@ -340,10 +345,7 @@ export class FrameSource {
     if (o.kind !== "image") {
       const miss = missingFacts(o.facts ?? {});
       if (miss.length) throw new EditError(`the probe record of ${o.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
-      // Decoding starts this far before the first slot, so the frames a slot depends on (the reorder delay and, after a seek, the open-GOP frames before its keyframe) are decoded:
-      // at least a quarter second and the frames held back, plus, in a format whose seek can land after the target, the longest keyframe gap, so a keyframe lies in the stretch.
-      const f = o.facts!;
-      this.pre = Math.max(0.25, o.srcFps ? (f.reorder + 1) / o.srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
+      this.pre = preRoll(o.facts!, o.srcFps);
     }
     const crop = o.crop || {};
     const [cl, cr, ct, cb] = ["left", "right", "top", "bottom"].map((k) => Number(crop[k] ?? 0));

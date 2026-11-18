@@ -2,8 +2,8 @@
 // track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python), and
 // never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
 // sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
-import { coverOffset, fitBox } from "./media.ts";
-import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, parseLen, parseTime, resolve, round6, type Timeline } from "./model.ts";
+import { coverOffset, fitBox, preRoll } from "./media.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -79,11 +79,12 @@ function srcRange(c: Clip) {
   return { in0, speed, len: clipDur(c) * speed };
 }
 
+const preOf = (a: VAsset) => preRoll(a as Dict as VideoFacts, a.fps); // how far before its in-point a read of this video seeks
 /** Subject analysis job for a clip's source range. */
 function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
   const a = asset(tl, c), { in0, len } = srcRange(c);
   return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
-    : { start: in0, duration: len, fps, container_start: a.container_start, srcW: a.width, srcH: a.height, root: root(p) });
+    : { start: in0, duration: len, fps, container_start: a.container_start, pre: preOf(a), srcW: a.width, srcH: a.height, root: root(p) });
 }
 /** Cached subject samples as [clip-local t, source fraction x, y | undefined]. `within` = [from, to] clip-local seconds keeps only the samples
  *  in that span; the counts and the summary describe exactly the samples kept. */
@@ -208,7 +209,7 @@ export function registerVisionOps(h: OpHelpers) {
         const sb = [clamp01(u0), clamp01(v0), clamp01(u1) - clamp01(u0), clamp01(v1) - clamp01(v0)];
         if (sb[2] <= 0.002 || sb[3] <= 0.002) throw new EditError("box is outside the visible picture of the target", "out_of_range", "draw the box over the object as seen in preview_frame");
         if (a.tracker && !["csrt", "kcf"].includes(a.tracker)) throw new EditError(`unknown tracker '${a.tracker}'`, "bad_value", "csrt|kcf");
-        const d = V.trackJob(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, container_start: L.a.container_start, tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
+        const d = V.trackJob(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, container_start: L.a.container_start, pre: preOf(L.a), tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
         if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
         pts = V.readResult(d).samples.map((s) => { if (!s.ok) lost++; return { T: ts0 + (s.t - in0) / speed, u: s.ok ? s.x : undefined, v: s.ok ? s.y : undefined }; });
       } else {
