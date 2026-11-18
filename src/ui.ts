@@ -142,7 +142,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const live = out ? playing.get(out) : undefined;
     if (live && !running.get(live.id)?.ctl.signal.aborted) return live; // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
-    jobs.set(id, job); // only now: nothing above can throw past this line, so a job in `jobs` always reaches its end
+    jobs.set(id, job); // every call that can throw is above; from here to the promise chain nothing throws, so a job in `jobs` always reaches its end
     if (out) playing.set(out, job);
     let last = 0;
     const ctl = new AbortController();
