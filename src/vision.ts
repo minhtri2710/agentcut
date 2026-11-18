@@ -294,12 +294,15 @@ export interface Sample { t: number; x?: number; y?: number; w?: number; h?: num
 const even = (v: number) => Math.max(2, Math.round(v / 2) * 2);
 /** The numbers a job hands to the helper's ffmpeg commands must be real numbers: finite, and fps and the frame size positive. Every job builder goes through derived. */
 function checkJob(params: Dict) {
-  for (const k of ["fps", "start", "duration", "at", "w", "h", "frames"]) {
+  for (const k of ["fps", "start", "duration", "at", "container_start", "w", "h", "frames"]) {
     const v = params[k];
     if (v === null || v === undefined) continue;
     if (typeof v !== "number" || !Number.isFinite(v) || (["fps", "w", "h"].includes(k) && v <= 0))
-      throw new EditError(`vision job: ${k} must be a ${["fps", "w", "h"].includes(k) ? "number > 0" : "finite number"}, got ${JSON.stringify(v)}`, "bad_media", "check the asset record (fps, width, height) in project.json");
+      throw new EditError(`vision job: ${k} must be a ${["fps", "w", "h"].includes(k) ? "number > 0" : "finite number"}, got ${JSON.stringify(v)}`, "bad_media", "check the asset record (fps, width, height, container_start) in project.json");
   }
+  // a read at a frame rate puts the picture on the clip clock, which starts at the file's container start
+  if (typeof params.fps === "number" && typeof params.container_start !== "number")
+    throw new EditError("vision job: container_start must be a finite number", "bad_media", "relink_asset with the file's path records it");
 }
 const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict, pkgs: string[], root: string | undefined, frames: number, extra: Partial<Derived> = {}): Derived => {
   checkJob({ ...params, frames });
@@ -308,10 +311,10 @@ const derived = (kind: Derived["kind"], ext: string, path: string, params: Dict,
 
 /** Subject centre over time (the largest face YuNet finds, with its score, else the saliency centroid); x/y are 0..1 of the full source frame.
  *  The job carries the face model's path; the cache key carries only the model's hash and the score threshold. */
-export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; srcW: number; srcH: number; root?: string }) {
+export function subjectJob(path: string, o: { still?: boolean; start?: number; duration?: number; fps?: number; container_start?: number; srcW: number; srcH: number; root?: string }) {
   const fps = o.still ? null : o.fps ?? 6, w = even(Math.min(480, o.srcW)), h = even((w * o.srcH) / o.srcW);
   // a still is one frame: no seek, no fps resampling (either would yield zero frames)
-  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
+  const params = { cmd: "subject", start: o.still ? null : o.start ?? 0, duration: o.still ? null : o.duration ?? null, fps, ...(o.still ? {} : { container_start: o.container_start }), w, h, face: FACE_MODEL.sha256.slice(0, 12), face_min: FACE_MIN };
   const d = derived("subject", ".json", path, params, CV, o.root, fps ? (o.duration ?? 1) * fps : 1);
   d.job.face_model = modelFile(FACE_MODEL.name);
   d.job.model_sha256 = FACE_MODEL.sha256; // the helper hashes the file it loads; neither field is part of the cache key
@@ -345,14 +348,14 @@ export async function analyzeSubject(path: string, o: Parameters<typeof subjectJ
 }
 
 /** OpenCV CSRT/KCF track of a box (fractions of the source frame) given at source time `at`, forwards and backwards. */
-export function trackJob(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
+export function trackJob(path: string, o: { start: number; duration: number; at: number; box: number[]; fps?: number; container_start: number; tracker?: string; srcW: number; srcH: number; root?: string }) {
   const fps = o.fps ?? 15, w = even(Math.min(640, o.srcW)), h = even((w * o.srcH) / o.srcW);
-  const params = { cmd: "track", start: o.start, duration: o.duration, at: o.at, box: o.box.map((v) => +v.toFixed(5)), fps, w, h, tracker: o.tracker ?? "csrt" };
+  const params = { cmd: "track", start: o.start, duration: o.duration, at: o.at, box: o.box.map((v) => +v.toFixed(5)), fps, container_start: o.container_start, w, h, tracker: o.tracker ?? "csrt" };
   return derived("track", ".json", path, params, CV, o.root, o.duration * fps);
 }
 
 /** Alpha version of a video (ProRes 4444 .mov, source audio kept) or image (.png), cached by content hash + model. */
-export function matteJob(path: string, o: { kind: string; fps?: number | null; duration?: number; srcW: number; srcH: number; colorSpace?: string; colorPrimaries?: string; colorTransfer?: string; model?: string; root?: string }) {
+export function matteJob(path: string, o: { kind: string; fps?: number | null; duration?: number; container_start?: number; srcW: number; srcH: number; colorSpace?: string; colorPrimaries?: string; colorTransfer?: string; model?: string; root?: string }) {
   const model = o.model ?? "u2netp";
   if (!MATTE_MODELS.includes(model)) throw new EditError(`unknown matte model '${model}'`, "bad_value", `models: ${MATTE_MODELS.join(", ")}`);
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
@@ -361,7 +364,7 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   // the job carries each only when there is one, and a video with no color_space, color_primaries or color_transfer is refused
   if (o.kind === "video" && (o.colorSpace === undefined || o.colorPrimaries === undefined || o.colorTransfer === undefined)) throw new EditError("a video matte job needs the asset's color_space, color_primaries and color_transfer", "bad_media", "relink_asset with the file's path records them");
   const convert = o.kind === "video" ? conversionFor(o.colorPrimaries!, o.colorTransfer!) : undefined, matrix = o.kind === "video" ? matrixFor(o.colorSpace!, o.srcW, o.srcH, convert) : undefined;
-  const params = { cmd: "matte", kind: o.kind, fps, w, h, model, ...(matrix ? { matrix } : {}), ...(convert ? { convert } : {}) };
+  const params = { cmd: "matte", kind: o.kind, fps, ...(fps ? { container_start: o.container_start } : {}), w, h, model, ...(matrix ? { matrix } : {}), ...(convert ? { convert } : {}) };
   const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
   d.job.model_file = modelFile(model);
   d.job.model_sha256 = MATTE_PINS[model].sha256; // the helper hashes the file it loads
