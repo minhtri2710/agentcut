@@ -303,6 +303,11 @@ export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, for
  *  and neither has a decimal NTSC rate as a project stores it (settings.fps 29.97 is 2997/100: a millisecond in-point steps the phase by 1e-5 slot, so a frame can sit on the boundary). */
 export const TIE_BIAS = 0.0327;
 
+/** The `fps` option of the tail read. By default `fps` rounds the end of the last frame's span, and a last frame that ends inside its own slot (a source faster than the grid, in a window of 1 - rate/source rate of a slot)
+ *  gets no slot, so a stream's newest frame is the one before it. `pass` always puts the last frame out. Only the tail read takes it: on a stream it would also put out a frame for a source that ended before the
+ *  stream's first slot, which `readFrame` takes for an empty stream (a source that ends well inside its probed length). It decides the frame the clip holds at the end, so `pixelKey` names it like TIE_BIAS. */
+export const FPS_END = "eof_action=pass";
+
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
   w: number; h: number; view: [number, number];
@@ -368,8 +373,8 @@ export class FrameSource {
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
-   *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS), and the FFmpeg that decodes. */
-  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, ffmpegVersion()]); }
+   *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS, FPS_END), and the FFmpeg that decodes. */
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion()]); }
 
   /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
   private get wraps() { return !!this.o.loop && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
@@ -416,7 +421,7 @@ export class FrameSource {
       : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
     const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) : ss; // an avi seek aimed before its first packet lands one frame late
     a.push("-noaccurate_seek", "-copyts", "-ss", seek.toFixed(6), ...this.input, "-an", "-sn",
-      "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${fill}`, ...slots, ...this.vf].join(","));
+      "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${mode === "tail" ? `:${FPS_END}` : ""}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
     a.push("-fps_mode", "passthrough");
     if (mode === "still" || mode === "reach") a.push("-frames:v", "1");
@@ -487,7 +492,7 @@ export class FrameSource {
     const o = this.o, end = o.srcDuration;
     // a source with no known length has no slot to start from: its last second, whichever frame the grid starts at
     const a = end ? this.args(Math.max(0, Math.floor((end - this.tailIn(end)) * o.rate) - 2), "tail")
-      : ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
+      : ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}:${FPS_END}`, ...this.vf].join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     const p = spawn("ffmpeg", a, { stdio: ["ignore", "pipe", "pipe"] });
     p.stderr!.resume();
     const fs = new FrameStream(p, this.w * this.h * 4);
@@ -576,14 +581,15 @@ export class FrameSource {
         const at = (o.srcIn ?? 0) + k / o.rate;
         if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at, end.all);
         if (this.wraps) { // a loop clip: the stream ended before its pass did (a file shorter than the pass, or a pass that starts after the picture): its last frame holds to the pass's end
-          const held = this.tip ?? await this.tailFrame();
+          const held = await this.tailFrame() ?? this.tip;
           if (!held) throw this.gone("the source has no frame", at, end.all);
           this.dry = true; this.hold = held;
           continue;
         }
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
-        // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
-        this.last = this.tip ?? (o.reverse ? null : await this.tailFrame());
+        // (the source's last frame, which the tail read keeps: `fps` gives a last frame that ends inside its own slot no slot of the stream, so the stream's newest is the one before it.
+        // The tail starts before the probed length: a source that ends inside the last two slots of it has no tail, and its stream's newest frame is its last. A reverse clip has only its stream's)
+        this.last = o.reverse ? this.tip : await this.tailFrame() ?? this.tip;
         if (!this.last) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
         return this.last;
