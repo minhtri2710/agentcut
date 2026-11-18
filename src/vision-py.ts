@@ -1,6 +1,7 @@
 // Python helper for the vision features, run through `uv run --with <pkgs>` (see vision.ts). Kept as a TS string so the
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
+import { FPS_END } from "./media.ts";
 import { COLOR_SPACES, CONVERSIONS, conversionChain } from "./model.ts";
 
 export const VISION_PY = String.raw`
@@ -48,7 +49,7 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, 
     if start is not None: args += ["-ss", "%.6f" % start]
     # Sample i is the picture at start + i/fps on the clip clock (the container start and the in-point are subtracted), as FrameSource slots a clip: before the first picture, the first one holds.
     # A range has round(dur * fps) samples while the picture lasts. The read ends with the last slot that starts before the picture ends; eof_action=pass keeps that slot when the last frame rounds into it.
-    clock = "settb=1/1000000,setpts=PTS-%.6f/TB,fps=%.6f:start_time=0:eof_action=pass," % (container_start + (start or 0), float(fps)) if fps else ""
+    clock = "settb=1/1000000,setpts=PTS-%.6f/TB,fps=%.6f:start_time=0:${FPS_END}," % (container_start + (start or 0), float(fps)) if fps else ""
     cut = "trim=end=%.6f," % ((int(dur * fps + 0.5) - 0.25) / fps) if fps and dur is not None else ""
     vf = clock + cut + ("setparams=colorspace=%s," % matrix if matrix else "") + (_CONVERT[convert] + "," if convert else "") + "scale=%d:%d:flags=bicubic" % (w, h)
     args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
