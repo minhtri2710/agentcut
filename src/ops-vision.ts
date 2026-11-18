@@ -83,7 +83,7 @@ function srcRange(c: Clip) {
 function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
   const a = asset(tl, c), { in0, len } = srcRange(c);
   return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
-    : { start: in0, duration: len, fps, srcW: a.width, srcH: a.height, root: root(p) });
+    : { start: in0, duration: len, fps, container_start: a.container_start, srcW: a.width, srcH: a.height, root: root(p) });
 }
 /** Cached subject samples as [clip-local t, source fraction x, y | undefined]. `within` = [from, to] clip-local seconds keeps only the samples
  *  in that span; the counts and the summary describe exactly the samples kept. */
@@ -208,7 +208,7 @@ export function registerVisionOps(h: OpHelpers) {
         const sb = [clamp01(u0), clamp01(v0), clamp01(u1) - clamp01(u0), clamp01(v1) - clamp01(v0)];
         if (sb[2] <= 0.002 || sb[3] <= 0.002) throw new EditError("box is outside the visible picture of the target", "out_of_range", "draw the box over the object as seen in preview_frame");
         if (a.tracker && !["csrt", "kcf"].includes(a.tracker)) throw new EditError(`unknown tracker '${a.tracker}'`, "bad_value", "csrt|kcf");
-        const d = V.trackJob(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
+        const d = V.trackJob(absPath(p, L.a.path), { start: srcAt(s0), duration: (s1 - s0) * speed, at: srcAt(at), box: sb, fps, container_start: L.a.container_start, tracker: a.tracker, srcW: L.a.width, srcH: L.a.height, root: root(p) });
         if (!ready(f, "track_to", req, d)) return pendingResult(f.id);
         pts = V.readResult(d).samples.map((s) => { if (!s.ok) lost++; return { T: ts0 + (s.t - in0) / speed, u: s.ok ? s.x : undefined, v: s.ok ? s.y : undefined }; });
       } else {
@@ -235,7 +235,7 @@ export function registerVisionOps(h: OpHelpers) {
 /** Matte job for a clip with remove_background (path: the asset's absolute path). */
 export function matteFor(root: string | undefined, tl: Timeline, c: Clip, path: string) {
   const a = asset(tl, c), rb = c.remove_background;
-  return V.matteJob(path, { kind: a.kind, fps: a.fps, duration: a.duration, srcW: a.width, srcH: a.height, colorSpace: a.color_space, colorPrimaries: a.color_primaries, colorTransfer: a.color_transfer, model: typeof rb === "object" ? rb.model : undefined, root });
+  return V.matteJob(path, { kind: a.kind, fps: a.fps, duration: a.duration, container_start: a.container_start, srcW: a.width, srcH: a.height, colorSpace: a.color_space, colorPrimaries: a.color_primaries, colorTransfer: a.color_transfer, model: typeof rb === "object" ? rb.model : undefined, root });
 }
 
 /** Matte jobs of every enabled remove_background clip (compounds included) of an absolutized timeline. */

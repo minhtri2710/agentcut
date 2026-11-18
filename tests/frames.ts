@@ -112,7 +112,8 @@ const row = (name: string, bad: string[]) => check(name, bad.length === 0, bad.s
 const v = (fps: string, secs = 6) => ({ plain: make(`v${fps.replace("/", "_")}.mp4`, fps, secs, X264, { mux: ["-g", "50"] }), aac: make(`v${fps.replace("/", "_")}a.mp4`, fps, secs, X264, { audio: true, mux: ["-g", "50"] }) });
 const v25 = v("25"), v30 = v("30"), v50 = v("50"), v24 = v("24"), v2997 = v("30000/1001");
 const nz25 = make("nz25.mp4", "25", 6, X264, { audio: true, mux: ["-output_ts_offset", "10"] });
-const mkv24 = make("v24.mkv", "24", 8, X264, { audio: true });
+const mkv24 = make("v24.mkv", "24", 8, X264, { audio: true }), mkv25 = make("v25.mkv", "25", 6, X264, { audio: true });
+const loopSlack = make("loopslack.mp4", "25", 4, X264, { audio: true, sound: 4.04, mux: ["-g", "50"] }); // 4 s of picture over 4.04 s of sound: no video_duration is recorded, the length is 0.04 s past the picture
 const webm24 = make("v24.webm", "24", 8, VP9);
 const mkvLate = make("late.mkv", "25", 8, X264, { audio: true, late: 2 });
 const ntsc30 = make("ntsc30.mp4", "30000/1001", 20, X264);
@@ -215,6 +216,22 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
     const first = await read(f, 0, 25), end = await read(l, 35 + last, 25), held = await read(h, 35 + last + 5, 25);
     f.close(); l.close(); h.close();
     return first === 0 && end === last && held === last ? [] : [`first slot frame ${first}, slot ${35 + last} frame ${end}, slot ${35 + last + 5} frame ${held}; want 0, ${last}, ${last}`];
+  }));
+  // A source faster than the grid leaves a window of 1 - rate/source rate of a slot in which the last frame ends inside its own slot: an in-point that puts the frame at the middle of it
+  const endBad: string[] = [];
+  // the last two pairs loop a picture 0.04 s shorter than its recorded length (sound outlasts it by less than VIDEO_END_SLACK): the pass runs dry at the last frame's slot, which the pass then holds
+  for (const [file, r, o] of [[v25.plain, 24], [v25.aac, 24], [mkv25, 24], [aviPlain, 24], [aviLate, 24], [aviVideo, 24], [aviVideoLate, 24], [v25.plain, 20], [mkv25, 20], [aviLate, 20], [v30.aac, 24], [v50.plain, 30], [mkv24, 20],
+    [loopSlack, 24, { loop: true }], [loopSlack, 20, { loop: true }]] as [string, number, Opts?][]) {
+    const { pts, S } = timingOf(file), pl = pts[pts.length - 1] - S, kl = Math.floor((pl - 0.5) * r), w = 1 - r / api.probe(file).fps;
+    endBad.push(...await sweep(`${file.split("/").pop()}->${r}${o ? " loop" : ""}`, file, r, [pl - (kl + w / 2 - 0.5 - TIE) / r], [0], [kl - 1, kl, kl + 1, kl + 2, kl + 8], o));
+  }
+  const slack = api.probe(loopSlack), slackEnd = timingOf(loopSlack).pts.at(-1)! + 1 / slack.fps; // the loop pairs need a recorded length past the picture and no video_duration, which the sound encoder's length can change
+  if (slack.video_duration != null || !(slack.duration > slackEnd)) endBad.push(`loopslack.mp4 no longer runs dry: duration ${slack.duration}, video_duration ${slack.video_duration}, picture ends ${slackEnd}`);
+  row("a last frame that ends inside its own slot is shown there and held after it: mp4, mkv and avi, 25 to 24 and 20, 30 to 24, 50 to 30, 24 to 20, and a loop pass that runs dry there", endBad);
+  row("a source read past its end and then at the slot before gives the held last frame, not nothing", await attempt(async () => {
+    const s = source(v25.plain, 24, 0), want = rule(v25.plain, 0, 24, 154), got = [await read(s, 154, 24), await read(s, 153, 24)];
+    s.close();
+    return got.every((n) => n === want) ? [] : [`slots 154, 153 read ${got}; want ${want}`];
   }));
 }
 

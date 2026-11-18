@@ -303,6 +303,11 @@ export const MATTE_FACTS: VideoFacts = { container_start: 0, video_start: 0, for
  *  and neither has a decimal NTSC rate as a project stores it (settings.fps 29.97 is 2997/100: a millisecond in-point steps the phase by 1e-5 slot, so a frame can sit on the boundary). */
 export const TIE_BIAS = 0.0327;
 
+/** The `fps` option of the tail read. By default `fps` rounds the end of the last frame's span, and a last frame that ends inside its own slot (a source faster than the grid, in a window of 1 - rate/source rate of a slot)
+ *  gets no slot, so a stream's newest frame is the one before it. `pass` always puts the last frame out. Only the tail read takes it: on a stream it would also put out a frame for a source that ended before the
+ *  stream's first slot, which `readFrame` takes for an empty stream (a source that ends well inside its probed length). It decides the frame the clip holds at the end, so `pixelKey` names it like TIE_BIAS. */
+export const FPS_END = "eof_action=pass";
+
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
   w: number; h: number; view: [number, number];
@@ -310,9 +315,9 @@ export class FrameSource {
   private proc: ChildProcess | null = null;
   private stream: FrameStream | null = null;
   private pos = -1;
-  private last: Buffer | null = null;
-  private tip: Buffer | null = null; // the newest frame the running stream produced (`last` is only the frame asked for)
+  private tip: Buffer | null = null; // the newest frame the running stream produced: the frame at `pos` (null: the stream has produced none since it was spawned)
   private eof = false;
+  private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`tip` stays the frame at `pos`)
   // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
   // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
   private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
@@ -368,8 +373,8 @@ export class FrameSource {
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
-   *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS), and the FFmpeg that decodes. */
-  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, ffmpegVersion()]); }
+   *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS, FPS_END), and the FFmpeg that decodes. */
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion()]); }
 
   /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
   private get wraps() { return !!this.o.loop && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
@@ -416,7 +421,7 @@ export class FrameSource {
       : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
     const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) : ss; // an avi seek aimed before its first packet lands one frame late
     a.push("-noaccurate_seek", "-copyts", "-ss", seek.toFixed(6), ...this.input, "-an", "-sn",
-      "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${fill}`, ...slots, ...this.vf].join(","));
+      "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${mode === "tail" ? `:${FPS_END}` : ""}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
     a.push("-fps_mode", "passthrough");
     if (mode === "still" || mode === "reach") a.push("-frames:v", "1");
@@ -487,7 +492,7 @@ export class FrameSource {
     const o = this.o, end = o.srcDuration;
     // a source with no known length has no slot to start from: its last second, whichever frame the grid starts at
     const a = end ? this.args(Math.max(0, Math.floor((end - this.tailIn(end)) * o.rate) - 2), "tail")
-      : ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}`, ...this.vf].join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
+      : ["-v", "error", "-nostdin", "-sseof", "-1", ...this.input, "-an", "-sn", "-vf", [`fps=${o.rate}:${FPS_END}`, ...this.vf].join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"];
     const p = spawn("ffmpeg", a, { stdio: ["ignore", "pipe", "pipe"] });
     p.stderr!.resume();
     const fs = new FrameStream(p, this.w * this.h * 4);
@@ -558,14 +563,14 @@ export class FrameSource {
   private async readFrame(u: number): Promise<Buffer> {
     const o = this.o;
     const k = Math.max(0, Math.round(u * o.rate));
-    if (this.eof && k > this.pos) return this.last!;
-    if (k === this.pos && this.last) return this.last;
-    if (!this.proc || k < this.pos || k - this.pos > Math.max(4, o.rate * 2)) {
+    if (this.eof && k > this.pos) return this.ending!;
+    if (k === this.pos && this.tip) return this.tip;
+    if (!this.proc || k < this.pos || (k === this.pos && !this.tip) || k - this.pos > Math.max(4, o.rate * 2)) { // k is pos with no frame: a stream that was empty from its first slot
       if (o.reverse && this.proc && k > this.pos) { /* keep streaming */ } else this.spawnAt(k);
     }
     while (this.pos < k) {
       if (this.pos + 1 > this.passEnd) { this.spawnAt(this.pos + 1); continue; } // a loop clip: the next pass starts at its own first slot
-      if (this.dry) { this.pos++; this.tip = this.hold; if (this.pos === k) this.last = this.hold; continue; }
+      if (this.dry) { this.pos++; this.tip = this.hold; continue; }
       const f = await this.stream!.read();
       if (!f) {
         const end = await this.ended!;
@@ -576,23 +581,24 @@ export class FrameSource {
         const at = (o.srcIn ?? 0) + k / o.rate;
         if (this.endedEarly(at)) throw this.gone(`the source ended after ${this.pos + 1} frames`, at, end.all);
         if (this.wraps) { // a loop clip: the stream ended before its pass did (a file shorter than the pass, or a pass that starts after the picture): its last frame holds to the pass's end
-          const held = this.tip ?? await this.tailFrame();
+          const held = await this.tailFrame() ?? this.tip;
           if (!held) throw this.gone("the source has no frame", at, end.all);
           this.dry = true; this.hold = held;
           continue;
         }
         // a fresh source read at or past the end (preview, still, sheet tile, a later render segment) holds the source's last frame, like a streamed one
-        // (a jump that runs off the end holds the stream's newest frame: `last` may be a recycled buffer by then)
-        this.last = this.tip ?? (o.reverse ? null : await this.tailFrame());
-        if (!this.last) throw this.gone("the source has no frame", at, end.all);
+        // (the source's last frame, which the tail read keeps: `fps` gives a last frame that ends inside its own slot no slot of the stream, so the stream's newest is the one before it.
+        // A source that ends before the tail's first slot (two slots before its probed length) has no tail and holds its stream's newest frame. A reverse clip has only its stream's.
+        // `tip` stays the frame at `pos`)
+        this.ending = o.reverse ? this.tip : await this.tailFrame() ?? this.tip;
+        if (!this.ending) throw this.gone("the source has no frame", at, end.all);
         this.eof = true;
-        return this.last;
+        return this.ending;
       }
       this.pos++;
       this.tip = f;
-      if (this.pos === k) this.last = f;
     }
-    return this.last!;
+    return this.tip!;
   }
 
   close() {
