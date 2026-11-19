@@ -343,11 +343,11 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   const t = frameTime(tl, o.start ?? 0, "start");
   let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
+  const at = drawable(p, tl);
+  const { stillFrame } = await renderMod();
   const { ALPHA_ON_OPAQUE, isTransparent, flattenIfOpaque } = await import("./encode.ts");
   const transparent = isTransparent(tl);
   const alpha = o.alpha ?? transparent;
-  const at = drawable(p, tl);
-  const { stillFrame } = await renderMod();
   const img = await stillFrame(flattenIfOpaque(at, alpha), p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
   o.signal?.throwIfAborted();
   writeOut(p, out, img.data);
