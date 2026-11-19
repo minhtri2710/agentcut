@@ -1,10 +1,13 @@
+// usage: profile-frames.ts <project> [scale] [ext]; draws what a render to ext (default .mp4) draws, in one process: worker segments and ranges are not taken
 import { drawable } from "../src/api.ts";
+import { outputDraw } from "../src/encode.ts";
 import { Project } from "../src/project.ts";
 import { Renderer } from "../src/render.ts";
 const p = new Project(process.argv[2]);
 const tl = p.load();
 p.requireValid(tl);
-const r = new Renderer(drawable(p, tl), p.root, Number(process.argv[3] ?? 1));
+const out = outputDraw(drawable(p, tl), process.argv[4] ?? ".mp4", { scale: Number(process.argv[3] ?? 1) });
+const r = new Renderer(out.tl, p.root, out.scale);
 let tf = 0, tp = 0;
 const n = Math.round(r.duration * r.fps);
 const t0 = performance.now();

@@ -12,7 +12,7 @@ const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 let failures = 0;
 const check = (name: string, cond: unknown, info?: unknown) => {
   if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info).slice(0, 400) : ""); }
+  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
 };
 const cliAsync = (args: (string | number)[]) => new Promise<any>((ok) => {
   const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by; the test declares its own name

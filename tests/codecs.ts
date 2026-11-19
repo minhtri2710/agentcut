@@ -315,7 +315,7 @@ console.log("text wrap: a word wider than the line breaks into pieces");
       const first = [...l.words[0].text][0], last = [...l.words[l.words.length - 1].text].pop()!;
       if (closing.includes(first) || opening.includes(last)) bad.push({ max, l: l.words.map((w) => w.text) });
     }
-  check("kinsoku: no line starts with a closing mark or ends with an opening one", bad.length === 0, bad.slice(0, 2));
+  check("kinsoku: no line starts with a closing mark or ends with an opening one", bad.length === 0, { n: bad.length, first: bad.slice(0, 2) });
   const hl = renderText(long, st, MAX, { activeWord: 0, highlightColor: "#ff0000" });
   check("a highlighted word that was broken is marked on every piece", red(hl) > 0 && white(hl, 0, hl.height) === 0, { red: red(hl), white: white(hl, 0, hl.height) });
   const hl2 = renderText(`ab ${long}`, st, MAX, { activeWord: 1, highlightColor: "#ff0000" });
@@ -764,7 +764,7 @@ console.log("decode and render failures");
       return Array.from({ length: Math.floor(raw.length / fb) }, (_, k) => { let n = 0; for (let i = 0; i < 16; i++) if (raw[k * fb + (Math.floor(H2 / 16) * W2 + i * 10 + 5) * 4] > 128) n |= 1 << i; return n; });
     };
     const one = await shown(1), two = await shown(2), want = Array.from({ length: 130 }, (_, k) => (37 + k) % 50); // in 1.5 = frame 37.5: the older frame at the tie
-    check("a render of a looping clip over a file with a keyframe inside shows the file's frames across three wraps, with one worker and with two", one.length === 130 && JSON.stringify(one) === JSON.stringify(want) && JSON.stringify(two) === JSON.stringify(one), { one: one.slice(0, 40), two: two.slice(0, 40) });
+    check("a render of a looping clip over a file with a keyframe inside shows the file's frames across three wraps, with one worker and with two", one.length === 130 && JSON.stringify(one) === JSON.stringify(want) && JSON.stringify(two) === JSON.stringify(one), { one, two });
   }
   {
     // a record without video_duration (written by hand) on a 2 s picture with 4 s of sound: the early end is decode_failed, and its hint names the action that works
@@ -951,7 +951,7 @@ console.log("decode and render failures");
   api.create(G, { width: W, height: H, fps: 24 });
   await applyLatest(G, [{ op: "add_clip", track: "overlay", src: join(m, "s30.mp4"), at: 0, duration: 3 }]);
   const [g1, g2] = await renderTwice(G, [1, 2]);
-  check("a held frame of a 30 fps source on a 24 fps timeline is the same for one and two workers", g1.length === 72 && differ(g1, g2).length === 0, [g1.length, g2.length, differ(g1, g2).slice(0, 5)]);
+  check("a held frame of a 30 fps source on a 24 fps timeline is the same for one and two workers", g1.length === 72 && differ(g1, g2).length === 0, [g1.length, g2.length, differ(g1, g2)]);
 
 
   // A-27: a layer that has ended keeps no canvas

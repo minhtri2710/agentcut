@@ -243,6 +243,16 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
   return res;
 }
 
+/** What a video output draws: its plan, the timeline and the scale. Frame profiles use it too, so they draw what a render draws. */
+export function outputDraw(tl: Timeline, ext: string, o: RenderOpts = {}) {
+  const gif = ext === ".gif";
+  if (!gif && !FORMATS[ext]) throw new EditError(`unsupported output format '${ext}'`, "bad_format", `use ${ALL_EXTS}`);
+  const plan = planOutput(ext, tl, o);
+  // alpha dropped: render on opaque black so semi-transparent edges are composited, not shown at full strength
+  const rtl = plan.transparent && !plan.alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
+  return { plan, tl: rtl, scale: gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1 };
+}
+
 export async function renderVideo(tl: Timeline, root: string, output: string, o: RenderOpts = {}) {
   needFfmpeg();
   o.signal?.throwIfAborted();
@@ -250,14 +260,9 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const ext = extname(output).toLowerCase();
   if (AUDIO_FORMATS[ext]) return renderAudio(tl, root, output, ext, o);
   const gif = ext === ".gif";
-  if (!gif && !FORMATS[ext]) throw new EditError(`unsupported output format '${ext}'`, "bad_format", `use ${ALL_EXTS}`);
-  const quality = o.quality ?? "standard";
-  const plan = planOutput(ext, tl, { codec: o.codec, alpha: o.alpha, quality, hwEncode: o.hwEncode });
+  const { plan, tl: rtl, scale } = outputDraw(tl, ext, o);
   const { v, mux, a } = plan;
   plan.warnings.push(...colourWarnings(tl));
-  // alpha dropped: render on opaque black so semi-transparent edges are composited, not shown at full strength
-  const rtl = plan.transparent && !plan.alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
-  const scale = gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1;
   const probe = new Renderer(structuredClone(rtl), root, scale);
   const T = probe.duration, fps = probe.fps, W = probe.W, H = probe.H;
   probe.close();

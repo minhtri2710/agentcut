@@ -106,7 +106,7 @@ async function sweep(label: string, file: string, r: number, bases: number[], ph
 const attempt = async (body: () => Promise<string[]>) => { try { return await body(); } catch (e: any) { return [`${e?.code ?? "threw"} ${String(e?.message).slice(0, 160)}`]; } };
 const SLOTS = [0, 1, 2, 5, 6, 7, 12, 13, 24, 31];
 const PHASES = [0, 0.3, 0.5, 0.77];
-const row = (name: string, bad: string[]) => check(name, bad.length === 0, bad.slice(0, 6));
+const row = (name: string, bad: string[]) => check(name, bad.length === 0, { n: bad.length, first: bad.slice(0, 6) });
 
 // ---- media
 const v = (fps: string, secs = 6) => ({ plain: make(`v${fps.replace("/", "_")}.mp4`, fps, secs, X264, { mux: ["-g", "50"] }), aac: make(`v${fps.replace("/", "_")}a.mp4`, fps, secs, X264, { audio: true, mux: ["-g", "50"] }) });
