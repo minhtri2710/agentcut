@@ -94,7 +94,12 @@ export function videoArgs(codec: VideoCodec, quality: string, hwEncode: boolean,
 
 export const ALPHA_ON_OPAQUE = "alpha is on but settings.background is opaque, so every pixel is opaque; set background to '#00000000' for a transparent export";
 
-export interface OutputPlan { codec: VideoCodec; alpha: boolean; v: string[]; mux: string[]; a: string[]; warnings: string[]; transparent: boolean }
+export interface OutputPlan { codec: VideoCodec; alpha: boolean; v: string[]; mux: string[]; a: string[]; warnings: string[] }
+
+export const isTransparent = (tl: Timeline) => parseColor(tl.settings.background ?? "#000000")[3] === 0;
+
+/** Alpha dropped: draw on opaque black so semi-transparent edges are composited, not shown at full strength. */
+export const flattenIfOpaque = (tl: Timeline, alpha: boolean): Timeline => isTransparent(tl) && !alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
 
 /** Resolve codec/alpha for a video output and validate the combination (throws EditError with a hint). */
 export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha?: boolean; quality?: string; hwEncode?: boolean } = {}): OutputPlan {
@@ -105,7 +110,7 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
   if (want !== "auto" && !own(CODECS, want))
     throw new EditError(`unknown codec '${o.codec}'`, "bad_codec", `use one of: auto, ${Object.keys(CODECS).join(", ")}`);
   if (gif && want !== "auto") throw new EditError(`codec '${want}' does not apply to .gif`, "bad_codec", "omit codec for .gif, or export .mp4/.mov/.webm");
-  const transparent = parseColor(tl.settings.background ?? "#000000")[3] === 0;
+  const transparent = isTransparent(tl);
   const wantAlpha = o.alpha ?? transparent;
   let codec: VideoCodec = gif ? "h264" : want === "auto" ? FORMATS[ext].codec : want;
   if (want === "auto" && wantAlpha && ext === ".mov") codec = "prores_4444"; // transparent .mov -> ProRes 4444 with alpha
@@ -122,7 +127,7 @@ export function planOutput(ext: string, tl: Timeline, o: { codec?: string; alpha
     warnings.push(`background is transparent but ${gif ? "gif" : `${codec} in ${ext}`} has no alpha: alpha dropped, frames composited on black (export .mov with codec prores_4444, or .webm, to keep transparency)`);
   if (alpha && !transparent) warnings.push(ALPHA_ON_OPAQUE);
   const { v, mux } = videoArgs(codec, o.quality ?? "standard", !!o.hwEncode, alpha, ext);
-  return { codec, alpha, v, mux: [...mux, ...(FORMATS[gif ? ".mp4" : ext]?.flags ?? [])], a: [...(FORMATS[gif ? ".mp4" : ext]?.audio ?? [])], warnings, transparent };
+  return { codec, alpha, v, mux: [...mux, ...(FORMATS[gif ? ".mp4" : ext]?.flags ?? [])], a: [...(FORMATS[gif ? ".mp4" : ext]?.audio ?? [])], warnings };
 }
 
 export interface SegmentJob { tl: Timeline; root: string; scale: number; fontDirs: string[]; t0: number; i0: number; i1: number; v: string[]; out: string }
@@ -244,13 +249,11 @@ async function renderAudio(tl: Timeline, root: string, output: string, ext: stri
 }
 
 /** What a video output draws: its plan, the timeline and the scale. Frame profiles use it too, so they draw what a render draws. */
-export function outputDraw(tl: Timeline, ext: string, o: RenderOpts = {}) {
-  const gif = ext === ".gif";
+export function outputDraw(tl: Timeline, extension: string, o: RenderOpts = {}) {
+  const ext = extension.toLowerCase(), gif = ext === ".gif";
   if (!gif && !FORMATS[ext]) throw new EditError(`unsupported output format '${ext}'`, "bad_format", `use ${ALL_EXTS}`);
   const plan = planOutput(ext, tl, o);
-  // alpha dropped: render on opaque black so semi-transparent edges are composited, not shown at full strength
-  const rtl = plan.transparent && !plan.alpha ? { ...tl, settings: { ...tl.settings, background: "#000000" } } : tl;
-  return { plan, tl: rtl, scale: gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1 };
+  return { plan, tl: flattenIfOpaque(tl, plan.alpha), scale: gif ? Math.min(o.scale ?? 1, 0.5) : o.scale ?? 1 };
 }
 
 export async function renderVideo(tl: Timeline, root: string, output: string, o: RenderOpts = {}) {

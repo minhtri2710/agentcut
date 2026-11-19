@@ -142,6 +142,10 @@ export function probe(path: string): any {
       vAbs = firstVideoPacket(path) ?? vAbs;
       if (Number(v.duration) > 0) dur = Math.max(dur, vAbs + Number(v.duration) - cStart); // the format's length counts from the picture's first frame, not from the container's start
     }
+    // an avi header gives an uncompressed sound's length only as nb_frames in its time_base, and the format's length is then the picture's
+    if (a && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number); dur = Math.max(dur, (Number(a.nb_frames) * n) / d || 0); }
+    if (v && String(j.format?.format_name).split(",").includes("matroska") && firstVideoPacket(path) === null)
+      throw new EditError(`${path} starts with picture packets that carry no timestamp, so AgentCut cannot place the picture`, "bad_media", "re-encode the file (for example ffmpeg -i in.mkv -c:v libx264 out.mp4)");
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
     let ends: Map<number, number> | undefined;
     const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
