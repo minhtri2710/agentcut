@@ -80,6 +80,7 @@ function srcRange(c: Clip) {
 }
 
 function preOf(a: VAsset) { // how far before its in-point a read of this video seeks; a record without the file's facts has no rule to read by
+  if (a.kind !== "video") throw new EditError(`${a.path} is ${a.kind === "image" ? "an image" : `a ${a.kind}`}, not a video: a read over time needs a video`, "bad_type", "point the clip at a video asset (update_clip set={asset:'<video asset id>'})");
   const miss = missingFacts(a);
   if (miss.length) throw new EditError(`the probe record of ${a.path} has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
   return preRoll(a as Dict as VideoFacts, a.fps);
