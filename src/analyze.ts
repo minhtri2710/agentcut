@@ -346,15 +346,16 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
   return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
 
-/** What is kept of a silent start: the stretch sent to the engine begins this long before the first sound. */
+/** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
 /**
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
  * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
  * Checks run cheapest first: the media (not_found, bad_media, no_audio), the range, the engine (missing_dependency, not_found for a model file), then the extraction.
- * The stretch handed to the engine starts at the first sound (silence()'s default threshold) less LEAD_PAD, never before `start`: after a silent
- * start whisper times the first words early. `skipped_leading` is the seconds left out. A music lead-in is not silence; give a range.
+ * The engine hears the speech only: every silence (silence()'s default threshold) is left out but LEAD_PAD on each side of the speech, the pieces are
+ * joined into one stretch and the engine's times are mapped back piece by piece; whisper times words into a silence it is given. `skipped_leading` is
+ * the seconds left out at the start. A music lead-in or bed is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  */
 export async function transcribe(path: string, language?: string, model?: string, range?: [number, number | undefined], signal?: AbortSignal) {
@@ -375,14 +376,20 @@ export async function transcribe(path: string, language?: string, model?: string
     const ffFail = (r: { status: number | null; stderr: string }) => new EditError(`cannot extract audio from ${path}: ${r.stderr.trim().slice(0, 300)}`, "decode_failed");
     const cut = await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
     if (cut.status !== 0) throw ffFail(cut);
-    const first = (await silence(raw, undefined, undefined, signal)).speech[0]?.[0] ?? 0;
-    const skipped = Math.max(0, +(first - LEAD_PAD).toFixed(3));
-    if (skipped) {
-      const trim = await run("ffmpeg", ["-v", "error", "-y", "-ss", String(skipped), "-i", raw, "-c", "copy", wav], { signal });
-      if (trim.status !== 0) throw ffFail(trim);
+    const { speech, duration: heard } = await silence(raw, undefined, undefined, signal);
+    const pieces = speech.map(([a, b]) => [Math.max(0, +(a - LEAD_PAD).toFixed(3)), Math.min(heard, +(b + LEAD_PAD).toFixed(3))]);
+    if (!pieces.length) pieces.push([0, heard]);
+    const skipped = pieces[0][0];
+    if (pieces.length > 1 || skipped || pieces[0][1] < heard) {
+      const graph = pieces.map(([a, b], k) => `[0:a]atrim=${a}:${b},asetpts=PTS-STARTPTS[p${k}];`).join("") + `${pieces.map((_, k) => `[p${k}]`).join("")}concat=n=${pieces.length}:v=0:a=1`;
+      const joined = await run("ffmpeg", ["-v", "error", "-y", "-i", raw, "-filter_complex", graph, wav], { signal });
+      if (joined.status !== 0) throw ffFail(joined);
     } else renameSync(raw, wav);
-    const at = (x: number) => +Math.min(Math.max(x + from + skipped, from), to ?? Infinity).toFixed(3); // engine time -> media time, inside the range
-    const late = (x: number) => to !== undefined && x + from + skipped >= to;
+    const starts: number[] = []; // where each piece begins in what the engine hears
+    pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a), 0);
+    const media = (x: number) => { let k = 0; while (k + 1 < starts.length && starts[k + 1] <= x) k++; return x - starts[k] + pieces[k][0] + from; };
+    const at = (x: number) => +Math.min(Math.max(media(x), from), to ?? from + heard).toFixed(3); // engine time -> media time, inside the range
+    const late = (x: number) => to !== undefined && media(x) >= to;
     if (asr.kind === "cli") {
       const { cli, model: mdl } = asr;
       // -ml 1 alone splits inside a syllable ("ch","ào"); -sow splits only on whole words

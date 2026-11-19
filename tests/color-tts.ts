@@ -445,7 +445,8 @@ fi
   writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho "$1" >> "${tmp}/whisper.calls"\nprintf '%s\\n' "$@" > "${tmp}/whisper.args"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && cp "${tmp}/whisper.json" "$2.json"; [ "$1" = "-f" ] && cp "$2" "${tmp}/whisper.wav"; shift; done\n`);
   chmodSync(join(bin, "whisper-cli"), 0o755);
   writeFileSync(join(tmp, "fake.bin"), ""); // the model file: the engine is a stand-in, but the path is checked
-  const tr = await AN.transcribe(join(tmp, "reply.wav"), "vi", join(tmp, "fake.bin"));
+  ff("-f", "lavfi", "-i", "sine=frequency=500:duration=4", join(tmp, "said.wav")); // long enough for the stand-in's words (to 3.35 s): word times stay within the media
+  const tr = await AN.transcribe(join(tmp, "said.wav"), "vi", join(tmp, "fake.bin"));
   const wargs = readFileSync(join(tmp, "whisper.args"), "utf8").split("\n");
   check("transcribe asks whisper.cpp for whole words: -sow with -ml 1, the model and the language", wargs.includes("-sow") && wargs.includes("-ml") && wargs[wargs.indexOf("-m") + 1] === join(tmp, "fake.bin") && wargs[wargs.indexOf("-l") + 1] === "vi", wargs);
   check("transcribe: punctuation-only tokens join the previous word (a leading one the next)", JSON.stringify(tr.words.map((w: any) => w.text)) === JSON.stringify(["“Xin", "chào", "các", "bạn,", "hôm", "nay...", "nhé!"]), tr.words);
@@ -478,6 +479,19 @@ fi
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
     check("range words are clamped to the range: a word past the end is dropped, one crossing it ends there, a zero-length word stays", JSON.stringify(held.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c.", 4.8, 5]]), held.words);
     check("whisper.cpp: text is the kept words, not the dropped one", held.text === "a b c.", held.text);
+    // a silence inside or after the speech is left out too: the engine hears the speech pieces joined (each keeps 0.1 s of its silence) and its times map back piece by piece
+    const gaps = join(tmp, "gaps.wav");
+    ff("-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-filter_complex", "concat=n=4:v=0:a=1", gaps); // tone 0-1, silence, tone 4-5, silence to 7
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" b", 1300, 1600)] }));
+    const pieced = await AN.transcribe(gaps, "vi", fake);
+    writeFileSync(join(tmp, "whisper.json"), fakeJson);
+    check("silences inside and after the speech are left out: the engine gets the two tones with 0.1 s of silence on each side (2.3 s of 7), starting on the tone", Math.abs(dur(given) - 2.3) < 0.05 && startDb(given) > -30 && pieced.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: pieced.skipped_leading });
+    const near = (x: number, y: number) => Math.abs(x - y) < 0.02;
+    check("a word the engine times in the second piece lands in the second tone (engine 1.3 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[1].start, 4.1) && near(pieced.words[1].end, 4.4), times(pieced.words));
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" z", 3800, 4600)] }));
+    const past = await AN.transcribe(src, "vi", fake);
+    writeFileSync(join(tmp, "whisper.json"), fakeJson);
+    check("no range: a word the engine ends past what it heard ends at the media's end (6 s), not after it", past.words[0].start === 5.7 && past.words[0].end === 6, times(past.words));
 
     // python whisper takes the same rules: it names its output after the wav it is given (a stand-in that does the same), and its text is rebuilt from the kept words
     {
@@ -515,7 +529,7 @@ fi
   // add_captions transcribe: where clips on the timeline play the media, the words follow them; the captions record the cut and validate warns when it changes
   {
     const talk = join(tmp, "talk.mp4"), fake = join(tmp, "fake.bin"), was = process.env.AGENTCUT_WHISPER_MODEL, saved = readFileSync(join(tmp, "whisper.json"), "utf8");
-    ff("-f", "lavfi", "-i", "color=c=blue:size=160x90:rate=30:d=8", "-f", "lavfi", "-i", "sine=f=440:d=8,volume='not(between(t,2,5))':eval=frame", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", talk); // tone, 3 s of silence, tone
+    ff("-f", "lavfi", "-i", "color=c=blue:size=160x90:rate=30:d=8", "-f", "lavfi", "-i", "sine=f=440:d=8,volume='if(between(t,2,5),0.25,1)':eval=frame", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", talk); // tone, 3 s of quiet tone (about -30 dBFS: heard by transcribe, silence for remove_silence at -25 dB), tone
     const said = (ws: [string, number, number][]) => writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "en" }, transcription: ws.map(([t, a, b]) => tok(" " + t, a * 1000, b * 1000)) }));
     said([["a", 0.5, 0.9], ["b", 2.2, 2.6], ["c", 3.2, 3.6], ["d", 5.5, 5.9], ["e", 6.5, 6.9], ["f", 7.8, 8]]);
     const asrCalls = () => (existsSync(join(tmp, "whisper.calls")) ? readFileSync(join(tmp, "whisper.calls"), "utf8").split("\n").filter(Boolean).length : 0);
@@ -550,7 +564,7 @@ fi
       // remove_silence first (the video's detached audio is cut into the same segments), then one captions clip: the words follow the segments, those in the removed stretch are dropped
       const B = join(tmp, "cap-cut");
       api.create(B, { preset: "720p" });
-      await applyLatest(B, [{ op: "add_clip", track: "main", src: talk }, { op: "detach_audio", id: "vid1" }, { op: "remove_silence", id: "vid1" }]);
+      await applyLatest(B, [{ op: "add_clip", track: "main", src: talk }, { op: "detach_audio", id: "vid1" }, { op: "remove_silence", id: "vid1", noise_db: -25 }]);
       const tB0 = await tlOf(B), pieces = tB0.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.type === "audio"), second = pieces[pieces.length - 1];
       const cutB: any = await applyLatest(B, [{ op: "add_captions", transcribe: "talk" }]);
       const [cb] = await capsOf(B), at = (src: number) => +(second.start + (src - second.in)).toFixed(3);
@@ -740,7 +754,7 @@ fi
     const realOf = (n: string) => (process.env.PATH ?? "").split(":").map((d) => join(d, n)).find((f) => existsSync(f))!;
     for (const n of ["ffmpeg", "ffprobe"]) symlinkSync(realOf(n), join(tools, n));
     const stubFf = join(E, "ff"); mkdirSync(stubFf);
-    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nif [ -e '${ffTrimFail}' ]; then case "$*" in *copy*) echo "boom: cannot trim" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nif [ -e '${ffTrimFail}' ]; then case "$*" in *concat*) echo "boom: cannot trim" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
     const engine = (dir: string, name: string, body: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), `#!/bin/sh\necho "${name}" >> '${asrLog}'\n${body}`, { mode: 0o755 }); return dir; };
     // whisper.cpp's own output for a language it does not know (exit 0, no json), captured from whisper-cli 1.9.5
     const unknownLanguage = `printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." "  -h,        --help                 [default] show this help message and exit" >&2\n`;
