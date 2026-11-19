@@ -1,6 +1,6 @@
 // Media analysis: beats (spectral flux + DP tracker, pure TS FFT), scene cuts, silence, loudness, TTS, transcription.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
@@ -18,6 +18,25 @@ async function decodeMono(path: string, sr: number, signal?: AbortSignal): Promi
   if (r.status !== 0) throw new EditError(`cannot decode audio from ${path}: ${r.stderr.slice(0, 300)}`, "decode_failed");
   const b = r.stdout;
   return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 4)));
+}
+
+/** Where the samples of a 16-bit PCM WAV (what our ffmpeg calls write) open on fd lie: the data chunk's offset and byte length (bounded by the file), rate, channels, bits. */
+export function wavData(fd: number, path: string) {
+  const size = fstatSync(fd).size, h = Buffer.alloc(24);
+  readSync(fd, h, 0, 12, 0);
+  if (h.toString("ascii", 0, 4) !== "RIFF" || h.toString("ascii", 8, 12) !== "WAVE") throw new EditError(`not a WAV file: ${path}`, "decode_failed");
+  let o = 12, channels = 0, rate = 0, bits = 0;
+  while (o + 8 <= size) {
+    h.fill(0); readSync(fd, h, 0, 24, o);
+    const id = h.toString("ascii", 0, 4), n = h.readUInt32LE(4);
+    if (id === "fmt ") { channels = h.readUInt16LE(10); rate = h.readUInt32LE(12); bits = h.readUInt16LE(22); }
+    if (id === "data") {
+      if (bits !== 16 || !channels) throw new EditError(`unsupported WAV (${bits}-bit, ${channels} ch): ${path}`, "decode_failed");
+      return { offset: o + 8, bytes: Math.min(n, size - o - 8), rate, channels, bits };
+    }
+    o += 8 + n + (n % 2);
+  }
+  throw new EditError(`WAV has no data chunk: ${path}`, "decode_failed");
 }
 
 /** In-place iterative radix-2 FFT. re/im length must be a power of two. */
@@ -354,8 +373,8 @@ const LEAD_PAD = 0.1;
  * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
  * Checks run cheapest first: the media (not_found, bad_media, no_audio), the range, the engine (missing_dependency, not_found for a model file), then the extraction.
  * The engine hears the speech only: every silence (silence()'s default threshold) is left out but LEAD_PAD on each side of the speech, the pieces are
- * joined into one stretch and the engine's times are mapped back piece by piece; whisper times words into a silence it is given. `skipped_leading` is
- * the seconds left out at the start. A music lead-in or bed is not silence; give a range.
+ * joined into one stretch and the engine's times are mapped back piece by piece (a word's end stays in the piece that holds its start); whisper times
+ * words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  */
 export async function transcribe(path: string, language?: string, model?: string, range?: [number, number | undefined], signal?: AbortSignal) {
@@ -373,22 +392,34 @@ export async function transcribe(path: string, language?: string, model?: string
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
-    const ffFail = (r: { status: number | null; stderr: string }) => new EditError(`cannot extract audio from ${path}: ${r.stderr.trim().slice(0, 300)}`, "decode_failed");
     const cut = await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
-    if (cut.status !== 0) throw ffFail(cut);
+    if (cut.status !== 0) throw new EditError(`cannot extract audio from ${path}: ${cut.stderr.trim().slice(0, 300)}`, "decode_failed");
     const { speech, duration: heard } = await silence(raw, undefined, undefined, signal);
     const pieces = speech.map(([a, b]) => [Math.max(0, +(a - LEAD_PAD).toFixed(3)), Math.min(heard, +(b + LEAD_PAD).toFixed(3))]);
     if (!pieces.length) pieces.push([0, heard]);
-    const skipped = pieces[0][0];
-    if (pieces.length > 1 || skipped || pieces[0][1] < heard) {
-      const graph = pieces.map(([a, b], k) => `[0:a]atrim=${a}:${b},asetpts=PTS-STARTPTS[p${k}];`).join("") + `${pieces.map((_, k) => `[p${k}]`).join("")}concat=n=${pieces.length}:v=0:a=1`;
-      const joined = await run("ffmpeg", ["-v", "error", "-y", "-i", raw, "-filter_complex", graph, wav], { signal });
-      if (joined.status !== 0) throw ffFail(joined);
+    if (pieces.length > 1 || pieces[0][0] || pieces[0][1] < heard) {
+      // the pieces' samples are copied into one wav in process, so nothing grows with their count; edges are whole samples, so the time map below is exact
+      const src = openSync(raw, "r"), out = openSync(wav, "w");
+      try {
+        const { offset, bytes, rate, channels, bits } = wavData(src, raw), frame = (channels * bits) / 8, frames = Math.floor(bytes / frame), block = 65536;
+        const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]);
+        spans.forEach(([a, b], k) => { pieces[k] = [a / rate, b / rate]; });
+        const size = spans.reduce((n, [a, b]) => n + (b - a) * frame, 0), h = Buffer.alloc(44);
+        h.write("RIFF", 0, "ascii"); h.writeUInt32LE(36 + size, 4); h.write("WAVEfmt ", 8, "ascii"); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(channels, 22);
+        h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * frame, 28); h.writeUInt16LE(frame, 32); h.writeUInt16LE(bits, 34); h.write("data", 36, "ascii"); h.writeUInt32LE(size, 40);
+        writeSync(out, h);
+        const buf = Buffer.allocUnsafe(block * frame);
+        for (const [a, b] of spans) for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
+      } finally { closeSync(src); closeSync(out); }
     } else renameSync(raw, wav);
+    const skipped = +pieces[0][0].toFixed(3);
     const starts: number[] = []; // where each piece begins in what the engine hears
     pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a), 0);
-    const media = (x: number) => { let k = 0; while (k + 1 < starts.length && starts[k + 1] <= x) k++; return x - starts[k] + pieces[k][0] + from; };
-    const at = (x: number) => +Math.min(Math.max(media(x), from), to ?? from + heard).toFixed(3); // engine time -> media time, inside the range
+    const holder = (x: number) => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; } return lo; };
+    const media = (x: number) => { const k = holder(x); return x - starts[k] + pieces[k][0] + from; };
+    const last = Math.min(to ?? Infinity, from + heard); // no word time past the range or the media
+    const at = (x: number) => +Math.min(Math.max(media(x), from), last).toFixed(3); // engine time -> media time, inside the range
+    const till = (x: number, start: number) => Math.min(at(x), +(pieces[holder(start)][1] + from).toFixed(3)); // a word's end stays in the piece that holds its start
     const late = (x: number) => to !== undefined && media(x) >= to;
     if (asr.kind === "cli") {
       const { cli, model: mdl } = asr;
@@ -398,13 +429,13 @@ export async function transcribe(path: string, language?: string, model?: string
       const j = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
       // punctuation comes back as timed tokens of its own: it joins the previous word (a leading one, the next) and stretches its end
       const words: { text: string; start: number; end: number }[] = [];
-      let lead = "";
+      let lead = "", began = 0;
       for (const s of j.transcription || []) {
         const text = String(s.text).trim();
         if (!text) continue;
         const prev = words[words.length - 1];
-        if (!/^\p{P}+$/u.test(text)) { if (late(s.offsets.from / 1000)) break; words.push({ text: lead + text, start: at(s.offsets.from / 1000), end: at(s.offsets.to / 1000) }); lead = ""; }
-        else if (prev) { prev.text += text; prev.end = at(s.offsets.to / 1000); }
+        if (!/^\p{P}+$/u.test(text)) { if (late(s.offsets.from / 1000)) break; began = s.offsets.from / 1000; words.push({ text: lead + text, start: at(began), end: till(s.offsets.to / 1000, began) }); lead = ""; }
+        else if (prev) { prev.text += text; prev.end = till(s.offsets.to / 1000, began); }
         else lead += text;
       }
       return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words, skipped_leading: skipped };
@@ -412,7 +443,7 @@ export async function transcribe(path: string, language?: string, model?: string
     const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
     if (r.status !== 0 || !existsSync(join(tmp, "a.json"))) throw asrError("whisper", r, language);
     const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
-    const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: at(w.end) })));
+    const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: till(w.end, w.start) })));
     return { source: path, language: j.language, text: words.map((w: any) => w.text).join(" "), words, skipped_leading: skipped };
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }

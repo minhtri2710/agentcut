@@ -88,9 +88,10 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    the captions with their clips is fine), and validate (so review and every apply result) warns when the captions clip moved alone or the clips that play the
    asset changed; move the captions clip back, or remove it and run add_captions again, which loses any hand-corrected words. A transcript's captions go on a
    track that is not magnetic.
-   "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. Silences are left out before whisper
-   (the start's are the result's 'skipped_leading' seconds; whisper times words into a silence it hears), but a music lead-in is not silence: pass the speech only, since
-   whisper may invent text over a long music-only stretch and times words early after a music lead-in; analyze_silence or the voiceover's length gives the span
+   "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. Silences of 0.4 s or more are left out
+   before whisper (the result's 'skipped_leading' is the seconds left out at the start; whisper times words into a silence it hears), but a music lead-in is not
+   silence: pass the speech only, since whisper may invent text over a long music-only stretch and times words early after a music lead-in; analyze_silence or
+   the voiceover's length gives the span
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
    "openai:nova" (OpenAI-compatible /v1/audio/speech: env AGENTCUT_TTS_URL, AGENTCUT_TTS_KEY, AGENTCUT_TTS_MODEL); default

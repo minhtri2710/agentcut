@@ -482,16 +482,24 @@ fi
     // a silence inside or after the speech is left out too: the engine hears the speech pieces joined (each keeps 0.1 s of its silence) and its times map back piece by piece
     const gaps = join(tmp, "gaps.wav");
     ff("-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-filter_complex", "concat=n=4:v=0:a=1", gaps); // tone 0-1, silence, tone 4-5, silence to 7
-    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" b", 1300, 1600)] }));
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" s", 600, 1250), tok(" b", 1300, 1600)] }));
     const pieced = await AN.transcribe(gaps, "vi", fake);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
     check("silences inside and after the speech are left out: the engine gets the two tones with 0.1 s of silence on each side (2.3 s of 7), starting on the tone", Math.abs(dur(given) - 2.3) < 0.05 && startDb(given) > -30 && pieced.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: pieced.skipped_leading });
     const near = (x: number, y: number) => Math.abs(x - y) < 0.02;
-    check("a word the engine times in the second piece lands in the second tone (engine 1.3 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[1].start, 4.1) && near(pieced.words[1].end, 4.4), times(pieced.words));
-    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" z", 3800, 4600)] }));
-    const past = await AN.transcribe(src, "vi", fake);
+    check("a word the engine times in the second piece lands in the second tone (engine 1.3 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[2].start, 4.1) && near(pieced.words[2].end, 4.4), times(pieced.words));
+    check("a word starting in the first piece and ending past the join ends with the first piece (1.1 s), not in the second tone", pieced.words[1].start === 0.6 && pieced.words[1].end <= 1.1 + 1e-9 && pieced.words[1].end > 1, times(pieced.words));
+    // many pieces: the engine hears them joined whatever their count, and a word in the last one maps into the last tone
+    const many = join(tmp, "many.wav");
+    ff("-f", "lavfi", "-i", "aevalsrc='0.125*sin(2*PI*300*t)*lt(mod(t,1.1),0.5)':s=16000:d=440", many); // 400 x (0.5 s tone, 0.6 s silence)
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" y", 279300, 279500)] }));
+    const lots = await AN.transcribe(many, "vi", fake);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
-    check("no range: a word the engine ends past what it heard ends at the media's end (6 s), not after it", past.words[0].start === 5.7 && past.words[0].end === 6, times(past.words));
+    check("400 speech pieces: the engine hears 0.6 + 399 x 0.7 = 279.9 s of 440, and a word 0.1 s into the last piece lands in the last tone (438.9-439.4 s)", Math.abs(dur(given) - 279.9) < 0.1 && lots.words[0].start >= 438.88 && lots.words[0].end <= 439.4, { dur: dur(given), w: times(lots.words) });
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" z", 3800, 4600)] }));
+    const past = await AN.transcribe(src, "vi", fake), pastRange = await AN.transcribe(src, "vi", fake, [2, 100]);
+    writeFileSync(join(tmp, "whisper.json"), fakeJson);
+    check("no range, or a range ending past the media: a word the engine ends past what it heard ends at the media's end (6 s), not after it", past.words[0].start === 5.7 && past.words[0].end === 6 && pastRange.words[0].start === 5.8 && pastRange.words[0].end === 6, { none: times(past.words), range: times(pastRange.words) });
 
     // python whisper takes the same rules: it names its output after the wav it is given (a stand-in that does the same), and its text is rebuilt from the kept words
     {
@@ -749,12 +757,12 @@ fi
   // transcribe errors: the media, the range and the engine are checked before anything runs, each error names its cause, and a failed engine
   // reports its own `error:` line, never its usage text. Stand-in engines and a recording ffmpeg on a PATH of their own (no real whisper).
   {
-    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail"), ffTrimFail = join(E, "ffmpeg.trimfail");
+    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail");
     mkdirSync(tools, { recursive: true });
     const realOf = (n: string) => (process.env.PATH ?? "").split(":").map((d) => join(d, n)).find((f) => existsSync(f))!;
     for (const n of ["ffmpeg", "ffprobe"]) symlinkSync(realOf(n), join(tools, n));
     const stubFf = join(E, "ff"); mkdirSync(stubFf);
-    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nif [ -e '${ffTrimFail}' ]; then case "$*" in *concat*) echo "boom: cannot trim" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
     const engine = (dir: string, name: string, body: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), `#!/bin/sh\necho "${name}" >> '${asrLog}'\n${body}`, { mode: 0o755 }); return dir; };
     // whisper.cpp's own output for a language it does not know (exit 0, no json), captured from whisper-cli 1.9.5
     const unknownLanguage = `printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." "  -h,        --help                 [default] show this help message and exit" >&2\n`;
@@ -795,14 +803,6 @@ fi
       e = await err(() => AN.transcribe(src, "vi", model));
       rmSync(ffFail);
       check("transcribe: a failed extraction reports ffmpeg's message and starts no engine", e.code === "decode_failed" && e.message.includes("boom: cannot open the input") && started(asrLog).length === 0, { code: e.code, msg: e.message });
-
-      // the trim of a silent start: the same ffmpeg error, and no engine start
-      const lead = join(E, "lead.wav");
-      ff("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-f", "lavfi", "-i", "sine=frequency=300:duration=2:sample_rate=24000", "-filter_complex", "concat=n=2:v=0:a=1", lead);
-      writeFileSync(ffTrimFail, "");
-      e = await err(() => AN.transcribe(lead, "vi", model));
-      rmSync(ffTrimFail);
-      check("transcribe: a failed trim of a silent start reports ffmpeg's message and starts no engine", e.code === "decode_failed" && e.message.includes("boom: cannot trim") && started(asrLog).length === 0, { code: e.code, msg: e.message });
 
       // a failed engine: its first error line, or its exit status; usage text is not in the message
       const usage = `echo "usage: whisper-cli [options] file0 file1 ..." >&2\necho "  -h, --help   show this help message and exit" >&2\n`;

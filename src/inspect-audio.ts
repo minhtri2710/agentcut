@@ -1,6 +1,6 @@
 // Audio inspection for agents that can only see stills: one image (time ruler, per-track waveforms, the rendered mix,
 // optional spectrogram, clip boundaries, markers, findings) + numeric findings (clipping/overs, silences, cut-offs, ducking).
-import { closeSync, fstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
@@ -26,36 +26,23 @@ interface Lane extends Win { id: string; role?: string; clips: Clip[] }
 function readWindows(path: string): Win {
   const fd = openSync(path, "r");
   try {
-    const size = fstatSync(fd).size, h = Buffer.alloc(24);
-    readSync(fd, h, 0, 12, 0);
-    if (h.toString("ascii", 0, 4) !== "RIFF" || h.toString("ascii", 8, 12) !== "WAVE") throw new EditError(`not a WAV file: ${path}`, "decode_failed");
-    let o = 12, nch = 0, sr = 0, bits = 0;
-    while (o + 8 <= size) {
-      h.fill(0); readSync(fd, h, 0, 24, o);
-      const id = h.toString("ascii", 0, 4), n = h.readUInt32LE(4);
-      if (id === "fmt ") { nch = h.readUInt16LE(10); sr = h.readUInt32LE(12); bits = h.readUInt16LE(22); }
-      if (id === "data") {
-        if (bits !== 16 || !nch) throw new EditError(`unsupported WAV (${bits}-bit, ${nch} ch): ${path}`, "decode_failed");
-        const frames = Math.floor(Math.min(n, size - o - 8) / (2 * nch)), dur = frames / sr;
-        const nw = Math.ceil(dur / WIN), w = Math.max(1, Math.round(WIN * sr)), per = 500; // windows per block
-        const rms = new Float64Array(nw), peak = new Float64Array(nw), buf = Buffer.allocUnsafeSlow(per * w * nch * 2);
-        for (let k0 = 0; k0 < nw; k0 += per) {
-          const f0 = k0 * w;
-          if (f0 >= frames) break; // the 20 ms window rounds up at some rates (11025 Hz: 221 frames), so the last windows can lie past the data: they stay 0
-          const nf = Math.min(frames - f0, per * w), got = readSync(fd, buf, 0, nf * nch * 2, o + 8 + f0 * nch * 2);
-          const x = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(got / 2));
-          for (let k = k0; k < Math.min(nw, k0 + per); k++) {
-            let sum = 0, pk = 0, cnt = 0;
-            const a = (k - k0) * w * nch, e = Math.min(x.length, a + w * nch);
-            for (let i = a; i < e; i++) { const v = x[i] / 32768; sum += v * v; cnt++; const av = v < 0 ? -v : v; if (av > pk) pk = av; }
-            rms[k] = cnt ? Math.sqrt(sum / cnt) : 0; peak[k] = pk;
-          }
-        }
-        return { rms, peak, dur };
+    const { offset, bytes, rate: sr, channels: nch } = AN.wavData(fd, path);
+    const frames = Math.floor(bytes / (2 * nch)), dur = frames / sr;
+    const nw = Math.ceil(dur / WIN), w = Math.max(1, Math.round(WIN * sr)), per = 500; // windows per block
+    const rms = new Float64Array(nw), peak = new Float64Array(nw), buf = Buffer.allocUnsafeSlow(per * w * nch * 2);
+    for (let k0 = 0; k0 < nw; k0 += per) {
+      const f0 = k0 * w;
+      if (f0 >= frames) break; // the 20 ms window rounds up at some rates (11025 Hz: 221 frames), so the last windows can lie past the data: they stay 0
+      const nf = Math.min(frames - f0, per * w), got = readSync(fd, buf, 0, nf * nch * 2, offset + f0 * nch * 2);
+      const x = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(got / 2));
+      for (let k = k0; k < Math.min(nw, k0 + per); k++) {
+        let sum = 0, pk = 0, cnt = 0;
+        const a = (k - k0) * w * nch, e = Math.min(x.length, a + w * nch);
+        for (let i = a; i < e; i++) { const v = x[i] / 32768; sum += v * v; cnt++; const av = v < 0 ? -v : v; if (av > pk) pk = av; }
+        rms[k] = cnt ? Math.sqrt(sum / cnt) : 0; peak[k] = pk;
       }
-      o += 8 + n + (n % 2);
     }
-    throw new EditError(`WAV has no data chunk: ${path}`, "decode_failed");
+    return { rms, peak, dur };
   } finally { closeSync(fd); }
 }
 
