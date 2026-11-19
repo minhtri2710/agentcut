@@ -330,7 +330,7 @@ export function exportCaptions(project: string | undefined, o: { out?: string; f
   return { output: out, format, cues: cues.length, duration: +cues[cues.length - 1].end.toFixed(3), clips: [...new Set(cues.map((q) => q.clip))] };
 }
 
-/** .png / .webp: one frame at `start`; alpha follows encode.ts planOutput (on with a transparent background, off composites on black). webp is lossless at quality=high. */
+/** .png / .webp: one frame at `start`; alpha follows encode.ts isTransparent / flattenIfOpaque, as video does (on with a transparent background, off composites on black). webp is lossless at quality=high. */
 async function renderStill(project: string | undefined, out: string, o: { start?: number | string; end?: number | string; scale?: number; quality?: string; draft?: boolean; codec?: string; alpha?: boolean; subtitles?: boolean; signal?: AbortSignal }) {
   o.signal?.throwIfAborted();
   const p = openProject(project);
@@ -343,13 +343,12 @@ async function renderStill(project: string | undefined, out: string, o: { start?
   const t = frameTime(tl, o.start ?? 0, "start");
   let scale = scaleOf(o.scale, 1), quality = o.quality ?? "standard";
   if (o.draft) { scale = Math.min(scale, 0.5); quality = "draft"; }
-  const transparent = M.parseColor(tl.settings.background ?? "#000000")[3] === 0;
-  const alpha = o.alpha ?? transparent;
   const at = drawable(p, tl);
   const { stillFrame } = await renderMod();
-  const { ALPHA_ON_OPAQUE } = await import("./encode.ts");
-  const flat = transparent && !alpha ? { ...at, settings: { ...at.settings, background: "#000000" } } : at; // alpha off: composite on black, as video does
-  const img = await stillFrame(flat, p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
+  const { ALPHA_ON_OPAQUE, isTransparent, flattenIfOpaque } = await import("./encode.ts");
+  const transparent = isTransparent(tl);
+  const alpha = o.alpha ?? transparent;
+  const img = await stillFrame(flattenIfOpaque(at, alpha), p.root, t, scale, ext === ".png" ? "png" : quality === "high" ? "webp_lossless" : "webp");
   o.signal?.throwIfAborted();
   writeOut(p, out, img.data);
   const warnings = [...(alpha && !transparent ? [ALPHA_ON_OPAQUE] : []), ...M.colourWarnings(tl)];
