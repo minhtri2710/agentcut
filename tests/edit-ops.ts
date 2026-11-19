@@ -291,6 +291,19 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("roll_edit moves the in-point of a compound and a lottie clip whose head is cut", near(at(ro, "cp").in, 1.5) && near(at(ro, "cp").duration, 2.5) && near(at(ro, "lt").in, 1.5) && near(at(ro, "lt").duration, 2.5), [at(ro, "cp"), at(ro, "lt")]);
   const [sl2] = run(src, [{ op: "slide_clip", id: "p2", by: 0.5 }]);
   check("slide_clip moves the in-point of a lottie next to it", near(at(sl2, "lt").in, 1.5) && near(at(sl2, "lt").duration, 2.5) && near(at(sl2, "cp").duration, 3.5), [at(sl2, "cp"), at(sl2, "lt")]);
+  // the asset kinds a media clip type plays
+  const onK = (type: string, asset: string) => {
+    const t = mk();
+    t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "k", type, asset, start: 0, duration: 1 });
+    return validate(t).filter((i: any) => i.path.includes("<k>"));
+  };
+  const refused = (type: string, assets: string[]) => assets.every((x) => { const e = onK(type, x).filter((i: any) => i.level === "error"); return e.length === 1 && e[0].path.endsWith("<k>.asset") && !!e[0].hint; });
+  check("validate: a video clip over an audio or Lottie asset is an error on its asset", refused("video", ["s", "l"]), ["s", "l"].map((x) => onK("video", x)));
+  check("validate: an image clip over a video, audio or Lottie asset is an error on its asset", refused("image", ["v", "s", "l"]), ["v", "s", "l"].map((x) => onK("image", x)));
+  check("validate: an audio clip over a Lottie asset is an error on its asset", refused("audio", ["l"]), onK("audio", "l"));
+  const plays = [["video", "v"], ["image", "i"], ["audio", "s"], ["audio", "v"], ["lottie", "l"]], vi = onK("video", "i");
+  check("validate: a clip over an asset it plays has no issue, and a video clip over an image only its warning on the type",
+    plays.every(([t, x]) => onK(t, x).length === 0) && vi.length === 1 && vi[0].level === "warning" && vi[0].path.endsWith("<k>.type"), [...plays.map(([t, x]) => onK(t, x)), vi]);
 }
 
 console.log("replace_timeline: the call's revision decides, and the saved revision is the project's");
