@@ -417,7 +417,7 @@ export async function transcribe(path: string, language?: string, model?: string
     pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a), 0);
     const holder = (x: number) => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; } return lo; };
     const media = (x: number) => { const k = holder(x); return x - starts[k] + pieces[k][0] + from; };
-    const last = Math.min(to ?? Infinity, from + heard); // no word time past the range or the media
+    const last = Math.min(to ?? Infinity, from + pieces[pieces.length - 1][1]); // no word time past the range or the last thing the engine heard
     const at = (x: number) => +Math.min(Math.max(media(x), from), last).toFixed(3); // engine time -> media time, inside the range
     const till = (x: number, start: number) => Math.min(at(x), +(pieces[holder(start)][1] + from).toFixed(3)); // a word's end stays in the piece that holds its start
     const late = (x: number) => to !== undefined && media(x) >= to;

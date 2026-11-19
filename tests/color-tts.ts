@@ -482,13 +482,14 @@ fi
     // a silence inside or after the speech is left out too: the engine hears the speech pieces joined (each keeps 0.1 s of its silence) and its times map back piece by piece
     const gaps = join(tmp, "gaps.wav");
     ff("-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-filter_complex", "concat=n=4:v=0:a=1", gaps); // tone 0-1, silence, tone 4-5, silence to 7
-    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" s", 600, 1250), tok(" b", 1300, 1600)] }));
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" s", 600, 1250), tok(" b", 1300, 1600), tok(" t", 2500, 2700)] }));
     const pieced = await AN.transcribe(gaps, "vi", fake);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
     check("silences inside and after the speech are left out: the engine gets the two tones with 0.1 s of silence on each side (2.3 s of 7), starting on the tone", Math.abs(dur(given) - 2.3) < 0.05 && startDb(given) > -30 && pieced.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: pieced.skipped_leading });
     const near = (x: number, y: number) => Math.abs(x - y) < 0.02;
     check("a word the engine times in the second piece lands in the second tone (engine 1.3 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[2].start, 4.1) && near(pieced.words[2].end, 4.4), times(pieced.words));
     check("a word starting in the first piece and ending past the join ends with the first piece (1.1 s), not in the second tone", pieced.words[1].start === 0.6 && pieced.words[1].end <= 1.1 + 1e-9 && pieced.words[1].end > 1, times(pieced.words));
+    check("a word the engine times past what it heard (engine 2.5-2.7 s of 2.3) is not inverted: it starts and ends at the end of the last piece (5.1 s)", pieced.words[3].start <= pieced.words[3].end && near(pieced.words[3].end, 5.1), times(pieced.words));
     // many pieces: the engine hears them joined whatever their count, and a word in the last one maps into the last tone
     const many = join(tmp, "many.wav");
     ff("-f", "lavfi", "-i", "aevalsrc='0.125*sin(2*PI*300*t)*lt(mod(t,1.1),0.5)':s=16000:d=440", many); // 400 x (0.5 s tone, 0.6 s silence)
