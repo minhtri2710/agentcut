@@ -250,6 +250,8 @@ await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "hflip
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["vflip"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a vflip filter (string form) -> unsupported");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: [{ type: "stabilize" }] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter -> unsupported");
 await fails(P, [{ op: "update_clip", id: "vid1", set: { filters: ["stabilize"] } }, { op: "auto_reframe", id: "vid1" }], "unsupported", "auto_reframe on a clip with a stabilize filter (string form) -> unsupported");
+writeFileSync(join(m, "anim.json"), JSON.stringify({ v: "5.7.0", fr: 30, ip: 0, op: 60, w: 640, h: 360, layers: [] }));
+await fails(P, [{ op: "add_clip", track: "overlay", src: join(m, "anim.json"), type: "video", at: 0, duration: 1, id: "lv" }, { op: "auto_reframe", id: "lv" }], "bad_type", "auto_reframe over a video clip on a Lottie asset -> bad_type");
 
 // files whose picture starts after the sound (4 s of the numbered picture: frame N in the luma bits of the top rows): an mpegts that starts at the sound (container start 1.4 s) and an mkv with the picture 1.4 s late
 const lateTs = join(m, "late.ts"), lateMkv = join(m, "late.mkv");
@@ -287,7 +289,7 @@ await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [10, 10] }], 
 await fails(Y, [{ op: "track_to", id: "shp1", target: "vid1", box: [400, 400, 200, 200], tracker: "nope" }], "bad_value", "unknown tracker -> bad_value");
 await fails(Y, [{ op: "track_to", id: "shp1", target: "shp1" }], "bad_value", "self-tracking -> bad_value");
 await fails(Y, [{ op: "add_track", id: "mag", kind: "video", magnetic: true }, { op: "add_clip", track: "mag", type: "shape", shape: "circle", size: [40, 40], fill: "white", duration: 2, id: "shpm" }, { op: "track_to", id: "shpm", target: "vid1", box: [400, 400, 200, 200], at: 1.5 }], "attached_magnetic", "track_to on a follower of a magnetic track -> attached_magnetic");
-await fails(Y, [{ op: "add_clip", track: "overlay", src: join(m, "still.png"), type: "video", at: 1, duration: 2, id: "stv" }, { op: "track_to", id: "shp1", target: "stv", box: [400, 400, 200, 200], at: 1.5 }], "bad_media", "track_to with a box over a video clip on an image (its record has no video facts) -> bad_media");
+await fails(Y, [{ op: "add_clip", track: "overlay", src: join(m, "still.png"), type: "video", at: 1, duration: 2, id: "stv" }, { op: "track_to", id: "shp1", target: "stv", box: [400, 400, 200, 200], at: 1.5 }], "bad_type", "track_to with a box over a video clip on an image -> bad_type");
 
 // on a reframed (panning) target the follower must account for the moving crop window
 // both pending in one batch (new reframe params): track_to waits for the reframe, prepare runs them in order
