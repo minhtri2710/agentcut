@@ -722,6 +722,12 @@ console.log("decode and render failures");
     const earlyMkv = made("mk-early.mkv", [...pic, "-itsoffset", "-0.5", ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", "-avoid_negative_ts", "disabled"]); // the sound starts at -0.5 s, the picture at 0 s
     check("an mka and an ogg whose sound starts at -0.5 s, and an mkv whose sound does, record the 2.5 s of sound, not its end on the file's clock",
       [earlySound, earlyOgg, earlyMkv].every((i) => Math.abs(i.duration - 2.5) < 0.05) && is(earlyMkv.container_start, -0.5) && is(earlyMkv.video_start, 0.5), [earlySound.duration, earlyOgg.duration, earlyMkv]);
+    // matroska writes no time for a block before 0: a picture that starts at -0.5 s has unstamped first packets
+    const refused = (name: string, args: string[]) => { try { return made(name, args); } catch (e: any) { return { code: e.code, message: e.message, hint: e.hint }; } };
+    const unstamped = [refused("mk-unstamped.mkv", [...pic, ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", ...early]), refused("mk-unstamped-pic.mkv", [...pic, ...MKV.slice(0, 4), ...early])];
+    check("an mkv whose first picture packets carry no timestamp, with sound and without, is refused when probed", unstamped.every((i) => i.code === "bad_media"), unstamped);
+    const longPcm = made("avi-long-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"]);
+    check("an avi whose uncompressed sound outlasts its picture records the sound's length and the picture's", is(longPcm.duration, 3) && is(longPcm.video_duration, 2), longPcm);
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
     const shiftedMp4 = made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]);
     check("an mp4 whose streams all start at 1.4 s records its length (2.5 s), the container's start is not taken from it", Math.abs(shiftedMp4.duration - 2.5) < 0.05 && Math.abs(shiftedMp4.container_start - 1.4) < 0.05, shiftedMp4);
