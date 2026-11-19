@@ -958,7 +958,7 @@ print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 
           if (typeof got === "string") return got;
           const vs = api.probe(path).video_start;
           const bad = got.map((n, i) => ({ i, n, want: Math.min(99, Math.max(0, Math.round((start + i / fps - vs) * 25))) })).filter((x) => Math.abs(x.n - x.want) > 3);
-          return got.length === count && !bad.length ? null : { count: got.length, want: count, bad: bad.slice(0, 3) };
+          return got.length === count && !bad.length ? null : { count: got.length, want: count, n: bad.length, first: bad.slice(0, 3) };
         };
         for (const [what, file, start] of [["an mpegts that starts at its sound", lateTs, 0], ["an mpegts that starts at its sound, in-point before the picture", lateTs, 0.3], ["an mkv with the picture 1.4 s late, in-point before the picture", lateMkv, 0.5], ["an mkv with the picture 1.4 s late, in-point after it", lateMkv, 2], ["an mpegts with a keyframe every second, in-point after the first keyframe", keyTs, 2], ["an mpegts with one keyframe, in-point after it", lateTs, 2]] as const) {
           const bad = wrong(slots(file, start, 2, 6), file, start, 6, 12);
@@ -973,7 +973,7 @@ print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 
         // the whole file, as the matte reads it (no start, no length): the gap before the picture is filled from 0, so the matte's frame i is at i / fps
         const whole = slots(lateTs, null, null, 6), vsTs = api.probe(lateTs).video_start;
         check("helper: a read of the whole file (the matte) starts at the clip clock's 0: the first samples are the first picture, held to its start, and the count covers the picture's end",
-          Array.isArray(whole) && whole[0] === 0 && whole[Math.floor(vsTs * 6) - 1] === 0 && Math.abs(whole.length - (vsTs + 4) * 6) <= 1, { n: Array.isArray(whole) ? whole.length : whole, head: Array.isArray(whole) ? whole.slice(0, 6) : null, vs: vsTs });
+          Array.isArray(whole) && whole[0] === 0 && whole[Math.floor(vsTs * 6) - 1] === 0 && Math.abs(whole.length - (vsTs + 4) * 6) <= 1, { whole, vs: vsTs });
       }
 
       // stdin closed while a decode and an encode are in flight: the helper stops both ffmpeg children before it exits, so the
