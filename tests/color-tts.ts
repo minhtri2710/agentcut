@@ -464,7 +464,19 @@ fi
     check("transcribe: an opening quote after a word joins the next word, not the previous one", wt(quoted.words) === JSON.stringify([["said", 0.1, 0.4], ["“hi”", 0.55, 0.85]]), wt(quoted.words));
     const kept = await hear([tok(" C♯", 100, 400), tok(" ♪la", 400, 700), tok(" (so", 700, 900), tok(" we", 900, 1100), tok(" go", 1100, 1300)]);
     const stray = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" go", 500, 700), tok(" (laughs)", 800, 1500), tok(" ok", 1600, 1900)]);
+    const forms = await hear([tok(" （笑）", 100, 400), tok(" 【音楽】", 400, 700), tok(" >>", 700, 800), tok(" [Music", 800, 1000), tok(" (upbeat)]", 1000, 1300), tok(" <<<", 1300, 1400), tok(" >>,", 1400, 1500), tok(" ok", 1500, 1800)]);
+    const gluedOne = await hear([tok(" （笑）そうですね（笑）", 100, 900), tok(" ok", 1000, 1300)]);
+    const gluedTwo = await hear([tok(" （笑）今日は", 100, 600), tok(" 明日も（笑）", 600, 1100), tok(" ok", 1200, 1500)]);
+    const aside = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" [Music]", 500, 900), tok(" go", 1000, 1200), tok(" home)", 1200, 1500), tok(" ok", 1600, 1900)]);
+    const notesGlued = await hear([tok(" [Music][Applause]", 100, 500), tok(" （笑）（拍手）", 500, 900), tok(" (laughs)Hello", 900, 1300), tok(" ok", 1400, 1700)]);
+    const closerFirst = await hear([tok(" )(laughs", 100, 400), tok(" music)", 400, 700), tok(" ok", 800, 1100)]);
     writeFileSync(join(tmp, "whisper.json"), json);
+    check("transcribe: notes glued to each other are not words, a note glued to speech stays with it", wt(notesGlued.words) === JSON.stringify([["(laughs)Hello", 0.9, 1.3], ["ok", 1.4, 1.7]]), wt(notesGlued.words));
+    check("transcribe: a closer before the opener in a word is not the opener's closer", wt(closerFirst.words) === JSON.stringify([["ok", 0.8, 1.1]]), wt(closerFirst.words));
+    check("transcribe: full-width notes, caption speaker marks (>>, <<<, >>,) and a note with another kind nested in it are not words", wt(forms.words) === JSON.stringify([["ok", 1.5, 1.8]]) && forms.text === "ok", { w: wt(forms.words), t: forms.text });
+    check("transcribe: a word with speech after its note's closer is kept whole, notes and all (one word ending in a note too)", wt(gluedOne.words) === JSON.stringify([["（笑）そうですね（笑）", 0.1, 0.9], ["ok", 1, 1.3]]), wt(gluedOne.words));
+    check("transcribe: a word with speech after its note opens no span, so a later word ending in a note does not take it", wt(gluedTwo.words) === JSON.stringify([["（笑）今日は", 0.1, 0.6], ["明日も（笑）", 0.6, 1.1], ["ok", 1.2, 1.5]]), wt(gluedTwo.words));
+    check("transcribe: an opener that never closes keeps its words when a note of the other kind follows and a later word closes it", wt(aside.words) === JSON.stringify([["(so", 0.1, 0.3], ["we", 0.3, 0.5], ["go", 1, 1.2], ["home)", 1.2, 1.5], ["ok", 1.6, 1.9]]), wt(aside.words));
     check("transcribe: an opener that never closes keeps its words when a later note closes; only the note goes", wt(stray.words) === JSON.stringify([["(so", 0.1, 0.3], ["we", 0.3, 0.5], ["go", 0.5, 0.7], ["ok", 1.6, 1.9]]), wt(stray.words));
     check("transcribe keeps a word with a sharp, a word with a music note glued on (without the note) and the words after an opener that never closes", wt(kept.words) === JSON.stringify([["C♯", 0.1, 0.4], ["la", 0.4, 0.7], ["(so", 0.7, 0.9], ["we", 0.9, 1.1], ["go", 1.1, 1.3]]) && kept.text === "C♯ la (so we go", { w: wt(kept.words), t: kept.text });
   }
@@ -529,7 +541,7 @@ fi
         check("python whisper: words are clamped to the range, a word past the end is dropped from words and from text", JSON.stringify(py.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c", 4.8, 5]]) && py.text === "a b c" && py.skipped_leading === 0, { w: py.words, t: py.text });
         const lead = await AN.transcribe(src, "vi", undefined);
         check("python whisper: the engine gets the media from 0.1 s before the first sound, the times are shifted by it, and the result says so", Math.abs(dur(join(tmp, "py.wav")) - 4.1) < 0.05 && lead.skipped_leading === 1.9 && lead.words[0].start === 2 && lead.words[0].end === 2.2, { dur: dur(join(tmp, "py.wav")), skipped: lead.skipped_leading, w: lead.words[0] });
-        standIn('{"language":"en","segments":[{"words":[{"word":" [BLANK_AUDIO]","start":0.1,"end":1},{"word":" (upbeat","start":1,"end":1.5},{"word":" music)","start":1.5,"end":2},{"word":" ♪","start":2,"end":2.2},{"word":" Hi.","start":2.5,"end":2.8}]}]}');
+        standIn('{"language":"en","segments":[{"words":[{"word":" [BLANK_AUDIO]","start":0.1,"end":1},{"word":" (upbeat","start":1,"end":1.5},{"word":" music)","start":1.5,"end":2},{"word":" ♪","start":2,"end":2.2},{"word":" （","start":2.2,"end":2.3},{"word":"笑","start":2.3,"end":2.4},{"word":"）","start":2.4,"end":2.45},{"word":" Hi.","start":2.5,"end":2.8}]}]}');
         const pyNotes = await AN.transcribe(src, "en", undefined, [2, 5]);
         check("python whisper: its sound notes are not words either", JSON.stringify(pyNotes.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["Hi.", 4.5, 4.8]]) && pyNotes.text === "Hi.", { w: pyNotes.words, t: pyNotes.text });
       } finally { process.env.PATH = pathNow; if (modelNow !== undefined) process.env.AGENTCUT_WHISPER_MODEL = modelNow; }
@@ -786,12 +798,12 @@ fi
   // transcribe errors: the media, the range and the engine are checked before anything runs, each error names its cause, and a failed engine
   // reports its own `error:` line, never its usage text. Stand-in engines and a recording ffmpeg on a PATH of their own (no real whisper).
   {
-    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail");
+    const E = join(tmp, "asr-err"), tools = join(E, "tools"), ffLog = join(E, "ffmpeg.calls"), asrLog = join(E, "asr.calls"), ffFail = join(E, "ffmpeg.fail"), ffBlock = join(E, "ffmpeg.block");
     mkdirSync(tools, { recursive: true });
     const realOf = (n: string) => (process.env.PATH ?? "").split(":").map((d) => join(d, n)).find((f) => existsSync(f))!;
     for (const n of ["ffmpeg", "ffprobe"]) symlinkSync(realOf(n), join(tools, n));
     const stubFf = join(E, "ff"); mkdirSync(stubFf);
-    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(stubFf, "ffmpeg"), `#!/bin/sh\n[ "$1" = "-version" ] && exec '${realOf("ffmpeg")}' "$@"\necho "$*" >> '${ffLog}'\nif [ -e '${ffFail}' ]; then case "$*" in *16000*) echo "boom: cannot open the input" >&2; exit 1;; esac; fi\nif [ -e '${ffBlock}' ]; then case "$*" in *16000*) '${realOf("ffmpeg")}' "$@" || exit 1; for a; do last="$a"; done; mkdir "$(dirname "$last")/a.wav"; exit 0;; esac; fi\nexec '${realOf("ffmpeg")}' "$@"\n`, { mode: 0o755 });
     const engine = (dir: string, name: string, body: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), `#!/bin/sh\necho "${name}" >> '${asrLog}'\n${body}`, { mode: 0o755 }); return dir; };
     // whisper.cpp's own output for a language it does not know (exit 0, no json), captured from whisper-cli 1.9.5
     const unknownLanguage = `printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." "  -h,        --help                 [default] show this help message and exit" >&2\n`;
@@ -832,6 +844,13 @@ fi
       e = await err(() => AN.transcribe(src, "vi", model));
       rmSync(ffFail);
       check("transcribe: a failed extraction reports ffmpeg's message and starts no engine", e.code === "decode_failed" && e.message.includes("boom: cannot open the input") && started(asrLog).length === 0, { code: e.code, msg: e.message });
+      // the speech pieces cannot be copied into the wav the engine hears (its path is taken by a directory): decode_failed with the cause, not internal
+      const toneThenSilence = join(E, "tone-silence.wav"), heardBefore = started(join(tmp, "whisper.calls")).length;
+      ff("-f", "lavfi", "-i", "sine=frequency=300:duration=1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2", "-filter_complex", "concat=n=2:v=0:a=1", toneThenSilence);
+      writeFileSync(ffBlock, "");
+      e = await err(() => AN.transcribe(toneThenSilence, "vi", model));
+      rmSync(ffBlock);
+      check("transcribe: a failed copy of the speech pieces is decode_failed with its cause, and starts no engine", e.code === "decode_failed" && e.message.includes("cannot prepare the audio extracted") && e.message.includes("EISDIR") && started(join(tmp, "whisper.calls")).length === heardBefore, { code: e.code, msg: e.message });
 
       // a failed engine: its first error line, or its exit status; usage text is not in the message
       const usage = `echo "usage: whisper-cli [options] file0 file1 ..." >&2\necho "  -h, --help   show this help message and exit" >&2\n`;
