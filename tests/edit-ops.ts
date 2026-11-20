@@ -294,13 +294,16 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   // the asset kinds a media clip type plays
   const onK = (type: string, asset: string) => {
     const t = mk();
+    t.assets.u = { path: "/none.u", kind: "unknown" } as any;
     t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "k", type, asset, start: 0, duration: 1 });
     return validate(t).filter((i: any) => i.path.includes("<k>"));
   };
-  const refused = (type: string, assets: string[]) => assets.every((x) => { const e = onK(type, x).filter((i: any) => i.level === "error"); return e.length === 1 && e[0].path.endsWith("<k>.asset") && !!e[0].hint; });
-  check("validate: a video clip over an audio or Lottie asset is an error on its asset", refused("video", ["s", "l"]), ["s", "l"].map((x) => onK("video", x)));
-  check("validate: an image clip over a video, audio or Lottie asset is an error on its asset", refused("image", ["v", "s", "l"]), ["v", "s", "l"].map((x) => onK("image", x)));
-  check("validate: an audio clip over a Lottie asset is an error on its asset", refused("audio", ["l"]), onK("audio", "l"));
+  const assetErr = (type: string, assets: string[]) => assets.every((x) => { const e = onK(type, x).filter((i: any) => i.level === "error"); return e.length === 1 && e[0].path.endsWith("<k>.asset") && !!e[0].hint; });
+  check("validate: a video clip over an audio or Lottie asset is an error on its asset", assetErr("video", ["s", "l"]), ["s", "l"].map((x) => onK("video", x)));
+  check("validate: an image clip over a video, audio or Lottie asset is an error on its asset, whose hint names freeze for a video", assetErr("image", ["v", "s", "l"]) && /freeze: true/.test(String(onK("image", "v")[0]?.hint)), ["v", "s", "l"].map((x) => onK("image", x)));
+  check("validate: an audio clip over an image or Lottie asset is an error on its asset", assetErr("audio", ["i", "l"]), ["i", "l"].map((x) => onK("audio", x)));
+  check("validate: a Lottie clip over a video, image or audio asset is an error on its asset", assetErr("lottie", ["v", "i", "s"]), ["v", "i", "s"].map((x) => onK("lottie", x)));
+  check("validate: a clip over an asset of unknown kind gets no issue: the asset's own kind error says it", onK("video", "u").length === 0, onK("video", "u"));
   const plays = [["video", "v"], ["image", "i"], ["audio", "s"], ["audio", "v"], ["lottie", "l"]], vi = onK("video", "i");
   check("validate: a clip over an asset it plays has no issue, and a video clip over an image only its warning on the type",
     plays.every(([t, x]) => onK(t, x).length === 0) && vi.length === 1 && vi[0].level === "warning" && vi[0].path.endsWith("<k>.type"), [...plays.map(([t, x]) => onK(t, x)), vi]);
