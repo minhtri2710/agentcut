@@ -368,20 +368,25 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
 /** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
-/** The engine's words without its sound notes, and their text. A span from a word whose first bracket ([ or () comes before any letter or digit to the
- *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music)) and goes whole, with the punctuation on it; with no
- *  closer before the next such opener nothing goes. Music notes (♩♪♫♬) are taken out of a word, and a word left with no letter or digit goes. Times are untouched. */
+/** Each bracket that opens a sound note, and the test for a word that closes it (the closer, then non-letters only). */
+const CLOSER: Record<string, RegExp> = { "[": /\][^\p{L}\p{N}]*$/u, "(": /\)[^\p{L}\p{N}]*$/u, "（": /）[^\p{L}\p{N}]*$/u, "【": /】[^\p{L}\p{N}]*$/u };
+
+/** The engine's words without its sound notes, and their text. A span from a word whose first bracket ([, (, （ or 【) comes before any letter or digit to the
+ *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music), （笑）) and goes whole, with the punctuation on it; with no
+ *  closer before the next such opener nothing goes, except that a word opening the other kind and closing this one is inside it ([Music, (upbeat)]). An inner
+ *  note split over two words still leaves the outer opener, and a note glued inside a word (a CJK run with no spaces) stays. Music notes (♩♪♫♬) and a word
+ *  made only of two or more < or > (caption speaker marks: >>) are taken out, and a word left with no letter or digit goes. Times are untouched. */
 function spoken(words: { text: string; start: number; end: number }[]) {
-  const kept: typeof words = [], opener = (t: string) => /^[^\p{L}\p{N}]*?([[(])/u.exec(t)?.[1];
+  const kept: typeof words = [], opener = (t: string) => /^[^\p{L}\p{N}]*?([[(（【])/u.exec(t)?.[1];
   for (let i = 0; i < words.length; i++) {
     const open = opener(words[i].text);
     if (open) {
-      const close = open === "[" ? /\][^\p{L}\p{N}]*$/u : /\)[^\p{L}\p{N}]*$/u;
+      const close = CLOSER[open], continuesSpan = (t: string, o = opener(t)) => !o || (o !== open && close.test(t));
       let j = i;
-      while (j + 1 < words.length && !close.test(words[j].text) && !opener(words[j + 1].text)) j++;
+      while (j + 1 < words.length && !close.test(words[j].text) && continuesSpan(words[j + 1].text)) j++;
       if (close.test(words[j].text)) { i = j; continue; }
     }
-    const text = words[i].text.replace(/[♩♪♫♬]/gu, "");
+    const text = words[i].text.replace(/[♩♪♫♬]|^[<>]{2,}$/gu, "");
     if (text === words[i].text) kept.push(words[i]);
     else if (/[\p{L}\p{N}]/u.test(text)) kept.push({ ...words[i], text });
   }
@@ -420,8 +425,9 @@ export async function transcribe(path: string, language?: string, model?: string
     if (!pieces.length) pieces.push([0, heard]);
     if (pieces.length > 1 || pieces[0][0] || pieces[0][1] < heard) {
       // the pieces' samples are copied into one wav in process, so nothing grows with their count; edges are whole samples, so the time map below is exact
-      const src = openSync(raw, "r"), out = openSync(wav, "w");
+      let src = -1, out = -1;
       try {
+        src = openSync(raw, "r"); out = openSync(wav, "w");
         const { offset, bytes, rate, channels, bits } = wavData(src, raw), frame = (channels * bits) / 8, frames = Math.floor(bytes / frame), block = 65536;
         const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]);
         spans.forEach(([a, b], k) => { pieces[k] = [a / rate, b / rate]; });
@@ -431,7 +437,8 @@ export async function transcribe(path: string, language?: string, model?: string
         writeSync(out, h);
         const buf = Buffer.allocUnsafe(block * frame);
         for (const [a, b] of spans) for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
-      } finally { closeSync(src); closeSync(out); }
+      } catch (e: any) { throw e instanceof EditError ? e : new EditError(`cannot prepare the audio extracted from ${path}: ${e.message}`, "decode_failed"); }
+      finally { if (src >= 0) closeSync(src); if (out >= 0) closeSync(out); }
     } else renameSync(raw, wav);
     const skipped = +pieces[0][0].toFixed(3);
     const starts: number[] = []; // where each piece begins in what the engine hears
