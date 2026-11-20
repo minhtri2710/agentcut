@@ -375,12 +375,13 @@ const CLOSER: Record<string, string> = { "[": "]", "(": ")", "（": "）", "【"
  *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music), （笑）) and goes whole, with the punctuation on it; with no
  *  closer before the next such opener nothing goes, except that a word opening the other kind and closing this one is inside it ([Music, (upbeat)]). A word
  *  with speech after its own closer ((laughs)Hello, （笑）そうですね（笑）) opens no span: a note glued to speech in one word stays, at either end or inside
- *  (a CJK run has no spaces). An inner note split over two words still leaves the outer opener. Music notes (♩♪♫♬) and two or more < or > opening a word
+ *  (a CJK run has no spaces); a further whole note is not speech, so notes glued together ([Music][Applause]) go. An inner note split over two words still leaves the outer opener. Music notes (♩♪♫♬) and two or more < or > opening a word
  *  with no letter or digit (caption speaker marks: >>, >>,) are taken out, and a word left with no letter or digit goes. Times are untouched. */
 function spoken(words: { text: string; start: number; end: number }[]) {
-  const speechFrom = (t: string, k: number) => k >= 0 && /[\p{L}\p{N}]/u.test(t.slice(k));
+  // whole notes after k are not speech: [Music][Applause] is notes only
+  const speechFrom = (t: string, k: number) => k >= 0 && /[\p{L}\p{N}]/u.test(t.slice(k).replace(/\[[^[\]()（）【】]*\]|\([^[\]()（）【】]*\)|（[^[\]()（）【】]*）|【[^[\]()（）【】]*】/gu, ""));
   const closes = (t: string, open: string) => { const k = t.lastIndexOf(CLOSER[open]); return k >= 0 && !speechFrom(t, k); };
-  const opener = (t: string) => { const o = /^[^\p{L}\p{N}]*?([[(（【])/u.exec(t)?.[1]; return o && !speechFrom(t, t.indexOf(CLOSER[o])) ? o : undefined; };
+  const opener = (t: string) => { const m = /^[^\p{L}\p{N}]*?([[(（【])/u.exec(t); return m && !speechFrom(t, t.indexOf(CLOSER[m[1]], m[0].length)) ? m[1] : undefined; };
   const kept: typeof words = [];
   for (let i = 0; i < words.length; i++) {
     const open = opener(words[i].text);

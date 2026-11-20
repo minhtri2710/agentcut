@@ -468,7 +468,11 @@ fi
     const gluedOne = await hear([tok(" （笑）そうですね（笑）", 100, 900), tok(" ok", 1000, 1300)]);
     const gluedTwo = await hear([tok(" （笑）今日は", 100, 600), tok(" 明日も（笑）", 600, 1100), tok(" ok", 1200, 1500)]);
     const aside = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" [Music]", 500, 900), tok(" go", 1000, 1200), tok(" home)", 1200, 1500), tok(" ok", 1600, 1900)]);
+    const notesGlued = await hear([tok(" [Music][Applause]", 100, 500), tok(" （笑）（拍手）", 500, 900), tok(" (laughs)Hello", 900, 1300), tok(" ok", 1400, 1700)]);
+    const closerFirst = await hear([tok(" )(laughs", 100, 400), tok(" music)", 400, 700), tok(" ok", 800, 1100)]);
     writeFileSync(join(tmp, "whisper.json"), json);
+    check("transcribe: notes glued to each other are not words, a note glued to speech stays with it", wt(notesGlued.words) === JSON.stringify([["(laughs)Hello", 0.9, 1.3], ["ok", 1.4, 1.7]]), wt(notesGlued.words));
+    check("transcribe: a closer before the opener in a word is not the opener's closer", wt(closerFirst.words) === JSON.stringify([["ok", 0.8, 1.1]]), wt(closerFirst.words));
     check("transcribe: full-width notes, caption speaker marks (>>, <<<, >>,) and a note with another kind nested in it are not words", wt(forms.words) === JSON.stringify([["ok", 1.5, 1.8]]) && forms.text === "ok", { w: wt(forms.words), t: forms.text });
     check("transcribe: a word with speech after its note's closer is kept whole, notes and all (one word ending in a note too)", wt(gluedOne.words) === JSON.stringify([["（笑）そうですね（笑）", 0.1, 0.9], ["ok", 1, 1.3]]), wt(gluedOne.words));
     check("transcribe: a word with speech after its note opens no span, so a later word ending in a note does not take it", wt(gluedTwo.words) === JSON.stringify([["（笑）今日は", 0.1, 0.6], ["明日も（笑）", 0.6, 1.1], ["ok", 1.2, 1.5]]), wt(gluedTwo.words));
