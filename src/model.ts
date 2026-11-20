@@ -34,7 +34,9 @@ export const CLIP_TYPES = ["video", "image", "text", "captions", "shape", "color
 export const VISUAL_TYPES = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]);
 /** The clips that are words on screen; a preset's box or bar behind the words is part of the clip. */
 export const TEXTY = new Set(["text", "captions"]);
-export const MEDIA_TYPES = new Set(["video", "image", "audio", "lottie"]);
+/** The asset kinds each media clip type plays (a video clip over an image shows it as a still, with a warning); validate refuses every other pair. */
+const PLAYS: Record<string, string[]> = { video: ["video", "image"], image: ["image"], audio: ["audio", "video"], lottie: ["lottie"] };
+export const MEDIA_TYPES = new Set(Object.keys(PLAYS));
 export const ENTER_EXIT = ["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop", "zoom_in", "zoom_out",
   "wipe_left", "wipe_right", "wipe_up", "wipe_down", "blur", "drop", "spin", "typewriter", "words", "bounce", "flip"];
 export const TRANSITIONS = ["crossfade", "dip_black", "dip_white", "slide_left", "slide_right", "slide_up", "slide_down",
@@ -990,8 +992,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           }
           if (c.type === "audio" && a.kind === "video" && !a.has_audio) issues.push({ level: "warning", path: `${p}.asset`, message: `asset '${aid}' has no audio track: the clip is silent`, hint: "point the clip at a file with sound (relink_asset, or update_clip asset=<id>), or remove it" });
           if (c.type === "video" && a.kind === "image") issues.push({ level: "warning", path: `${p}.type`, message: "asset is an image; use type 'image'" });
-          if (c.type === "audio" && a.kind === "image") issues.push({ level: "error", path: `${p}.type`, message: "asset is an image, cannot be audio" });
-          if (c.type === "lottie" && a.kind !== "lottie") issues.push({ level: "error", path: `${p}.asset`, message: "asset is not a Lottie animation" });
+          if (ASSET_KINDS.includes(a.kind) && !PLAYS[c.type].includes(a.kind)) issues.push({ level: "error", path: `${p}.asset`, message: `asset '${aid}' is kind ${a.kind}, which ${c.type} clips cannot play`, hint: `remove the clip and add it again without type (add_clip asset='${aid}' infers type '${a.kind}'${c.type === "image" && a.kind === "video" ? "; freeze: true holds the frame at 'in'" : ""}), or point it at an asset of kind ${PLAYS[c.type].join(" or ")} (update_clip set={asset:'<id>'})` });
           if (c.reverse && dur * Number(c.speed ?? 1) > 60) issues.push({ level: "warning", path: `${p}.reverse`, message: "reversing more than 60 s of video uses a lot of memory" });
         }
       }
