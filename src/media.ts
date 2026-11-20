@@ -1,6 +1,6 @@
 // Media probing and decoding through FFmpeg pipes (async, back-pressured, exact-size frame reads).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
@@ -114,6 +114,12 @@ function packetEnds(path: string): Map<number, number> {
   }
   return ends;
 }
+/** Whether a RIFF file is shorter than its first chunk says (avidec's own test for a file cut off mid-write). Reads 8 bytes.
+ *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met. */
+function cutShort(path: string, size: number): boolean {
+  const fd = openSync(path, "r"), b = Buffer.alloc(8);
+  try { return readSync(fd, b, 0, 8, 0) === 8 && b.readUInt32LE(4) + 8 > size; } finally { closeSync(fd); }
+}
 export function probe(path: string): any {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   const st = statSync(path), mtime = st.mtimeMs, size = st.size;
@@ -142,13 +148,14 @@ export function probe(path: string): any {
       vAbs = firstVideoPacket(path) ?? vAbs;
       if (Number(v.duration) > 0) dur = Math.max(dur, vAbs + Number(v.duration) - cStart); // the format's length counts from the picture's first frame, not from the container's start
     }
-    // an avi header gives an uncompressed sound's length only as nb_frames in its time_base, and the format's length is then the picture's
-    if (a && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number); dur = Math.max(dur, (Number(a.nb_frames) * n) / d || 0); }
+    let ends: Map<number, number> | undefined;
+    const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
+    // an avi sound with a fixed sample size (PCM, ADPCM) shows no `duration`: the header gives its length as nb_frames in its time_base, and the format's length is the picture's.
+    // A file cut off mid-write still has the header's planned length, so its sound is where its packets end.
+    if (a && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number), head = (Number(a.nb_frames) * n) / d; dur = Math.max(dur, cutShort(path, size) ? end(a) : Number.isFinite(head) ? head : 0); }
     if (v && String(j.format?.format_name).split(",").includes("matroska") && firstVideoPacket(path) === null)
       throw new EditError(`${path} starts with picture packets that carry no timestamp, so AgentCut cannot place the picture`, "bad_media", "re-encode the file (for example ffmpeg -i in.mkv -c:v libx264 out.mp4)");
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
-    let ends: Map<number, number> | undefined;
-    const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
     // a file with no length in it (a webm written to a pipe): the packets give it
     const measured = () => Math.max(v ? end(v) : 0, a ? end(a) : 0);
     info = { path, has_audio: !!a };
