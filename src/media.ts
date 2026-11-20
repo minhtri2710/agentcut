@@ -140,6 +140,10 @@ export function probe(path: string): any {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
+    // An avi cut off mid-write, or never finished (written to a pipe), has only the lengths its header planned, which ffprobe scales by the bytes present.
+    // They are dropped: the file is read as one with no length in it, from its packets.
+    const cut = j.format?.format_name === "avi" && cutShort(path, size);
+    if (cut) for (const x of [j.format, ...streams]) delete x.duration;
     // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
     const cStart = Number(j.format?.start_time) || 0;
@@ -151,8 +155,7 @@ export function probe(path: string): any {
     let ends: Map<number, number> | undefined;
     const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
     // an avi sound with a fixed sample size (PCM, ADPCM) shows no `duration`: the header gives its length as nb_frames in its time_base, and the format's length is the picture's.
-    // A file cut off mid-write still has the header's planned length, so its sound is where its packets end.
-    if (a && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number), head = (Number(a.nb_frames) * n) / d; dur = Math.max(dur, cutShort(path, size) ? end(a) : Number.isFinite(head) ? head : 0); }
+    if (a && !cut && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number), head = (Number(a.nb_frames) * n) / d; dur = Math.max(dur, Number.isFinite(head) ? head : 0); }
     if (v && String(j.format?.format_name).split(",").includes("matroska") && firstVideoPacket(path) === null)
       throw new EditError(`${path} starts with picture packets that carry no timestamp, so AgentCut cannot place the picture`, "bad_media", "re-encode the file (for example ffmpeg -i in.mkv -c:v libx264 out.mp4)");
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);

@@ -701,7 +701,7 @@ console.log("decode and render failures");
     const pic = ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2"], sine = (d: number) => ["-f", "lavfi", "-i", `sine=frequency=440:duration=${d}`];
     const VP9 = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8"], MKV = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"], WEBM = [...VP9, "-c:a", "libopus"];
     const made = (name: string, args: string[]) => { ff(...args, join(m, name)); return api.probe(join(m, name)); };
-    const piped = (name: string, args: string[]) => { writeFileSync(join(m, name), spawnSync("ffmpeg", ["-v", "error", "-y", ...args, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout); return api.probe(join(m, name)); };
+    const piped = (name: string, args: string[], format = "webm") => { writeFileSync(join(m, name), spawnSync("ffmpeg", ["-v", "error", "-y", ...args, "-f", format, "-"], { maxBuffer: 1 << 26 }).stdout); return api.probe(join(m, name)); };
     const is = (x: number | undefined, want: number) => x !== undefined && Math.abs(x - want) < 0.01;
     const longer = [made("mk-long.mkv", [...pic, ...sine(2.5), ...MKV]), made("mk-long.webm", [...pic, ...sine(2.5), ...WEBM])];
     check("an mkv and a webm whose sound outlasts the picture record the picture's length and the container's", longer.every((i) => is(i.video_duration, 2) && i.duration > 2.4), longer.map((i) => [i.video_duration, i.duration]));
@@ -732,6 +732,11 @@ console.log("decode and render failures");
     writeFileSync(join(m, "avi-cut-pcm.avi"), readFileSync(join(m, "avi-long-pcm.avi")).subarray(0, 200000));
     const cutPcm = api.probe(join(m, "avi-cut-pcm.avi"));
     check("an avi cut off mid-write records the sound its packets hold, not the length its header plans", cutPcm.duration > 1.2 && cutPcm.duration < 200000 / 88200, cutPcm);
+    // the picture's length is the frames that decode at 25 fps; 0.06 is the slack inside which no picture length is recorded apart (0.05 s), plus rounding
+    const cutFrames = +spawnSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", join(m, "avi-cut-pcm.avi")], { encoding: "utf8" }).stdout;
+    check("an avi cut off mid-write records the picture its frames hold, not a share of the length its header plans", Math.abs((cutPcm.video_duration ?? cutPcm.duration) - cutFrames / 25) < 0.06, { ...cutPcm, cutFrames });
+    const pipedAvi = piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi");
+    check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
     const shiftedMp4 = made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]);
     check("an mp4 whose streams all start at 1.4 s records its length (2.5 s), the container's start is not taken from it", Math.abs(shiftedMp4.duration - 2.5) < 0.05 && Math.abs(shiftedMp4.container_start - 1.4) < 0.05, shiftedMp4);
