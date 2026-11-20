@@ -370,15 +370,16 @@ const LEAD_PAD = 0.1;
 
 /** The engine's words without its sound notes, and their text. A span from a word whose first bracket ([ or () comes before any letter or digit to the
  *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music)) and goes whole, with the punctuation on it; with no
- *  closer nothing goes. Music notes (♩♪♫♬) are taken out of a word, and a word left with no letter or digit goes. Times are untouched. */
+ *  closer before the next such opener nothing goes. Music notes (♩♪♫♬) are taken out of a word, and a word left with no letter or digit goes. Times are untouched. */
 function spoken(words: { text: string; start: number; end: number }[]) {
-  const kept: typeof words = [];
+  const kept: typeof words = [], opener = (t: string) => /^[^\p{L}\p{N}]*?([[(])/u.exec(t)?.[1];
   for (let i = 0; i < words.length; i++) {
-    const open = /^[^\p{L}\p{N}]*?([[(])/u.exec(words[i].text)?.[1];
+    const open = opener(words[i].text);
     if (open) {
       const close = open === "[" ? /\][^\p{L}\p{N}]*$/u : /\)[^\p{L}\p{N}]*$/u;
-      const j = words.slice(i).findIndex((w) => close.test(w.text));
-      if (j >= 0) { i += j; continue; }
+      let j = i;
+      while (j + 1 < words.length && !close.test(words[j].text) && !opener(words[j + 1].text)) j++;
+      if (close.test(words[j].text)) { i = j; continue; }
     }
     const text = words[i].text.replace(/[♩♪♫♬]/gu, "");
     if (text === words[i].text) kept.push(words[i]);

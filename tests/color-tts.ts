@@ -463,7 +463,9 @@ fi
     const quoted = await hear([tok(" said", 100, 400), tok(" “", 500, 550), tok("hi", 550, 800), tok("”", 800, 850)]);
     check("transcribe: an opening quote after a word joins the next word, not the previous one", wt(quoted.words) === JSON.stringify([["said", 0.1, 0.4], ["“hi”", 0.55, 0.85]]), wt(quoted.words));
     const kept = await hear([tok(" C♯", 100, 400), tok(" ♪la", 400, 700), tok(" (so", 700, 900), tok(" we", 900, 1100), tok(" go", 1100, 1300)]);
+    const stray = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" go", 500, 700), tok(" (laughs)", 800, 1500), tok(" ok", 1600, 1900)]);
     writeFileSync(join(tmp, "whisper.json"), json);
+    check("transcribe: an opener that never closes keeps its words when a later note closes; only the note goes", wt(stray.words) === JSON.stringify([["(so", 0.1, 0.3], ["we", 0.3, 0.5], ["go", 0.5, 0.7], ["ok", 1.6, 1.9]]), wt(stray.words));
     check("transcribe keeps a word with a sharp, a word with a music note glued on (without the note) and the words after an opener that never closes", wt(kept.words) === JSON.stringify([["C♯", 0.1, 0.4], ["la", 0.4, 0.7], ["(so", 0.7, 0.9], ["we", 0.9, 1.1], ["go", 1.1, 1.3]]) && kept.text === "C♯ la (so we go", { w: wt(kept.words), t: kept.text });
   }
 
@@ -581,6 +583,11 @@ fi
       check("the captions record the asset and the cut they were timed for; validate has no warning for them", JSON.stringify(ca.timed_for) === JSON.stringify({ asset: "talk", cut: [[2, 5, 0, 1], [4, 8, 5, 2]] }) && (await stale(A)).length === 0, { t: ca.timed_for, issues: await stale(A) });
       const before = asrCalls(), refused: any = await applyLatest(A, [{ op: "add_captions", transcribe: "talk", at: 1 }]).catch((e) => e);
       check("at is refused with bad_arg when the media plays on the timeline, before any engine runs", refused.code === "bad_arg" && /'at'/.test(refused.message) && asrCalls() === before && (await capsOf(A)).length === 1, { code: refused.code, msg: refused.message, calls: asrCalls() - before });
+      const heard = readFileSync(join(tmp, "whisper.json"), "utf8"), tl0 = JSON.stringify(await tlOf(A));
+      said([["[BLANK_AUDIO]", 0, 8]]);
+      const none: any = await applyLatest(A, [{ op: "add_captions", transcribe: "talk" }]).catch((e) => e);
+      writeFileSync(join(tmp, "whisper.json"), heard);
+      check("add_captions over media clips play, whose transcription has no spoken word, is no_words saying so (not blaming the clips), and the timeline is unchanged", none.code === "no_words" && /'talk' has no spoken word/.test(none.message) && JSON.stringify(await tlOf(A)) === tl0, { code: none.code, msg: none.message });
       // the cut changes: a trim, then a move, each warn (in review too); putting it back clears the warning
       const trimmed: any = await applyLatest(A, [{ op: "trim_clip", id: "vid1", trim_start: 0.5 }]);
       check("trimming a clip that plays the media warns in the apply result and in validate, naming the captions clip", trimmed.issues.some((i: any) => i.level === "warning" && /timed_for/.test(i.path) && i.hint.includes(ca.id)) && (await stale(A)).length === 1, trimmed.issues);

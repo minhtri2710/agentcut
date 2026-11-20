@@ -684,6 +684,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { 
     if (follows && tl.tracks.find((x) => x.id === (a.track ?? "captions"))?.magnetic) throw new EditError(`track '${a.track ?? "captions"}' is magnetic, which places captions by order, but these words are timed on the timeline`, "bad_arg", "use a track that is not magnetic");
     if (follows && a.at !== undefined) throw new EditError(`'${asset}' plays on the timeline, so its captions follow the clips and 'at' has no meaning`, "bad_arg", "drop 'at'; to put captions elsewhere give words, or move the clips");
     const t = AN.analysis(p, { kind: "transcribe", path, language: a.language, range: a.transcribe_range });
+    if (!t.words.length) throw new EditError(`the transcription of '${s}' has no spoken word`, "no_words", "check that the media has speech, or give transcribe_range the stretch that holds it");
     if (follows) {
       a.words = wordsOnTimeline(t.words, played.cut);
       unmapped = played.unmapped;
@@ -692,7 +693,6 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { 
       timed = { asset: asset!, cut: played.cut };
       cap = Math.max(...played.cut.map(([cin, out, start, speed]) => start + (out - cin) / speed));
     } else {
-      if (!t.words.length) throw new EditError(`the transcription of '${s}' has no spoken word`, "no_words", "check that the media has speech, or give transcribe_range the stretch that holds it");
       a.words = t.words;
       const end = Number((asset ? tl.assets[asset].duration : undefined) ?? probe(path).duration);
       if (end > 0) cap = a.transcribe_range ? Math.min(a.transcribe_range[1], end) : end;
