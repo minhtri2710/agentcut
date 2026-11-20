@@ -368,6 +368,25 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
 /** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
+/** The engine's words without its sound notes, and their text. A span from a word whose first bracket ([ or () comes before any letter or digit to the
+ *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music)) and goes whole, with the punctuation on it; with no
+ *  closer nothing goes. Music notes (♩♪♫♬) are taken out of a word, and a word left with no letter or digit goes. Times are untouched. */
+function spoken(words: { text: string; start: number; end: number }[]) {
+  const kept: typeof words = [];
+  for (let i = 0; i < words.length; i++) {
+    const open = /^[^\p{L}\p{N}]*?([[(])/u.exec(words[i].text)?.[1];
+    if (open) {
+      const close = open === "[" ? /\][^\p{L}\p{N}]*$/u : /\)[^\p{L}\p{N}]*$/u;
+      const j = words.slice(i).findIndex((w) => close.test(w.text));
+      if (j >= 0) { i += j; continue; }
+    }
+    const text = words[i].text.replace(/[♩♪♫♬]/gu, "");
+    if (text === words[i].text) kept.push(words[i]);
+    else if (/[\p{L}\p{N}]/u.test(text)) kept.push({ ...words[i], text });
+  }
+  return { text: kept.map((w) => w.text).join(" "), words: kept };
+}
+
 /**
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
  * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
@@ -376,6 +395,7 @@ const LEAD_PAD = 0.1;
  * joined into one stretch and the engine's times are mapped back piece by piece (a word's end stays in the piece that holds its start); whisper times
  * words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
+ * Its sound notes are not words (spoken()): a spoken aside it puts in brackets or parentheses goes with them.
  */
 export async function transcribe(path: string, language?: string, model?: string, range?: [number, number | undefined], signal?: AbortSignal) {
   const info = probe(path);
@@ -427,7 +447,7 @@ export async function transcribe(path: string, language?: string, model?: string
       const r = await run(cli, ["-m", mdl, "-f", wav, "-oj", "-ojf", "-ml", "1", "-sow", "-of", join(tmp, "out"), ...(language ? ["-l", language] : ["-l", "auto"])], { signal, maxBuffer: 1 << 28 });
       if (r.status !== 0 || !existsSync(join(tmp, "out.json"))) throw asrError(cli, r, language);
       const j = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
-      // punctuation comes back as timed tokens of its own: it joins the previous word (a leading one, the next) and stretches its end
+      // punctuation comes back as timed tokens of its own: it joins the previous word and stretches its end; opening punctuation (and a leading one) joins the next
       const words: { text: string; start: number; end: number }[] = [];
       let lead = "", began = 0;
       for (const s of j.transcription || []) {
@@ -435,16 +455,16 @@ export async function transcribe(path: string, language?: string, model?: string
         if (!text) continue;
         const prev = words[words.length - 1];
         if (!/^\p{P}+$/u.test(text)) { if (late(s.offsets.from / 1000)) break; began = s.offsets.from / 1000; words.push({ text: lead + text, start: at(began), end: till(s.offsets.to / 1000, began) }); lead = ""; }
-        else if (prev) { prev.text += text; prev.end = till(s.offsets.to / 1000, began); }
+        else if (prev && !/^[\p{Ps}\p{Pi}]+$/u.test(text)) { prev.text += text; prev.end = till(s.offsets.to / 1000, began); }
         else lead += text;
       }
-      return { source: path, language: j.result?.language ?? language ?? null, text: words.map((w) => w.text).join(" "), words, skipped_leading: skipped };
+      return { source: path, language: j.result?.language ?? language ?? null, ...spoken(words), skipped_leading: skipped };
     }
     const r = await run("whisper", [wav, "--word_timestamps", "True", "--output_format", "json", "--output_dir", tmp, ...(language ? ["--language", language] : []), ...(model ? ["--model", model] : [])], { signal, maxBuffer: 1 << 28 });
     if (r.status !== 0 || !existsSync(join(tmp, "a.json"))) throw asrError("whisper", r, language);
     const j = JSON.parse(readFileSync(join(tmp, "a.json"), "utf8"));
     const words = j.segments.flatMap((s: any) => (s.words || []).filter((w: any) => !late(w.start)).map((w: any) => ({ text: String(w.word).trim(), start: at(w.start), end: till(w.end, w.start) })));
-    return { source: path, language: j.language, text: words.map((w: any) => w.text).join(" "), words, skipped_leading: skipped };
+    return { source: path, language: j.language, ...spoken(words), skipped_leading: skipped };
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 

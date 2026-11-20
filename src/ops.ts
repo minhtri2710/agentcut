@@ -692,6 +692,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { 
       timed = { asset: asset!, cut: played.cut };
       cap = Math.max(...played.cut.map(([cin, out, start, speed]) => start + (out - cin) / speed));
     } else {
+      if (!t.words.length) throw new EditError(`the transcription of '${s}' has no spoken word`, "no_words", "check that the media has speech, or give transcribe_range the stretch that holds it");
       a.words = t.words;
       const end = Number((asset ? tl.assets[asset].duration : undefined) ?? probe(path).duration);
       if (end > 0) cap = a.transcribe_range ? Math.min(a.transcribe_range[1], end) : end;

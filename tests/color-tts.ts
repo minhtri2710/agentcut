@@ -453,6 +453,19 @@ fi
   check("transcribe: a word with punctuation ends where the punctuation ends, starts are untouched", JSON.stringify(tr.words.map((w: any) => [w.start, w.end])) === JSON.stringify([[0.2, 0.5], [0.5, 0.9], [0.9, 1.1], [1.1, 1.45], [1.8, 2.1], [2.1, 2.5], [3, 3.35]]), tr.words);
   check("transcribe: text has no space before punctuation", tr.text === "“Xin chào các bạn, hôm nay... nhé!" && tr.language === "vi", tr.text);
   check("transcribe starts whisper-cli once, for the transcription itself (no probe call)", readFileSync(join(tmp, "whisper.calls"), "utf8") === "-m\n", readFileSync(join(tmp, "whisper.calls"), "utf8"));
+  // whisper's sound notes are not words: a bracketed span goes whole with the punctuation on it, music notes go, the other words keep their times
+  {
+    const json = readFileSync(join(tmp, "whisper.json"), "utf8"), wt = (ws: any[]) => JSON.stringify(ws.map((w) => [w.text, w.start, w.end]));
+    const hear = (ts: any[]) => { writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "en" }, transcription: ts })); return AN.transcribe(join(tmp, "said.wav"), "en", join(tmp, "fake.bin")); };
+    const notes = await hear([tok(" Hi", 100, 300), tok(" [BLANK_AUDIO]", 300, 900), tok(" Hello", 1000, 1300), tok(",", 1300, 1350), tok(" [", 1400, 1450), tok(" Music", 1450, 1700), tok(" ]", 1700, 1750),
+      tok(" (upbeat", 1800, 2000), tok(" music)", 2000, 2200), tok(".", 2200, 2250), tok(" ♪", 2300, 2400), tok(" ♪♪", 2400, 2500), tok(" world", 2600, 2900), tok(".", 2900, 2950)]);
+    check("transcribe: [ Music ], [BLANK_AUDIO], (upbeat music). and lone music notes are not words, in words or in text; the spoken words keep their times", wt(notes.words) === JSON.stringify([["Hi", 0.1, 0.3], ["Hello,", 1, 1.35], ["world.", 2.6, 2.95]]) && notes.text === "Hi Hello, world.", { w: wt(notes.words), t: notes.text });
+    const quoted = await hear([tok(" said", 100, 400), tok(" “", 500, 550), tok("hi", 550, 800), tok("”", 800, 850)]);
+    check("transcribe: an opening quote after a word joins the next word, not the previous one", wt(quoted.words) === JSON.stringify([["said", 0.1, 0.4], ["“hi”", 0.55, 0.85]]), wt(quoted.words));
+    const kept = await hear([tok(" C♯", 100, 400), tok(" ♪la", 400, 700), tok(" (so", 700, 900), tok(" we", 900, 1100), tok(" go", 1100, 1300)]);
+    writeFileSync(join(tmp, "whisper.json"), json);
+    check("transcribe keeps a word with a sharp, a word with a music note glued on (without the note) and the words after an opener that never closes", wt(kept.words) === JSON.stringify([["C♯", 0.1, 0.4], ["la", 0.4, 0.7], ["(so", 0.7, 0.9], ["we", 0.9, 1.1], ["go", 1.1, 1.3]]) && kept.text === "C♯ la (so we go", { w: wt(kept.words), t: kept.text });
+  }
 
   // transcribe range: only [start, end] of the media goes to the engine, and the word times stay in media seconds
   {
@@ -506,13 +519,17 @@ fi
     {
       const binPy = join(tmp, "bin-py-range"), pathNow = process.env.PATH!, modelNow = process.env.AGENTCUT_WHISPER_MODEL;
       mkdirSync(binPy);
-      writeFileSync(join(binPy, "whisper"), `#!/bin/sh\ncp "$1" "${tmp}/py.wav"\nwav="$1"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_dir" ] && od="$2"; shift; done\nn=$(basename "$wav" .wav)\nprintf '%s' '{"language":"vi","text":" a b c d","segments":[{"words":[{"word":" a","start":0.1,"end":0.3},{"word":" b","start":1,"end":1},{"word":" c","start":2.8,"end":3.3},{"word":" d","start":3.3,"end":3.6}]}]}' > "$od/$n.json"\n`, { mode: 0o755 });
+      const standIn = (json: string) => writeFileSync(join(binPy, "whisper"), `#!/bin/sh\ncp "$1" "${tmp}/py.wav"\nwav="$1"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_dir" ] && od="$2"; shift; done\nn=$(basename "$wav" .wav)\nprintf '%s' '${json}' > "$od/$n.json"\n`, { mode: 0o755 });
+      standIn('{"language":"vi","text":" a b c d","segments":[{"words":[{"word":" a","start":0.1,"end":0.3},{"word":" b","start":1,"end":1},{"word":" c","start":2.8,"end":3.3},{"word":" d","start":3.3,"end":3.6}]}]}');
       process.env.PATH = `${binPy}:${pathNow}`; delete process.env.AGENTCUT_WHISPER_MODEL;
       try {
         const py = await AN.transcribe(src, "vi", undefined, [2, 5]);
         check("python whisper: words are clamped to the range, a word past the end is dropped from words and from text", JSON.stringify(py.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c", 4.8, 5]]) && py.text === "a b c" && py.skipped_leading === 0, { w: py.words, t: py.text });
         const lead = await AN.transcribe(src, "vi", undefined);
         check("python whisper: the engine gets the media from 0.1 s before the first sound, the times are shifted by it, and the result says so", Math.abs(dur(join(tmp, "py.wav")) - 4.1) < 0.05 && lead.skipped_leading === 1.9 && lead.words[0].start === 2 && lead.words[0].end === 2.2, { dur: dur(join(tmp, "py.wav")), skipped: lead.skipped_leading, w: lead.words[0] });
+        standIn('{"language":"en","segments":[{"words":[{"word":" [BLANK_AUDIO]","start":0.1,"end":1},{"word":" (upbeat","start":1,"end":1.5},{"word":" music)","start":1.5,"end":2},{"word":" ♪","start":2,"end":2.2},{"word":" Hi.","start":2.5,"end":2.8}]}]}');
+        const pyNotes = await AN.transcribe(src, "en", undefined, [2, 5]);
+        check("python whisper: its sound notes are not words either", JSON.stringify(pyNotes.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["Hi.", 4.5, 4.8]]) && pyNotes.text === "Hi.", { w: pyNotes.words, t: pyNotes.text });
       } finally { process.env.PATH = pathNow; if (modelNow !== undefined) process.env.AGENTCUT_WHISPER_MODEL = modelNow; }
     }
     const before = calls();
@@ -532,6 +549,10 @@ fi
       const e1: any = await applyLatest(Q, [{ op: "add_captions", words: [{ text: "Hi", start: 0, end: 0.4 }], transcribe_range: [0, 2] }]).catch((x) => x);
       const e2: any = await applyLatest(Q, [{ op: "add_captions", transcribe: src, transcribe_range: [3, 3] }]).catch((x) => x);
       check("add_captions: transcribe_range without transcribe, and a bad range, are bad_value and leave the timeline unchanged", e1.code === "bad_value" && e2.code === "bad_value" && JSON.stringify((await api.info(Q, "json")).timeline) === was2, { e1: e1.code, e2: e2.code });
+      writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "en" }, transcription: [tok(" [BLANK_AUDIO]", 0, 3000)] }));
+      const e3: any = await applyLatest(Q, [{ op: "add_captions", transcribe: src, language: "en" }]).catch((x) => x);
+      writeFileSync(join(tmp, "whisper.json"), fakeJson);
+      check("add_captions over media no clip plays, whose transcription has no spoken word, is no_words naming the media and leaves the timeline unchanged", e3.code === "no_words" && e3.message?.includes(src) && JSON.stringify((await api.info(Q, "json")).timeline) === was2, { code: e3.code, msg: e3.message });
     } finally { if (was === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = was; }
   }
 
