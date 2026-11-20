@@ -728,13 +728,15 @@ console.log("decode and render failures");
     check("an mkv whose first picture packets carry no timestamp, with sound and without, is refused when probed", unstamped.every((i) => i.code === "bad_media"), unstamped);
     const longPcm = made("avi-long-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"]);
     check("an avi whose uncompressed sound outlasts its picture records the sound's length and the picture's", is(longPcm.duration, 3) && is(longPcm.video_duration, 2), longPcm);
-    // a file cut off mid-write keeps its header's planned length (3 s); its 200000 bytes hold at most 2.27 s of this sound (88200 bytes/s), and the lower bound only has to clear the picture's estimate (1.12 s)
+    // a file cut off mid-write keeps its header's planned length (3 s), which is not recorded: the record is where its packets end, the picture's at 1.52 s and the sound's at 1.49 s, both under the 2.27 s of this sound that 200000 bytes can hold (88200 bytes/s)
     writeFileSync(join(m, "avi-cut-pcm.avi"), readFileSync(join(m, "avi-long-pcm.avi")).subarray(0, 200000));
     const cutPcm = api.probe(join(m, "avi-cut-pcm.avi"));
     check("an avi cut off mid-write records the sound its packets hold, not the length its header plans", cutPcm.duration > 1.2 && cutPcm.duration < 200000 / 88200, cutPcm);
-    // the picture's length is the frames that decode at 25 fps; 0.06 is the slack inside which no picture length is recorded apart (0.05 s), plus rounding
-    const cutFrames = +spawnSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", join(m, "avi-cut-pcm.avi")], { encoding: "utf8" }).stdout;
-    check("an avi cut off mid-write records the picture its frames hold, not a share of the length its header plans", Math.abs((cutPcm.video_duration ?? cutPcm.duration) - cutFrames / 25) < 0.06, { ...cutPcm, cutFrames });
+    // every picture packet counts, the one the cut falls in included (a loop's stream wraps after its frame). A file with no sound records the picture's end as its length, whatever the bytes hold: half of a 2 s picture
+    ff(...pic, "-c:v", "mpeg4", join(m, "avi-pic.avi"));
+    writeFileSync(join(m, "avi-cut-pic.avi"), readFileSync(join(m, "avi-pic.avi")).subarray(0, statSync(join(m, "avi-pic.avi")).size >> 1));
+    const cutPic = api.probe(join(m, "avi-cut-pic.avi")), cutPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "avi-cut-pic.avi")], { encoding: "utf8" }).stdout;
+    check("an avi cut off mid-write records the picture its packets hold, the cut-off last one included, not a share of the length its header plans", is(cutPic.duration, cutPackets / 25), { ...cutPic, cutPackets });
     const pipedAvi = piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi");
     check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
