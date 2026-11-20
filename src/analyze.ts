@@ -368,25 +368,29 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
 /** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
-/** Each bracket that opens a sound note, and the test for a word that closes it (the closer, then non-letters only). */
-const CLOSER: Record<string, RegExp> = { "[": /\][^\p{L}\p{N}]*$/u, "(": /\)[^\p{L}\p{N}]*$/u, "（": /）[^\p{L}\p{N}]*$/u, "【": /】[^\p{L}\p{N}]*$/u };
+/** Each bracket that opens a sound note, and its closer. */
+const CLOSER: Record<string, string> = { "[": "]", "(": ")", "（": "）", "【": "】" };
 
 /** The engine's words without its sound notes, and their text. A span from a word whose first bracket ([, (, （ or 【) comes before any letter or digit to the
  *  first word ending in the matching closer and non-letters is a note ([BLANK_AUDIO], (upbeat music), （笑）) and goes whole, with the punctuation on it; with no
- *  closer before the next such opener nothing goes, except that a word opening the other kind and closing this one is inside it ([Music, (upbeat)]). An inner
- *  note split over two words still leaves the outer opener, and a note glued inside a word (a CJK run with no spaces) stays. Music notes (♩♪♫♬) and a word
- *  made only of two or more < or > (caption speaker marks: >>) are taken out, and a word left with no letter or digit goes. Times are untouched. */
+ *  closer before the next such opener nothing goes, except that a word opening the other kind and closing this one is inside it ([Music, (upbeat)]). A word
+ *  with speech after its own closer ((laughs)Hello, （笑）そうですね（笑）) opens no span: a note glued to speech in one word stays, at either end or inside
+ *  (a CJK run has no spaces). An inner note split over two words still leaves the outer opener. Music notes (♩♪♫♬) and two or more < or > opening a word
+ *  with no letter or digit (caption speaker marks: >>, >>,) are taken out, and a word left with no letter or digit goes. Times are untouched. */
 function spoken(words: { text: string; start: number; end: number }[]) {
-  const kept: typeof words = [], opener = (t: string) => /^[^\p{L}\p{N}]*?([[(（【])/u.exec(t)?.[1];
+  const speechFrom = (t: string, k: number) => k >= 0 && /[\p{L}\p{N}]/u.test(t.slice(k));
+  const closes = (t: string, open: string) => { const k = t.lastIndexOf(CLOSER[open]); return k >= 0 && !speechFrom(t, k); };
+  const opener = (t: string) => { const o = /^[^\p{L}\p{N}]*?([[(（【])/u.exec(t)?.[1]; return o && !speechFrom(t, t.indexOf(CLOSER[o])) ? o : undefined; };
+  const kept: typeof words = [];
   for (let i = 0; i < words.length; i++) {
     const open = opener(words[i].text);
     if (open) {
-      const close = CLOSER[open], continuesSpan = (t: string, o = opener(t)) => !o || (o !== open && close.test(t));
+      const continuesSpan = (t: string, o = opener(t)) => !o || (o !== open && closes(t, open));
       let j = i;
-      while (j + 1 < words.length && !close.test(words[j].text) && continuesSpan(words[j + 1].text)) j++;
-      if (close.test(words[j].text)) { i = j; continue; }
+      while (j + 1 < words.length && !closes(words[j].text, open) && continuesSpan(words[j + 1].text)) j++;
+      if (closes(words[j].text, open)) { i = j; continue; }
     }
-    const text = words[i].text.replace(/[♩♪♫♬]|^[<>]{2,}$/gu, "");
+    const text = words[i].text.replace(/[♩♪♫♬]|^[<>]{2,}(?=[^\p{L}\p{N}]*$)/gu, "");
     if (text === words[i].text) kept.push(words[i]);
     else if (/[\p{L}\p{N}]/u.test(text)) kept.push({ ...words[i], text });
   }

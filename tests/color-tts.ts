@@ -464,9 +464,15 @@ fi
     check("transcribe: an opening quote after a word joins the next word, not the previous one", wt(quoted.words) === JSON.stringify([["said", 0.1, 0.4], ["“hi”", 0.55, 0.85]]), wt(quoted.words));
     const kept = await hear([tok(" C♯", 100, 400), tok(" ♪la", 400, 700), tok(" (so", 700, 900), tok(" we", 900, 1100), tok(" go", 1100, 1300)]);
     const stray = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" go", 500, 700), tok(" (laughs)", 800, 1500), tok(" ok", 1600, 1900)]);
-    const forms = await hear([tok(" （笑）", 100, 400), tok(" 【音楽】", 400, 700), tok(" >>", 700, 800), tok(" [Music", 800, 1000), tok(" (upbeat)]", 1000, 1300), tok(" <<<", 1300, 1400), tok(" ok", 1500, 1800)]);
+    const forms = await hear([tok(" （笑）", 100, 400), tok(" 【音楽】", 400, 700), tok(" >>", 700, 800), tok(" [Music", 800, 1000), tok(" (upbeat)]", 1000, 1300), tok(" <<<", 1300, 1400), tok(" >>,", 1400, 1500), tok(" ok", 1500, 1800)]);
+    const gluedOne = await hear([tok(" （笑）そうですね（笑）", 100, 900), tok(" ok", 1000, 1300)]);
+    const gluedTwo = await hear([tok(" （笑）今日は", 100, 600), tok(" 明日も（笑）", 600, 1100), tok(" ok", 1200, 1500)]);
+    const aside = await hear([tok(" (so", 100, 300), tok(" we", 300, 500), tok(" [Music]", 500, 900), tok(" go", 1000, 1200), tok(" home)", 1200, 1500), tok(" ok", 1600, 1900)]);
     writeFileSync(join(tmp, "whisper.json"), json);
-    check("transcribe: full-width notes, caption speaker marks (>>, <<<) and a note with another kind nested in it are not words", wt(forms.words) === JSON.stringify([["ok", 1.5, 1.8]]) && forms.text === "ok", { w: wt(forms.words), t: forms.text });
+    check("transcribe: full-width notes, caption speaker marks (>>, <<<, >>,) and a note with another kind nested in it are not words", wt(forms.words) === JSON.stringify([["ok", 1.5, 1.8]]) && forms.text === "ok", { w: wt(forms.words), t: forms.text });
+    check("transcribe: a word with speech after its note's closer is kept whole, notes and all (one word ending in a note too)", wt(gluedOne.words) === JSON.stringify([["（笑）そうですね（笑）", 0.1, 0.9], ["ok", 1, 1.3]]), wt(gluedOne.words));
+    check("transcribe: a word with speech after its note opens no span, so a later word ending in a note does not take it", wt(gluedTwo.words) === JSON.stringify([["（笑）今日は", 0.1, 0.6], ["明日も（笑）", 0.6, 1.1], ["ok", 1.2, 1.5]]), wt(gluedTwo.words));
+    check("transcribe: an opener that never closes keeps its words when a note of the other kind follows and a later word closes it", wt(aside.words) === JSON.stringify([["(so", 0.1, 0.3], ["we", 0.3, 0.5], ["go", 1, 1.2], ["home)", 1.2, 1.5], ["ok", 1.6, 1.9]]), wt(aside.words));
     check("transcribe: an opener that never closes keeps its words when a later note closes; only the note goes", wt(stray.words) === JSON.stringify([["(so", 0.1, 0.3], ["we", 0.3, 0.5], ["go", 0.5, 0.7], ["ok", 1.6, 1.9]]), wt(stray.words));
     check("transcribe keeps a word with a sharp, a word with a music note glued on (without the note) and the words after an opener that never closes", wt(kept.words) === JSON.stringify([["C♯", 0.1, 0.4], ["la", 0.4, 0.7], ["(so", 0.7, 0.9], ["we", 0.9, 1.1], ["go", 1.1, 1.3]]) && kept.text === "C♯ la (so we go", { w: wt(kept.words), t: kept.text });
   }
