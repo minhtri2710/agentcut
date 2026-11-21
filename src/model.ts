@@ -805,6 +805,21 @@ function checkFields(obj: Dict, fields: F, path: string, issues: Issue[], what: 
   }
 }
 
+/** Every colour a clip (or the settings) names must parse: render reads them with parseColor and would fail with bad_color on each frame that draws one. A field of another type is left to checkFields. */
+function colourIssues(obj: Dict, path: string, issues: Issue[]) {
+  const at = (k: string, v: unknown) => {
+    if (v === undefined || v === null) return;
+    try { parseColor(v); } catch (e: any) { issues.push({ level: "error", path: `${path}.${k}`, message: e.message, hint: e.hint }); }
+  };
+  for (const k of ["color", "fill", "highlight_color", "highlight_bg", "glow", "background"]) if (typeof obj[k] === "string") at(k, obj[k]);
+  for (const k of ["stroke", "shadow", "border", "glow", "background"]) {
+    const v = obj[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) at(`${k}.color`, v.color);
+  }
+  const g = obj.gradient;
+  if (g && typeof g === "object" && Array.isArray(g.colors)) g.colors.forEach((x: unknown, i: number) => at(`gradient.colors[${i}]`, x));
+}
+
 /** group stamp {id, name?, track, parent?}: id and track are non-empty strings, name a string; parent is a stamp too (recursively) */
 function groupIssues(g: any, path: string): { path: string; message: string; hint: string }[] {
   const hint = "group: {id, name?, track, parent?}";
@@ -836,6 +851,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     issues.push({ level: "warning", path: `$.${k}`, message: `unknown top-level key '${k}' (ignored)` });
   const st = tl.settings || {};
   checkFields(st, SETTINGS_FIELDS, "$.settings", issues, "settings");
+  colourIssues({ background: st.background }, "$.settings", issues);
   if (st.effects != null && !Array.isArray(st.effects)) issues.push({ level: "error", path: "$.settings.effects", message: "effects must be a list", hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
   else (st.effects || []).forEach((f: any, fi: number) => {
     const ft = typeof f === "string" ? f : f?.type;
@@ -955,6 +971,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      colourIssues(c, p, issues);
       rangeIssues(c, p, issues);
       if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });

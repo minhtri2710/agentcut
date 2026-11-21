@@ -1402,6 +1402,19 @@ console.log("op arguments, documented ranges, undo steps");
   const text = (weight: unknown) => err({ op: "add_clip", track: "text", text: "hi", weight });
   check("a numeric string weight is checked against the same range as a number", (await text("950")).details?.issues?.[0]?.path?.endsWith(".weight") && (await text(950)).details?.issues?.[0]?.path?.endsWith(".weight")
     && (await text("700")).code === undefined && (await text("bold")).code === undefined);
+  const colours: [string, any, string][] = [["a shape fill without #", { op: "add_clip", track: "overlay", type: "shape", shape: "circle", duration: 1, fill: "ff00ff" }, ".fill"],
+    ["a stroke colour", { op: "add_clip", track: "overlay", type: "shape", shape: "rect", duration: 1, stroke: { color: "nope", width: 2 } }, ".stroke.color"],
+    ["a text colour", { op: "add_clip", track: "text", text: "hi", color: "notacolor" }, ".color"],
+    ["a gradient stop", { op: "add_clip", track: "text", text: "hi", gradient: { colors: ["#fff", "bad"] } }, ".gradient.colors[1]"],
+    ["a text background", { op: "add_clip", track: "text", text: "hi", background: { color: "zzz" } }, ".background.color"],
+    ["a solid colour clip", { op: "add_clip", track: "overlay", type: "color", color: "#12", duration: 1 }, ".color"],
+    ["the canvas background", { op: "set_settings", background: "darkish" }, "$.settings.background"]];
+  for (const [name, o, end] of colours) {
+    const e = await err(o), is = e.details?.issues?.[0];
+    check(`a colour that does not parse is refused at apply, not left to fail the render: ${name}`, e.code === "validation_failed" && is?.path?.endsWith(end) && /unknown colour/.test(is.message) && /#RRGGBB/.test(is.hint), { code: e.code, issues: e.details?.issues });
+  }
+  check("colours that parse are accepted: #RGB, #RRGGBBAA, rgba(), a basic name, a glow string, a shadow object", (await Promise.all([{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", duration: 1, fill: "#f0f", stroke: { color: "#00000080", width: 2 } },
+    { op: "add_clip", track: "text", text: "hi", color: "rgba(10,20,30,0.5)", glow: "magenta", shadow: { color: "black" }, background: "#0008" }].map((o) => err(o)))).every((e) => e.code === undefined));
   check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror), a scale keyframe of 0 (pop-in)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { volume: 4 }, { scale_x: -1 }, { keyframes: { scale: [[0, 0], [0.3, 1]] } }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined));
 
   const both = await err({ op: "update_clip", id: "c1", set: { reverse: true, loop: true } }), pair = both.details?.issues?.[0];
