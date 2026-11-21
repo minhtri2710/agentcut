@@ -483,7 +483,7 @@ export class FrameSource {
     const proc = this.proc;
     if (!this.lengthCheck) { this.lengthCheck = this.checkLoopLength(); this.lengthCheck.catch(() => {}); } // awaited by readAt; this keeps a read that fails first from leaving it unhandled
     // Decoder text printed before the first frame is out belongs to the frames decoded ahead of the first slot (after a seek into a format whose seek can land mid-GOP, they miss their references)
-    // and is never shown: on a clean exit only the text after it asks for a software retry. Decoder text never fails a clean exit: which frames print it depends on where the stream starts
+    // and is never shown: on a clean exit only the text after it (all its text, for a run that put out no frame) asks for a software retry. Decoder text never fails a clean exit: which frames print it depends on where the stream starts
     // (a seek past a damaged frame prints nothing), so the length checks and the held last frame decide, as they do for a fresh read.
     const frameBytes = this.w * this.h * 4;
     let before = "", after = "", seen = 0, framed = false;
