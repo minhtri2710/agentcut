@@ -337,8 +337,8 @@ export class FrameSource {
   private tip: Buffer | null = null; // the newest frame the running stream produced: the frame at `pos` (null: the stream has produced none since it was spawned)
   private eof = false;
   private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`tip` stays the frame at `pos`)
-  // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
-  // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
+  // What the running ffmpeg reports once it is done. fail: why it failed (a spawn error or a non-zero exit; "" for a clean exit, whatever the decoder printed). retry: what a software retry answers
+  // (as fail, and on a clean exit the decoder's text about shown frames; a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
   private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
   private still: Buffer | null = null;
   private lengthCheck: Promise<void> | undefined; // a loop source: does the file hold its probed length (the first spawn starts it)
@@ -460,7 +460,8 @@ export class FrameSource {
     const proc = this.proc;
     if (!this.lengthCheck) { this.lengthCheck = this.checkLoopLength(); this.lengthCheck.catch(() => {}); } // awaited by readAt; this keeps a read that fails first from leaving it unhandled
     // Decoder text printed before the first frame is out belongs to the frames decoded ahead of the first slot (after a seek into a format whose seek can land mid-GOP, they miss their references)
-    // and is never shown: on a clean exit only the text after it fails the read. A run that put out no frame showed nothing, so no text fails it: the length checks and the held last frame decide.
+    // and is never shown: on a clean exit only the text after it asks for a software retry. Decoder text never fails a clean exit: which frames print it depends on where the stream starts
+    // (a seek past a damaged frame prints nothing), so the length checks and the held last frame decide, as they do for a fresh read.
     const frameBytes = this.w * this.h * 4;
     let before = "", after = "", seen = 0, framed = false;
     proc.stderr?.on("data", (d) => { if (framed ? after.length < 2000 : before.length < 2000) { if (framed) after += d; else before += d; } });
@@ -471,7 +472,7 @@ export class FrameSource {
       proc.once("close", (code, sig) => {
         const text = `${before}${after}`;
         if (code !== 0) { const t = `${text}ffmpeg exited with ${code ?? sig}`.trim(); res({ fail: t, retry: t, all: t }); }
-        else res({ fail: after.trim(), retry: (framed ? after : before).trim(), all: text.trim() });
+        else res({ fail: "", retry: (framed ? after : before).trim(), all: text.trim() });
       });
     });
     this.stream = new FrameStream(this.proc, frameBytes);

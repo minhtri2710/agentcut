@@ -626,7 +626,7 @@ console.log("decode and render failures");
     check(`a fresh H.264 ts read past the end (in ${srcIn}) holds the last frame the stream shows`, Buffer.isBuffer(got) && got.equals(heldTs), Buffer.isBuffer(got) ? got.length : got);
   }
   // a source that gives no frame well inside its probed length still fails (a ts cut after its first packets, read from a seek), and keeps the decoder's text in the message;
-  // text from a frame that is shown fails the read (40 packets overwritten after the first second, read from the file's start)
+  // text from a frame that is shown (40 packets overwritten after the first second) fails no read: a stream from the file's start prints it, one that starts after the damage does not, and both hold the same last frame
   const tsBytes = readFileSync(ts264), packets = Math.floor(tsBytes.length / 188);
   writeFileSync(join(m, "h264-head.ts"), tsBytes.subarray(0, 188 * 12));
   const broken = Buffer.from(tsBytes);
@@ -634,8 +634,11 @@ console.log("decode and render failures");
   writeFileSync(join(m, "h264-damaged.ts"), broken);
   const noFrame = h264(join(m, "h264-head.ts"), 1.5), noFrameErr: any = await noFrame.readAt(0).catch((x) => x); noFrame.close();
   check("a plain clip whose ts gives no frame inside its probed length is decode_failed, with the decoder's text kept in the message", noFrameErr?.code === "decode_failed" && /the source ended after 0 frames at 1\.50s: [\s\S]*\[h264/.test(noFrameErr.message), noFrameErr?.message ?? "no error");
-  const damaged = h264(join(m, "h264-damaged.ts"), 0), damagedErr: any = await (async () => { for (let k = 0; k <= 108; k++) await damaged.readAt(k / 25); })().catch((x) => x); damaged.close();
-  check("a ts whose packets are damaged in a shown frame is decode_failed with the decoder's words", damagedErr?.code === "decode_failed" && /\[h264/.test(damagedErr.message), damagedErr?.message ?? "no error");
+  const damagedText = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", join(m, "h264-damaged.ts"), "-f", "null", "-"], { encoding: "utf8" }).stderr;
+  const damaged = h264(join(m, "h264-damaged.ts"), 0), fromStart: any = await (async () => { for (let k = 0; k <= 108; k++) await damaged.readAt(k / 25); return damaged.readAt(4.32); })().catch((x) => x); damaged.close();
+  const later = h264(join(m, "h264-damaged.ts"), 2), fromLater: any = await later.readAt(2.32).catch((x) => x); later.close();
+  check("a ts damaged in a shown frame holds the same last frame whether its stream starts at 0 or after the damage", /\[h264/.test(damagedText) && Buffer.isBuffer(fromStart) && Buffer.isBuffer(fromLater) && fromStart.equals(fromLater),
+    [damagedText.slice(0, 120), fromStart?.code ?? fromStart?.length, fromLater?.code ?? fromLater?.length]);
   // a loop clip repeats the probed length (2 s here): a source that ends well inside it fails as a plain clip's does, within the plain clip's allowance it is read
   for (const [name, secs] of [["loop-short", 1], ["loop-near", 1.7]] as const) ff("-f", "lavfi", "-i", `testsrc2=size=64x64:rate=30:duration=${secs}`, "-pix_fmt", "yuv420p", join(m, `${name}.mp4`));
   const looped = (name: string, srcIn: number) => new FrameSource({ path: join(m, `${name}.mp4`), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcIn, srcDuration: 2, loop: true, facts: api.probe(join(m, `${name}.mp4`)) });
@@ -737,6 +740,28 @@ console.log("decode and render failures");
     writeFileSync(join(m, "avi-cut-pic.avi"), readFileSync(join(m, "avi-pic.avi")).subarray(0, statSync(join(m, "avi-pic.avi")).size >> 1));
     const cutPic = api.probe(join(m, "avi-cut-pic.avi")), cutPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "avi-cut-pic.avi")], { encoding: "utf8" }).stdout;
     check("an avi cut off mid-write records the picture its packets hold, the cut-off last one included, not a share of the length its header plans", is(cutPic.duration, cutPackets / 25), { ...cutPic, cutPackets });
+    // a clip past a cut avi's picture holds its last frame, as validate says: the stream from the clip's start, which decodes the cut-off packet, holds the frame a fresh read there (a preview, a later render segment) shows
+    const cutSrc = (f: string) => { const facts = api.probe(join(m, f)); return new FrameSource({ path: join(m, f), kind: "video", srcW: 64, srcH: 64, rate: 25, fit: "fill", box: [64, 64], srcDuration: facts.video_duration ?? facts.duration, facts }); };
+    const pastCut = await Promise.all(["avi-cut-pic.avi", "avi-cut-pcm.avi"].map(async (f) => {
+      const at = api.probe(join(m, f)).duration + 0.4, played = cutSrc(f), fresh = cutSrc(f);
+      const streamed: any = await (async () => { for (let k = 0; k <= Math.round(at * 25); k++) await played.readAt(k / 25); return played.readAt(at); })().catch((x) => x), held: any = await fresh.readAt(at).catch((x) => x);
+      played.close(); fresh.close();
+      return (Buffer.isBuffer(streamed) && Buffer.isBuffer(held) && streamed.equals(held)) || [f, streamed?.code ?? "frame", held?.code ?? "frame"];
+    }));
+    check("a clip read past a cut avi's picture, with sound and without, holds the frame a fresh read there shows", pastCut.every((x) => x === true), pastCut);
+    { // one worker streams the whole clip: the render holds the frame the preview shows past the end (64x64 at draft quality; the encode's loss stays well under the step to the frame before)
+      const CH = join(tmp, "cut-hold"), out = join(CH, "renders", "w1.mp4");
+      api.create(CH, { width: 64, height: 64, fps: 25 });
+      await applyLatest(CH, [{ op: "add_clip", track: "main", src: join(m, "avi-cut-pic.avi"), duration: 2 }]);
+      const rendered: any = await api.render(CH, { out, workers: 1, quality: "draft", sheet: false }).catch((e: any) => e);
+      const rgba = (args: string[], input?: Buffer) => spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...args, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input, maxBuffer: 1 << 26 }).stdout as Buffer;
+      const preview = async (t: number) => rgba(["-i", "-"], Buffer.from((await api.frameImage(CH, t, { scale: 1 })).data));
+      const mad = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length; i++) if (i % 4 !== 3) s += Math.abs(a[i] - b[i]); return s / (a.length * 0.75); };
+      const raw = rendered?.code ? Buffer.alloc(0) : rgba(["-i", out]), fb = 64 * 64 * 4, last = raw.subarray(raw.length - fb);
+      const held = await preview(1.96), before = await preview(cutPic.duration - 0.08); // the picture's last slot but one
+      const d = raw.length === 50 * fb ? [mad(last, held), mad(last, before)] : [];
+      check("a 2 s clip of a cut avi rendered by one worker holds the frame the preview shows past the picture's end", !rendered?.code && d.length === 2 && d[0] < d[1] / 1.5, rendered?.code ? [rendered.code, rendered.message] : { frames: raw.length / fb, d });
+    }
     const pipedAvi = piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi");
     check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
