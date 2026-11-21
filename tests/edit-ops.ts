@@ -1361,6 +1361,50 @@ console.log("templates and beats");
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
 }
 
+console.log("colour validation and atomic batches");
+{
+  const Q = join(tmp, "colours-proj");
+  api.create(Q, { preset: "720p" });
+  const shape = { id: "shape1", type: "shape", shape: "rect", start: 0, duration: 1 };
+  const text = { id: "text1", type: "text", text: "Hello", start: 0, duration: 1 };
+  const cases: [string, any, string][] = [
+    ["shape fill", { ...shape, fill: "notacolor" }, ".fill"],
+    ["text color", { ...text, color: "notacolor" }, ".color"],
+    ["solid color", { ...shape, type: "color", shape: undefined, color: "notacolor" }, ".color"],
+    ...["stroke", "border", "shadow", "glow", "background"].map((key): [string, any, string] =>
+      [key, { ...text, [key]: { color: "notacolor" } }, `.${key}.color`]),
+    ...["glow", "background", "highlight_color", "highlight_bg"].map((key): [string, any, string] =>
+      [key, { ...text, type: "captions", words: [{ text: "Hello", start: 0, end: 1 }], [key]: "notacolor" }, `.${key}`]),
+    ...["shape", "text", "color"].map((type): [string, any, string] =>
+      [`${type} gradient`, { id: "gradient1", type, text: "Hello", start: 0, duration: 1, gradient: { colors: ["red", "notacolor"] } }, ".gradient.colors[1]"]),
+  ];
+  for (const [name, clip, suffix] of cases) {
+    const t = newTimeline(640, 360, 30);
+    t.tracks[0].clips.push(clip);
+    const issues = validate(t);
+    check(`validate rejects invalid ${name} at its field`, issues.some((i) => i.level === "error" && i.path.endsWith(suffix) && /unknown colour/.test(i.message) && !!i.hint), issues);
+  }
+  const t = newTimeline(640, 360, 30);
+  t.settings.background = "notacolor";
+  check("validate rejects invalid canvas background", validate(t).some((i) => i.level === "error" && i.path === "$.settings.background"));
+  t.settings.background = "transparent";
+  check("validate accepts absent optional colours on an empty timeline", !validate(t).some((i) => i.level === "error"), validate(t));
+  t.tracks[0].clips.push({ id: "compound1", type: "compound", start: 0, duration: 1, tracks: [{ id: "nested", kind: "video", clips: [{ ...shape, fill: "notacolor" }] }] });
+  check("validate rejects invalid colours inside compounds", validate(t).some((i) => i.level === "error" && i.path.includes("<compound1>") && i.path.endsWith("<shape1>.fill")), validate(t));
+  for (const [name, clip] of cases.slice(0, 2)) {
+    const { start, ...args } = clip;
+    const before = readFileSync(join(Q, "project.json"), "utf8");
+    let error: any;
+    try { await applyLatest(Q, [{ op: "add_clip", track: "overlay", ...args, at: start }]); } catch (e) { error = e; }
+    check(`ops batch rejects invalid ${name} without saving`, error?.code === "validation_failed" && readFileSync(join(Q, "project.json"), "utf8") === before, error?.details);
+  }
+  const valid = await applyLatest(Q, [
+    { op: "add_clip", track: "overlay", id: shape.id, type: "shape", shape: "rect", duration: 1, fill: "#f08a", stroke: { color: "rgba(1,2,3,0.5)", width: 2 } },
+    { op: "add_clip", track: "text", id: text.id, text: "Hello", duration: 1, color: "white", background: "#12345678", glow: { color: "rgb(1,2,3)" }, gradient: { colors: ["red", "#aabbcc"] } },
+  ]);
+  check("valid colours pass ops batch and validate", valid.errors === 0 && (await api.validate(Q)).valid === true, valid);
+}
+
 console.log("op arguments, documented ranges, undo steps");
 {
   const Q = join(tmp, "args-proj");
@@ -1402,21 +1446,13 @@ console.log("op arguments, documented ranges, undo steps");
   const text = (weight: unknown) => err({ op: "add_clip", track: "text", text: "hi", weight });
   check("a numeric string weight is checked against the same range as a number", (await text("950")).details?.issues?.[0]?.path?.endsWith(".weight") && (await text(950)).details?.issues?.[0]?.path?.endsWith(".weight")
     && (await text("700")).code === undefined && (await text("bold")).code === undefined);
-  const colours: [string, any, string][] = [["a shape fill without #", { op: "add_clip", track: "overlay", type: "shape", shape: "circle", duration: 1, fill: "ff00ff" }, ".fill"],
-    ["a stroke colour", { op: "add_clip", track: "overlay", type: "shape", shape: "rect", duration: 1, stroke: { color: "nope", width: 2 } }, ".stroke.color"],
-    ["a text colour", { op: "add_clip", track: "text", text: "hi", color: "notacolor" }, ".color"],
-    ["a gradient stop", { op: "add_clip", track: "text", text: "hi", gradient: { colors: ["#fff", "bad"] } }, ".gradient.colors[1]"],
-    ["a text background", { op: "add_clip", track: "text", text: "hi", background: { color: "zzz" } }, ".background.color"],
-    ["a solid colour clip", { op: "add_clip", track: "overlay", type: "color", color: "#12", duration: 1 }, ".color"],
-    ["the canvas background", { op: "set_settings", background: "darkish" }, "$.settings.background"],
-    ["an rgb() stop with a channel missing", { op: "add_clip", track: "overlay", type: "shape", shape: "rect", duration: 1, gradient: { colors: ["#fff", "rgb(255,0)"] } }, ".gradient.colors[1]"],
-    ["an rgba() with an alpha that is not a number", { op: "add_clip", track: "text", text: "hi", color: "rgba(1,2,3,half)" }, ".color"]];
+  const colours: [string, any, string][] = [["an rgb() stop with a channel missing", { op: "add_clip", track: "overlay", type: "shape", shape: "rect", duration: 1, gradient: { colors: ["#fff", "rgb(255,0)"] } }, ".gradient.colors[1]"],
+    ["an rgba() with an alpha that is not a number", { op: "add_clip", track: "text", text: "hi", color: "rgba(1,2,3,half)" }, ".color"],
+    ["an rgb() with an empty channel", { op: "add_clip", track: "text", text: "hi", color: "rgb(1,,3)" }, ".color"]];
   for (const [name, o, end] of colours) {
     const e = await err(o), is = e.details?.issues?.[0];
-    check(`a colour that does not parse is refused at apply, not left to fail the render: ${name}`, e.code === "validation_failed" && is?.path?.endsWith(end) && /unknown colour/.test(is.message) && /#RRGGBB/.test(is.hint), { code: e.code, issues: e.details?.issues });
+    check(`an rgb() colour needs 3 or 4 numbers: ${name} is refused at apply`, e.code === "validation_failed" && is?.path?.endsWith(end) && /unknown colour/.test(is.message), { code: e.code, issues: e.details?.issues });
   }
-  check("colours that parse are accepted: #RGB, #RRGGBBAA, rgba(), a basic name, a glow string, a shadow object", (await Promise.all([{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", duration: 1, fill: "#f0f", stroke: { color: "#00000080", width: 2 } },
-    { op: "add_clip", track: "text", text: "hi", color: "rgba(10,20,30,0.5)", glow: "magenta", shadow: { color: "black" }, background: "#0008" }].map((o) => err(o)))).every((e) => e.code === undefined));
   check("an rgb() channel or rgba() alpha may be a percentage, as in CSS", JSON.stringify([parseColor("rgba(0,0,0,0%)"), parseColor("rgba(100%,0%,50%,50%)")]) === JSON.stringify([[0, 0, 0, 0], [255, 0, 128, 128]])
     && (await err({ op: "set_settings", background: "rgba(0,0,0,0%)" })).code === undefined, [parseColor("rgba(0,0,0,0%)"), parseColor("rgba(100%,0%,50%,50%)")]);
   check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror), a scale keyframe of 0 (pop-in)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { volume: 4 }, { scale_x: -1 }, { keyframes: { scale: [[0, 0], [0.3, 1]] } }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined));
