@@ -260,13 +260,13 @@ for (const [file, late, mux] of [[lateTs, 0.54, ["-f", "mpegts"]], [lateMkv, 1.4
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", ...mux, file);
 // the same mpegts with a keyframe every second (lateTs has the one): a seek into it can land on a keyframe after its target
 const keyTs = join(m, "key.ts");
+const { inputSeek, preRoll } = await import("../src/media.ts");
+ff("-itsoffset", "0.54", "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128", "-f", "lavfi", "-i", "sine=f=440:r=48000",
+  "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-g", "25", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", "-c:a", "aac", "-shortest", "-f", "mpegts", keyTs);
 // the same numbered picture where a seek near the picture's start does not land: h264 with sound in an flv, mpeg4 with B-frames in an avi
 const nsFlv = join(m, "ns.flv"), nsAvi = join(m, "ns.avi"), numbered = "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128";
 ff("-f", "lavfi", "-i", numbered, "-f", "lavfi", "-i", "sine=f=440:r=48000", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", nsFlv);
 ff("-f", "lavfi", "-i", numbered, "-c:v", "mpeg4", "-bf", "2", "-q:v", "2", nsAvi);
-const { inputSeek, preRoll } = await import("../src/media.ts");
-ff("-itsoffset", "0.54", "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128", "-f", "lavfi", "-i", "sine=f=440:r=48000",
-  "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-g", "25", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", "-c:a", "aac", "-shortest", "-f", "mpegts", keyTs);
 { // the job carries the container start the asset records, since the helper cannot learn it from a read that drops the sound
   const LP = join(tmp, "late-project");
   api.create(LP, { preset: "youtube" });
@@ -275,6 +275,18 @@ ff("-itsoffset", "0.54", "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,f
   const sj = readFileSync(join(tmp, "late-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((j) => j.cmd === "subject");
   const lp = (await api.probe(keyTs));
   check("a subject job carries the container start the asset records and seeks the asset's pre-roll before its in-point (an mpegts that starts at its sound, in 3 s)", lp.container_start > 1 && sj?.container_start === lp.container_start && sj?.seek > 0 && sj.seek === 3 - preRoll(lp as any, lp.fps), { job: sj, probe: lp.container_start });
+}
+{ // the job builder seeks by the picture's start the asset records: no seek near it (an flv at in 0), the pre-roll before the in-point past it (the mpegts above, whose picture starts 0.54 s after its sound, at in 2.5)
+  const SP = join(tmp, "seek-project");
+  api.create(SP, { preset: "youtube" });
+  process.env.FAKE_JOB_LOG = join(tmp, "seek-jobs.jsonl");
+  await applyPrep(SP, [{ op: "add_clip", track: "main", src: nsFlv, duration: 1, id: "near" }, { op: "auto_reframe", id: "near" },
+    { op: "add_clip", track: "main", src: keyTs, in: 2.5, duration: 1, id: "past" }, { op: "auto_reframe", id: "past" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
+  const jobs = readFileSync(join(tmp, "seek-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((j) => j.cmd === "subject");
+  const near = jobs.find((j) => j.path === nsFlv), past = jobs.find((j) => j.path === keyTs);
+  const kp = (await api.probe(keyTs)), want = inputSeek(2.5, preRoll(kp as any, kp.fps), kp.video_start);
+  check("a subject job seeks by the picture's start the asset records: none at in 0 of an flv, the pre-roll before the in-point at in 2.5 of an mpegts whose picture starts after its sound",
+    near?.seek === null && typeof want === "number" && past?.seek === want, { near: near?.seek, past: past?.seek, want });
 }
 
 // ---------------------------------------------------------------- track_to

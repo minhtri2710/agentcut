@@ -452,15 +452,15 @@ console.log("cli surface: --start/--end, transcribe, tts");
       missing.code === "not_found" && missing.message.includes(join(tmp, "nope.wav")) && still.code === "no_audio" && noModel.code === "not_found" && noModel.message.includes(join(tmp, "no-such.bin")), { missing, still, noModel });
     const past = [fail(talk, "--model", model, "--start", "999"), fail(talk, "--model", model, "--start", "999", "--end", "1000")];
     check("transcribe: a start past the media's end, with and without an end, is bad_value naming the media's length", past.every((x) => x.code === "bad_value" && x.message.includes(length)), past);
-    { // a range from 0 of a file with a picture whose input seek there does not land (h264 in an flv, in an avi): the engine hears the whole range
+    { // a range from 0 of a file with a picture whose input seek there does not land (h264 in an flv, in an avi): the engine hears the whole range. It ends at the sound's end (2 s), so a late start shortens it
       const heard = ["flv", "avi"].map((ext) => {
         const f = join(m, `ns.${ext}`), got = join(tmp, `heard-${ext}.wav`);
         asr(`while [ $# -gt 0 ]; do [ "$1" = "-f" ] && cp "$2" "${got}"; [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"vi"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}}]}' > "$2.json"; shift; done\n`);
         ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2", "-f", "lavfi", "-i", "sine=f=300:d=2", "-c:v", "libx264", "-c:a", ext === "flv" ? "aac" : "pcm_s16le", f);
-        const r = cli(["transcribe", f, "--language", "vi", "--model", model, "--start", "0", "--end", "1.5"], { ok: false });
+        const r = cli(["transcribe", f, "--language", "vi", "--model", model, "--start", "0", "--end", "2"], { ok: false });
         return { ext, ok: r.ok, heard: existsSync(got) ? cli(["probe", got]).duration : null };
       });
-      check("transcribe: a range from 0 of an flv or avi with an h264 picture reaches the engine whole (1.5 s within 1 %)", heard.every((h) => h.ok && Math.abs(h.heard - 1.5) <= 0.015), heard);
+      check("transcribe: a range from 0 of an flv or avi with an h264 picture reaches the engine whole (2 s within 1 %)", heard.every((h) => h.ok && Math.abs(h.heard - 2) <= 0.02), heard);
     }
     asr(`printf '%s\\n' "whisper_lang_id: unknown language 'xx'" "error: unknown language 'xx'" "" "usage: whisper-cli [options] file0 file1 ..." >&2\nexit 0\n`);
     const lang = fail(talk, "--model", model, "--language", "xx");

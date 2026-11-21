@@ -384,7 +384,7 @@ export const FPS_END = "eof_action=pass";
 
 /** Seconds decoded before a stream's first slot, so the frames a slot depends on (the reorder delay and, after a seek, the open-GOP frames before its keyframe) are decoded:
  *  at least a quarter second and the frames held back, plus, in a format whose seek can land after the target, the longest keyframe gap, so a keyframe lies in the stretch.
- *  The vision helper seeks this far before its in-point too. */
+ *  The vision job builder seeks this far before its in-point too (inputSeek). */
 export const preRoll = (f: VideoFacts, srcFps?: number | null) => Math.max(0.25, srcFps ? (f.reorder + 1) / srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
 
 /** How far past the picture's start (s) a read starts from the file's start instead of seeking. ffmpeg aims an input seek 3/23 s early when a stream holds frames back, and in flv and avi a seek aimed before
