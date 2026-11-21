@@ -119,7 +119,8 @@ async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
     try {
-      const [next, results] = (await applyOps(p, tl, list));
+      const [next, results] = await applyOps(p, tl, list);
+      o.signal?.throwIfAborted(); // probing yields: a call cancelled meanwhile saves nothing
       const issues = p.validate(next);
       const nextKey = issueKeyer(next), added = issues.filter((i) => i.level === "error" && !before.has(nextKey(i)));
       if (added.length && !o.allowInvalid)
