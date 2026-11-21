@@ -137,11 +137,37 @@ async function packetEnds(path: string): Promise<Map<number, number>> {
   }
   return ends;
 }
-/** Whether a RIFF file is shorter than its first chunk says (avidec's own test for a file cut off mid-write). Reads 8 bytes.
- *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met. */
-function cutShort(path: string, size: number): boolean {
-  const fd = openSync(path, "r"), b = Buffer.alloc(8);
-  try { return readSync(fd, b, 0, 8, 0) === 8 && b.readUInt32LE(4) + 8 > size; } finally { closeSync(fd); }
+/** Whether a file is shorter than its container says (a file cut off mid-write), by `format_name`: avi by its first RIFF chunk (avidec's own test, 8 bytes), matroska by its Segment's size
+ *  (two 12-byte reads; a file written live or to a pipe gives no size), mov/mp4 by its top-level boxes (16 bytes per box). Any other format is not checked.
+ *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met.
+ *  shortcut: an mp4 box of size 0 runs to the end of the file, so it is not checked; read its contents when a writer of such a box is met.
+ *  shortcut: fewer than 8 stray bytes after the last mp4 box read as cut, which costs a packet scan and records where the packets end; tell them apart when such a writer is met. */
+function cutShort(path: string, size: number, format: string): boolean {
+  const kind = ["avi", "matroska", "mov"].find((k) => format.split(",").includes(k));
+  if (!kind) return false;
+  const fd = openSync(path, "r"), b = Buffer.alloc(16), at = (pos: number, n: number) => readSync(fd, b, 0, n, pos);
+  // an EBML size: the first set bit marks its length in bytes, and all value bits set means "unknown"
+  const vint = (o: number): [number, number] => { const len = Math.clz32(b[o]) - 23; let v = b[o] & (0xff >> len), ones = v === 0xff >> len; for (let i = 1; i < len; i++) { v = v * 256 + b[o + i]; ones &&= b[o + i] === 0xff; } return [len, ones ? NaN : v]; };
+  try {
+    if (kind === "avi") return at(0, 8) === 8 && b.readUInt32LE(4) + 8 > size;
+    if (kind === "matroska") {
+      if (at(0, 12) !== 12 || b.readUInt32BE(0) !== 0x1a45dfa3) return false;
+      const [hl, hv] = vint(4), seg = 4 + hl + hv;
+      if (!(seg > 0) || at(seg, 12) !== 12 || b.readUInt32BE(0) !== 0x18538067) return false;
+      const [sl, sv] = vint(4);
+      return seg + 4 + sl + sv > size; // NaN (an unknown size) is not cut
+    }
+    for (let o = 0; o < size;) {
+      const got = at(o, 16);
+      if (got < 8) return true;
+      let n = b.readUInt32BE(0);
+      if (n === 0) return false;
+      if (n === 1) n = got === 16 ? Number(b.readBigUInt64BE(8)) : Infinity;
+      if (n < 8 || o + n > size) return true;
+      o += n;
+    }
+    return false;
+  } finally { closeSync(fd); }
 }
 export async function probe(path: string): Promise<any> {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
@@ -163,9 +189,9 @@ export async function probe(path: string): Promise<any> {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
-    // An avi cut off mid-write, or never finished (written to a pipe), has only the lengths its header planned, which ffprobe scales by the bytes present.
+    // An avi, mkv/webm or mp4/mov cut off mid-write, or an avi never finished (written to a pipe), has only the lengths its header planned, which ffprobe gives as they are (an avi's scaled by the bytes present).
     // They are dropped: the file is read as one with no length in it, from its packets.
-    const cut = j.format?.format_name === "avi" && cutShort(path, size);
+    const cut = cutShort(path, size, String(j.format?.format_name));
     if (cut) for (const x of [j.format, ...streams]) delete x.duration;
     // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
@@ -202,11 +228,11 @@ export async function probe(path: string): Promise<any> {
       if (!still) info.duration = sec(dur);
       // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
       // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. Matroska gives no per-stream duration: then, for a file with sound,
-      // the stream's own DURATION tag counts when the picture and the container both start at 0 on the file's clock (a writer may put a length or an end time there, which differ by the stream's absolute start), else the packets' end.
+      // the stream's own DURATION tag counts when the file is not cut and the picture and the container both start at 0 on the file's clock (a writer may put a length or an end time there, which differ by the stream's absolute start), else the packets' end.
       // A file with no sound ends with its picture, so no field is recorded.
       const vd = Number(v.duration), vStart = vAbs - cStart;
       let vEnd = vd > 0 ? vStart + vd : 0;
-      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : (await end(v)); }
+      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && !cut && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : (await end(v)); }
       if (!still && vEnd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = sec(vEnd);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
