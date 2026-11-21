@@ -387,6 +387,10 @@ export const FPS_END = "eof_action=pass";
  *  The vision helper seeks this far before its in-point too. */
 export const preRoll = (f: VideoFacts, srcFps?: number | null) => Math.max(0.25, srcFps ? (f.reorder + 1) / srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
 
+/** How far past the picture's start (s) a stream reads from the file's start instead of seeking. ffmpeg aims an input seek 3/23 s early when a stream holds frames back, and in flv and avi a seek aimed before
+ *  the first keyframe does not land: the read goes on from the end of the file, or from a frame that is not a keyframe. 0.25 s of margin keeps a seek's rounding off that edge. */
+const NO_SEEK_SPAN = 3 / 23 + 0.25;
+
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
   w: number; h: number; view: [number, number];
@@ -474,9 +478,9 @@ export class FrameSource {
   }
 
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
-   *  It seeks to the keyframe before `pre` seconds ahead of the slot (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
+   *  It seeks to the keyframe before `pre` seconds ahead of the slot, or reads from the file's start when that point is within NO_SEEK_SPAN of the picture's start (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
    *  clip's clock (container start and in-point subtracted, TIE_BIAS added, the passes of a loop before the slot's added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
-   *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
+   *  A stream whose first frame is later than its slot grid (a read with no seek, or a seek in a format whose seek can land after the target) is filled back with that frame,
    *  from a whole number of slots before the slot, which keeps the grid's phase. A loop clip's stream reads the pass of its first slot and no loop, except `unsought`: a read from the file's start
    *  (no seek, so ffmpeg's loop restarts at 0) that carries on through the passes after. */
   private args(k: number, mode: "stream" | "still" | "tail" | "reach", at?: number, unsought = false): string[] {
@@ -491,12 +495,12 @@ export class FrameSource {
     if (loop && D) { n = this.passOf(k); ss = unsought ? 0 : Math.max(0, srcIn + k / r - n * D - this.pre); } // a slot's pre-roll in the pass before is not read: the fill below stands in for it
     if (unsought) a.push("-stream_loop", "-1");
     const shift = n * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
-    const fill = ss <= f.video_start || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
+    const sought = ss >= f.video_start + NO_SEEK_SPAN; // a read near the picture's start has no seek: it reads from the file's start
+    const fill = !sought || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
       ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
       : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
-    const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) : ss; // an avi seek aimed before its first packet lands one frame late
-    a.push("-noaccurate_seek", "-copyts", "-ss", seek.toFixed(6), ...this.input, "-an", "-sn",
+    a.push("-noaccurate_seek", "-copyts", ...(sought ? ["-ss", ss.toFixed(6)] : []), ...this.input, "-an", "-sn",
       "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${mode === "tail" ? `:${FPS_END}` : ""}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
     a.push("-fps_mode", "passthrough");
