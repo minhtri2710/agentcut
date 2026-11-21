@@ -688,7 +688,7 @@ fi
         r.results.map((x: any) => x.op).join() === "add_captions,add_voiceover,add_marker" && (await api.info(Z, "json")).timeline.tracks.some((t: any) => t.clips.some((c: any) => c.type === "captions" && c.words.length)) && r.results[1].duration > 0.5, r.results);
 
       // a caller that is not api.apply (prepare, a test) gets an internal error, never a result without the analysis
-      const pz = api.openProject(Z), direct = (() => { try { applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }]); return null; } catch (x: any) { return x; } })();
+      const pz = api.openProject(Z), direct = (await (async () => { try { (await applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }])); return null; } catch (x: any) { return x; } })());
       check("applyOps without the api.apply runner fails closed on an analysis: an internal error, not an EditError, and no piper start", direct && !(direct instanceof Error && "code" in direct) && /^internal: /.test(direct.message) && started("piper.calls") === p0 + 1, direct && direct.message);
 
       // add_voiceover captions are timed for the voice clip: moving it warns, and the captions end with it

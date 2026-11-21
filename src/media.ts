@@ -4,6 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
 import { inp } from "./ffinput.ts";
+import { run } from "./proc.ts";
 import { COLOR_SPACES, conversionChain, conversionFor, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
@@ -26,24 +27,29 @@ export function checkFfmpegVersion(output: string): void {
 
 let ffChecked = false;
 let ffVersion: string | undefined;
-export function needFfmpeg() {
+function checkFfmpeg() {
   if (ffChecked) return;
-  for (const b of ["ffmpeg", "ffprobe"]) {
-    const r = spawnSync(b, ["-version"], { encoding: "utf8" });
-    if (r.error) throw new EditError(`'${b}' not found on PATH`, "missing_dependency",
-      FFMPEG_INSTALL);
-    if (r.status !== 0) throw new EditError(`'${b} -version' failed`, "missing_dependency", FFMPEG_INSTALL);
-    if (b === "ffmpeg") {
-      checkFfmpegVersion(r.stdout);
-      ffVersion = r.stdout.split("\n")[0].trim();
-    }
-  }
+  const r = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
+  if (r.error) throw new EditError("'ffmpeg' not found on PATH", "missing_dependency", FFMPEG_INSTALL);
+  if (r.status !== 0) throw new EditError("'ffmpeg -version' failed", "missing_dependency", FFMPEG_INSTALL);
+  checkFfmpegVersion(r.stdout);
+  ffVersion = r.stdout.split("\n")[0].trim();
   ffChecked = true;
+}
+
+let probeChecked = false;
+export async function needFfmpeg() {
+  checkFfmpeg();
+  if (probeChecked) return;
+  const r = await run("ffprobe", ["-version"]);
+  if (r.status === null) throw new EditError("'ffprobe' not found on PATH", "missing_dependency", FFMPEG_INSTALL);
+  if (r.status !== 0) throw new EditError("'ffprobe -version' failed", "missing_dependency", FFMPEG_INSTALL);
+  probeChecked = true;
 }
 
 /** The first line of `ffmpeg -version` (version and build), read once per process: a different FFmpeg may decode other pixels. */
 export function ffmpegVersion(): string {
-  needFfmpeg();
+  checkFfmpeg();
   return ffVersion!;
 }
 
@@ -54,7 +60,7 @@ const codecLists: Partial<Record<"encoders" | "decoders", string>> = {};
 /** Whether this FFmpeg build lists `name` among its encoders or decoders. The list is read once per process, and only a successful read is kept. */
 export function hasCodec(kind: "encoders" | "decoders", name: string): boolean {
   if (codecLists[kind] === undefined) {
-    needFfmpeg();
+    checkFfmpeg();
     const r = spawnSync("ffmpeg", ["-hide_banner", `-${kind}`], { encoding: "utf8" });
     if (r.status !== 0) return false;
     codecLists[kind] = r.stdout;
@@ -86,8 +92,8 @@ const endsOnClock = (format: string) => format.split(",").some((f) => END_ON_CLO
 const FIRST_PACKET_START_FORMATS = new Set(["avi"]);
 const startsOnFirstPacket = (format: string) => format.split(",").some((f) => FIRST_PACKET_START_FORMATS.has(f));
 /** Where the first packet of the first video stream is (s, the file's own clock), or null when it shows no time. One packet is read, nothing is scanned. */
-function firstVideoPacket(path: string): number | null {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8" });
+async function firstVideoPacket(path: string): Promise<number | null> {
+  const r = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)]);
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const [pts, dts] = r.stdout.split("\n")[0].split(",");
   const t = pts !== "" && Number.isFinite(Number(pts)) ? Number(pts) : Number(dts);
@@ -97,8 +103,8 @@ const probeCache = new Map<string, { mtime: number; size: number; info: any }>()
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
 /** The longest stretch between two keyframes of the first video stream, counting the one after the last keyframe (packets only, nothing is decoded). `whole` stands for a stream with no stretch to measure. */
-function keyGap(path: string, whole: number): number {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+async function keyGap(path: string, whole: number): Promise<number> {
+  const r = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", ...inp(path)], { maxBuffer: 256 << 20 });
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const keys: number[] = []; let end = -Infinity;
   for (const line of r.stdout.split("\n")) {
@@ -121,8 +127,8 @@ function tagLength(tags: Record<string, unknown> | undefined): number {
   return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : 0;
 }
 /** Where the packets of each stream end (largest pts + duration, s, on the file's own clock), by stream index. The whole file is read once, no packet decoded. */
-function packetEnds(path: string): Map<number, number> {
-  const r = spawnSync("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,dts_time,duration_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+async function packetEnds(path: string): Promise<Map<number, number>> {
+  const r = await run("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,dts_time,duration_time", "-of", "csv=p=0", ...inp(path)], { maxBuffer: 256 << 20 });
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const ends = new Map<number, number>();
   for (const line of r.stdout.split("\n")) {
@@ -137,7 +143,7 @@ function cutShort(path: string, size: number): boolean {
   const fd = openSync(path, "r"), b = Buffer.alloc(8);
   try { return readSync(fd, b, 0, 8, 0) === 8 && b.readUInt32LE(4) + 8 > size; } finally { closeSync(fd); }
 }
-export function probe(path: string): any {
+export async function probe(path: string): Promise<any> {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   const st = statSync(path), mtime = st.mtimeMs, size = st.size;
   const hit = probeCache.get(path);
@@ -150,8 +156,8 @@ export function probe(path: string): any {
     if (!j || !Array.isArray(j.layers) || !(j.fr > 0) || !(j.w > 0) || !(j.h > 0) || !Number.isFinite(j.op - j.ip)) throw new EditError(`${path} is not a Lottie animation`, "bad_media");
     info = { path, kind: "lottie", width: Math.round(j.w), height: Math.round(j.h), fps: +j.fr, duration: Math.max(0, +((j.op - j.ip) / j.fr).toFixed(3)), has_audio: false, alpha: true };
   } else {
-    needFfmpeg();
-    const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { encoding: "utf8", maxBuffer: 32 << 20 });
+    await needFfmpeg();
+    const r = await run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
     if (r.status !== 0) throw new EditError(`ffprobe cannot read ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
     const j = JSON.parse(r.stdout);
     const streams: any[] = j.streams || [];
@@ -166,18 +172,18 @@ export function probe(path: string): any {
     const cStart = Number(j.format?.start_time) || 0;
     let vAbs = Number(v?.start_time) || 0; // where the picture starts on the file's clock
     if (v && startsOnFirstPacket(String(j.format?.format_name))) {
-      vAbs = firstVideoPacket(path) ?? vAbs;
+      vAbs = (await firstVideoPacket(path)) ?? vAbs;
       if (Number(v.duration) > 0) dur = Math.max(dur, vAbs + Number(v.duration) - cStart); // the format's length counts from the picture's first frame, not from the container's start
     }
     let ends: Map<number, number> | undefined;
-    const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
+    const end = async (s: any) => { const e = (ends ??= await packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
     // an avi sound with a fixed sample size (PCM, ADPCM) shows no `duration`: the header gives its length as nb_frames in its time_base, and the format's length is the picture's.
     if (a && !cut && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number), head = (Number(a.nb_frames) * n) / d; dur = Math.max(dur, Number.isFinite(head) ? head : 0); }
-    if (v && String(j.format?.format_name).split(",").includes("matroska") && firstVideoPacket(path) === null)
+    if (v && String(j.format?.format_name).split(",").includes("matroska") && (await firstVideoPacket(path)) === null)
       throw new EditError(`${path} starts with picture packets that carry no timestamp, so AgentCut cannot place the picture`, "bad_media", "re-encode the file (for example ffmpeg -i in.mkv -c:v libx264 out.mp4)");
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
     // a file with no length in it (a webm written to a pipe): the packets give it
-    const measured = () => Math.max(v ? end(v) : 0, a ? end(a) : 0);
+    const measured = async () => Math.max(v ? (await end(v)) : 0, a ? (await end(a)) : 0);
     info = { path, has_audio: !!a };
     if (v) {
       let w = +v.width, h = +v.height, rot = 0;
@@ -192,7 +198,7 @@ export function probe(path: string): any {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
-      if (!still && !(dur > 0)) dur = measured();
+      if (!still && !(dur > 0)) dur = (await measured());
       if (!still) info.duration = sec(dur);
       // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
       // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. Matroska gives no per-stream duration: then, for a file with sound,
@@ -200,7 +206,7 @@ export function probe(path: string): any {
       // A file with no sound ends with its picture, so no field is recorded.
       const vd = Number(v.duration), vStart = vAbs - cStart;
       let vEnd = vd > 0 ? vStart + vd : 0;
-      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : end(v); }
+      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : (await end(v)); }
       if (!still && vEnd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = sec(vEnd);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
@@ -209,10 +215,10 @@ export function probe(path: string): any {
         if (!COLOR_SPACES.includes(cs) && !NO_MATRIX.includes(cs)) throw new EditError(`${path} names the colour matrix '${cs}', which AgentCut cannot read with`, "bad_media", `supported: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}; re-encode the file with a tag from that list`);
         Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs,
           color_primaries: String(v.color_primaries ?? "unknown"), color_transfer: String(v.color_transfer ?? "unknown") });
-        if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
+        if (!seeksBefore(info.format)) info.key_gap = (await keyGap(path, dur));
       }
     } else if (a || AUDIO_EXT.has(ext)) {
-      if (!(dur > 0) && a) dur = measured();
+      if (!(dur > 0) && a) dur = (await measured());
       Object.assign(info, { kind: "audio", duration: sec(dur), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
   }

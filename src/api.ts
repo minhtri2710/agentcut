@@ -119,7 +119,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
     try {
-      const [next, results] = applyOps(p, tl, list);
+      const [next, results] = (await applyOps(p, tl, list));
       const issues = p.validate(next);
       const nextKey = issueKeyer(next), added = issues.filter((i) => i.level === "error" && !before.has(nextKey(i)));
       if (added.length && !o.allowInvalid)
@@ -470,8 +470,8 @@ async function tts(text: string | undefined, out: string | undefined, voice?: st
   if (p) refuseSource(p.root, p.load(), path);
   return AN.tts(text, path, voice, rate, p?.root, signal);
 }
-export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
-  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, pre: a.kind === "image" ? undefined : preRoll(a, a.fps), srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
+export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { (await needFfmpeg()); return AN.loudness(presolve(p), signal); }, transcribe, tts,
+  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = (await probeMedia(f)); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, pre: a.kind === "image" ? undefined : preRoll(a, a.fps), srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),

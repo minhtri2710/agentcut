@@ -224,7 +224,7 @@ export async function main(argv = process.argv.slice(2)) {
         return;
       }
       case "history": res = api.history(P); break;
-      case "probe": res = api.probe(pos[0]); break;
+      case "probe": res = (await api.probe(pos[0])); break;
       case "beats": {
         const author = f.markers ? who() : undefined, revision = f.markers ? based() : undefined; // before the analysis: a refused author or a missing revision costs nothing
         res = await api.analyze.beats(pos[0], signal);

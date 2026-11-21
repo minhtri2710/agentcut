@@ -118,7 +118,7 @@ function rampRuns(kfs: any[], dur: number, fps: number, sr: number) {
 
 /** `signal` stops the running ffmpeg and rejects with signal.reason. */
 export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: number, signal?: AbortSignal): Promise<string> {
-  needFfmpeg();
+  (await needFfmpeg());
   resolve(tl);
   const T = Math.max(0.04, totalDuration(tl));
   t1 ??= T;
