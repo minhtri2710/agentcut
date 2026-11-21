@@ -20,13 +20,15 @@ agent ──(MCP / CLI · JSON)──▶ ops / templates (add_clip, apply_templa
 
 ## Cài đặt
 
-Cần **FFmpeg**. Sau đó chọn **một** trong ba cách dưới.
+Cần **FFmpeg ≥ 5.1** (kèm `ffprobe` trên PATH). `-fps_mode` cần 5.1; các filter `asegment` và `huesaturation` có từ 5.0. Sau đó chọn **một** trong ba cách dưới.
 
 | Hệ điều hành | Cài FFmpeg |
 |---|---|
 | macOS | `brew install ffmpeg` |
 | Windows | `winget install Gyan.FFmpeg` |
 | Linux | `sudo apt install ffmpeg` (hoặc dnf/pacman) |
+
+Kiểm tra bằng `ffmpeg -version`. Nếu gói của bản phân phối quá cũ (ví dụ 4.4), nâng cấp gói hoặc tải build mới tại https://ffmpeg.org/download.html và đặt `ffmpeg` / `ffprobe` mới lên đầu PATH. Các build git/không nhận diện được phiên bản được phép chạy nhưng không được đảm bảo tương thích.
 
 **Cách 1: dùng Node ≥ 20 (npm/npx)**
 ```bash
