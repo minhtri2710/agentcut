@@ -40,7 +40,11 @@ function make(file: string, rate: string, secs: number, enc: string[], o: { audi
   const out = join(m, file);
   // sound: the sound's length in seconds, when it outlasts the picture (no -shortest)
   ff(...(o.late ? ["-itsoffset", String(o.late)] : []), "-f", "lavfi", "-i", pic(rate, secs), ...(o.audio ? ["-f", "lavfi", "-i", `sine=f=440:r=48000${o.sound ? `:d=${o.sound}` : ""}`] : []), ...enc,
-    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", ...(o.sound ? [] : ["-shortest"])] : ["-an"]), ...(o.mux ?? []), out);
+    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", ...(o.sound ? [] : ["-shortest"])] : ["-an"]), "-fps_mode", "passthrough", ...(o.mux ?? []), out);
+  if (o.late) {
+    const { pts, S } = timingOf(out), [n, d = 1] = rate.split("/").map(Number);
+    check(`${file}: first picture really starts ${o.late} s after the container`, pts.length > 0 && pts[0] > S && Math.abs(pts[0] - S - o.late) <= d / n + 1024 / 48000, { first: pts[0], start: S }); // one video slot plus AAC priming on the container clock
+  }
   return out;
 }
 
