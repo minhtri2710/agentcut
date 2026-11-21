@@ -8,7 +8,7 @@ import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
 import { inp } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
-import { EditError, type Dict } from "./model.ts";
+import { EditError, resolve as resolveTimeline, totalDuration, type Dict } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
@@ -135,8 +135,17 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
-    const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
-    const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
+    let start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
+    let out: string | undefined;
+    if (body.play) {
+      const tl = resolveTimeline(p.load()), fps = tl.settings.fps, duration = totalDuration(tl);
+      if (!Number.isFinite(start) || start < 0 || (end !== undefined && (!Number.isFinite(end) || end <= start)))
+        throw new EditError("play range must have a finite non-negative start and an end after start", "bad_value");
+      const first = Math.round(start * fps), last = Math.round(Math.min(end ?? duration, duration) * fps);
+      if (last <= first) throw new EditError("play range contains no frames", "empty", "choose a range of at least one frame inside the timeline");
+      start = first / fps; end = last / fps;
+      out = join(cacheDir, `play-r${tl.revision}-f${first}-${last}.mp4`);
+    }
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
     const live = out ? playing.get(out) : undefined;
