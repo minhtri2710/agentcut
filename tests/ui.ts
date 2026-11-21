@@ -101,6 +101,17 @@ check("a frame time at the duration is refused as bad_value", late.status >= 400
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
 const th = await raw(`/api/thumb/${vid.asset}?t=0.5`);
 check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] === 0xd8);
+{
+  const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), keep = srcAbs + ".keep";
+  renameSync(srcAbs, keep);
+  let thumb: Awaited<ReturnType<typeof raw>>;
+  try {
+    ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=64x64:r=10:d=1", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1", "-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-disposition:v:0", "0", "-disposition:v:1", "default", srcAbs);
+    thumb = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  } finally { rmSync(srcAbs, { force: true }); renameSync(keep, srcAbs); }
+  const rgb = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { input: thumb.body }).stdout;
+  check("a thumbnail reads the first video stream, not the default stream", thumb.status === 200 && rgb.length === 3 && rgb[0] < 30 && rgb[1] > 200 && rgb[2] < 30, [...rgb]);
+}
 { // a thumbnail ffmpeg cannot make is an error response that is not cached, never an empty 200
   const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), away = srcAbs + ".away";
   renameSync(srcAbs, away);

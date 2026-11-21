@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
-import { inp } from "./ffinput.ts";
+import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { run } from "./proc.ts";
 import { COLOR_SPACES, conversionChain, conversionFor, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
 
@@ -408,12 +408,12 @@ export class FrameSource {
     const dec = alphaDecoder(o.codec, o.alpha, o.path);
     if (dec) this.hw = false;
     this.dec = dec;
-    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path), "-map", "0:V:0"];
+    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path), ...VIDEO_MAP];
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
    *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS, FPS_END), and the FFmpeg that decodes. */
-  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion()]); }
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion(), VIDEO_MAP]); }
 
   /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
   private get wraps() { return !!this.o.loop && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
