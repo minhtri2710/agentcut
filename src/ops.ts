@@ -20,13 +20,13 @@ import { registerAudioOps } from "./ops-audio.ts";
 import { registerVisionOps } from "./ops-vision.ts";
 
 const PREFIX: Record<string, string> = { video: "vid", image: "img", text: "txt", captions: "cap", shape: "shp", color: "col", audio: "aud", gap: "gap", lottie: "lot" };
-type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict;
+type OpFn = (p: Project, tl: Timeline, a: Dict) => Dict | Promise<Dict>;
 export const OPS: Record<string, { fn: OpFn; doc: string; args: Dict }> = {};
 /** The argument names an op declares: a key "a|b" declares both; "..." makes the op open (any key, which the op checks itself). */
 type ArgNames<K extends string> = K extends `${infer H}|${infer T}` ? H | ArgNames<T> : K;
 type OpArgs<A> = "..." extends keyof A ? Dict : { [K in ArgNames<keyof A & string>]?: any };
 /** `a` is typed from the declared args, so reading an undeclared key is a compile error. */
-const op = <A extends Dict>(name: string, doc: string, args: A, fn: (p: Project, tl: Timeline, a: OpArgs<A>) => Dict) => { OPS[name] = { fn: fn as OpFn, doc, args }; };
+const op = <A extends Dict>(name: string, doc: string, args: A, fn: (p: Project, tl: Timeline, a: OpArgs<A>) => Dict | Promise<Dict>) => { OPS[name] = { fn: fn as OpFn, doc, args }; };
 
 /** The names op `name` declares ("a|b" is both). "..." is not a name: it marks an op that checks the rest itself. */
 const argNames = (name: string) => Object.keys(OPS[name].args).flatMap((k) => k.split("|")).filter((k) => k !== "...");
@@ -52,8 +52,8 @@ function mediaSource(p: Project, path: string): string {
 }
 
 /** The asset record of the media file `src`, probed first so that a file that is not media leaves nothing in media/; copy puts it into media/ (staged, dropped with a batch that is not saved). */
-function mediaRecord(p: Project, src: string, copy: boolean): Asset {
-  const info = probe(src);
+async function mediaRecord(p: Project, src: string, copy: boolean): Promise<Asset> {
+  const info = (await probe(src));
   if (copy) {
     let dst = join(p.root, "media", basename(src));
     const copied = (f: string) => lstatSync(f, { throwIfNoEntry: false })?.isFile() === true && sameFile(f, src); // a symlink at the destination is not a copy
@@ -75,14 +75,14 @@ function sameFile(x: string, y: string): boolean {
 const SLUG_LETTERS: Record<string, string> = { đ: "d", ł: "l", ø: "o", ß: "ss", æ: "ae", œ: "oe" };
 const slug = (name: string) => name.toLowerCase().replace(/[đłøßæœ]/g, (c) => SLUG_LETTERS[c]).normalize("NFD").replace(/\p{M}+/gu, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24);
 
-export function importAsset(p: Project, tl: Timeline, path: string, id?: string, copy = false): string {
+export async function importAsset(p: Project, tl: Timeline, path: string, id?: string, copy = false): Promise<string> {
   if (id) plainKey(id);
   const src = mediaSource(p, path);
   for (const [k, a] of Object.entries(tl.assets)) if (sameFile(presolve(p.abs(a.path)), src)) {
     if (id && id !== k) throw new EditError(`${path} is already imported as asset '${k}'`, "exists", `use id '${k}', or omit id`);
     return k;
   }
-  const info = mediaRecord(p, src, copy);
+  const info = (await mediaRecord(p, src, copy));
   if (!id) {
     const base = slug(basename(src, extname(src))) || "asset";
     id = base;
@@ -94,15 +94,15 @@ export function importAsset(p: Project, tl: Timeline, path: string, id?: string,
 
 op("import_media", "Import a media file (video/image/audio/Lottie .json) as an asset. Returns id + probe info.",
   { path: "file path (required)", id: "asset id", copy: "copy into project media/ (false)" },
-  (p, tl, a) => { const id = importAsset(p, tl, a.path, a.id, !!a.copy); const { path, ...rest } = tl.assets[id]; return { asset: id, ...rest }; });
+  async (p, tl, a) => { const id = (await importAsset(p, tl, a.path, a.id, !!a.copy)); const { path, ...rest } = tl.assets[id]; return { asset: id, ...rest }; });
 
 op("relink_asset", "Point an asset at another file (it moved, or was replaced) and probe it again. The new file must be the same kind (video, image, audio, lottie), else bad_type: import_media it and update_clip each clip. Returns the new probe and `changed` ({field: {old, new}}), and `recheck`: clips whose auto_reframe focus or track_to x/y keyframes may come from the old picture (run those ops again; nothing is changed or deleted). The old file is never removed, so undo restores the old record. The clips are kept as they are; captions made from a transcript of the old file keep their timings.",
   { id: "asset id (required)", path: "the new file (required)", copy: "copy into project media/ (false)" },
-  (p, tl, a) => {
+  async (p, tl, a) => {
     if (!own(tl.assets, a.id)) throw new EditError(`asset '${a.id}' not found`, "not_found");
     const src = mediaSource(p, a.path);
     for (const [k, x] of Object.entries(tl.assets)) if (k !== a.id && sameFile(presolve(p.abs(x.path)), src)) throw new EditError(`${a.path} is already imported as asset '${k}'`, "exists", `use id '${k}' on the clips, or remove_asset id=${k} first`);
-    const old = tl.assets[a.id], info = mediaRecord(p, src, !!a.copy);
+    const old = tl.assets[a.id], info = (await mediaRecord(p, src, !!a.copy));
     if (info.kind !== old.kind) throw new EditError(`asset '${a.id}' is ${old.kind}, the new file is ${info.kind}`, "bad_type", "import_media the new file, then update_clip each clip");
     tl.assets[a.id] = info;
     const changed: Dict = {};
@@ -232,10 +232,10 @@ function defaultDuration(tl: Timeline, c: Clip): number {
 
 export const trackEnd = (tr: Track) => Math.max(0, ...tr.clips.map(clipEnd));
 
-function makeClip(p: Project, tl: Timeline, a: Dict): Clip {
+async function makeClip(p: Project, tl: Timeline, a: Dict): Promise<Clip> {
   const given = Object.keys(a);
   a = { ...a };
-  if (a.src) a.asset = importAsset(p, tl, a.src);
+  if (a.src) a.asset = (await importAsset(p, tl, a.src));
   if (a.asset && !own(tl.assets, a.asset)) { const s = suggest(a.asset, Object.keys(tl.assets)); throw new EditError(`asset '${a.asset}' not found`, "not_found", `${s ? `did you mean '${s}'? ` : ""}import it first or pass src`); }
   if (a.srt) a.srt = absPath(a.srt);
   for (const f of a.filters ?? []) if (f && typeof f === "object" && f.type === "lut" && f.path) f.path = absPath(f.path);
@@ -360,7 +360,7 @@ function shiftClips(tl: Timeline, tr: Track, moved: Clip[], d: number) {
   if (stay.length) resolve(tl); // placeAt writes offsets only
 }
 
-function addClip(p: Project, tl: Timeline, a: Dict): Dict {
+async function addClip(p: Project, tl: Timeline, a: Dict): Promise<Dict> {
   if ("start" in a) throw new EditError("add_clip: unknown argument 'start'", "bad_arg", "add_clip places a clip with 'at'", ".start");
   refuseUnknown(Object.keys(a), addKeys(), "add_clip", { stored: true, list: "arguments: track, src, asset, type, at, index, after, before, duration, end, preset, or a clip field (see timeline_schema)" });
   if (a.attach_to) { a = { ...a, attach_to: resolveRef(tl, a.attach_to) }; findClip(tl, a.attach_to); }
@@ -372,7 +372,7 @@ function addClip(p: Project, tl: Timeline, a: Dict): Dict {
   }
   // "at" relative to end must be computed before this clip exists
   if (typeof a.at === "string" && /^end/i.test(a.at)) a = { ...a, at: parseAt(tl, a.at) };
-  const c = makeClip(p, tl, a);
+  const c = (await makeClip(p, tl, a));
   lengthOnce(c);
   const tr = ensureTrack(tl, a.track, c.type);
   refuseAttachedMagnetic(c, tr);
@@ -389,30 +389,30 @@ op("add_clip", "Add a clip. Type is inferred (src/asset -> video|image|audio|lot
 
 op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to build a slideshow/montage. defaults apply to every item.",
   { track: "default main", items: "list of clip specs or paths", defaults: "shared fields (duration, transition, motion, fit...)" },
-  (p, tl, a) => {
+  async (p, tl, a) => {
     const tid = a.track ?? "main";
     const out: Dict[] = [];
-    (a.items ?? []).forEach((it: any, i: number) => {
+    for (let [i, it] of (a.items ?? []).entries()) {
       if (typeof it === "string") it = { src: it };
       const spec: Dict = { ...(a.defaults ?? {}), ...it, track: tid };
       const tr = tl.tracks.find((t) => t.id === tid);
       if (i === 0 && !("transition" in it) && (!tr || !tr.clips.length)) delete spec.transition;
       for (const k of Object.keys(spec)) if (spec[k] === undefined) delete spec[k];
-      try { out.push(addClip(p, tl, spec)); }
+      try { out.push((await addClip(p, tl, spec))); }
       catch (e) { // name where the unknown key sits: items[i] (0-based) or defaults
         if (e instanceof EditError && e.code === "bad_arg" && e.path?.startsWith(".")) e.path = `${e.path.slice(1) in it ? `.items[${i}]` : ".defaults"}${e.path}`;
         throw e;
       }
-    });
+    }
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
 
 op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. Shorthand: pass fields directly. start on an attached clip sets its offset (start with offset is refused); a clip on a magnetic track cannot be attached (attached_magnetic).",
-  { id: "clip id", set: "fields (dicts merge; keyframes replace)", "...": "clip fields (instead of set)" }, (p, tl, a) => {
+  { id: "clip id", set: "fields (dicts merge; keyframes replace)", "...": "clip fields (instead of set)" }, async (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
     const patch = patchOf(a, "update_clip");
     refuseUnknown(keysToSet(patch, c), Object.keys(fieldsFor(c.type)), "update_clip", { kind: "field", stored: true, list: `see timeline_schema for the fields of a ${c.type} clip` });
-    if (patch.src) { patch.asset = importAsset(p, tl, patch.src); delete patch.src; }
+    if (patch.src) { patch.asset = (await importAsset(p, tl, patch.src)); delete patch.src; }
     if (patch.attach_to) patch.attach_to = resolveRef(tl, patch.attach_to);
     if (typeof patch.match_duration === "string") patch.match_duration = followTarget(tl, c, patch.match_duration);
     if (patch.srt) patch.srt = absPath(patch.srt);
@@ -670,7 +670,7 @@ op("clear_markers", "Remove markers (all, or those whose label contains match)."
 // ---------------------------------------------------------------- captions / voice / beats / templates
 /** `cap`: the longest the clip may last (seconds from its start), so that the hold after the last word never outlives the sound.
  *  `timed`: the clips the words were timed for, with absolute timeline starts; the clip records them relative to its own start. */
-function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { asset: string; cut: number[][] }) {
+async function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { asset: string; cut: number[][] }) {
   refuseUnknown(Object.keys(a), [...new Set([...argNames("add_captions"), ...Object.keys(fieldsFor("captions"))])].filter((k) => k !== "start"), "add_captions", { stored: true, list: "arguments: words, srt, transcribe, preset, track, at, style, or a text style field (see timeline_schema)" });
   a = { ...a };
   if (a.transcribe_range !== undefined && !a.transcribe) throw new EditError("transcribe_range needs transcribe", "bad_value", "give transcribe=<media> with it, or drop transcribe_range");
@@ -694,7 +694,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { 
       cap = Math.max(...played.cut.map(([cin, out, start, speed]) => start + (out - cin) / speed));
     } else {
       a.words = t.words;
-      const end = Number((asset ? tl.assets[asset].duration : undefined) ?? probe(path).duration);
+      const end = Number((asset ? tl.assets[asset].duration : undefined) ?? (await probe(path)).duration);
       if (end > 0) cap = a.transcribe_range ? Math.min(a.transcribe_range[1], end) : end;
     }
     delete a.transcribe; delete a.language; delete a.transcribe_range;
@@ -708,7 +708,7 @@ function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, timed?: { 
   delete a.preset;
   const given = Object.fromEntries(Object.entries(a).filter(([k]) => !["op", "track", "at"].includes(k)));
   const spec = { ...expandPreset("captions", presetName, sample, given), track: a.track ?? "captions", at: a.at ?? 0, type: "captions" };
-  const res = addClip(p, tl, spec);
+  const res = (await addClip(p, tl, spec));
   if (timed) {
     resolve(tl);
     const [, , made] = findClip(tl, res.id), s0 = clipStart(made);
@@ -721,7 +721,7 @@ op("add_captions", "Add animated captions from word timings, .srt/.vtt, or by tr
   addCaptions);
 
 op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via say/SAPI/espeak, 'piper[:model.onnx]', or 'openai:<voice>' for an OpenAI-compatible server; see list_voices (CLI: agentcut voices)), placed on the voice track. captions=true (or a caption preset name) adds timed captions. Each sentence is synthesized separately (one request per sentence for openai; rate applies to each), so captions follow the real sentence timing. piper runs with ORT_DISABLE_TELEMETRY=1.",
-  { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, (p, tl, a) => {
+  { text: "script", voice: "voice name, optionally provider-prefixed", rate: "words/min", track: "voice", at: "start (default end of voice track)", captions: "bool | preset name | caption fields" }, async (p, tl, a) => {
     const res = AN.analysis(p, { kind: "tts", text: a.text, voice: a.voice, rate: a.rate });
     let stamp = p.stamp, out = join(p.root, "media", `vo-${stamp}.wav`);
     while (lexists(out)) out = join(p.root, "media", `vo-${++stamp}.wav`); // a voiceover of this batch may already hold the millisecond
@@ -731,7 +731,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
     const tr = ensureTrack(tl, tid, "audio");
     if (!tr.role) tr.role = "voice";
     const at = a.at !== undefined ? parseAt(tl, a.at) : trackEnd(tr);
-    const clip = addClip(p, tl, { track: tid, src: out, at });
+    const clip = (await addClip(p, tl, { track: tid, src: out, at }));
     const result: Dict = { clip, duration: res.duration, path: p.rel(out) };
     if (a.captions) {
       const speech = AN.analysis(p, { kind: "silence", path: res.path, noiseDb: -40, minSilence: 0.15 }).speech;
@@ -743,7 +743,7 @@ op("add_voiceover", "Text-to-speech into media/ (voice: OS voice e.g. 'Linh' via
       const extra = typeof a.captions === "object" ? a.captions : typeof a.captions === "string" ? { preset: a.captions } : {};
       resolve(tl);
       const [, , voice] = findClip(tl, clip.id);
-      result.captions = addCaptions(p, tl, { words, at, ...extra }, clipDur(voice), { asset: voice.asset, cut: playedCut(tl, voice.asset).cut });
+      result.captions = (await addCaptions(p, tl, { words, at, ...extra }, clipDur(voice), { asset: voice.asset, cut: playedCut(tl, voice.asset).cut }));
     }
     return result;
   });
@@ -876,17 +876,18 @@ op("remove_silence", "Cut dead air out of a video/audio clip (Auto-Editor / CapC
   });
 
 op("apply_template", "Build a whole video from a template (expands into ordinary ops you can edit afterwards). Templates: " + Object.keys(TEMPLATES).join(", ") + ".",
-  { name: Object.keys(TEMPLATES).join("|"), "...": "template args (see capabilities.templates)" }, (p, tl, a) => {
+  { name: Object.keys(TEMPLATES).join("|"), "...": "template args (see capabilities.templates)" }, async (p, tl, a) => {
     const t = own(TEMPLATES, a.name);
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
     refuseUnknown(Object.keys(a), ["name", ...Object.keys(t.args)], `apply_template ${a.name}`);
     if (["slideshow", "promo", "beat_montage"].includes(a.name) && !a.media?.length) throw new EditError(`template '${a.name}' needs media: [paths]`, "missing_arg");
     const ops = t.build(a, tl.settings as { width: number; height: number });
-    const results = ops.map((o, i) => {
+    const results: Dict[] = [];
+    for (const [i, o] of ops.entries()) {
       const { op: name, ...args } = o;
-      try { return { op: name, ...OPS[name].fn(p, tl, args) }; }
+      try { results.push({ op: name, ...await OPS[name].fn(p, tl, args) }); }
       catch (e: any) { if (e instanceof EditError) e.path = `template ${a.name} step ${i} (${name})`; throw e; }
-    });
+    }
     return { template: a.name, steps: results.length, results, duration: totalDuration(resolve(tl)) };
   });
 
@@ -915,10 +916,10 @@ registerAudioOps(helpers);
 registerVisionOps(helpers);
 
 // ---------------------------------------------------------------- runner
-export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict[]] {
+function* opSteps(p: Project, tl: Timeline, ops: Dict[]): Generator<Dict | Promise<Dict>, [Timeline, Dict[]], Dict> {
   const work = structuredClone(tl);
   const results: Dict[] = [];
-  ops.forEach((o, i) => {
+  for (const [i, o] of ops.entries()) {
     if (!o || typeof o !== "object" || !o.op) throw new EditError(`ops[${i}] must be an object with an 'op' field`, "bad_op", undefined, `ops[${i}]`);
     const def = own(OPS, o.op);
     if (!def) { const s = suggest(o.op, Object.keys(OPS)); throw new EditError(`ops[${i}]: unknown op '${o.op}'`, "unknown_op", `${s ? `did you mean '${s}'? ` : ""}ops: ${Object.keys(OPS).join(", ")}`, `ops[${i}]`); }
@@ -926,15 +927,38 @@ export function applyOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict
       const { op: _n, ...args } = o;
       refuseProtoKeys(args);
       if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(o.op), o.op);
-      results.push({ op: o.op, ...def.fn(p, work, args) });
+      results.push({ op: o.op, ...yield def.fn(p, work, args) });
     } catch (e: any) {
       if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${o.op})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${o.op})`; throw e; }
       if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${o.op}): missing or invalid argument`, "missing_arg", `${o.op} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
       throw e;
     }
-  });
+  }
   resolve(work);
   return [work, results];
+}
+
+export async function applyOps(p: Project, tl: Timeline, ops: Dict[]): Promise<[Timeline, Dict[]]> {
+  const steps = opSteps(p, tl, ops);
+  let step = steps.next();
+  while (!step.done) {
+    let result: Dict;
+    try { result = await step.value; }
+    catch (e) { step = steps.throw(e); continue; }
+    step = steps.next(result);
+  }
+  return step.value;
+}
+
+/** Pending vision requests are synchronous: collectors must finish before their analysis sink is restored. */
+export function applyPendingOps(p: Project, tl: Timeline, ops: Dict[]): [Timeline, Dict[]] {
+  const steps = opSteps(p, tl, ops);
+  let step = steps.next();
+  while (!step.done) {
+    if (step.value instanceof Promise) throw new Error("pending vision ops must be synchronous");
+    step = steps.next(step.value);
+  }
+  return step.value;
 }
 
 export const opsDoc = () => Object.fromEntries(Object.entries(OPS).map(([k, v]) => [k, { doc: v.doc, args: v.args }]));

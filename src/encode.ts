@@ -257,7 +257,7 @@ export function outputDraw(tl: Timeline, extension: string, o: RenderOpts = {}) 
 }
 
 export async function renderVideo(tl: Timeline, root: string, output: string, o: RenderOpts = {}) {
-  needFfmpeg();
+  (await needFfmpeg());
   o.signal?.throwIfAborted();
   refuseSource(root, tl, output);
   const ext = extname(output).toLowerCase();

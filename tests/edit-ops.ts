@@ -36,6 +36,25 @@ ff("-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=6", "-f", "lavfi"
 ff("-f", "lavfi", "-i", "color=c=blue:size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(m, "silent.mp4"));
 ff("-f", "lavfi", "-i", "gradients=size=400x400:n=3", "-frames:v", "1", join(m, "p.png"));
 
+console.log("async probing");
+{
+  let responsive = false;
+  const tick = setImmediate(() => { responsive = true; });
+  const info = await api.probe(join(m, "a.mp4"));
+  clearImmediate(tick);
+  check("probing yields to the event loop and keeps the media record", responsive && info.kind === "video" && near(info.duration, 6) && info.has_audio, info);
+  const cached = await api.probe(join(m, "a.mp4"));
+  check("an async probe cache hit returns a separate record", cached !== info && JSON.stringify(cached) === JSON.stringify(info));
+  const empty = join(m, "empty.mp4");
+  writeFileSync(empty, "");
+  for (const [path, code] of [[empty, "bad_media"], [join(m, "missing.mp4"), "not_found"]]) {
+    try { await api.probe(path); check(`probe rejects ${code}`, false); }
+    catch (e: any) { check(`probe rejects ${code}`, e.code === code, { code: e.code, message: e.message }); }
+  }
+  const original = newTimeline(640, 360, 30), [unchanged, results] = await applyOps(null as any, original, []);
+  check("an empty async batch returns an unchanged copy and no results", unchanged !== original && JSON.stringify(unchanged) === JSON.stringify(original) && results.length === 0);
+}
+
 const P = join(tmp, "proj");
 api.create(P, { preset: "720p" });
 const apply = async (ops: any[], dryRun = false) => (await applyLatest(P, ops, { dryRun })).results;
@@ -144,7 +163,7 @@ console.log("reverse / pure timeline");
   const t = newTimeline(640, 360, 30);
   t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
   t.tracks[0].clips = [{ id: "x1", type: "video", asset: "v", in: 0, duration: 2 }, { id: "x2", type: "video", asset: "v", in: 4, duration: 2, reverse: true, keyframes: { volume: [[0, 1], [1, 0.5]] } }];
-  const [out, res] = applyOps(null as any, t, [{ op: "j_cut", id: "x2", seconds: 1 }, { op: "l_cut", id: "x2", seconds: 1 }]);
+  const [out, res] = (await applyOps(null as any, t, [{ op: "j_cut", id: "x2", seconds: 1 }, { op: "l_cut", id: "x2", seconds: 1 }]));
   const au = out.tracks.flatMap((tr) => tr.clips).find((c) => c.id === res[0].audio)!;
   check("reverse j_cut keeps in, l_cut lowers in", au.reverse && near(au.in as number, 3) && near(au.duration as number, 4) && near(au.start as number, 1), au);
   check("volume keyframes shift with the head", near(au.keyframes.volume[0][0], 1) && near(au.keyframes.volume[1][0], 2), au.keyframes);
@@ -160,136 +179,136 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
     t.assets.l = { path: "/none.json", kind: "lottie" };
     return t;
   };
-  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const run = async (t: any, ops: any[]) => (await applyOps(null as any, t, ops));
   const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
   const errs = (t: any) => validate(t).filter((i: any) => i.level === "error");
-  const refuses = (name: string, t: any, ops: any[], code: string) => {
-    try { run(t, ops); check(name, false, "no error"); }
+  const refuses = async (name: string, t: any, ops: any[], code: string) => {
+    try { (await run(t, ops)); check(name, false, "no error"); }
     catch (e: any) { check(name, e.code === code && !!e.hint, { code: e.code, message: e.message, hint: e.hint }); }
   };
   // until_end clips: an explicit length edit replaces the stretch
-  const bed = () => run(mk(), [
+  const bed = async () => (await run(mk(), [
     { op: "add_clip", track: "main", asset: "v", id: "mv", duration: 10 },
     { op: "add_clip", track: "music", asset: "s", type: "audio", id: "bed", at: 0, until_end: true },
-  ])[0];
-  check("until_end setup: the bed stretches to the end of the rest", near(at(bed(), "bed").duration, 10), at(bed(), "bed"));
-  const [us, [sr]] = run(bed(), [{ op: "split_clip", id: "bed", at: 4 }]);
+  ]))[0];
+  check("until_end setup: the bed stretches to the end of the rest", near(at((await bed()), "bed").duration, 10), at((await bed()), "bed"));
+  const [us, [sr]] = (await run((await bed()), [{ op: "split_clip", id: "bed", at: 4 }]));
   check("split_clip of an until_end clip: neither half stretches", near(at(us, "bed").duration, 4) && near(at(us, sr.right).duration, 6) && near(at(us, sr.right).start, 4) && !at(us, "bed").until_end && !at(us, sr.right).until_end, [at(us, "bed"), at(us, sr.right)]);
-  const [ut] = run(bed(), [{ op: "trim_clip", id: "bed", trim_end: 3 }]);
+  const [ut] = (await run((await bed()), [{ op: "trim_clip", id: "bed", trim_end: 3 }]));
   check("trim_clip on an until_end clip keeps the trimmed length", near(at(ut, "bed").duration, 7) && !at(ut, "bed").until_end, at(ut, "bed"));
-  const [uu] = run(bed(), [{ op: "update_clip", id: "bed", duration: 5 }]);
+  const [uu] = (await run((await bed()), [{ op: "update_clip", id: "bed", duration: 5 }]));
   check("update_clip duration on an until_end clip keeps the length", near(at(uu, "bed").duration, 5) && !at(uu, "bed").until_end, at(uu, "bed"));
-  const [ur] = run(bed(), [{ op: "update_clip", id: "bed", name: "x" }]);
+  const [ur] = (await run((await bed()), [{ op: "update_clip", id: "bed", name: "x" }]));
   check("an until_end clip not edited in length keeps stretching", at(ur, "bed").until_end === true && near(at(ur, "bed").duration, 10), at(ur, "bed"));
   // trim_start by clip type
-  const kinds = run(mk(), [
+  const kinds = (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "i", id: "im", at: 0, duration: 4, keyframes: { opacity: [[1, 0], [2, 1]] } },
     { op: "add_clip", track: "overlay", type: "text", text: "hi", id: "tx", at: 0, duration: 4 },
     { op: "add_clip", track: "overlay", type: "shape", shape: "rect", id: "sh", at: 0, duration: 4 },
     { op: "add_clip", track: "main", asset: "v", id: "vd", in: 2, duration: 4, keyframes: { volume: [[1, 0.5], [3, 1]] } },
     { op: "add_clip", track: "main", asset: "v", id: "rv", in: 2, duration: 4, reverse: true },
     { op: "add_clip", track: "main", asset: "v", id: "fz", in: 2, duration: 4, freeze: true },
-  ])[0];
-  const [tk] = run(kinds, ["im", "tx", "sh", "vd", "rv", "fz"].map((id) => ({ op: "trim_clip", id, trim_start: 1 })));
+  ]))[0];
+  const [tk] = (await run(kinds, ["im", "tx", "sh", "vd", "rv", "fz"].map((id) => ({ op: "trim_clip", id, trim_start: 1 }))));
   check("trim_start on an image, text and shape clip leaves no in-point and the batch validates", ["im", "tx", "sh"].every((id) => at(tk, id).in === undefined && near(at(tk, id).duration, 3)) && errs(tk).length === 0, errs(tk));
   check("trim_start shifts the keyframes of the trimmed clip by the trimmed amount", near(at(tk, "im").keyframes.opacity[0][0], 0) && near(at(tk, "im").keyframes.opacity[1][0], 1) && near(at(tk, "vd").keyframes.volume[0][0], 0) && near(at(tk, "vd").in, 3), [at(tk, "im").keyframes, at(tk, "vd")]);
   check("trim_start on a reversed clip trims the end of the content: in stays", near(at(tk, "rv").in, 2) && near(at(tk, "rv").duration, 3), at(tk, "rv"));
   check("trim_start on a freeze clip keeps the frozen frame", near(at(tk, "fz").in, 2) && near(at(tk, "fz").duration, 3), at(tk, "fz"));
-  const cw = run(mk(), [{ op: "add_clip", track: "text", id: "cap", at: 0, words: [{ text: "a", start: 0, end: 0.5 }, { text: "b", start: 1.2, end: 1.6 }, { text: "c", start: 2, end: 2.5 }] }])[0];
-  const [tw] = run(cw, [{ op: "trim_clip", id: "cap", trim_start: 1 }]);
-  const cws = run(mk(), [{ op: "add_clip", track: "text", id: "caps", at: 0, words: [{ text: "a", start: "0s", end: "0.5s" }, { text: "b", start: "1.2s", end: "1.6s" }] }])[0];
-  const [tws] = run(cws, [{ op: "trim_clip", id: "caps", trim_start: 1 }]);
+  const cw = (await run(mk(), [{ op: "add_clip", track: "text", id: "cap", at: 0, words: [{ text: "a", start: 0, end: 0.5 }, { text: "b", start: 1.2, end: 1.6 }, { text: "c", start: 2, end: 2.5 }] }]))[0];
+  const [tw] = (await run(cw, [{ op: "trim_clip", id: "cap", trim_start: 1 }]));
+  const cws = (await run(mk(), [{ op: "add_clip", track: "text", id: "caps", at: 0, words: [{ text: "a", start: "0s", end: "0.5s" }, { text: "b", start: "1.2s", end: "1.6s" }] }]))[0];
+  const [tws] = (await run(cws, [{ op: "trim_clip", id: "caps", trim_start: 1 }]));
   check("trim_start keeps caption words whose times are strings", JSON.stringify(at(tws, "caps").words.map((w: any) => [w.text, w.start, w.end])) === '[["b",0.2,0.6]]', at(tws, "caps").words);
   check("trim_start on a captions clip shifts its words and drops the ones cut off", JSON.stringify(at(tw, "cap").words.map((w: any) => [w.text, w.start, w.end])) === '[["b",0.2,0.6],["c",1,1.5]]' && near(at(tw, "cap").start, 1) && errs(tw).length === 0, at(tw, "cap"));
-  const cs = run(mk(), [{ op: "add_clip", track: "text", id: "cs", at: 0, duration: 4, srt: "1\n00:00:00,500 --> 00:00:01,500\nhello there\n" }])[0];
-  refuses("trim_start on srt captions (times it cannot move) is refused", cs, [{ op: "trim_clip", id: "cs", trim_start: 1 }], "bad_type");
-  const dv = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "dv", in: 2, duration: 4, keyframes: { volume: [[1, 0.5], [3, 1]] } }, { op: "detach_audio", id: "dv" }])[0];
-  const [td] = run(dv, [{ op: "trim_clip", id: "dv", trim_start: 1 }]);
+  const cs = (await run(mk(), [{ op: "add_clip", track: "text", id: "cs", at: 0, duration: 4, srt: "1\n00:00:00,500 --> 00:00:01,500\nhello there\n" }]))[0];
+  (await refuses("trim_start on srt captions (times it cannot move) is refused", cs, [{ op: "trim_clip", id: "cs", trim_start: 1 }], "bad_type"));
+  const dv = (await run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "dv", in: 2, duration: 4, keyframes: { volume: [[1, 0.5], [3, 1]] } }, { op: "detach_audio", id: "dv" }]))[0];
+  const [td] = (await run(dv, [{ op: "trim_clip", id: "dv", trim_start: 1 }]));
   const dau = td.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "dv");
   check("trim_start shifts the detached audio's volume keyframes with its picture", near(dau.keyframes.volume[0][0], 0) && near(dau.keyframes.volume[1][0], 2) && near(dau.in, 3), dau);
   // attach_audio: detach_audio's inverse
   const canon = (x: any): any => (Array.isArray(x) ? x.map(canon) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, canon(x[k])])) : x);
-  const fxv = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "fx", in: 1, duration: 3, volume: 0.8, fade_in: 0.2, fade_out: 0.1, denoise: 0.5, eq: "voice_clarity", compressor: "voice", pan: 0.3, pitch: 2, normalize: -16, keyframes: { volume: [[0, 0.5], [2, 1]] } }])[0];
-  const [fxd] = run(fxv, [{ op: "detach_audio", id: "fx" }]);
+  const fxv = (await run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "fx", in: 1, duration: 3, volume: 0.8, fade_in: 0.2, fade_out: 0.1, denoise: 0.5, eq: "voice_clarity", compressor: "voice", pan: 0.3, pitch: 2, normalize: -16, keyframes: { volume: [[0, 0.5], [2, 1]] } }]))[0];
+  const [fxd] = (await run(fxv, [{ op: "detach_audio", id: "fx" }]));
   const fxa = at(fxd, "aud1");
   check("detach_audio setup: the processing moved to the audio clip", fxa.denoise === 0.5 && fxa.pitch === 2 && at(fxd, "fx").denoise === undefined && at(fxd, "fx").muted === true, [fxa, at(fxd, "fx")]);
-  const [fxr, [fxres]] = run(fxd, [{ op: "attach_audio", id: "fx" }]);
+  const [fxr, [fxres]] = (await run(fxd, [{ op: "attach_audio", id: "fx" }]));
   check("attach_audio after detach_audio restores the video's fields exactly (JSON, keys sorted) and removes the audio clip", JSON.stringify(canon(at(fxr, "fx"))) === JSON.stringify(canon(at(fxv, "fx"))) && !at(fxr, "aud1") && fxres.removed === "aud1", { before: at(fxv, "fx"), after: at(fxr, "fx") });
-  check("attach_audio accepts the audio clip's id too", !at(run(fxd, [{ op: "attach_audio", id: "aud1" }])[0], "aud1"));
-  const [jc2] = run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "x1", in: 0, duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "x2", in: 4, duration: 2 }, { op: "j_cut", id: "x2", seconds: 0.5 }]);
-  try { run(jc2, [{ op: "attach_audio", id: "x2" }]); check("attach_audio refuses a J-cut's audio", false, "no error"); }
+  check("attach_audio accepts the audio clip's id too", !at((await run(fxd, [{ op: "attach_audio", id: "aud1" }]))[0], "aud1"));
+  const [jc2] = (await run(mk(), [{ op: "add_clip", track: "main", asset: "v", id: "x1", in: 0, duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "x2", in: 4, duration: 2 }, { op: "j_cut", id: "x2", seconds: 0.5 }]));
+  try { (await run(jc2, [{ op: "attach_audio", id: "x2" }])); check("attach_audio refuses a J-cut's audio", false, "no error"); }
   catch (e: any) { check("attach_audio refuses a J-cut's audio as out_of_sync, naming offset", e.code === "out_of_sync" && /offset/.test(e.message) && e.details?.field === "offset" && !!e.hint, { code: e.code, message: e.message, details: e.details }); }
-  refuses("attach_audio on a video with no detached audio is refused as not_detached", fxv, [{ op: "attach_audio", id: "fx" }], "not_detached");
-  check("after attach_audio a speed ramp is accepted (detached, it was refused)", errs(run(fxr, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).length === 0);
+  (await refuses("attach_audio on a video with no detached audio is refused as not_detached", fxv, [{ op: "attach_audio", id: "fx" }], "not_detached"));
+  check("after attach_audio a speed ramp is accepted (detached, it was refused)", errs((await run(fxr, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }]))[0]).length === 0);
   { // state of the audio clip that keeps the sound silent (or unplayable) must not turn audible
     const mute = structuredClone(fxd); at(mute, "aud1").muted = true;
-    check("attach_audio keeps a muted detached audio silent (the video ends muted)", at(run(mute, [{ op: "attach_audio", id: "fx" }])[0], "fx").muted === true);
+    check("attach_audio keeps a muted detached audio silent (the video ends muted)", at((await run(mute, [{ op: "attach_audio", id: "fx" }]))[0], "fx").muted === true);
     for (const side of ["aud1", "fx"]) for (const state of [{ muted: true }, { volume: 0 }]) { // the audio's track, and the video's
       const quiet = structuredClone(fxd); Object.assign(quiet.tracks.find((t: any) => t.clips.some((c: any) => c.id === side))!, state);
-      refuses(`attach_audio refuses ${side === "fx" ? "a video" : "audio"} on a track with ${JSON.stringify(state)} as audio_state`, quiet, [{ op: "attach_audio", id: "fx" }], "audio_state");
+      (await refuses(`attach_audio refuses ${side === "fx" ? "a video" : "audio"} on a track with ${JSON.stringify(state)} as audio_state`, quiet, [{ op: "attach_audio", id: "fx" }], "audio_state"));
     }
     const frozen = structuredClone(fxd); at(frozen, "fx").freeze = true;
-    refuses("attach_audio refuses a frozen video as audio_state", frozen, [{ op: "attach_audio", id: "fx" }], "audio_state");
+    (await refuses("attach_audio refuses a frozen video as audio_state", frozen, [{ op: "attach_audio", id: "fx" }], "audio_state"));
     const tail = structuredClone(fxd); at(tail, "aud1").until_end = true;
-    refuses("attach_audio refuses audio with its own length rule (until_end) as audio_state", tail, [{ op: "attach_audio", id: "fx" }], "audio_state");
+    (await refuses("attach_audio refuses audio with its own length rule (until_end) as audio_state", tail, [{ op: "attach_audio", id: "fx" }], "audio_state"));
   }
   { // clips attached to the audio clip move to the video, in place
-    const [pinned] = run(fxd, [{ op: "add_clip", track: "text", type: "text", text: "t", id: "tag", attach_to: "aud1", offset: 0.5, duration: 1 }, { op: "add_clip", track: "text", type: "text", text: "u", id: "fol", at: 0, match_duration: "aud1" }]);
-    const [moved] = run(pinned, [{ op: "attach_audio", id: "fx" }]);
+    const [pinned] = (await run(fxd, [{ op: "add_clip", track: "text", type: "text", text: "t", id: "tag", attach_to: "aud1", offset: 0.5, duration: 1 }, { op: "add_clip", track: "text", type: "text", text: "u", id: "fol", at: 0, match_duration: "aud1" }]));
+    const [moved] = (await run(pinned, [{ op: "attach_audio", id: "fx" }]));
     check("attach_audio re-points clips attached to the audio (attach_to, match_duration) to the video and keeps their start and length",
       at(moved, "tag").attach_to === "fx" && at(moved, "fol").match_duration === "fx" && near(at(moved, "tag").start, at(pinned, "tag").start) && near(at(moved, "fol").duration, at(pinned, "fol").duration) && errs(moved).length === 0, [at(moved, "tag"), at(moved, "fol"), errs(moved)]);
   }
   { // splitting the detached audio itself leaves two audio clips attached to one video: a valid layout, so no op may pick one of them
-    const [pieces] = run(fxd, [{ op: "split_clip", id: "aud1", at: 1 }, { op: "add_clip", track: "main", asset: "v", id: "p1", duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "p2", duration: 2 }]);
+    const [pieces] = (await run(fxd, [{ op: "split_clip", id: "aud1", at: 1 }, { op: "add_clip", track: "main", asset: "v", id: "p1", duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "p2", duration: 2 }]));
     const attached = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio" && c.attach_to === id);
     check("two audio pieces on one video validate clean", attached(pieces, "fx").length === 2 && errs(pieces).length === 0, errs(pieces));
     for (const o of [{ op: "attach_audio", id: "fx" }, { op: "trim_clip", id: "fx", trim_start: 0.5 }, { op: "j_cut", id: "fx", seconds: 0.2 }, { op: "l_cut", id: "fx", seconds: 0.2 }, { op: "remove_silence", id: "fx" }, { op: "roll_edit", id: "fx", by: 0.2 }, { op: "slide_clip", id: "p1", by: 0.2 }])
-      refuses(`${o.op} on a video with two audio pieces is refused as audio_pieces`, pieces, [o], "audio_pieces");
+      (await refuses(`${o.op} on a video with two audio pieces is refused as audio_pieces`, pieces, [o], "audio_pieces"));
     const rev = structuredClone(pieces); at(rev, "fx").reverse = true;
     const soft = (name: string, f: () => void) => { try { f(); } catch (e: any) { check(name, false, { code: e.code, message: e.message }); } }; // a refusal fails its own row, not the suite
-    soft("trim_clip on a reversed video with two audio pieces is not refused", () => { const [tr2] = run(rev, [{ op: "trim_clip", id: "fx", trim_start: 0.5 }]);
+    soft("trim_clip on a reversed video with two audio pieces is not refused", async () => { const [tr2] = (await run(rev, [{ op: "trim_clip", id: "fx", trim_start: 0.5 }]));
     check("trim_clip on a reversed video with two audio pieces trims the picture and leaves both pieces alone", near(at(tr2, "fx").duration, 2.5) && attached(tr2, "fx").every((x: any, i: number) => near(x.duration, attached(rev, "fx")[i].duration) && near(x.in, attached(rev, "fx")[i].in)), [at(tr2, "fx"), attached(tr2, "fx")]); });
-    soft("slip_clip on a video with two audio pieces is not refused", () => { const [sl, [slr]] = run(pieces, [{ op: "slip_clip", id: "fx", by: 0.2 }]);
+    soft("slip_clip on a video with two audio pieces is not refused", async () => { const [sl, [slr]] = (await run(pieces, [{ op: "slip_clip", id: "fx", by: 0.2 }]));
     check("slip_clip slips the picture and every audio piece by the same amount, and lists them", near(at(sl, "fx").in, 1.2) && near(at(sl, "aud1").in, 1.2) && near(at(sl, "aud2").in, 2.2) && slr.audio.length === 2, [slr, attached(sl, "fx")]); });
     const tight = structuredClone(pieces); at(tight, "aud2").in = 0.3; // only this piece cannot slip earlier by 0.5
-    refuses("slip_clip is bounded by every audio piece, not only the picture", tight, [{ op: "slip_clip", id: "fx", by: -0.5 }], "out_of_range");
-    soft("enhance_voice on a video with two audio pieces is not refused", () => { const [ev, [evr]] = run(pieces, [{ op: "enhance_voice", id: "fx" }]);
+    (await refuses("slip_clip is bounded by every audio piece, not only the picture", tight, [{ op: "slip_clip", id: "fx", by: -0.5 }], "out_of_range"));
+    soft("enhance_voice on a video with two audio pieces is not refused", async () => { const [ev, [evr]] = (await run(pieces, [{ op: "enhance_voice", id: "fx" }]));
     check("enhance_voice enhances every audio piece and lists them", attached(ev, "fx").length === 2 && attached(ev, "fx").every((x: any) => x.normalize === true && x.compressor === "voice") && at(ev, "fx").normalize === undefined && evr.clips.length === 2, [evr, attached(ev, "fx")]); });
-    const [sp] = run(pieces, [{ op: "split_clip", id: "fx", at: 2 }]);
+    const [sp] = (await run(pieces, [{ op: "split_clip", id: "fx", at: 2 }]));
     const [left, right] = [attached(sp, "fx"), attached(sp, sp.tracks[0].clips[1].id)];
     check("split_clip on a video splits the piece it crosses, and every piece stays with its picture", left.length === 2 && right.length === 1 && near(right[0].start, 2) && near(right[0].duration, 1) && errs(sp).length === 0, [left, right]);
-    const [dp, [dr]] = run(pieces, [{ op: "duplicate_clip", id: "fx" }]);
+    const [dp, [dr]] = (await run(pieces, [{ op: "duplicate_clip", id: "fx" }]));
     check("duplicate_clip copies every audio piece", Array.isArray(dr.audio) && dr.audio.length === 2 && attached(dp, dr.id).length === 2 && errs(dp).length === 0, [dr, attached(dp, dr.id)]);
-    const ramp = errs(run(pieces, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }])[0]).filter((i: any) => /detached audio/.test(i.message));
+    const ramp = errs((await run(pieces, [{ op: "set_keyframes", id: "fx", prop: "speed", keyframes: [[0, 1], [1, 2]] }]))[0]).filter((i: any) => /detached audio/.test(i.message));
     check("validate: a speed ramp on a video with two audio pieces is an error naming both", ramp.length === 1 && /aud1/.test(ramp[0].message) && /aud2/.test(ramp[0].message), ramp);
     check("validate: the hint for two audio pieces names a removal of each and offers no attach_audio", /remove_clip id=aud1/.test(ramp[0]?.hint ?? "") && /remove_clip id=aud2/.test(ramp[0]?.hint ?? "") && !/attach_audio/.test(ramp[0]?.hint ?? ""), ramp[0]?.hint);
   }
-  const [te] = run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]);
+  const [te] = (await run(kinds, [{ op: "trim_clip", id: "rv", trim_end: 1 }]));
   check("trim_end on a reversed clip trims the start of the content: in moves", near(at(te, "rv").in, 3) && near(at(te, "rv").duration, 3), at(te, "rv"));
   // an edit that timeline 0 would cut short is refused (no silent desync of a J-cut's audio)
-  const jc = () => run(mk(), [
+  const jc = async () => (await run(mk(), [
     { op: "add_clip", track: "main", asset: "v", id: "x1", in: 0, duration: 2 },
     { op: "add_clip", track: "main", asset: "v", id: "x2", in: 4, duration: 2 },
     { op: "add_clip", track: "main", asset: "v", id: "x3", in: 1, duration: 2 }, // spare source before its head
     { op: "j_cut", id: "x2", seconds: 2 },
-  ])[0];
-  check("J-cut setup: the lead sits at timeline 0", near(at(jc(), "aud1").start, 0) && near(at(jc(), "aud1").in, 2), at(jc(), "aud1"));
-  refuses("roll_edit that would push a J-cut lead before 0 is refused", jc(), [{ op: "roll_edit", id: "x1", by: -0.5 }], "out_of_range");
-  refuses("slide_clip that would push its own J-cut lead before 0 is refused", jc(), [{ op: "slide_clip", id: "x2", by: -0.5 }], "out_of_range");
-  const [rl] = run(jc(), [{ op: "roll_edit", id: "x1", by: 0.5 }]);
+  ]))[0];
+  check("J-cut setup: the lead sits at timeline 0", near(at((await jc()), "aud1").start, 0) && near(at((await jc()), "aud1").in, 2), at((await jc()), "aud1"));
+  (await refuses("roll_edit that would push a J-cut lead before 0 is refused", (await jc()), [{ op: "roll_edit", id: "x1", by: -0.5 }], "out_of_range"));
+  (await refuses("slide_clip that would push its own J-cut lead before 0 is refused", (await jc()), [{ op: "slide_clip", id: "x2", by: -0.5 }], "out_of_range"));
+  const [rl] = (await run((await jc()), [{ op: "roll_edit", id: "x1", by: 0.5 }]));
   check("roll_edit later with the lead at 0 still works and keeps audio and picture in step", near(at(rl, "x2").start, 2.5) && near(at(rl, "aud1").start, 0.5) && near(at(rl, "aud1").in, 2.5) && errs(rl).length === 0, [at(rl, "x2"), at(rl, "aud1")]);
   // roll_edit and slide_clip move the in-point of every type with source time
   const nested = { id: "tr0", kind: "video", clips: [{ id: "n1", type: "shape", shape: "rect", start: 0, duration: 6 }] };
-  const src = run(mk(), [
+  const src = (await run(mk(), [
     { op: "add_clip", track: "main", asset: "v", id: "p1", in: 0, duration: 2 },
     { op: "add_clip", track: "main", type: "compound", tracks: [nested], id: "cp", in: 1, duration: 3 },
     { op: "add_clip", track: "main", asset: "v", id: "p2", in: 0, duration: 2 },
     { op: "add_clip", track: "main", type: "lottie", asset: "l", id: "lt", in: 1, duration: 3 },
     { op: "add_clip", track: "main", asset: "v", id: "p3", in: 0, duration: 2 },
-  ])[0];
-  const [ro] = run(src, [{ op: "roll_edit", id: "p1", by: 0.5 }, { op: "roll_edit", id: "p2", by: 0.5 }]);
+  ]))[0];
+  const [ro] = (await run(src, [{ op: "roll_edit", id: "p1", by: 0.5 }, { op: "roll_edit", id: "p2", by: 0.5 }]));
   check("roll_edit moves the in-point of a compound and a lottie clip whose head is cut", near(at(ro, "cp").in, 1.5) && near(at(ro, "cp").duration, 2.5) && near(at(ro, "lt").in, 1.5) && near(at(ro, "lt").duration, 2.5), [at(ro, "cp"), at(ro, "lt")]);
-  const [sl2] = run(src, [{ op: "slide_clip", id: "p2", by: 0.5 }]);
+  const [sl2] = (await run(src, [{ op: "slide_clip", id: "p2", by: 0.5 }]));
   check("slide_clip moves the in-point of a lottie next to it", near(at(sl2, "lt").in, 1.5) && near(at(sl2, "lt").duration, 2.5) && near(at(sl2, "cp").duration, 3.5), [at(sl2, "cp"), at(sl2, "lt")]);
   // the asset kinds a media clip type plays
   const onK = (type: string, asset: string) => {
@@ -388,41 +407,41 @@ console.log("required revision: every history-writing call names the state it wa
 
 console.log("match_duration by clip reference");
 {
-  const base = () => {
+  const base = async () => {
     const t = newTimeline(640, 360, 30);
     t.assets.i = { path: "/none.png", kind: "image" };
     t.assets.s = { path: "/none.wav", kind: "audio", duration: 20 };
-    return applyOps(null as any, t, [
+    return (await applyOps(null as any, t, [
       { op: "add_clip", track: "main", asset: "i", id: "img1", duration: 2 },
       { op: "add_clip", track: "main", asset: "i", id: "img2", duration: 2 },
       { op: "add_clip", track: "main", asset: "i", id: "img3", duration: 2 },
       { op: "add_clip", track: "voice", asset: "s", type: "audio", id: "vo1", at: 0, duration: 3 },
-    ])[0];
+    ]))[0];
   };
-  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const run = async (t: any, ops: any[]) => (await applyOps(null as any, t, ops));
   const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
-  let t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "voice#-1" }])[0];
+  let t = (await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "voice#-1" }]))[0];
   check("a reference sets the duration and keeps the magnetic start", at(t, "img2").duration === 3 && at(t, "img2").start === 2 && at(t, "img3").start === 5 && at(t, "img2").match_duration === "vo1", at(t, "img2"));
-  t = run(t, [{ op: "update_clip", id: "vo1", duration: 5 }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "vo1", duration: 5 }]))[0];
   check("a later change to the target updates the clip length", at(t, "img2").duration === 5 && at(t, "img3").start === 7, [at(t, "img2"), at(t, "img3")]);
-  t = run(t, [{ op: "update_clip", id: "img2", end_offset: -0.5 }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "img2", end_offset: -0.5 }]))[0];
   check("negative end_offset holds longer", near(at(t, "img2").duration, 5.5) && near(at(t, "img3").start, 7.5), at(t, "img2"));
-  t = run(t, [{ op: "update_clip", id: "img2", end_offset: 1 }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "img2", end_offset: 1 }]))[0];
   check("end_offset stops before the target ends", near(at(t, "img2").duration, 4) && near(at(t, "img3").start, 6), at(t, "img2"));
-  t = run(t, [{ op: "update_clip", id: "img2", match_duration: null, end_offset: null }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "img2", match_duration: null, end_offset: null }]))[0];
   check("null un-follows and keeps the length", at(t, "img2").match_duration === undefined && near(at(t, "img2").duration, 4), at(t, "img2"));
-  t = run(base(), [{ op: "add_clip", track: "main", asset: "i", id: "img4", match_duration: "vo1", end_offset: 1 }])[0];
+  t = (await run((await base()), [{ op: "add_clip", track: "main", asset: "i", id: "img4", match_duration: "vo1", end_offset: 1 }]))[0];
   check("add_clip takes a reference", at(t, "img4").duration === 2 && at(t, "img4").start === 6, at(t, "img4"));
-  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.5, match_duration: "vo1" }])[0];
+  t = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.5, match_duration: "vo1" }]))[0];
   check("a reference with attach_to: start from the attachment, length from the reference", near(at(t, "ovl").start, 0.5) && at(t, "ovl").duration === 3, at(t, "ovl"));
 
   // a chain, listed in the opposite order
-  t = run(base(), [
+  t = (await run((await base()), [
     { op: "add_clip", track: "overlay", asset: "i", id: "cA", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", asset: "i", id: "cB", at: 0, duration: 1 },
     { op: "update_clip", id: "cA", match_duration: "cB", end_offset: 0.5 }, { op: "update_clip", id: "cB", match_duration: "vo1", end_offset: 0.5 },
-  ])[0];
+  ]))[0];
   check("a chain resolves", near(at(t, "cB").duration, 2.5) && near(at(t, "cA").duration, 2), [at(t, "cA"), at(t, "cB")]);
-  t = run(t, [{ op: "update_clip", id: "vo1", duration: 6 }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "vo1", duration: 6 }]))[0];
   check("changing the end of the chain updates its start", near(at(t, "cB").duration, 5.5) && near(at(t, "cA").duration, 5), [at(t, "cA"), at(t, "cB")]);
 
   // bad references: bad_ref, nothing written
@@ -463,46 +482,46 @@ console.log("match_duration by clip reference");
   check("project_info shows the resolved duration", qi.errors === 0 && qi2.errors === 0 && qi2.timeline.tracks[0].clips[1].duration === 3 && near(qi2.duration, 5), qi2.timeline.tracks[0].clips);
 
   // remove_clip of the target
-  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }])[0];
-  let [t2, [rm]] = run(t, [{ op: "remove_clip", id: "vo1" }]);
+  t = (await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }]))[0];
+  let [t2, [rm]] = (await run(t, [{ op: "remove_clip", id: "vo1" }]));
   check("remove_clip of the target keeps the follower with a plain duration", at(t2, "img2") && near(at(t2, "img2").duration, 2.5) && at(t2, "img2").match_duration === undefined && at(t2, "img2").end_offset === undefined && JSON.stringify(rm.unlinked_durations) === '["img2"]' && !rm.removed_attached.length, { rm, c: at(t2, "img2") });
-  t = run(base(), [
+  t = (await run((await base()), [
     { op: "add_clip", track: "overlay", asset: "i", id: "box", at: 0, duration: 1 },
     { op: "add_clip", track: "overlay", asset: "i", id: "tag", attach_to: "box", offset: 0, duration: 2, at: 0 },
     { op: "add_clip", track: "main", asset: "i", id: "img4", match_duration: "tag" },
-  ])[0];
-  [t2, [rm]] = run(t, [{ op: "remove_clip", id: "box" }]);
+  ]))[0];
+  [t2, [rm]] = (await run(t, [{ op: "remove_clip", id: "box" }]));
   check("removing an attached target unlinks its followers too", JSON.stringify(rm.removed_attached) === '["tag"]' && JSON.stringify(rm.unlinked_durations) === '["img4"]' && at(t2, "img4").match_duration === undefined && at(t2, "img4").duration === 2, { rm, c: at(t2, "img4") });
 
   // split / duplicate
-  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 1 }])[0]; // img2: 2..4 (2 s)
-  let [t3, [sp]] = run(t, [{ op: "split_clip", id: "img2", at: 3 }]);
+  t = (await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 1 }]))[0]; // img2: 2..4 (2 s)
+  let [t3, [sp]] = (await run(t, [{ op: "split_clip", id: "img2", at: 3 }]));
   const [l, r] = [at(t3, sp.left), at(t3, sp.right)];
   check("split of a follower: both halves keep their length and drop the reference", l.duration === 1 && r.duration === 1 && l.match_duration === undefined && r.match_duration === undefined && l.end_offset === undefined && r.end_offset === undefined, { l, r });
-  t3 = run(t3, [{ op: "update_clip", id: "vo1", duration: 9 }])[0];
+  t3 = (await run(t3, [{ op: "update_clip", id: "vo1", duration: 9 }]))[0];
   check("  and a later change of the target leaves them alone", at(t3, sp.left).duration === 1 && at(t3, sp.right).duration === 1);
-  [t3, [sp]] = run(t, [{ op: "split_clip", id: "vo1", at: 1.5 }]);
+  [t3, [sp]] = (await run(t, [{ op: "split_clip", id: "vo1", at: 1.5 }]));
   check("split of the target: the follower keeps following the left half", at(t3, "img2").match_duration === "vo1" && near(at(t3, "img2").duration, 0.5), at(t3, "img2"));
-  [t3, [sp]] = run(t, [{ op: "duplicate_clip", id: "img2" }]);
+  [t3, [sp]] = (await run(t, [{ op: "duplicate_clip", id: "img2" }]));
   check("duplicate keeps the reference", at(t3, sp.id).match_duration === "vo1" && at(t3, sp.id).end_offset === 1 && near(at(t3, sp.id).duration, 2), at(t3, sp.id));
 
   // hand-edited timelines
-  const bad = (name: string, edit: (x: any) => void) => {
-    const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+  const bad = async (name: string, edit: (x: any) => void) => {
+    const x = structuredClone((await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1" }]))[0]);
     edit(x);
     const e = validate(x).filter((i: any) => i.level === "error" && /<img2>\.match_duration$/.test(i.path));
     check(`validate: ${name}`, e.length === 1, validate(x).filter((i: any) => i.level === "error"));
   };
-  bad("a missing clip", (x) => { at(x, "img2").match_duration = "ghost"; });
-  { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "img2").match_duration = "ghost";
+  (await bad("a missing clip", (x) => { at(x, "img2").match_duration = "ghost"; }));
+  { const x = structuredClone((await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1" }]))[0]); at(x, "img2").match_duration = "ghost";
     check("validate: the missing-clip hint does not offer true", validate(x).find((i: any) => /<img2>\.match_duration$/.test(i.path))?.hint === "name an existing clip id, or remove match_duration"); }
-  bad("until_end together with a followed length", (x) => { at(x, "img2").until_end = true; });
-  bad("itself", (x) => { at(x, "img2").match_duration = "img2"; });
-  bad("a cycle", (x) => { at(x, "vo1").match_duration = "img2"; at(x, "img2").match_duration = "vo1"; });
-  bad("an until_end target", (x) => { at(x, "vo1").until_end = true; });
-  bad("a cycle through an attached length", (x) => { at(x, "vo1").attach_to = "img2"; at(x, "vo1").match_duration = true; });
+  (await bad("until_end together with a followed length", (x) => { at(x, "img2").until_end = true; }));
+  (await bad("itself", (x) => { at(x, "img2").match_duration = "img2"; }));
+  (await bad("a cycle", (x) => { at(x, "vo1").match_duration = "img2"; at(x, "img2").match_duration = "vo1"; }));
+  (await bad("an until_end target", (x) => { at(x, "vo1").until_end = true; }));
+  (await bad("a cycle through an attached length", (x) => { at(x, "vo1").attach_to = "img2"; at(x, "vo1").match_duration = true; }));
   { // a follower of an attached-length clip: lengths settle in one call, the magnetic clip after it moves with them
-    const [x] = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "tag", attach_to: "img1", offset: 0.5, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "tag" }]);
+    const [x] = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "tag", attach_to: "img1", offset: 0.5, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "tag" }]));
     check("a clip can follow an attached match_duration:true clip", near(at(x, "tag").duration, 1.5) && near(at(x, "img2").duration, 1.5) && !validate(x).some((i: any) => i.level === "error"), [at(x, "tag"), at(x, "img2")]);
     at(x, "img1").duration = 4;
     resolve(x);
@@ -510,22 +529,22 @@ console.log("match_duration by clip reference");
     check("  and one resolve settles the chain: attached length, follower, the clip after it", near(at(x, "tag").duration, 3.5) && near(at(x, "img2").duration, 3.5) && near(at(x, "img3").start, 7.5) && JSON.stringify(once) === JSON.stringify(twice), [at(x, "tag"), at(x, "img2"), at(x, "img3")]);
   }
   { // ... but not through to an until_end clip: before it on a magnetic track, its start would move with its own length
-    const x = base();
+    const x = (await base());
     x.tracks.find((tr: any) => tr.id === "main")!.clips.push({ id: "ue", type: "image", asset: "i", start: 0, duration: 1, until_end: true });
     x.tracks.find((tr: any) => tr.id === "main")!.clips.unshift({ id: "af", type: "image", asset: "i", start: 0, duration: 1, match_duration: "ay" });
     x.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "ay", type: "image", asset: "i", start: 0, duration: 1, attach_to: "ue", match_duration: true });
     check("validate: a follower whose length chain reaches an until_end clip is an error", validate(x).some((i: any) => i.level === "error" && i.path.endsWith("<af>.match_duration") && /until_end/.test(i.message)), validate(x));
   }
-  { const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]); at(x, "vo1").match_duration = true;
+  { const x = structuredClone((await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1" }]))[0]); at(x, "vo1").match_duration = true;
     check("validate: match_duration:true without attach_to is a plain length, so a good target", !validate(x).some((i: any) => i.level === "error"), validate(x)); }
-  bad("a number", (x) => { at(x, "img2").match_duration = 5; });
+  (await bad("a number", (x) => { at(x, "img2").match_duration = 5; }));
   { // one resolve() of a hand-edited project: followers settle before the magnetic layout, so the clip after a follower moves with it
-    const x = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+    const x = structuredClone((await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1" }]))[0]);
     at(x, "vo1").duration = 5;
     resolve(x);
     check("resolve once: a follower settles before the magnetic layout", at(x, "img2").duration === 5 && at(x, "img3").start === 7, [at(x, "img2"), at(x, "img3")]);
   }
-  const ok = structuredClone(run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1" }])[0]);
+  const ok = structuredClone((await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1" }]))[0]);
   check("validate: a good reference is clean", !validate(ok).some((i: any) => i.level === "error"), validate(ok));
 
   // saved values that would hang or crash a render are refused at validation
@@ -569,66 +588,66 @@ console.log("match_duration by clip reference");
   for (const k of ["effects", "filters"]) check(`validate: clip ${k} as a string is an error, not a throw`, errAt(bx((x) => { at(x, "img2")[k] = "grain"; }), new RegExp(`<img2>\\.${k}$`)));
 
   // match_duration:true with attach_to, as before
-  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true, end_offset: 0.2 }])[0];
+  t = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true, end_offset: 0.2 }]))[0];
   check("match_duration:true with attach_to: target - offset - end_offset", near(at(t, "ovl").duration, 1.5) && near(at(t, "ovl").start, 0.3), at(t, "ovl"));
-  t = run(t, [{ op: "update_clip", id: "img1", duration: 4 }])[0];
+  t = (await run(t, [{ op: "update_clip", id: "img1", duration: 4 }]))[0];
   check("  and it follows the target", near(at(t, "ovl").duration, 3.5), at(t, "ovl"));
 
   // computed durations are not silently overwritten
-  const refuses = (tt: any, ops: any[], name: string, hint: RegExp) => {
-    try { run(tt, ops); check(name, false, "no error"); }
+  const refuses = async (tt: any, ops: any[], name: string, hint: RegExp) => {
+    try { (await run(tt, ops)); check(name, false, "no error"); }
     catch (e: any) { check(name, e.code === "computed_duration" && hint.test(e.hint ?? ""), { code: e.code, message: e.message, hint: e.hint }); }
   };
-  const fol = run(base(), [{ op: "add_clip", track: "main", asset: "i", id: "img4", duration: 2 }, { op: "update_clip", id: "img2", match_duration: "vo1" },
-    { op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true }])[0];
+  const fol = (await run((await base()), [{ op: "add_clip", track: "main", asset: "i", id: "img4", duration: 2 }, { op: "update_clip", id: "img2", match_duration: "vo1" },
+    { op: "add_clip", track: "overlay", asset: "i", id: "ovl", attach_to: "img1", offset: 0.3, match_duration: true }]))[0];
   const R1 = /follows 'vo1'.*end_offset.*match_duration=null/;
-  refuses(fol, [{ op: "update_clip", id: "img2", duration: 1 }], "update_clip duration on a follower is refused", R1);
-  refuses(fol, [{ op: "update_clip", id: "img2", set: { duration: 1 } }], "  also through set", R1);
-  refuses(fol, [{ op: "update_clip", id: "ovl", duration: 1 }], "update_clip duration on an attached match_duration:true clip is refused", /attach_to target 'img1'.*match_duration=null/);
+  (await refuses(fol, [{ op: "update_clip", id: "img2", duration: 1 }], "update_clip duration on a follower is refused", R1));
+  (await refuses(fol, [{ op: "update_clip", id: "img2", set: { duration: 1 } }], "  also through set", R1));
+  (await refuses(fol, [{ op: "update_clip", id: "ovl", duration: 1 }], "update_clip duration on an attached match_duration:true clip is refused", /attach_to target 'img1'.*match_duration=null/));
   for (const [k, v] of [["duration", 1], ["end", 1], ["trim_start", 0.5], ["trim_end", 0.5]] as const)
-    refuses(fol, [{ op: "trim_clip", id: "img2", [k]: v }], `trim_clip ${k} on a follower is refused`, R1);
-  refuses(fol, [{ op: "roll_edit", id: "img1", by: 0.2 }], "roll_edit with a follower on the right is refused", R1);
-  refuses(fol, [{ op: "roll_edit", id: "img2", by: 0.2 }], "roll_edit with a follower on the left is refused", R1);
-  refuses(fol, [{ op: "slide_clip", id: "img3", by: 0.2 }], "slide_clip next to a follower is refused", R1);
+    (await refuses(fol, [{ op: "trim_clip", id: "img2", [k]: v }], `trim_clip ${k} on a follower is refused`, R1));
+  (await refuses(fol, [{ op: "roll_edit", id: "img1", by: 0.2 }], "roll_edit with a follower on the right is refused", R1));
+  (await refuses(fol, [{ op: "roll_edit", id: "img2", by: 0.2 }], "roll_edit with a follower on the left is refused", R1));
+  (await refuses(fol, [{ op: "slide_clip", id: "img3", by: 0.2 }], "slide_clip next to a follower is refused", R1));
   {
-    const [x, [u]] = run(fol, [{ op: "update_clip", id: "img2", duration: 1, match_duration: null, end_offset: null }]);
+    const [x, [u]] = (await run(fol, [{ op: "update_clip", id: "img2", duration: 1, match_duration: null, end_offset: null }]));
     check("update_clip may set duration while it drops match_duration", u.duration === 1 && at(x, "img2").match_duration === undefined && at(x, "img3").start === 3, [u, at(x, "img3")]);
-    const [, [u2]] = run(fol, [{ op: "update_clip", id: "img2", end_offset: 1 }]);
+    const [, [u2]] = (await run(fol, [{ op: "update_clip", id: "img2", end_offset: 1 }]));
     check("end_offset is the allowed edit, and the result is post-resolve", u2.duration === 2, u2);
-    const [y, [sl]] = run(fol, [{ op: "slide_clip", id: "img2", by: 0.2 }]);
+    const [y, [sl]] = (await run(fol, [{ op: "slide_clip", id: "img2", by: 0.2 }]));
     check("slide_clip of the follower itself still works", sl.id === "img2" && sl.duration === at(y, "img2").duration, sl);
   }
   {
-    const t0 = base();
+    const t0 = (await base());
     t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
-    const [x1] = run(t0, [{ op: "add_clip", track: "main", asset: "v", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }]);
+    const [x1] = (await run(t0, [{ op: "add_clip", track: "main", asset: "v", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }]));
     const aud = x1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === "vid1").id;
-    const [x2] = run(x1, [{ op: "update_clip", id: aud, match_duration: "vo1" }]);
-    refuses(x2, [{ op: "j_cut", id: "vid1", seconds: 0.5 }], "j_cut on a computed-length audio clip is refused", R1);
+    const [x2] = (await run(x1, [{ op: "update_clip", id: aud, match_duration: "vo1" }]));
+    (await refuses(x2, [{ op: "j_cut", id: "vid1", seconds: 0.5 }], "j_cut on a computed-length audio clip is refused", R1));
   }
   {
-    const [x, [sn]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2, 3, 4, 5, 6] }]);
+    const [x, [sn]] = (await run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2, 3, 4, 5, 6] }]));
     check("snap_to_beats keeps computed clips and lists them", JSON.stringify(sn.kept_computed) === '["img2"]' && x && at(x, "img2").match_duration === "vo1" && at(x, "img2").duration === 3, sn);
     check("  and retimed lists the values that were applied", sn.retimed.length > 0 && sn.retimed.every((r: any) => at(x, r.id).duration === r.duration) && !sn.retimed.some((r: any) => r.id === "img2"), sn);
     // a short list: a clip named in neither list is exactly one the list did not reach, and it is untouched
     const ids = (x: any) => x.tracks.find((tr: any) => tr.id === "main").clips.map((c: any) => c.id);
-    const [sx, [ss]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2] }]);
+    const [sx, [ss]] = (await run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 2] }]));
     const named = [...ss.retimed.map((r: any) => r.id), ...ss.kept_computed], rest = ids(sx).filter((id: string) => !named.includes(id));
     check("snap_to_beats with a short list: the clips named in neither retimed nor kept_computed are the ones it did not reach, and keep their length", ids(sx).length === 4 && named.length === 2 && rest.length === 2 && rest.every((id: string) => at(sx, id).duration === at(fol, id).duration), ss);
   }
   {
-    const code = (beats: number[], t: any = fol) => { try { run(t, [{ op: "snap_to_beats", track: "main", beats }]); return "accepted"; } catch (e: any) { return e.code === "bad_beats" ? `bad_beats ${e.hint}` : `${e.code}: ${e.message}`; } };
-    check("snap_to_beats refuses a descent past the track, and accepts a close pair past it", /^bad_beats/.test(code([0, 1, 2, 3, 4, 3.5, 5])) && code([0, 1, 2, 3, 4, 4.01, 5]) === "accepted");
-    const rising = run(fol, [{ op: "update_clip", id: "img4", transition: { type: "crossfade", duration: 0.5 } }])[0];
-    const refused = [code([0, 1, 2, 2.04, 5], rising), code([0, 1, 1, 3, 4]), code([-1, 0, 1, 2, 3]), code([0, 1, 2, 3, -2])];
-    const kept = (() => { try { const [x, [n]] = run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 1.03, 3] }]); return { x, n }; } catch (e: any) { return { err: e.code }; } })();
+    const code = async (beats: number[], t: any = fol) => { try { (await run(t, [{ op: "snap_to_beats", track: "main", beats }])); return "accepted"; } catch (e: any) { return e.code === "bad_beats" ? `bad_beats ${e.hint}` : `${e.code}: ${e.message}`; } };
+    check("snap_to_beats refuses a descent past the track, and accepts a close pair past it", /^bad_beats/.test((await code([0, 1, 2, 3, 4, 3.5, 5]))) && (await code([0, 1, 2, 3, 4, 4.01, 5])) === "accepted");
+    const rising = (await run(fol, [{ op: "update_clip", id: "img4", transition: { type: "crossfade", duration: 0.5 } }]))[0];
+    const refused = [(await code([0, 1, 2, 2.04, 5], rising)), (await code([0, 1, 1, 3, 4])), (await code([-1, 0, 1, 2, 3])), (await code([0, 1, 2, 3, -2]))];
+    const kept = (await (async () => { try { const [x, [n]] = (await run(fol, [{ op: "snap_to_beats", track: "main", beats: [0, 1, 1.03, 3] }])); return { x, n }; } catch (e: any) { return { err: e.code }; } })());
     check("snap_to_beats does not judge the beat pair of a clip that keeps its computed length", JSON.stringify(kept.n?.kept_computed) === '["img2"]' && at(kept.x, "img2").duration === at(fol, "img2").duration, kept.err ?? kept.n);
     check("snap_to_beats refuses a reached pair 0.05 s or less apart even with a transition to cover it, a repeat, a negative time, and a negative past the track; the hint names every and not --full",
       refused.every((r) => /^bad_beats/.test(r) && /every/.test(r) && !/--full/.test(r)), refused);
   }
 
   // match_duration:true without attach_to is a plain length, so a clip can follow it
-  t = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "plain", at: 0, duration: 2, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "plain" }])[0];
+  t = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "plain", at: 0, duration: 2, match_duration: true }, { op: "update_clip", id: "img2", match_duration: "plain" }]))[0];
   check("a match_duration:true clip without attach_to can be followed", at(t, "img2").duration === 2, at(t, "img2"));
 
   // until_end and a followed length
@@ -637,33 +656,33 @@ console.log("match_duration by clip reference");
     ["update_clip until_end on a follower", [{ op: "update_clip", id: "img2", match_duration: "vo1" }, { op: "update_clip", id: "img2", until_end: true }]],
     ["update_clip a reference on an until_end clip", [{ op: "add_clip", track: "overlay", asset: "i", id: "u1", until_end: true }, { op: "update_clip", id: "u1", match_duration: "vo1" }]],
   ] as [string, any[]][]) {
-    try { run(base(), ops); check(`${name}: until_end with a followed length is refused`, false, "no error"); }
+    try { (await run((await base()), ops)); check(`${name}: until_end with a followed length is refused`, false, "no error"); }
     catch (e: any) { check(`${name}: until_end with a followed length is refused`, e.code === "bad_value" && /until_end and match_duration both set the length; keep one/.test(e.message) && !!e.hint, { code: e.code, message: e.message }); }
   }
 
   // clips that lose their target by remove_track / remove_asset force keep their length
-  t = run(base(), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }])[0];
-  let [t4, [rt]] = run(t, [{ op: "remove_track", id: "voice" }]);
+  t = (await run((await base()), [{ op: "update_clip", id: "img2", match_duration: "vo1", end_offset: 0.5 }]))[0];
+  let [t4, [rt]] = (await run(t, [{ op: "remove_track", id: "voice" }]));
   check("remove_track: a follower of a removed clip keeps its length", JSON.stringify(rt.unlinked_durations) === '["img2"]' && at(t4, "img2").match_duration === undefined && at(t4, "img2").end_offset === undefined && near(at(t4, "img2").duration, 2.5), { rt, c: at(t4, "img2") });
   check("  and the timeline is valid", !validate(t4).some((i: any) => i.level === "error"), validate(t4));
-  [t4, [rt]] = run(t, [{ op: "remove_asset", id: "s", force: true }]);
+  [t4, [rt]] = (await run(t, [{ op: "remove_asset", id: "s", force: true }]));
   check("remove_asset force: a follower of a removed clip keeps its length", JSON.stringify(rt.unlinked_durations) === '["img2"]' && at(t4, "img2").match_duration === undefined && near(at(t4, "img2").duration, 2.5), { rt, c: at(t4, "img2") });
   check("  and the timeline is valid", !validate(t4).some((i: any) => i.level === "error"), validate(t4));
 
   // freeze_frame and remove_silence: what they create from a follower is a plain clip
   {
-    const t0 = base();
+    const t0 = (await base());
     t0.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false, ...VF };
-    const [x, rs] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
-      { op: "freeze_frame", id: "vid1", at: 0, duration: 1.5 }]);
+    const [x, rs] = (await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
+      { op: "freeze_frame", id: "vid1", at: 0, duration: 1.5 }]));
     const fz = rs[2];
     check("freeze_frame: the freeze clip is plain and keeps its length", at(x, fz.id).match_duration === undefined && at(x, fz.id).end_offset === undefined && at(x, fz.id).duration === 1.5 && at(x, "vid1").match_duration === "vo1", { fz, c: at(x, fz.id) });
-    const [x2, rs2] = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
-      { op: "freeze_frame", id: "vid1", at: 1.5, duration: 1 }]);
+    const [x2, rs2] = (await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 0, duration: 1 }, { op: "update_clip", id: "vid1", match_duration: "vo1" },
+      { op: "freeze_frame", id: "vid1", at: 1.5, duration: 1 }]));
     for (const [name, atT] of [["after the clip ends", 50], ["before the clip starts", -2]] as const) {
-      const t1 = run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 1, duration: 1 }])[0], before = JSON.stringify(t1);
+      const t1 = (await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "vid1", at: 1, duration: 1 }]))[0], before = JSON.stringify(t1);
       let err: any;
-      try { run(t1, [{ op: "freeze_frame", id: "vid1", at: atT, duration: 1 }]); } catch (e) { err = e; }
+      try { (await run(t1, [{ op: "freeze_frame", id: "vid1", at: atT, duration: 1 }])); } catch (e) { err = e; }
       check(`freeze_frame at a time ${name} is refused with its range, and nothing changes`, err?.code === "bad_value" && /1s to 2s/.test(err.message) && !!err.hint && JSON.stringify(t1) === before, { code: err?.code, message: err?.message });
     }
     const fz2 = rs2[2];
@@ -687,17 +706,17 @@ console.log("match_duration by clip reference");
 
 console.log("attach graph: cycles are invalid, chains settle in one resolve, batch issue identity");
 {
-  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const run = async (t: any, ops: any[]) => (await applyOps(null as any, t, ops));
   const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
   const attachErrs = (t: any) => validate(t).filter((i: any) => i.level === "error" && /\.attach_to$/.test(i.path));
-  const base = () => {
+  const base = async () => {
     const t = newTimeline(640, 360, 30);
     t.assets.i = { path: "/none.png", kind: "image" };
-    return run(t, [{ op: "add_clip", track: "main", asset: "i", id: "k0", duration: 2 }, { op: "add_clip", track: "overlay", asset: "i", id: "k1", at: 0, duration: 1 }])[0];
+    return (await run(t, [{ op: "add_clip", track: "main", asset: "i", id: "k0", duration: 2 }, { op: "add_clip", track: "overlay", asset: "i", id: "k1", at: 0, duration: 1 }]))[0];
   };
-  const self = run(base(), [{ op: "update_clip", id: "k1", attach_to: "k1" }])[0];
+  const self = (await run((await base()), [{ op: "update_clip", id: "k1", attach_to: "k1" }]))[0];
   check("validate: a clip attached to itself is an error with a hint", attachErrs(self).length === 1 && !!attachErrs(self)[0].hint, validate(self));
-  const cyc = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "k2", attach_to: "k1", at: 0, duration: 1 }, { op: "update_clip", id: "k1", attach_to: "k2" }])[0];
+  const cyc = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "k2", attach_to: "k1", at: 0, duration: 1 }, { op: "update_clip", id: "k1", attach_to: "k2" }]))[0];
   check("validate: an attach cycle is an error on each clip of it, with a hint", attachErrs(cyc).length === 2 && attachErrs(cyc).every((i: any) => !!i.hint), validate(cyc));
   const tail = structuredClone(cyc);
   at(tail, "k0").attach_to = "k1"; // k0 leads into the cycle without being in it
@@ -705,23 +724,23 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   check("resolve: a saved cycle terminates", (() => { resolve(structuredClone(cyc)); return true; })());
 
   // a chain of 6 links, listed dependent-first, with stale starts
-  const stale = () => {
-    const t = base();
+  const stale = async () => {
+    const t = (await base());
     t.tracks.find((x: any) => x.id === "overlay")!.clips = [6, 5, 4, 3, 2, 1].map((n) => ({ id: `ch${n}`, type: "image", asset: "i", start: 0, duration: 1, attach_to: n === 1 ? "k0" : `ch${n - 1}`, offset: 1 }));
     return t;
   };
-  const chain = resolve(stale());
+  const chain = resolve((await stale()));
   check("resolve: a 6-link chain listed dependent-first settles in one call", [1, 2, 3, 4, 5, 6].every((n) => near(at(chain, `ch${n}`).start, n)), [1, 2, 3, 4, 5, 6].map((n) => at(chain, `ch${n}`).start));
   check("  and the chain is valid", validate(chain).every((i: any) => i.level !== "error"), validate(chain));
-  const once = stale();
+  const once = (await stale());
   at(once, "ch3").match_duration = true; at(once, "ch3").end_offset = 0.25;
   once.tracks.push({ id: "bed", kind: "audio", clips: [{ id: "bd", type: "audio", asset: "i", start: 0, duration: 1, until_end: true }] });
   const first = structuredClone(resolve(once)), second = structuredClone(resolve(structuredClone(first)));
   check("resolve is a fixed point on a timeline with attach chains", JSON.stringify(first) === JSON.stringify(second), { first, second });
 
   // a clip whose length follows an until_end clip cannot set where that clip ends (each resolve would grow both)
-  const chase = (x: any) => {
-    const t = base();
+  const chase = async (x: any) => {
+    const t = (await base());
     t.tracks.push({ id: "bed", kind: "audio", clips: [{ id: "u", type: "audio", asset: "i", start: 0, duration: 1, until_end: true }] });
     t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "x", type: "image", asset: "i", start: 0, duration: 1, ...x });
     const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
@@ -732,13 +751,13 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
     ["attached, an offset clamped at 0", { attach_to: "u", match_duration: true, offset: -1 }],
     ["named, negative end_offset", { match_duration: "u", end_offset: -0.5 }],
   ] as const) {
-    const r = chase(x);
+    const r = (await chase(x));
     check(`resolve: an until_end clip with a follower (${name}) is a fixed point and ends with the rest`, r.stable && near(r.len, 2), r);
   }
-  const floor = chase({ attach_to: "u", match_duration: true, offset: 5 });
+  const floor = (await chase({ attach_to: "u", match_duration: true, offset: 5 }));
   check("resolve: a follower that starts past the rest still extends the until_end clip by its minimum length", floor.stable && near(floor.len, 5.1), floor);
   { // on a magnetic track the clips after an until_end clip, and clips attached to them, move with it
-    const t = base();
+    const t = (await base());
     t.tracks.find((tr: any) => tr.id === "main")!.clips.unshift({ id: "u", type: "image", asset: "i", start: 0, duration: 1, until_end: true });
     t.tracks.find((tr: any) => tr.id === "overlay")!.clips.push({ id: "c", type: "image", asset: "i", start: 0, duration: 1, attach_to: "k0", offset: 0.5 });
     const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
@@ -746,30 +765,30 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   }
 
   // every length settles before any layout: one resolve gives the final answer (hand-edited: add_clip refuses attach_to on a magnetic track)
-  const lengths = (edit: (t: any) => void) => {
-    const t = base();
+  const lengths = async (edit: (t: any) => void) => {
+    const t = (await base());
     edit(t);
     const a = structuredClone(resolve(t)), b = structuredClone(resolve(structuredClone(a)));
     return { stable: JSON.stringify(a) === JSON.stringify(b), a };
   };
   const magnetic = (t: any) => t.tracks.find((tr: any) => tr.id === "main")!.clips;
   { // k1 (overlay, 1 s) is 3 s long: the magnetic clip m1 takes its length from it, and m2 starts after that length
-    const r = lengths((t) => {
+    const r = (await lengths((t) => {
       at(t, "k1").duration = 3;
       magnetic(t).splice(1, 0, { id: "m1", type: "image", asset: "i", start: 2, duration: 1, attach_to: "k1", match_duration: true }, { id: "m2", type: "image", asset: "i", start: 3, duration: 1 });
-    });
+    }));
     check("resolve: an attached length on a magnetic track settles before the clips after it are laid out", r.stable && near(at(r.a, "m1").duration, 3) && near(at(r.a, "m2").start, 5) && near(at(r.a, "m1").start, 0), r.a);
   }
   { // validate says what resolve does with attach_to on a magnetic track
-    const t = base();
+    const t = (await base());
     magnetic(t).push({ id: "m1", type: "image", asset: "i", start: 2, duration: 1, attach_to: "k1", match_duration: true });
     check("validate: attach_to on a magnetic track is a warning that names the length it still takes", validate(t).some((i: any) => i.level === "warning" && /<m1>\.attach_to$/.test(i.path) && /match_duration/.test(i.message)), validate(t));
   }
 
   { // until_end clips on a magnetic track settle in one resolve: each one is stretched where its start is final
     const img = (id: string, x: any = {}) => ({ id, type: "image", asset: "i", start: 0, duration: 1, ...x });
-    const build = (clips: any[], rest: any[] = [img("p", { duration: 4 })]) => {
-      const t = base();
+    const build = async (clips: any[], rest: any[] = [img("p", { duration: 4 })]) => {
+      const t = (await base());
       t.tracks = [{ id: "m", kind: "video", magnetic: true, clips }, { id: "o", kind: "video", clips: rest }];
       return t;
     };
@@ -779,22 +798,22 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
       check(`resolve: ${name} gives the same answer on every call`, r.every((y) => y === r[0]) && want.every(([id, s, d]) => near(at(x, id).start, s) && near(at(x, id).duration, d)), want.map(([id]) => [at(x, id).start, at(x, id).duration]));
       check(`  and the timeline is valid`, !validate(x).some((i: any) => i.level === "error"), validate(x));
     };
-    settled("two until_end clips on one magnetic track", build([img("u1", { until_end: true }), img("u2", { until_end: true })]), [["u1", 0, 4], ["u2", 4, 0.1]]);
-    settled("an until_end clip with a transition on a magnetic track", build([img("a"), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 0.3 } })]), [["u", 0.7, 3.3]]);
-    settled("an until_end clip whose transition is longer than its length ends with the rest, as long as the overlap", build([img("a", { duration: 3 }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], []), [["u", 2, 1]]);
-    settled("an until_end clip after a clip that ends past the rest keeps its transition overlap, so the clip after it keeps its place", build([img("u1", { duration: 4, until_end: true }), img("a"), img("u2", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } }), img("b")]), [["u2", 4, 1], ["b", 5, 1]]);
+    settled("two until_end clips on one magnetic track", (await build([img("u1", { until_end: true }), img("u2", { until_end: true })])), [["u1", 0, 4], ["u2", 4, 0.1]]);
+    settled("an until_end clip with a transition on a magnetic track", (await build([img("a"), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 0.3 } })])), [["u", 0.7, 3.3]]);
+    settled("an until_end clip whose transition is longer than its length ends with the rest, as long as the overlap", (await build([img("a", { duration: 3 }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], [])), [["u", 2, 1]]);
+    settled("an until_end clip after a clip that ends past the rest keeps its transition overlap, so the clip after it keeps its place", (await build([img("u1", { duration: 4, until_end: true }), img("a"), img("u2", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } }), img("b")])), [["u2", 4, 1], ["b", 5, 1]]);
     { // a clip attached to an until_end clip is counted in the end at the start it keeps (the clip before is disabled and ends past everything else)
-      const t = build([img("a", { duration: 3, enabled: false }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], [img("x", { duration: 0.5, attach_to: "u" }), img("bed", { until_end: true })]);
+      const t = (await build([img("a", { duration: 3, enabled: false }), img("u", { duration: 0.1, until_end: true, transition: { type: "crossfade", duration: 1 } })], [img("x", { duration: 0.5, attach_to: "u" }), img("bed", { until_end: true })]));
       const r = runs(t), x = JSON.parse(r[0]), xEnd = at(x, "x").start + at(x, "x").duration;
       check("resolve: a clip attached to an until_end clip ends with the until_end clips, which stay valid and stable", r.every((y) => y === r[0]) && xEnd <= at(x, "bed").start + at(x, "bed").duration + 1e-6 && !validate(x).some((i: any) => i.level === "error"), [at(x, "x"), at(x, "bed"), at(x, "u")]);
     }
     // attach_to on a magnetic track is a hand-edit (add_clip, update_clip, move_clip, duplicate_clip, track_to and update_track refuse it with attached_magnetic); what would not settle is refused
     const errAt = (t: any, id: string, field: string) => validate(t).some((i: any) => i.level === "error" && i.path.endsWith(`<${id}>.${field}`));
-    const before = build([img("y", { attach_to: "u", match_duration: true }), img("u", { until_end: true })]);
+    const before = (await build([img("y", { attach_to: "u", match_duration: true }), img("u", { until_end: true })]));
     check("validate: a magnetic clip whose attached length reaches an until_end clip is an error", errAt(before, "y", "match_duration"), validate(before));
-    const placed = build([img("a"), img("u", { until_end: true, attach_to: "a", offset: 0.5 })]);
+    const placed = (await build([img("a"), img("u", { until_end: true, attach_to: "a", offset: 0.5 })]));
     check("validate: an until_end clip on a magnetic track cannot be attached", errAt(placed, "u", "attach_to"), validate(placed));
-    const off = build([], [img("p", { duration: 4 }), img("u", { until_end: true }), img("y", { attach_to: "u", match_duration: true })]);
+    const off = (await build([], [img("p", { duration: 4 }), img("u", { until_end: true }), img("y", { attach_to: "u", match_duration: true })]));
     check("validate: the same attached length on a track that is not magnetic is accepted", !validate(off).some((i: any) => i.level === "error"), validate(off));
   }
 
@@ -823,11 +842,11 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
   check("removing one copy of a duplicated id keeps the survivor's old errors old", await code([{ op: "replace_timeline", timeline: (await withTrack((t) => { const o = t.tracks.find((x: any) => x.id === "overlay"); o.clips = o.clips.filter((c: any) => c.id !== "g2"); })) }]) === "ok");
   // a ripple follows an attach chain of any depth (17 links here)
   const blank = newTimeline(640, 360, 30); blank.assets.i = { path: "/none.png", kind: "image" };
-  const [deep] = run(blank, [
+  const [deep] = (await run(blank, [
     { op: "add_clip", track: "free", asset: "i", id: "R", at: 0, duration: 1 }, { op: "add_clip", track: "free", asset: "i", id: "B", at: 3, duration: 1 },
     ...Array.from({ length: 17 }, (_, k) => ({ op: "add_clip", track: "links", asset: "i", id: `k${k}`, attach_to: k ? `k${k - 1}` : "B", offset: 0.1, duration: 0.1 })),
     { op: "add_clip", track: "free", asset: "i", id: "A", attach_to: "k16", offset: 2, duration: 1 },
-    { op: "remove_clip", id: "R", ripple: true }]);
+    { op: "remove_clip", id: "R", ripple: true }]));
   check("a ripple moves a clip at the end of a 17-link attach chain once, with its chain", near(at(deep, "B").start, 2) && near(at(deep, "A").start, 2 + 1.7 + 2), [at(deep, "B").start, at(deep, "k16").start, at(deep, "A").start]);
   const N = join(tmp, "proj-nested");
   api.create(N, { preset: "720p" });
@@ -840,208 +859,208 @@ console.log("attach graph: cycles are invalid, chains settle in one resolve, bat
 
 console.log("pieces of an attached clip keep their place and length");
 {
-  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const run = async (t: any, ops: any[]) => (await applyOps(null as any, t, ops));
   const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
   const valid = (name: string, t: any) => check(`${name}: validation is clean`, !validate(t).some((i: any) => i.level === "error"), validate(t));
-  const base = () => {
+  const base = async () => {
     const t = newTimeline(640, 360, 30);
     t.assets.i = { path: "/none.png", kind: "image" };
     t.assets.v = { path: "/none.mp4", kind: "video", duration: 10, has_audio: false, ...VF };
     t.assets.av = { path: "/none2.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
-    return applyOps(null as any, t, [
+    return (await applyOps(null as any, t, [
       { op: "add_clip", track: "main", asset: "i", id: "img1", duration: 4 },
       { op: "add_clip", track: "main", asset: "i", id: "img2", duration: 2 },
       { op: "add_clip", track: "overlay", asset: "v", id: "ovl", attach_to: "img1", offset: 0.5, in: 1, duration: 2 },
-    ])[0];
+    ]))[0];
   };
   // plain duration
-  let [t, [sp]] = run(base(), [{ op: "split_clip", id: "ovl", at: 1.5 }]);
+  let [t, [sp]] = (await run((await base()), [{ op: "split_clip", id: "ovl", at: 1.5 }]));
   let [l, r] = [at(t, sp.left), at(t, sp.right)];
   check("split of an attached clip: the left keeps its place, the right starts at the split time", near(l.start, 0.5) && near(r.start, 1.5) && near(l.offset, 0.5) && near(r.offset, 1.5), { l, r });
   check("  both stay attached to the same target and the lengths sum to the original", l.attach_to === "img1" && r.attach_to === "img1" && near(l.duration + r.duration, 2) && near(r.in, 2), { l, r });
   valid("split of an attached clip", t);
   // retime the target
-  const [t3] = run(t, [{ op: "move_clip", id: "img1", index: 1 }]);
+  const [t3] = (await run(t, [{ op: "move_clip", id: "img1", index: 1 }]));
   check("moving the target moves both halves and keeps their gap", near(at(t3, "img1").start, 2) && near(at(t3, sp.left).start, 2.5) && near(at(t3, sp.right).start, 3.5), [at(t3, sp.left), at(t3, sp.right)]);
   valid("retimed target", t3);
   // computed length
-  const [tm, [, spm]] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "ovl", at: 2 }]);
+  const [tm, [, spm]] = (await run((await base()), [{ op: "update_clip", id: "ovl", match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "ovl", at: 2 }]));
   [l, r] = [at(tm, "ovl"), at(tm, spm.right)];
   check("split with a computed length: plain durations that sum to the original, no match_duration/end_offset", near(l.duration, 1.5) && near(r.duration, 1.5) && near(l.start, 0.5) && near(r.start, 2) && [l, r].every((c: any) => c.match_duration === undefined && c.end_offset === undefined), { l, r });
   valid("split with a computed length", tm);
-  const [tm3] = run(tm, [{ op: "update_clip", id: "img1", duration: 6 }]);
+  const [tm3] = (await run(tm, [{ op: "update_clip", id: "img1", duration: 6 }]));
   check("  a later change of the target leaves the lengths alone", near(at(tm3, "ovl").duration, 1.5) && near(at(tm3, spm.right).duration, 1.5), [at(tm3, "ovl"), at(tm3, spm.right)]);
   // freeze_frame (a later clip attached to a main clip, and a clip attached to that one, shift too)
-  const fbase = run(base(), [
+  const fbase = (await run((await base()), [
     { op: "add_clip", track: "overlay", asset: "i", id: "tail", attach_to: "img2", offset: 0, duration: 1 },
     { op: "add_clip", track: "overlay", asset: "i", id: "sub", attach_to: "tail", offset: 0.25, duration: 0.5 },
-  ])[0];
+  ]))[0];
   check("freeze setup: the later clips sit where expected", near(at(fbase, "tail").start, 4) && near(at(fbase, "sub").start, 4.25), [at(fbase, "tail"), at(fbase, "sub")]);
-  const [tf, rf] = run(fbase, [{ op: "freeze_frame", id: "ovl", at: 1.5, duration: 1 }]);
+  const [tf, rf] = (await run(fbase, [{ op: "freeze_frame", id: "ovl", at: 1.5, duration: 1 }]));
   const fz = at(tf, rf[0].id), fl = at(tf, "ovl"), fr = tf.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "video" && c.id !== "ovl" && !c.freeze);
   check("freeze_frame on an attached clip: the freeze clip is attached and placed at the freeze time", fz.attach_to === "img1" && near(fz.start, 1.5) && near(fz.duration, 1) && near(fl.start, 0.5) && near(fl.duration, 1), { fz, fl });
   check("  the right part sits after the freeze", fr && near(fr.start, 2.5) && near(fr.duration, 1) && fr.attach_to === "img1", fr);
   check("  later attached clips move by their offset, and a clip attached to one of them follows once", near(at(tf, "tail").start, 5) && near(at(tf, "sub").start, 5.25), [at(tf, "tail"), at(tf, "sub")]);
   valid("freeze_frame on an attached clip", tf);
   // ripple removal and duplicate: a start written on an attached clip is overwritten by resolve
-  const [tr0] = run(base(), [
+  const [tr0] = (await run((await base()), [
     { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 2.5, duration: 0.5 },
     { op: "add_clip", track: "overlay", asset: "i", id: "tail", attach_to: "img2", offset: 0, duration: 1 },
-  ]);
-  const [tr1] = run(tr0, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  ]));
+  const [tr1] = (await run(tr0, [{ op: "remove_clip", id: "gap", ripple: true }]));
   check("remove_clip ripple moves a later attached clip by its offset", near(at(tr0, "tail").start, 4) && near(at(tr1, "tail").start, 3.5), [at(tr0, "tail"), at(tr1, "tail")]);
   valid("remove_clip ripple", tr1);
-  const [td, [dp]] = run(base(), [{ op: "duplicate_clip", id: "ovl" }]);
+  const [td, [dp]] = (await run((await base()), [{ op: "duplicate_clip", id: "ovl" }]));
   check("duplicate_clip of an attached clip lands after the original, attached to the same target, and reports no audio", dp.audio === undefined && at(td, dp.id).attach_to === "img1" && near(at(td, dp.id).start, 2.5) && near(at(td, dp.id).offset, 2.5), at(td, dp.id));
   valid("duplicate_clip of an attached clip", td);
-  const [tdm, [, dpm]] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "duplicate_clip", id: "ovl" }]);
+  const [tdm, [, dpm]] = (await run((await base()), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "duplicate_clip", id: "ovl" }]));
   check("duplicate_clip of an attached clip with a computed length: the copy lands after it with the same length, as a plain duration", near(at(tdm, "ovl").duration, 3.5) && near(at(tdm, dpm.id).start, 4) && near(at(tdm, dpm.id).duration, 3.5) && at(tdm, dpm.id).match_duration === undefined && at(tdm, dpm.id).end_offset === undefined && at(tdm, "ovl").match_duration === true, [at(tdm, "ovl"), at(tdm, dpm.id)]);
   valid("duplicate_clip with a computed length", tdm);
   // chain: C and A on one track, B (on another track) attached to C, A attached to B: A follows C once
-  const cbase = run(base(), [
+  const cbase = (await run((await base()), [
     { op: "add_track", id: "ty", kind: "video" },
     { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 1, duration: 1 },
     { op: "add_clip", track: "overlay", asset: "i", id: "cc", at: 2, duration: 1 },
     { op: "add_clip", track: "ty", asset: "i", id: "bb", attach_to: "cc", offset: 0.5, duration: 2 },
     { op: "add_clip", track: "overlay", asset: "i", id: "aa", attach_to: "bb", offset: 3, duration: 1 },
-  ])[0];
-  const [tc] = run(cbase, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  ]))[0];
+  const [tc] = (await run(cbase, [{ op: "remove_clip", id: "gap", ripple: true }]));
   check("remove_clip ripple: a clip attached through a clip of another track follows once", near(at(cbase, "aa").start, 5.5) && near(at(tc, "cc").start, 1) && near(at(tc, "bb").start, 1.5) && near(at(tc, "aa").start, 4.5), ["cc", "bb", "aa"].map((i) => at(tc, i)));
   valid("remove_clip ripple through a chain", tc);
   // the shifted offset is clamped at 0, so a later move of the target does not leave the clip behind
-  const kbase = run(base(), [
+  const kbase = (await run((await base()), [
     { op: "add_track", id: "ty", kind: "video" },
     { op: "add_clip", track: "ty", asset: "i", id: "mm", at: 0, duration: 6 },
     { op: "add_clip", track: "overlay", asset: "i", id: "gap", at: 0, duration: 3 },
     { op: "add_clip", track: "overlay", asset: "i", id: "att", attach_to: "mm", offset: 1, duration: 1 },
-  ])[0];
-  const [tk] = run(kbase, [{ op: "remove_clip", id: "gap", ripple: true }]);
+  ]))[0];
+  const [tk] = (await run(kbase, [{ op: "remove_clip", id: "gap", ripple: true }]));
   check("remove_clip ripple: the shifted offset stops at the target's start", near(at(tk, "att").start, 0) && near(at(tk, "att").offset, 0), at(tk, "att"));
-  const [tk2] = run(tk, [{ op: "move_clip", id: "mm", at: 3 }]);
+  const [tk2] = (await run(tk, [{ op: "move_clip", id: "mm", at: 3 }]));
   check("  and after the target moves the clip is at the target's new start", near(at(tk2, "att").start, 3), at(tk2, "att"));
   // freeze_frame when the target is on the same track, after the freeze time
-  const sbase = run(base(), [
+  const sbase = (await run((await base()), [
     { op: "add_clip", track: "overlay", asset: "i", id: "tt", at: 5, duration: 1 },
     { op: "add_clip", track: "overlay", asset: "v", id: "c0", attach_to: "tt", offset: -4, duration: 3 },
-  ])[0];
+  ]))[0];
   check("freeze setup: c0 sits before its target", near(at(sbase, "c0").start, 1) && near(at(sbase, "tt").start, 5), [at(sbase, "c0"), at(sbase, "tt")]);
-  const [ts, rsf] = run(sbase, [{ op: "freeze_frame", id: "c0", at: 2, duration: 1 }]);
+  const [ts, rsf] = (await run(sbase, [{ op: "freeze_frame", id: "c0", at: 2, duration: 1 }]));
   const sr = ts.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.attach_to === "tt" && c.id !== "c0" && !c.freeze);
   check("freeze_frame with the target later on the same track: left, freeze and right are contiguous", near(at(ts, "c0").start, 1) && near(at(ts, "c0").duration, 1) && near(at(ts, rsf[0].id).start, 2) && near(at(ts, rsf[0].id).duration, 1) && sr && near(sr.start, 3) && near(sr.duration, 2) && near(at(ts, "tt").start, 6), [at(ts, "c0"), at(ts, rsf[0].id), sr, at(ts, "tt")]);
   valid("freeze_frame with the target on the same track", ts);
   // freeze_frame through a clip that stays: X (attached to a later clip that shifts) is the freeze clip's target
-  const pbase = run(base(), [
+  const pbase = (await run((await base()), [
     { op: "add_track", id: "x", kind: "video" },
     { op: "add_clip", track: "x", asset: "i", id: "tt", at: 5, duration: 1 },
     { op: "add_clip", track: "x", asset: "i", id: "xx", attach_to: "tt", offset: -4, duration: 1 },
     { op: "add_clip", track: "x", asset: "v", id: "c0", attach_to: "xx", offset: 1, duration: 2 },
-  ])[0];
+  ]))[0];
   check("freeze setup: xx at 1, c0 at 2, tt at 5", near(at(pbase, "xx").start, 1) && near(at(pbase, "c0").start, 2) && near(at(pbase, "tt").start, 5), ["xx", "c0", "tt"].map((i) => at(pbase, i)));
-  const [tp, [rp]] = run(pbase, [{ op: "freeze_frame", id: "c0", at: 3, duration: 2 }]);
+  const [tp, [rp]] = (await run(pbase, [{ op: "freeze_frame", id: "c0", at: 3, duration: 2 }]));
   const pr = tp.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "video" && c.attach_to === "xx" && c.id !== "c0" && !c.freeze);
   check("freeze_frame when its target stays and follows a shifting clip: freeze at 3, right part at 5, the target stays at 1", near(at(tp, rp.id).start, 3) && near(rp.start, 3) && pr && near(pr.start, 5) && near(at(tp, "xx").start, 1) && near(at(tp, "tt").start, 7), [at(tp, rp.id), pr, at(tp, "xx"), at(tp, "tt")]);
   valid("freeze_frame through a clip that stays", tp);
   // detached audio
-  const abase = run(base(), [{ op: "add_clip", track: "main", asset: "av", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }])[0];
+  const abase = (await run((await base()), [{ op: "add_clip", track: "main", asset: "av", id: "vid1", in: 1, duration: 2 }, { op: "detach_audio", id: "vid1" }]))[0];
   const aud = abase.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").id;
   check("audio setup: attached to the video", at(abase, aud).attach_to === "vid1" && near(at(abase, aud).start, 6) && at(abase, aud).offset === 0, at(abase, aud));
-  const [ta, [sa]] = run(abase, [{ op: "split_clip", id: aud, at: 7 }]);
+  const [ta, [sa]] = (await run(abase, [{ op: "split_clip", id: aud, at: 7 }]));
   [l, r] = [at(ta, sa.left), at(ta, sa.right)];
   check("splitting the audio clip directly: the right half stays attached to the video at its place", l.attach_to === "vid1" && r.attach_to === "vid1" && near(l.start, 6) && near(r.start, 7) && near(r.offset, 1) && near(l.duration + r.duration, 2) && near(r.in, 2), { l, r });
   valid("split of an attached audio clip", ta);
-  const [tv, [sv]] = run(abase, [{ op: "split_clip", id: "vid1", at: 7 }]);
+  const [tv, [sv]] = (await run(abase, [{ op: "split_clip", id: "vid1", at: 7 }]));
   const vr = at(tv, sv.right), al = at(tv, aud), ar = tv.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === sv.right);
   check("splitting the video: its audio splits with it, the right audio follows the right picture", ar && near(al.start, 6) && near(al.duration, 1) && near(ar.start, 7) && near(ar.duration, 1) && near(vr.start, 7) && near(ar.in, 2), { al, ar, vr });
   valid("split of a video with detached audio", tv);
-  const [tw, [, sw]] = run(abase, [{ op: "update_clip", id: aud, match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]);
+  const [tw, [, sw]] = (await run(abase, [{ op: "update_clip", id: aud, match_duration: true, end_offset: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]));
   const wl = at(tw, aud), wr = tw.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio" && c.attach_to === sw.right);
   check("splitting the video: audio with a computed length gets plain lengths on both pieces", wr && near(wl.start, 6) && near(wl.duration, 1) && near(wr.start, 7) && near(wr.duration, 0.5) && [wl, wr].every((c: any) => c.match_duration === undefined && c.end_offset === undefined), { wl, wr });
   valid("split of a video whose audio has a computed length", tw);
-  const [tj, [, sj]] = run(abase, [{ op: "j_cut", id: "vid1", seconds: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]);
+  const [tj, [, sj]] = (await run(abase, [{ op: "j_cut", id: "vid1", seconds: 0.5 }, { op: "split_clip", id: "vid1", at: 7 }]));
   const aj = tj.tracks.flatMap((tr: any) => tr.clips).filter((c: any) => c.type === "audio").sort((x: any, y: any) => x.start - y.start);
   check("splitting a video with J-cut audio: the audio is split at the same time", aj.length === 2 && near(aj[0].start, 5.5) && near(aj[0].duration, 1.5) && near(aj[1].start, 7) && near(aj[1].duration, 1) && aj[1].attach_to === sj.right, aj);
   valid("split of a J-cut video", tj);
   // ops that place an attached clip set its offset: it lands where asked and stays attached
   console.log("ops that place an attached clip move it by offset");
-  const refused = (name: string, t: any, ops: any[], code: string) => {
+  const refused = async (name: string, t: any, ops: any[], code: string) => {
     const before = JSON.stringify(t);
-    try { run(t, ops); check(name, false, "no error"); }
+    try { (await run(t, ops)); check(name, false, "no error"); }
     catch (e: any) { check(name, e.code === code && !!e.hint && JSON.stringify(t) === before, { code: e.code, message: e.message, hint: e.hint }); }
   };
   // a magnetic track is ordered: after/before name a clip of that track, never one of another track (it used to land first, or before the last clip)
-  const stories = run(base(), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "add_clip", track: "m2", asset: "i", id: "n1", duration: 1 }, { op: "add_clip", track: "m2", asset: "i", id: "n2", duration: 1 }])[0];
-  refused("add_clip after= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", after: "img1" }], "bad_value");
-  refused("add_clip before= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", before: "img1" }], "bad_value");
-  refused("move_clip to a magnetic track after= a clip of another track is refused", stories, [{ op: "move_clip", id: "img2", track: "m2", after: "img1" }], "bad_value");
-  const [m1, [r1]] = run(base(), [{ op: "move_clip", id: "ovl", at: 1 }]);
+  const stories = (await run((await base()), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "add_clip", track: "m2", asset: "i", id: "n1", duration: 1 }, { op: "add_clip", track: "m2", asset: "i", id: "n2", duration: 1 }]))[0];
+  (await refused("add_clip after= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", after: "img1" }], "bad_value"));
+  (await refused("add_clip before= a clip of another track is refused", stories, [{ op: "add_clip", track: "m2", asset: "i", before: "img1" }], "bad_value"));
+  (await refused("move_clip to a magnetic track after= a clip of another track is refused", stories, [{ op: "move_clip", id: "img2", track: "m2", after: "img1" }], "bad_value"));
+  const [m1, [r1]] = (await run((await base()), [{ op: "move_clip", id: "ovl", at: 1 }]));
   check("move_clip at on an attached clip: it lands at the asked time, stays attached, offset updated, result reports the start", near(at(m1, "ovl").start, 1) && at(m1, "ovl").attach_to === "img1" && near(at(m1, "ovl").offset, 1) && near(r1.start, 1), [at(m1, "ovl"), r1]);
   valid("move_clip at on an attached clip", m1);
-  const [m2, [r2]] = run(m1, [{ op: "move_clip", id: "ovl", shift: 0.5 }]);
+  const [m2, [r2]] = (await run(m1, [{ op: "move_clip", id: "ovl", shift: 0.5 }]));
   check("move_clip shift on an attached clip: moves by the amount, offset updated", near(at(m2, "ovl").start, 1.5) && near(at(m2, "ovl").offset, 1.5) && near(r2.start, 1.5), [at(m2, "ovl"), r2]);
-  const [m3] = run(m2, [{ op: "move_clip", id: "img1", index: 1 }]);
+  const [m3] = (await run(m2, [{ op: "move_clip", id: "img1", index: 1 }]));
   check("  and a later move of the target carries it", near(at(m3, "img1").start, 2) && near(at(m3, "ovl").start, 3.5), [at(m3, "img1"), at(m3, "ovl")]);
   valid("move_clip then target move", m3);
-  const [m4] = run(base(), [{ op: "move_clip", id: "ovl", shift: -5 }]);
+  const [m4] = (await run((await base()), [{ op: "move_clip", id: "ovl", shift: -5 }]));
   check("move_clip shift before 0 stops at 0, still attached", near(at(m4, "ovl").start, 0) && near(at(m4, "ovl").offset, 0) && at(m4, "ovl").attach_to === "img1", at(m4, "ovl"));
-  const [m5, [r5]] = run(base(), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty", at: 2 }]);
+  const [m5, [r5]] = (await run((await base()), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty", at: 2 }]));
   check("move_clip of an attached clip to another non-magnetic track: lands there, stays attached, offset updated", m5.tracks.find((x: any) => x.id === "ty")!.clips.some((c: any) => c.id === "ovl") && near(at(m5, "ovl").start, 2) && near(at(m5, "ovl").offset, 2) && at(m5, "ovl").attach_to === "img1" && r5.track === "ty", [at(m5, "ovl"), r5]);
-  const [m6] = run(m5, [{ op: "move_clip", id: "img1", index: 1 }]);
+  const [m6] = (await run(m5, [{ op: "move_clip", id: "img1", index: 1 }]));
   check("  and a later move of the target carries it", near(at(m6, "ovl").start, 4), at(m6, "ovl"));
   valid("move_clip to another track", m6);
-  const [m7] = run(base(), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty" }]);
+  const [m7] = (await run((await base()), [{ op: "add_track", id: "ty", kind: "video" }, { op: "move_clip", id: "ovl", track: "ty" }]));
   check("move_clip to another track without a time keeps the place", near(at(m7, "ovl").start, 0.5) && near(at(m7, "ovl").offset, 0.5), at(m7, "ovl"));
   // magnetic destinations refuse an attached clip
-  refused("move_clip of an attached clip into a magnetic track is refused, batch atomic", base(), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "move_clip", id: "ovl", track: "main", index: 1 }], "attached_magnetic");
-  refused("duplicate_clip of an attached clip into a magnetic track is refused, batch atomic", base(), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "duplicate_clip", id: "ovl", track: "main" }], "attached_magnetic");
-  const hand = base();
+  (await refused("move_clip of an attached clip into a magnetic track is refused, batch atomic", (await base()), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "move_clip", id: "ovl", track: "main", index: 1 }], "attached_magnetic"));
+  (await refused("duplicate_clip of an attached clip into a magnetic track is refused, batch atomic", (await base()), [{ op: "update_clip", id: "ovl", name: "x" }, { op: "duplicate_clip", id: "ovl", track: "main" }], "attached_magnetic"));
+  const hand = (await base());
   at(hand, "img2").attach_to = "img1";
-  refused("move_clip within a magnetic track of an attached clip (hand-edited) is refused", hand, [{ op: "move_clip", id: "img2", index: 0 }], "attached_magnetic");
-  refused("add_clip with attach_to onto a magnetic track is refused", base(), [{ op: "add_clip", track: "main", asset: "i", id: "bad", attach_to: "img1", offset: 1, duration: 1 }], "attached_magnetic");
-  refused("update_clip attach_to on a clip of a magnetic track is refused", base(), [{ op: "update_clip", id: "img2", attach_to: "img1", offset: 1 }], "attached_magnetic");
-  refused("update_track magnetic=true on a track holding an attached clip is refused", base(), [{ op: "update_track", id: "overlay", set: { magnetic: true } }], "attached_magnetic");
-  const [m8] = run(base(), [{ op: "update_clip", id: "ovl", attach_to: null }, { op: "move_clip", id: "ovl", track: "main", index: 1 }]);
+  (await refused("move_clip within a magnetic track of an attached clip (hand-edited) is refused", hand, [{ op: "move_clip", id: "img2", index: 0 }], "attached_magnetic"));
+  (await refused("add_clip with attach_to onto a magnetic track is refused", (await base()), [{ op: "add_clip", track: "main", asset: "i", id: "bad", attach_to: "img1", offset: 1, duration: 1 }], "attached_magnetic"));
+  (await refused("update_clip attach_to on a clip of a magnetic track is refused", (await base()), [{ op: "update_clip", id: "img2", attach_to: "img1", offset: 1 }], "attached_magnetic"));
+  (await refused("update_track magnetic=true on a track holding an attached clip is refused", (await base()), [{ op: "update_track", id: "overlay", set: { magnetic: true } }], "attached_magnetic"));
+  const [m8] = (await run((await base()), [{ op: "update_clip", id: "ovl", attach_to: null }, { op: "move_clip", id: "ovl", track: "main", index: 1 }]));
   check("  after attach_to=null the clip can join the magnetic track", at(m8, "ovl").attach_to === undefined && m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id).join() === "img1,ovl,img2", m8.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id));
   valid("detached then moved", m8);
-  const [m9] = run(base(), [{ op: "move_clip", id: "img2", index: 0 }]);
+  const [m9] = (await run((await base()), [{ op: "move_clip", id: "img2", index: 0 }]));
   check("move_clip within a magnetic track of a plain clip is unchanged", m9.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id).join() === "img2,img1", m9.tracks.find((x: any) => x.id === "main")!.clips.map((c: any) => c.id));
   // trim_start
-  const [n1, [q1]] = run(base(), [{ op: "trim_clip", id: "ovl", trim_start: 0.5 }]);
+  const [n1, [q1]] = (await run((await base()), [{ op: "trim_clip", id: "ovl", trim_start: 0.5 }]));
   check("trim_clip trim_start on an attached clip: start moves by d, in-point by d, the end stays, still attached", near(at(n1, "ovl").start, 1) && near(at(n1, "ovl").in, 1.5) && near(at(n1, "ovl").duration, 1.5) && near(at(n1, "ovl").start + at(n1, "ovl").duration, 2.5) && near(at(n1, "ovl").offset, 1) && at(n1, "ovl").attach_to === "img1" && near(q1.start, 1), [at(n1, "ovl"), q1]);
   valid("trim_start on an attached clip", n1);
-  const [n2] = run(base(), [{ op: "update_clip", id: "ovl", speed: 2 }, { op: "trim_clip", id: "ovl", trim_start: 0.5 }]);
+  const [n2] = (await run((await base()), [{ op: "update_clip", id: "ovl", speed: 2 }, { op: "trim_clip", id: "ovl", trim_start: 0.5 }]));
   check("  with speed 2 the in-point moves by d*speed", near(at(n2, "ovl").in, 2) && near(at(n2, "ovl").start, 1) && near(at(n2, "ovl").start + at(n2, "ovl").duration, 2.5), at(n2, "ovl"));
   // update_clip start
-  const [u1, [s1]] = run(base(), [{ op: "update_clip", id: "ovl", start: 1.5 }]);
+  const [u1, [s1]] = (await run((await base()), [{ op: "update_clip", id: "ovl", start: 1.5 }]));
   check("update_clip start on an attached clip moves it: offset updated, still attached", near(at(u1, "ovl").start, 1.5) && near(at(u1, "ovl").offset, 1.5) && at(u1, "ovl").attach_to === "img1" && near(s1.start, 1.5), [at(u1, "ovl"), s1]);
   valid("update_clip start on an attached clip", u1);
-  refused("update_clip start with offset on an attached clip is refused", base(), [{ op: "update_clip", id: "ovl", set: { start: 1, offset: 1 } }], "bad_value");
-  const [u2] = run(base(), [{ op: "update_clip", id: "ovl", set: { start: 5, attach_to: "img2" } }]);
+  (await refused("update_clip start with offset on an attached clip is refused", (await base()), [{ op: "update_clip", id: "ovl", set: { start: 1, offset: 1 } }], "bad_value"));
+  const [u2] = (await run((await base()), [{ op: "update_clip", id: "ovl", set: { start: 5, attach_to: "img2" } }]));
   check("update_clip start with a new attach_to computes the offset against the new target", near(at(u2, "ovl").start, 5) && near(at(u2, "ovl").offset, 1) && at(u2, "ovl").attach_to === "img2", at(u2, "ovl"));
   valid("update_clip start with a new attach_to", u2);
-  const [u3] = run(base(), [{ op: "update_clip", id: "ovl", set: { start: 3, attach_to: null } }]);
+  const [u3] = (await run((await base()), [{ op: "update_clip", id: "ovl", set: { start: 3, attach_to: null } }]));
   check("update_clip start with attach_to null places the plain clip", at(u3, "ovl").attach_to === undefined && near(at(u3, "ovl").start, 3), at(u3, "ovl"));
   // add_transition
-  const tbase = run(base(), [{ op: "add_clip", track: "overlay", asset: "i", id: "ov0", at: 0, duration: 2 }])[0];
-  const [x1, [y1]] = run(tbase, [{ op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]);
+  const tbase = (await run((await base()), [{ op: "add_clip", track: "overlay", asset: "i", id: "ov0", at: 0, duration: 2 }]))[0];
+  const [x1, [y1]] = (await run(tbase, [{ op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]));
   check("add_transition on an attached clip: start = previous end - duration, offset updated, still attached", near(at(x1, "ovl").start, 1.5) && near(at(x1, "ovl").offset, 1.5) && at(x1, "ovl").attach_to === "img1" && near(y1.start, 1.5), [at(x1, "ovl"), y1]);
   valid("add_transition on an attached clip", x1);
-  const [x2] = run(tbase, [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]);
+  const [x2] = (await run(tbase, [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "add_transition", to: "ovl", type: "crossfade", duration: 0.5 }]));
   check("  a computed length is kept: it still ends at the target's end", near(at(x2, "ovl").start, 1.5) && near(at(x2, "ovl").start + at(x2, "ovl").duration, 4) && at(x2, "ovl").match_duration === true, at(x2, "ovl"));
   // computed length
-  const [c1] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "move_clip", id: "ovl", at: 1 }]);
+  const [c1] = (await run((await base()), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "move_clip", id: "ovl", at: 1 }]));
   check("move_clip of an attached clip with a computed length: it keeps the rule and ends at the target's end", near(at(c1, "ovl").start, 1) && near(at(c1, "ovl").duration, 3) && at(c1, "ovl").match_duration === true && at(c1, "ovl").attach_to === "img1", at(c1, "ovl"));
   valid("move_clip with a computed length", c1);
-  const [c2] = run(base(), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "update_clip", id: "ovl", start: 1 }]);
+  const [c2] = (await run((await base()), [{ op: "update_clip", id: "ovl", match_duration: true }, { op: "update_clip", id: "ovl", start: 1 }]));
   check("update_clip start of an attached clip with a computed length: same", near(at(c2, "ovl").start, 1) && near(at(c2, "ovl").duration, 3) && at(c2, "ovl").match_duration === true, at(c2, "ovl"));
   // ripple with a clamped target: an attached clip outside the set keeps its place
-  const lbase = run(base(), [
+  const lbase = (await run((await base()), [
     { op: "add_track", id: "x", kind: "video" },
     { op: "add_clip", track: "x", asset: "i", id: "xc", at: 1, duration: 4 },
     { op: "add_clip", track: "x", asset: "i", id: "xt", at: 2, duration: 1 },
     { op: "add_clip", track: "x", asset: "i", id: "xb", attach_to: "xt", offset: -1.5, duration: 0.5 },
-  ])[0];
+  ]))[0];
   check("ripple setup: xb sits before its target", near(at(lbase, "xb").start, 0.5) && near(at(lbase, "xt").start, 2), [at(lbase, "xb"), at(lbase, "xt")]);
-  const [lr] = run(lbase, [{ op: "remove_clip", id: "xc", ripple: true }]);
+  const [lr] = (await run(lbase, [{ op: "remove_clip", id: "xc", ripple: true }]));
   check("remove_clip ripple when the target's shift stops at 0: the attached clip outside the set keeps its place", near(at(lr, "xt").start, 0) && near(at(lr, "xb").start, 0.5) && at(lr, "xb").attach_to === "xt", [at(lr, "xt"), at(lr, "xb")]);
   valid("remove_clip ripple with a clamped target", lr);
   // remove_silence on an attached clip (real media with a silent stretch)
@@ -1103,13 +1122,13 @@ console.log("pieces of an attached clip keep their place and length");
     const all4 = (await api.info(S4, "json")).timeline.tracks.flatMap((tr: any) => tr.clips), pc = all4.filter((c: any) => c.type === "audio");
     check("remove_silence: an audio piece is named after the segment it attaches to, also when the first segment has none", r4.segments.length === 2 && pc.length > 0 && pc.every((c: any) => c.name === `audio of ${c.attach_to}`) && pc.some((c: any) => c.attach_to === r4.segments[1]) && !pc.some((c: any) => c.attach_to === r4.segments[0]), { r4, pc });
   }
-  const rv = (() => {
+  const rv = (await (async () => {
     const t = newTimeline(640, 360, 30);
     t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
-    const [t1] = applyOps(null as any, t, [{ op: "add_clip", track: "overlay", asset: "v", id: "pv", at: 0, duration: 3 }, { op: "detach_audio", id: "pv" }]);
+    const [t1] = (await applyOps(null as any, t, [{ op: "add_clip", track: "overlay", asset: "v", id: "pv", at: 0, duration: 3 }, { op: "detach_audio", id: "pv" }]));
     t1.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.type === "audio").reverse = true;
-    try { applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }]); return "no error"; } catch (e: any) { return e.code; }
-  })();
+    try { (await applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }])); return "no error"; } catch (e: any) { return e.code; }
+  })());
   check("remove_silence refuses a picture whose detached audio plays reversed", rv === "reversed_audio", rv);
 }
 
@@ -1121,68 +1140,68 @@ console.log("clip copies: split, duplicate, freeze, remove");
     t.assets.i = { path: "/none.png", kind: "image" };
     return t;
   };
-  const run = (t: any, ops: any[]) => applyOps(null as any, t, ops);
+  const run = async (t: any, ops: any[]) => (await applyOps(null as any, t, ops));
   const at = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
   const ids = (t: any, track: string) => t.tracks.find((tr: any) => tr.id === track).clips.map((c: any) => c.id).join();
   const ok = (name: string, t: any) => check(`${name}: the timeline validates`, !validate(t).some((i: any) => i.level === "error"), validate(t).filter((i: any) => i.level === "error"));
-  const refusedWith = (t: any, ops: any[]) => { try { run(t, ops); return "no error"; } catch (e: any) { return e.code; } };
+  const refusedWith = async (t: any, ops: any[]) => { try { (await run(t, ops)); return "no error"; } catch (e: any) { return e.code; } };
 
   // split_clip
-  const [fx, [, sfx]] = run(mk(), [
+  const [fx, [, sfx]] = (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "i", id: "box", at: 0, duration: 4, effects: [{ type: "vignette" }, { type: "grain", start: 1, duration: 2 }, { type: "blur", start: 3 }] },
-    { op: "split_clip", id: "box", at: 2 }]);
+    { op: "split_clip", id: "box", at: 2 }]));
   const rfx = at(fx, sfx.right).effects;
   check("split_clip: the right half gets the effects in its own time (whole-clip ones stay, a window is cut at the split)", rfx.length === 3 && rfx[0].start === undefined && rfx[1].type === "grain" && near(rfx[1].start, 0) && near(rfx[1].duration, 1) && rfx[2].type === "blur" && near(rfx[2].start, 1) && at(fx, "box").effects.length === 3, [rfx, at(fx, "box").effects]);
-  const [aw, [, saw]] = run(mk(), [
+  const [aw, [, saw]] = (await run(mk(), [
     { op: "add_clip", track: "captions", type: "captions", id: "cap", at: 0, duration: 4, words: [{ text: "a", s: 0, e: 1 }, { text: "b", s: 2, e: 3 }] },
-    { op: "split_clip", id: "cap", at: 1.5 }]);
+    { op: "split_clip", id: "cap", at: 1.5 }]));
   const lw = at(aw, "cap").words, rw = at(aw, saw.right).words;
   check("split_clip: caption words written with the s/e aliases survive in both halves", lw.length === 1 && lw[0].text === "a" && rw.length === 1 && rw[0].text === "b" && near(rw[0].start, 0.5) && near(rw[0].end, 1.5), [lw, rw]);
-  const withSrt = run(mk(), [{ op: "add_clip", track: "captions", type: "captions", id: "scap", at: 0, duration: 4, srt: "/none.srt" }])[0];
-  check("split_clip: srt-backed captions are refused (their cues cannot be moved into the right half)", refusedWith(withSrt, [{ op: "split_clip", id: "scap", at: 2 }]) === "bad_type");
+  const withSrt = (await run(mk(), [{ op: "add_clip", track: "captions", type: "captions", id: "scap", at: 0, duration: 4, srt: "/none.srt" }]))[0];
+  check("split_clip: srt-backed captions are refused (their cues cannot be moved into the right half)", (await refusedWith(withSrt, [{ op: "split_clip", id: "scap", at: 2 }])) === "bad_type");
 
   // duplicate_clip keeps the sound of a picture with detached audio
-  const dbase = run(mk(), [
+  const dbase = (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "v", id: "pic", at: 2, in: 1, duration: 3 },
-    { op: "j_cut", id: "pic", seconds: 0.5 }])[0];
+    { op: "j_cut", id: "pic", seconds: 0.5 }]))[0];
   check("j_cut on a new track sets no role", at(dbase, at(dbase, "pic").id) && dbase.tracks.find((tr: any) => tr.id === "dialogue")?.role === undefined, dbase.tracks.map((tr: any) => [tr.id, tr.role]));
-  const [dt, [dd]] = run(dbase, [{ op: "duplicate_clip", id: "pic", at: 8 }]);
+  const [dt, [dd]] = (await run(dbase, [{ op: "duplicate_clip", id: "pic", at: 8 }]));
   const da = at(dt, dd.audio?.[0]), oa = at(dt, "aud1");
   check("duplicate_clip: the copy gets its own copy of the detached audio (result.audio lists its one id), connected to it and with the same lead", dd.audio.length === 1 && !!da && da.attach_to === dd.id && da.id !== oa.id && oa.attach_to === "pic" && near(da.offset, oa.offset) && near(da.start, 7.5) && near(da.duration, oa.duration) && near(da.in, oa.in) && at(dt, dd.id).muted === true, [da, oa]);
   ok("duplicate_clip with detached audio", dt);
 
   // freeze_frame at the clip start plays before the clip
-  const fbase = () => run(mk(), [
+  const fbase = async () => (await run(mk(), [
     { op: "add_clip", track: "main", asset: "i", id: "first", duration: 2 },
-    { op: "add_clip", track: "main", asset: "v", id: "pic", in: 1, duration: 3, transition: { type: "crossfade", duration: 0.5 } }])[0];
-  const [fm, [fr]] = run(fbase(), [{ op: "freeze_frame", id: "pic", at: 1.5, duration: 1 }]);
+    { op: "add_clip", track: "main", asset: "v", id: "pic", in: 1, duration: 3, transition: { type: "crossfade", duration: 0.5 } }]))[0];
+  const [fm, [fr]] = (await run((await fbase()), [{ op: "freeze_frame", id: "pic", at: 1.5, duration: 1 }]));
   check("freeze_frame at the start of a storyline clip: the freeze comes first, then the whole clip", ids(fm, "main") === `first,${fr.id},pic` && near(at(fm, fr.id).in, 1) && near(at(fm, "pic").duration, 3) && near(at(fm, "pic").start, at(fm, fr.id).start + 1), [ids(fm, "main"), at(fm, fr.id), at(fm, "pic")]);
   check("  the transition from the previous clip leads into the freeze", at(fm, fr.id).transition?.type === "crossfade" && at(fm, "pic").transition === undefined, [at(fm, fr.id).transition, at(fm, "pic").transition]);
   ok("freeze_frame at a storyline clip start", fm);
-  const [fo, [, fo1]] = run(mk(), [{ op: "add_clip", track: "overlay", asset: "v", id: "pic", at: 1, in: 2, duration: 2 }, { op: "freeze_frame", id: "pic", at: 1, duration: 1.5 }]);
+  const [fo, [, fo1]] = (await run(mk(), [{ op: "add_clip", track: "overlay", asset: "v", id: "pic", at: 1, in: 2, duration: 2 }, { op: "freeze_frame", id: "pic", at: 1, duration: 1.5 }]));
   check("freeze_frame at the start of a free-placed clip: the freeze sits at that time and the clip moves after it", ids(fo, "overlay") === `${fo1.id},pic` && near(at(fo, fo1.id).start, 1) && near(at(fo, fo1.id).in, 2) && near(at(fo, "pic").start, 2.5), [ids(fo, "overlay"), at(fo, fo1.id), at(fo, "pic")]);
   ok("freeze_frame at a free-placed clip start", fo);
 
   // remove_clip follows the attach chain
-  const cbase = () => run(mk(), [
+  const cbase = async () => (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "i", id: "k0", at: 0, duration: 4 },
     { op: "add_clip", track: "overlay", asset: "i", id: "k1", attach_to: "k0", offset: 0.5, duration: 1 },
     { op: "add_clip", track: "overlay", asset: "i", id: "k2", attach_to: "k1", offset: 0.2, duration: 0.5 },
     { op: "add_clip", track: "text", type: "text", text: "x", id: "k3", attach_to: "k2", offset: 0.1, duration: 0.2 },
-    { op: "add_clip", track: "text", type: "text", text: "y", id: "keep", at: 3, duration: 1 }])[0];
-  const [cr, [crr]] = run(cbase(), [{ op: "remove_clip", id: "k0" }]);
+    { op: "add_clip", track: "text", type: "text", text: "y", id: "keep", at: 3, duration: 1 }]))[0];
+  const [cr, [crr]] = (await run((await cbase()), [{ op: "remove_clip", id: "k0" }]));
   check("remove_clip removes the whole attach chain", JSON.stringify([...crr.removed_attached].sort()) === '["k1","k2","k3"]' && !at(cr, "k1") && !at(cr, "k2") && !at(cr, "k3") && !!at(cr, "keep"), { crr, left: cr.tracks.flatMap((tr: any) => tr.clips.map((c: any) => c.id)) });
-  const [ck] = run(cbase(), [{ op: "remove_clip", id: "k0", keep_attached: true }]);
+  const [ck] = (await run((await cbase()), [{ op: "remove_clip", id: "k0", keep_attached: true }]));
   check("remove_clip keep_attached detaches only the direct dependents", !at(ck, "k0") && at(ck, "k1").attach_to === undefined && at(ck, "k2").attach_to === "k1" && at(ck, "k3").attach_to === "k2", [at(ck, "k1"), at(ck, "k2")]);
   ok("remove_clip chain", cr);
 
   // flash: `at` is clip-local like keyframes, so it moves with the content
-  const fxs = (fxl: any[]) => run(mk(), [{ op: "add_clip", track: "overlay", asset: "i", id: "fl", at: 0, duration: 6, effects: fxl }])[0];
-  const [ft] = run(fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }]), [{ op: "trim_clip", id: "fl", trim_start: 1 }]);
+  const fxs = async (fxl: any[]) => (await run(mk(), [{ op: "add_clip", track: "overlay", asset: "i", id: "fl", at: 0, duration: 6, effects: fxl }]))[0];
+  const [ft] = (await run((await fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }])), [{ op: "trim_clip", id: "fl", trim_start: 1 }]));
   check("trim_start moves a flash with the content and drops one that is already over", JSON.stringify(at(ft, "fl").effects.map((f: any) => f.at)) === "[1]", at(ft, "fl").effects);
-  const [fs, [fsr]] = run(fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }]), [{ op: "split_clip", id: "fl", at: 1 }]);
+  const [fs, [fsr]] = (await run((await fxs([{ type: "flash", at: 2 }, { type: "flash", at: 0.5 }])), [{ op: "split_clip", id: "fl", at: 1 }]));
   check("split_clip: the right half's flash fires at the same moment, the one before the split stays on the left", JSON.stringify(at(fs, fsr.right).effects.map((f: any) => f.at)) === "[1]" && at(fs, "fl").effects.length === 2, [at(fs, fsr.right).effects, at(fs, "fl").effects]);
-  const [fw] = run(fxs([{ type: "flash", start: 1, duration: 0.5 }]), [{ op: "trim_clip", id: "fl", trim_start: 1.25 }]);
+  const [fw] = (await run((await fxs([{ type: "flash", start: 1, duration: 0.5 }])), [{ op: "trim_clip", id: "fl", trim_start: 1.25 }]));
   const fwf = at(fw, "fl").effects?.[0];
   check("a flash cut into by the head keeps its own length and fades from where it was", near(fwf?.at, -0.25) && near(fwf?.duration, 0.5) && fwf.start === undefined, fwf);
   ok("flash after trim_start", fw);
@@ -1196,51 +1215,51 @@ console.log("clip copies: split, duplicate, freeze, remove");
   check("a flash fires at its `at` for its own duration, which is not also a window from the clip start", flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.1) > 100 && flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.3) === 0 && flashAt({ type: "flash", at: -0.25, duration: 0.5 }, 0.1) > 50, [flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.1), flashAt({ type: "flash", at: 2, duration: 0.25 }, 2.3)]);
 
   // expand_compound
-  const cbase2 = () => run(mk(), [
+  const cbase2 = async () => (await run(mk(), [
     { op: "add_clip", track: "main", asset: "i", id: "A", duration: 2 },
     { op: "add_clip", track: "main", asset: "i", id: "B", duration: 1, transition: { type: "crossfade", duration: 0.5 }, effects: [{ type: "flash", at: 0.8 }] },
     { op: "add_clip", track: "overlay", asset: "i", id: "O", at: 1.5, duration: 1 },
     { op: "add_clip", track: "main", asset: "i", id: "D", duration: 2 },
-    { op: "make_compound", ids: ["B", "O"], id: "C" }])[0];
+    { op: "make_compound", ids: ["B", "O"], id: "C" }]))[0];
   const nested = (t: any, tid: string) => at(t, "C").tracks.find((x: any) => x.id === tid);
-  const kept = (f: (t: any) => void) => { const t = structuredClone(cbase2()); f(t); return run(t, [{ op: "expand_compound", id: "C" }])[0]; };
-  check("expand_compound setup: the compound sits 0.5 over the previous clip and D follows it", near(at(cbase2(), "C").start, 1.5) && near(at(cbase2(), "D").start, 2.5), [at(cbase2(), "C").start, at(cbase2(), "D").start]);
+  const kept = async (f: (t: any) => void) => { const t = structuredClone((await cbase2())); f(t); return (await run(t, [{ op: "expand_compound", id: "C" }]))[0]; };
+  check("expand_compound setup: the compound sits 0.5 over the previous clip and D follows it", near(at((await cbase2()), "C").start, 1.5) && near(at((await cbase2()), "D").start, 2.5), [at((await cbase2()), "C").start, at((await cbase2()), "D").start]);
   const noHome = (t: any) => { at(t, "C").tracks = at(t, "C").tracks.filter((x: any) => x.id !== "main"); };
-  const e1c = (() => { const t = structuredClone(cbase2()); noHome(t); try { run(t, [{ op: "expand_compound", id: "C" }]); return "no error"; } catch (e: any) { return e.code; } })();
+  const e1c = (await (async () => { const t = structuredClone((await cbase2())); noHome(t); try { (await run(t, [{ op: "expand_compound", id: "C" }])); return "no error"; } catch (e: any) { return e.code; } })());
   check("expand_compound with nothing back on its storyline refuses to drop the compound's transition", e1c === "layer_properties", e1c);
-  const e1b = (() => { const t = structuredClone(cbase2()); noHome(t); return run(t, [{ op: "update_clip", id: "C", set: { transition: null } }])[0]; })();
-  const e1 = run(e1b, [{ op: "expand_compound", id: "C" }])[0];
+  const e1b = (await (async () => { const t = structuredClone((await cbase2())); noHome(t); return (await run(t, [{ op: "update_clip", id: "C", set: { transition: null } }]))[0]; })());
+  const e1 = (await run(e1b, [{ op: "expand_compound", id: "C" }]))[0];
   check("expand_compound with nothing back on its storyline: the clips after it keep their time", near(at(e1, "D").start, at(e1b, "D").start), [at(e1b, "D"), at(e1, "D")]);
   ok("expand_compound time-keeping gap", e1);
   for (const [name, st, dur] of [["a head gap shorter than the transition becomes a smaller overlap", 0.3, 0.7], ["a head gap longer than the transition stays a gap", 0.8, 0.2]] as const) {
-    const e2 = kept((t) => { Object.assign(nested(t, "main").clips[0], { start: st, duration: dur }); });
+    const e2 = (await kept((t) => { Object.assign(nested(t, "main").clips[0], { start: st, duration: dur }); }));
     check(`expand_compound: ${name}; the clip keeps its time and D stays at 2.5`, near(at(e2, "B").start, 1.5 + st) && near(at(e2, "D").start, 2.5), [at(e2, "B"), at(e2, "D")]);
     ok(`expand_compound head gap ${st}`, e2);
   }
-  const cutHead = run(cbase2(), [{ op: "update_clip", id: "C", set: { in: 0.5, duration: 0.5 } }, { op: "expand_compound", id: "C" }])[0];
+  const cutHead = (await run((await cbase2()), [{ op: "update_clip", id: "C", set: { in: 0.5, duration: 0.5 } }, { op: "expand_compound", id: "C" }]))[0];
   check("expand_compound: a head cut moves the nested flash with the content", near(at(cutHead, "B").effects?.[0].at, 0.3), at(cutHead, "B").effects);
 
   // layer properties: identity values lose nothing; a drop that would be silent is refused
-  const refuse = (t: any, ops: any[]) => { try { run(t, ops); return undefined; } catch (e: any) { return e; } };
-  const withProps = (props: any) => { const t = structuredClone(cbase2()); Object.assign(at(t, "C"), props); return refuse(t, [{ op: "expand_compound", id: "C" }]); };
-  check("expand_compound accepts identity layer values (opacity 1, scale 1, rotation 0, blend normal, radius 0)", withProps({ opacity: 1, scale: 1, scale_x: 1, rotation: 0, blend: "normal", radius: 0 }) === undefined);
-  check("expand_compound still refuses a real layer value", withProps({ opacity: 0.5 })?.code === "layer_properties");
+  const refuse = async (t: any, ops: any[]) => { try { (await run(t, ops)); return undefined; } catch (e: any) { return e; } };
+  const withProps = async (props: any) => { const t = structuredClone((await cbase2())); Object.assign(at(t, "C"), props); return (await refuse(t, [{ op: "expand_compound", id: "C" }])); };
+  check("expand_compound accepts identity layer values (opacity 1, scale 1, rotation 0, blend normal, radius 0)", (await withProps({ opacity: 1, scale: 1, scale_x: 1, rotation: 0, blend: "normal", radius: 0 })) === undefined);
+  check("expand_compound still refuses a real layer value", (await withProps({ opacity: 0.5 }))?.code === "layer_properties");
   for (const props of [{ until_end: true }, { pending: { auto_reframe: { op: "auto_reframe" } } }]) {
-    const er = withProps(props);
+    const er = (await withProps(props));
     check(`expand_compound refuses ${Object.keys(props)[0]} instead of dropping it`, er?.code === "layer_properties" && er.message.includes(Object.keys(props)[0]), er && [er.code, er.message]);
   }
-  const free = run(mk(), [
+  const free = (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "i", id: "f1", at: 0, duration: 2 }, { op: "add_clip", track: "overlay", asset: "i", id: "f2", at: 2, duration: 2 },
-    { op: "make_compound", ids: ["f2"], id: "FC" }])[0];
+    { op: "make_compound", ids: ["f2"], id: "FC" }]))[0];
   at(free, "FC").transition = { type: "crossfade", duration: 0.5 };
-  const ft2 = refuse(free, [{ op: "expand_compound", id: "FC" }]);
+  const ft2 = (await refuse(free, [{ op: "expand_compound", id: "FC" }]));
   check("expand_compound refuses the transition of a compound on a free track instead of dropping it", ft2?.code === "layer_properties" && ft2.message.includes("transition"), ft2 && [ft2.code, ft2.message]);
 
   // the srt refusal while expanding names the compound, not the nested clip it cannot reach
-  const srtc = run(mk(), [
+  const srtc = (await run(mk(), [
     { op: "add_clip", track: "captions", type: "captions", id: "sc", at: 0, duration: 4, srt: "/none.srt" },
-    { op: "make_compound", ids: ["sc"], id: "SC" }, { op: "update_clip", id: "SC", set: { in: 1, duration: 3 } }])[0];
-  const es = refuse(srtc, [{ op: "expand_compound", id: "SC" }]);
+    { op: "make_compound", ids: ["sc"], id: "SC" }, { op: "update_clip", id: "SC", set: { in: 1, duration: 3 } }]))[0];
+  const es = (await refuse(srtc, [{ op: "expand_compound", id: "SC" }]));
   check("expand_compound over srt captions with a cut head: the hint names the compound", es?.code === "bad_type" && /update_clip id=SC set=\{in: 0\}/.test(es.hint) && !/give the clip/.test(es.hint), es && [es.code, es.hint]);
 }
 
@@ -1361,6 +1380,50 @@ console.log("templates and beats");
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
 }
 
+console.log("colour validation and atomic batches");
+{
+  const Q = join(tmp, "colours-proj");
+  api.create(Q, { preset: "720p" });
+  const shape = { id: "shape1", type: "shape", shape: "rect", start: 0, duration: 1 };
+  const text = { id: "text1", type: "text", text: "Hello", start: 0, duration: 1 };
+  const cases: [string, any, string][] = [
+    ["shape fill", { ...shape, fill: "notacolor" }, ".fill"],
+    ["text color", { ...text, color: "notacolor" }, ".color"],
+    ["solid color", { ...shape, type: "color", shape: undefined, color: "notacolor" }, ".color"],
+    ...["stroke", "border", "shadow", "glow", "background"].map((key): [string, any, string] =>
+      [key, { ...text, [key]: { color: "notacolor" } }, `.${key}.color`]),
+    ...["glow", "background", "highlight_color", "highlight_bg"].map((key): [string, any, string] =>
+      [key, { ...text, type: "captions", words: [{ text: "Hello", start: 0, end: 1 }], [key]: "notacolor" }, `.${key}`]),
+    ...["shape", "text", "color"].map((type): [string, any, string] =>
+      [`${type} gradient`, { id: "gradient1", type, text: "Hello", start: 0, duration: 1, gradient: { colors: ["red", "notacolor"] } }, ".gradient.colors[1]"]),
+  ];
+  for (const [name, clip, suffix] of cases) {
+    const t = newTimeline(640, 360, 30);
+    t.tracks[0].clips.push(clip);
+    const issues = validate(t);
+    check(`validate rejects invalid ${name} at its field`, issues.some((i) => i.level === "error" && i.path.endsWith(suffix) && /unknown colour/.test(i.message) && !!i.hint), issues);
+  }
+  const t = newTimeline(640, 360, 30);
+  t.settings.background = "notacolor";
+  check("validate rejects invalid canvas background", validate(t).some((i) => i.level === "error" && i.path === "$.settings.background"));
+  t.settings.background = "transparent";
+  check("validate accepts absent optional colours on an empty timeline", !validate(t).some((i) => i.level === "error"), validate(t));
+  t.tracks[0].clips.push({ id: "compound1", type: "compound", start: 0, duration: 1, tracks: [{ id: "nested", kind: "video", clips: [{ ...shape, fill: "notacolor" }] }] });
+  check("validate rejects invalid colours inside compounds", validate(t).some((i) => i.level === "error" && i.path.includes("<compound1>") && i.path.endsWith("<shape1>.fill")), validate(t));
+  for (const [name, clip] of cases.slice(0, 2)) {
+    const { start, ...args } = clip;
+    const before = readFileSync(join(Q, "project.json"), "utf8");
+    let error: any;
+    try { await applyLatest(Q, [{ op: "add_clip", track: "overlay", ...args, at: start }]); } catch (e) { error = e; }
+    check(`ops batch rejects invalid ${name} without saving`, error?.code === "validation_failed" && readFileSync(join(Q, "project.json"), "utf8") === before, error?.details);
+  }
+  const valid = await applyLatest(Q, [
+    { op: "add_clip", track: "overlay", id: shape.id, type: "shape", shape: "rect", duration: 1, fill: "#f08a", stroke: { color: "rgba(1,2,3,0.5)", width: 2 } },
+    { op: "add_clip", track: "text", id: text.id, text: "Hello", duration: 1, color: "white", background: "#12345678", glow: { color: "rgb(1,2,3)" }, gradient: { colors: ["red", "#aabbcc"] } },
+  ]);
+  check("valid colours pass ops batch and validate", valid.errors === 0 && (await api.validate(Q)).valid === true, valid);
+}
+
 console.log("op arguments, documented ranges, undo steps");
 {
   const Q = join(tmp, "args-proj");
@@ -1477,7 +1540,7 @@ check("timeline valid", inf.errors === 0, inf.issues);
 const out = join(P, "renders", "jcut.mp4");
 const rr: any = await api.render(P, { draft: true, sheet: false, out, end: 4 });
 check("draft render", rr.frames > 0, rr);
-const pr: any = api.probe(out);
+const pr: any = (await api.probe(out));
 check("render has audio", pr.has_audio && near(pr.duration, 4, 0.15), pr);
 // B's 660 Hz tone starts in the J-cut lead (2.0..2.5), under A's 440 Hz, before B's picture (2.5)
 const tone = (ss: number) => {
@@ -1525,148 +1588,148 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
   { // a hint offers loop only where validate accepts it on every clip the hint is given for
     const mk = (clips: any[], extra: any = {}) => { const t = base(); t.assets.va = { path: "x.mp4", kind: "video", duration: 2, has_audio: true, ...VF, ...extra }; t.tracks[0].clips = clips; return t; };
     const vid = (o: any = {}) => ({ id: "y", type: "video", asset: "va", in: 0, duration: 2, ...o });
-    const refusedHint = (t: any, ops: any[]) => { try { applyOps(null as any, t, ops); return "no error"; } catch (e: any) { return e.code === "out_of_range" ? String(e.hint) : `${e.code}: ${e.message}`; } };
+    const refusedHint = async (t: any, ops: any[]) => { try { (await applyOps(null as any, t, ops)); return "no error"; } catch (e: any) { return e.code === "out_of_range" ? String(e.hint) : `${e.code}: ${e.message}`; } };
     const warnHint = (t: any) => String(w(t).find((i: any) => /of source/.test(i.message))?.hint);
     const slip = [{ op: "slip_clip", id: "y", by: 1 }], lcut = [{ op: "l_cut", id: "y", seconds: 1 }];
-    const reversedSound = applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }, { op: "update_clip", id: "aud1", set: { reverse: true } }])[0]; // an op builds the state: the picture plays forward, its detached sound backwards
+    const reversedSound = (await applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }, { op: "update_clip", id: "aud1", set: { reverse: true } }]))[0]; // an op builds the state: the picture plays forward, its detached sound backwards
     // loop lifts only the source end: it is offered when the upper bound tripped and the lower did not (a clip longer than its source trips the upper bound alone at by -0.5, both at by -2)
     const longer = mk([vid({ in: 1, duration: 5 })]), slipBy = (by: number) => [{ op: "slip_clip", id: "y", by }];
     check("slip_clip past the source end offers loop on a forward clip, and not on a reversed one, nor when the in-point would pass 0",
-      /set loop: true/.test(refusedHint(mk([vid()]), slip)) && /^no slip fits/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && !/loop/.test(refusedHint(mk([vid({ reverse: true })]), slip))
-      && /^no slip fits/.test(refusedHint(mk([vid()]), slipBy(-1))) && !/loop/.test(refusedHint(mk([vid()]), slipBy(-1)))
-      && /set loop: true/.test(refusedHint(longer, slipBy(-0.5))) && /^no slip fits/.test(refusedHint(longer, slipBy(-2))) && !/loop/.test(refusedHint(longer, slipBy(-2))),
-      [refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-0.5)), refusedHint(longer, slipBy(-2))]);
-    check("  nor when only its detached sound is reversed, nor on a source whose format cannot loop", !/loop/.test(refusedHint(reversedSound, slip)) && /^no slip fits/.test(refusedHint(reversedSound, slip)) && !/loop/.test(refusedHint(mk([vid()], { format: "mpegts", key_gap: 1 }), slip)));
+      /set loop: true/.test((await refusedHint(mk([vid()]), slip))) && /^no slip fits/.test((await refusedHint(mk([vid({ reverse: true })]), slip))) && !/loop/.test((await refusedHint(mk([vid({ reverse: true })]), slip)))
+      && /^no slip fits/.test((await refusedHint(mk([vid()]), slipBy(-1)))) && !/loop/.test((await refusedHint(mk([vid()]), slipBy(-1))))
+      && /set loop: true/.test((await refusedHint(longer, slipBy(-0.5)))) && /^no slip fits/.test((await refusedHint(longer, slipBy(-2)))) && !/loop/.test((await refusedHint(longer, slipBy(-2)))),
+      [(await refusedHint(mk([vid()]), slipBy(-1))), (await refusedHint(longer, slipBy(-0.5))), (await refusedHint(longer, slipBy(-2)))]);
+    check("  nor when only its detached sound is reversed, nor on a source whose format cannot loop", !/loop/.test((await refusedHint(reversedSound, slip))) && /^no slip fits/.test((await refusedHint(reversedSound, slip))) && !/loop/.test((await refusedHint(mk([vid()], { format: "mpegts", key_gap: 1 }), slip))));
     // a hint prints "allowed by: a .. b" only when a non-zero amount fits (a < b, or a = b off zero); a clip longer than its source says so even where loop is offered
-    const shown = [refusedHint(mk([vid({ duration: 1 })]), slipBy(1.5)), refusedHint(mk([vid({ in: 1, duration: 1 })]), slipBy(-2))];
+    const shown = [(await refusedHint(mk([vid({ duration: 1 })]), slipBy(1.5))), (await refusedHint(mk([vid({ in: 1, duration: 1 })]), slipBy(-2)))];
     const range = (h: string) => /allowed by: (-?[\d.]+) \.\. (-?[\d.]+) s/.exec(h)?.slice(1).map(Number);
     check("slip_clip prints 'allowed by' only for a range that holds an amount; a clip longer than its source, offered loop, says no slip fits",
-      shown.every((h) => { const r = range(h); return !!r && r[0] <= r[1] && (r[0] < r[1] || r[0] !== 0); }) && /^no slip fits/.test(refusedHint(longer, slipBy(-0.5))), { shown, longer: refusedHint(longer, slipBy(-0.5)) });
+      shown.every((h) => { const r = range(h); return !!r && r[0] <= r[1] && (r[0] < r[1] || r[0] !== 0); }) && /^no slip fits/.test((await refusedHint(longer, slipBy(-0.5)))), { shown, longer: (await refusedHint(longer, slipBy(-0.5))) });
     // the roll and the slide share the one print: two clips with no spare source say "no by fits", a pair with room still print their range
     const pair = (a: any, b: any) => mk([vid({ id: "L", ...a }), vid({ id: "R", ...b })]), roll = [{ op: "roll_edit", id: "L", by: 0.5 }];
-    const slid = refusedHint(mk([vid({ id: "A", in: 1, duration: 5 }), vid({ id: "M", in: 1, duration: 1 }), vid({ id: "N", in: 1, duration: 1 })]), [{ op: "slide_clip", id: "M", by: 0.5 }]);
+    const slid = (await refusedHint(mk([vid({ id: "A", in: 1, duration: 5 }), vid({ id: "M", in: 1, duration: 1 }), vid({ id: "N", in: 1, duration: 1 })]), [{ op: "slide_clip", id: "M", by: 0.5 }]));
     check("roll_edit and slide_clip say 'no by fits' when a clip is longer than its source, or the pair has no spare source, and print their range when there is one",
-      [refusedHint(pair({ in: 1, duration: 5 }, { in: 1, duration: 1 }), roll), refusedHint(pair({}, {}), roll), slid].every((h) => /^no by fits/.test(h) && !range(h))
-      && range(refusedHint(pair({ in: 0.5, duration: 1 }, { in: 0.5, duration: 1 }), [{ op: "roll_edit", id: "L", by: 3 }]))?.join() === "-0.5,0.5", [refusedHint(pair({ in: 1, duration: 5 }, { in: 1, duration: 1 }), roll), refusedHint(pair({}, {}), roll), slid]);
+      [(await refusedHint(pair({ in: 1, duration: 5 }, { in: 1, duration: 1 }), roll)), (await refusedHint(pair({}, {}), roll)), slid].every((h) => /^no by fits/.test(h) && !range(h))
+      && range((await refusedHint(pair({ in: 0.5, duration: 1 }, { in: 0.5, duration: 1 }), [{ op: "roll_edit", id: "L", by: 3 }])))?.join() === "-0.5,0.5", [(await refusedHint(pair({ in: 1, duration: 5 }, { in: 1, duration: 1 }), roll)), (await refusedHint(pair({}, {}), roll)), slid]);
     // a clip's loop flag is its own, so the hint names every clip it must be set on; following it (loop on each named clip, the same op again) must pass
-    const det = applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }])[0], two = applyOps(null as any, det, [{ op: "split_clip", id: "aud1", at: 1 }])[0];
+    const det = (await applyOps(null as any, mk([vid()]), [{ op: "detach_audio", id: "y" }]))[0], two = (await applyOps(null as any, det, [{ op: "split_clip", id: "aud1", at: 1 }]))[0];
     const named = (h: string) => [...h.matchAll(/'([^']+)'/g)].map((m) => m[1]);
-    const follows = (t: any, ops: any[], ids: string[], cure = (id: string): any => ({ op: "update_clip", id, set: { loop: true } })) => { try { applyOps(null as any, structuredClone(t), [...ids.map(cure), ...ops]); return true; } catch { return false; } };
-    const slipNamed = [det, two].map((t) => named(refusedHint(t, slip)));
-    const yLooped = applyOps(null as any, det, [{ op: "update_clip", id: "y", set: { loop: true } }])[0];
+    const follows = async (t: any, ops: any[], ids: string[], cure = (id: string): any => ({ op: "update_clip", id, set: { loop: true } })) => { try { (await applyOps(null as any, structuredClone(t), [...ids.map(cure), ...ops])); return true; } catch { return false; } };
+    const slipNamed = await Promise.all([det, two].map(async (t) => named((await refusedHint(t, slip)))));
+    const yLooped = (await applyOps(null as any, det, [{ op: "update_clip", id: "y", set: { loop: true } }]))[0];
     check("slip_clip on a video with detached audio names the video and each piece to set loop on (one piece or two), and setting loop on those clips lets the same slip pass; a clip with loop is not named again",
-      slipNamed[0].join() === "y,aud1" && slipNamed[1].join() === "y,aud1,aud2" && follows(det, slip, slipNamed[0]) && follows(two, slip, slipNamed[1]) && named(refusedHint(yLooped, slip)).join() === "aud1" && /on 'aud1' \(/.test(refusedHint(yLooped, slip)) && /on each of 'y', 'aud1' \(/.test(refusedHint(det, slip)), [slipNamed, refusedHint(yLooped, slip)]);
+      slipNamed[0].join() === "y,aud1" && slipNamed[1].join() === "y,aud1,aud2" && (await follows(det, slip, slipNamed[0])) && (await follows(two, slip, slipNamed[1])) && named((await refusedHint(yLooped, slip))).join() === "aud1" && /on 'aud1' \(/.test((await refusedHint(yLooped, slip))) && /on each of 'y', 'aud1' \(/.test((await refusedHint(det, slip))), [slipNamed, (await refusedHint(yLooped, slip))]);
     // trim_clip leaves a reversed picture's audio alone, so on a reversed video with detached audio the trim cure also names each clip; a lone clip, or a forward video whose audio follows the trim, keeps the plain text
-    const revDet = applyOps(null as any, mk([vid({ reverse: true })]), [{ op: "detach_audio", id: "y" }])[0], revHint = refusedHint(revDet, slipBy(-0.5)), revNamed = named(revHint);
+    const revDet = (await applyOps(null as any, mk([vid({ reverse: true })]), [{ op: "detach_audio", id: "y" }]))[0], revHint = (await refusedHint(revDet, slipBy(-0.5))), revNamed = named(revHint);
     const trimEnd = (id: string): any => ({ op: "trim_clip", id, trim_end: 0.5 }), trimStart = (id: string): any => ({ op: "trim_clip", id, trim_start: 1 });
     // each trim end opens one bound: a forward clip's trim_end opens the later source (by > 0) and its trim_start the earlier (by < 0); a reversed clip is the other way round
-    const revUp = refusedHint(revDet, slip);
+    const revUp = (await refusedHint(revDet, slip));
     // where the audio sits against the picture after ops: lead = audio start - picture start, tail = audio end - picture end, dev = largest difference of the source time they play at the same timeline time (Infinity: they do not overlap)
-    const after = (t: any, ops: any[], aud = "aud1", pic = "y") => {
+    const after = async (t: any, ops: any[], aud = "aud1", pic = "y") => {
       try {
-        const all = applyOps(null as any, structuredClone(t), ops)[0].tracks.flatMap((x: any) => x.clips), p = all.find((c: any) => c.id === pic), a = all.find((c: any) => c.id === aud);
+        const all = (await applyOps(null as any, structuredClone(t), ops))[0].tracks.flatMap((x: any) => x.clips), p = all.find((c: any) => c.id === pic), a = all.find((c: any) => c.id === aud);
         const src = (c: any, s: number) => c.reverse ? c.in + c.duration - (s - c.start) : c.in + (s - c.start), lo = Math.max(p.start, a.start), hi = Math.min(p.start + p.duration, a.start + a.duration);
         return JSON.stringify({ lead: +(a.start - p.start).toFixed(3), tail: +(a.start + a.duration - p.start - p.duration).toFixed(3), dev: hi > lo ? +Math.max(...[0, 0.5, 1].map((k) => Math.abs(src(a, lo + (hi - lo) * k) - src(p, lo + (hi - lo) * k)))).toFixed(3) : "apart" });
       } catch (e: any) { return `refused ${e.code}`; }
     };
     const inLine = (lead: number, tail: number) => JSON.stringify({ lead, tail, dev: 0 });
     const shorten = (id: string, by: number, d: number): any => ({ op: "trim_clip", id, duration: d - by }); // the audio's share of a trim_start on a reversed video: its head, with no move
-    const detachY = (t: any) => applyOps(null as any, t, [{ op: "detach_audio", id: "y" }])[0];
-    const revBoth = detachY(mk([vid({ reverse: true, duration: 5 })]));
-    const manyAudio = (t: any, at: number) => applyOps(null as any, detachY(t), [{ op: "split_clip", id: "aud1", at }])[0];
-    const slipMany = [refusedHint(manyAudio(mk([vid()]), 1), slip), refusedHint(manyAudio(mk([vid({ reverse: true })]), 1), slip), refusedHint(manyAudio(mk([vid({ reverse: true })]), 1), slipBy(-0.5))];
+    const detachY = async (t: any) => (await applyOps(null as any, t, [{ op: "detach_audio", id: "y" }]))[0];
+    const revBoth = (await detachY(mk([vid({ reverse: true, duration: 5 })])));
+    const manyAudio = async (t: any, at: number) => (await applyOps(null as any, (await detachY(t)), [{ op: "split_clip", id: "aud1", at }]))[0];
+    const slipMany = [(await refusedHint((await manyAudio(mk([vid()]), 1)), slip)), (await refusedHint((await manyAudio(mk([vid({ reverse: true })]), 1)), slip)), (await refusedHint((await manyAudio(mk([vid({ reverse: true })]), 1)), slipBy(-0.5)))];
     // a piece that plays the other way round from its video (an op on the audio alone builds it): the hints name no trim cure (the one a Phase-1 probe found for the mirror's low bound is refused); a length rule the video's trim does not reach is cleared first
-    const setAud = (t: any, set: any) => applyOps(null as any, t, [{ op: "update_clip", id: "aud1", set }])[0], mirror = setAud(revDet, { reverse: false }); // reversedSound is the picture forwards and the sound backwards; the mirror is the other way round
+    const setAud = async (t: any, set: any) => (await applyOps(null as any, t, [{ op: "update_clip", id: "aud1", set }]))[0], mirror = (await setAud(revDet, { reverse: false })); // reversedSound is the picture forwards and the sound backwards; the mirror is the other way round
     const withZ = (t: any) => { t.tracks.find((x: any) => x.id === "voice").clips.push({ id: "z", type: "audio", asset: "au", start: 0, duration: 2 }); return t; };
-    const mdZ = setAud(withZ(detachY(mk([vid()]))), { match_duration: "z" }), mdRev = setAud(revDet, { match_duration: true }), mdY = setAud(detachY(mk([vid()])), { match_duration: true });
-    const clearMd: any = { op: "update_clip", id: "aud1", match_duration: null }, mdHints = [refusedHint(mdZ, slipBy(0.5)), refusedHint(mdRev, slipBy(-0.5)), refusedHint(mdY, slipBy(0.5)), refusedHint(mdY, slipBy(-0.5))];
+    const mdZ = (await setAud(withZ((await detachY(mk([vid()])))), { match_duration: "z" })), mdRev = (await setAud(revDet, { match_duration: true })), mdY = (await setAud((await detachY(mk([vid()]))), { match_duration: true }));
+    const clearMd: any = { op: "update_clip", id: "aud1", match_duration: null }, mdHints = [(await refusedHint(mdZ, slipBy(0.5))), (await refusedHint(mdRev, slipBy(-0.5))), (await refusedHint(mdY, slipBy(0.5))), (await refusedHint(mdY, slipBy(-0.5)))];
     const slipPieces = (
-      /^no slip fits: the clip or its audio has no spare source to slide over \('aud1' plays backwards but 'y' plays forwards, so no trim cure is named\)$/.test(refusedHint(reversedSound, slip))
-      && /\('aud1' plays forwards but 'y' plays backwards, so no trim cure is named\)$/.test(refusedHint(mirror, slipBy(-0.5))) && after(mirror, [trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)]) === "refused out_of_range"
-      && /\(update_clip id=aud1 match_duration=null first, then trim_clip trim_end; or set loop: true on each of 'y', 'aud1' /.test(mdHints[0]) && after(mdZ, [clearMd, trimEnd("y"), ...slipBy(0.5)]) === inLine(0, 0) && after(mdZ, [trimEnd("y"), ...slipBy(0.5)]) === "refused out_of_range"
-      && /\(update_clip id=aud1 match_duration=null first, then trim_clip trim_end, on each of 'y', 'aud1' /.test(mdHints[1]) && after(mdRev, [clearMd, trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)]) === inLine(0, 0) && after(mdRev, [trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)]) === "refused computed_duration"
-      && /\(trim_clip trim_end first; or set loop: true on each of 'y', 'aud1' /.test(mdHints[2]) && after(mdY, [trimEnd("y"), ...slipBy(0.5)]) === inLine(0, 0)
-      && /over \(update_clip id=aud1 match_duration=null first, then trim_clip trim_start\)$/.test(mdHints[3]) && after(mdY, [clearMd, trimStart("y"), ...slipBy(-0.5)]) === inLine(0, 0) && after(mdY, [trimStart("y"), ...slipBy(-0.5)]) === "refused out_of_range");
+      /^no slip fits: the clip or its audio has no spare source to slide over \('aud1' plays backwards but 'y' plays forwards, so no trim cure is named\)$/.test((await refusedHint(reversedSound, slip)))
+      && /\('aud1' plays forwards but 'y' plays backwards, so no trim cure is named\)$/.test((await refusedHint(mirror, slipBy(-0.5)))) && (await after(mirror, [trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)])) === "refused out_of_range"
+      && /\(update_clip id=aud1 match_duration=null first, then trim_clip trim_end; or set loop: true on each of 'y', 'aud1' /.test(mdHints[0]) && (await after(mdZ, [clearMd, trimEnd("y"), ...slipBy(0.5)])) === inLine(0, 0) && (await after(mdZ, [trimEnd("y"), ...slipBy(0.5)])) === "refused out_of_range"
+      && /\(update_clip id=aud1 match_duration=null first, then trim_clip trim_end, on each of 'y', 'aud1' /.test(mdHints[1]) && (await after(mdRev, [clearMd, trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)])) === inLine(0, 0) && (await after(mdRev, [trimEnd("y"), trimEnd("aud1"), ...slipBy(-0.5)])) === "refused computed_duration"
+      && /\(trim_clip trim_end first; or set loop: true on each of 'y', 'aud1' /.test(mdHints[2]) && (await after(mdY, [trimEnd("y"), ...slipBy(0.5)])) === inLine(0, 0)
+      && /over \(update_clip id=aud1 match_duration=null first, then trim_clip trim_start\)$/.test(mdHints[3]) && (await after(mdY, [clearMd, trimStart("y"), ...slipBy(-0.5)])) === inLine(0, 0) && (await after(mdY, [trimStart("y"), ...slipBy(-0.5)])) === "refused out_of_range");
     check("slip_clip on a reversed video with detached audio says the clip or its audio has no spare source, names each clip and the end to trim from the bound that tripped, and trimming those clips lets the same slip pass; a lone clip keeps the plain text; a piece that plays the other way round from its video gets no trim, and a computed length is cleared first where the video's trim does not reach it",
-      /^no slip fits: the clip or its audio /.test(revHint) && revNamed.join() === "y,aud1" && /trim_clip trim_end first/.test(revHint) && follows(revDet, slipBy(-0.5), revNamed, trimEnd) && !follows(revDet, slipBy(-0.5), ["y"], trimEnd)
-      && /trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount/.test(revUp) && !follows(revDet, slip, ["y", "aud1"], trimEnd)
-      && after(revDet, [trimStart("y"), shorten("aud1", 1, 2), ...slip]) === inLine(0, 0) // the audio stays with the picture: trim_start on both would leave it 1 s late
-      && /\(trim_clip trim_end first, on each of 'y', 'aud1' \([^)]*\); and trim_clip trim_start on 'y' first, then shorten 'aud1'/.test(refusedHint(revBoth, slipBy(-2)))
-      && /\(trim_clip trim_end first\)$/.test(refusedHint(mk([vid({ reverse: true })]), slipBy(-0.5))) && /^no slip fits: the clip has no spare source/.test(refusedHint(mk([vid({ reverse: true })]), slip)) && /\(trim_clip trim_end first; or set loop: true on 'aud1' \(/.test(refusedHint(yLooped, slip))
-      && /trim_clip trim_start first/.test(refusedHint(mk([vid()]), slipBy(-1))) && /trim_clip trim_start and trim_end first/.test(refusedHint(longer, slipBy(-2)))
+      /^no slip fits: the clip or its audio /.test(revHint) && revNamed.join() === "y,aud1" && /trim_clip trim_end first/.test(revHint) && (await follows(revDet, slipBy(-0.5), revNamed, trimEnd)) && !(await follows(revDet, slipBy(-0.5), ["y"], trimEnd))
+      && /trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount/.test(revUp) && !(await follows(revDet, slip, ["y", "aud1"], trimEnd))
+      && (await after(revDet, [trimStart("y"), shorten("aud1", 1, 2), ...slip])) === inLine(0, 0) // the audio stays with the picture: trim_start on both would leave it 1 s late
+      && /\(trim_clip trim_end first, on each of 'y', 'aud1' \([^)]*\); and trim_clip trim_start on 'y' first, then shorten 'aud1'/.test((await refusedHint(revBoth, slipBy(-2))))
+      && /\(trim_clip trim_end first\)$/.test((await refusedHint(mk([vid({ reverse: true })]), slipBy(-0.5)))) && /^no slip fits: the clip has no spare source/.test((await refusedHint(mk([vid({ reverse: true })]), slip))) && /\(trim_clip trim_end first; or set loop: true on 'aud1' \(/.test((await refusedHint(yLooped, slip)))
+      && /trim_clip trim_start first/.test((await refusedHint(mk([vid()]), slipBy(-1)))) && /trim_clip trim_start and trim_end first/.test((await refusedHint(longer, slipBy(-2))))
       && slipMany.every((h) => /^no slip fits: the clip or its audio has no spare source to slide over \(it has 2 audio clips, which no trim_clip keeps in line/.test(h) && !/trim_clip trim_(start|end)/.test(h)) && /set loop: true on each of 'y', 'aud1', 'aud2'/.test(slipMany[0]) && slipPieces,
-      [revHint, revUp, refusedHint(yLooped, slip), refusedHint(mk([vid()]), slipBy(-1)), refusedHint(longer, slipBy(-2)), refusedHint(revBoth, slipBy(-2)), slipMany, refusedHint(reversedSound, slip), refusedHint(mirror, slipBy(-0.5)), mdHints]);
-    const lcutName = (t: any) => named(refusedHint(t, lcut).split("set loop")[1] ?? ""), lcutNamed = lcutName(det), linked = mk([vid({ in: 1, duration: 1 })]); // the audio clip an l_cut makes is thrown away with its refused batch: there the video is the clip to set
-    check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test(refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut)) && /trim_end/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)) && !/loop/.test(refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut)));
+      [revHint, revUp, (await refusedHint(yLooped, slip)), (await refusedHint(mk([vid()]), slipBy(-1))), (await refusedHint(longer, slipBy(-2))), (await refusedHint(revBoth, slipBy(-2))), slipMany, (await refusedHint(reversedSound, slip)), (await refusedHint(mirror, slipBy(-0.5))), mdHints]);
+    const lcutName = async (t: any) => named((await refusedHint(t, lcut)).split("set loop")[1] ?? ""), lcutNamed = (await lcutName(det)), linked = mk([vid({ in: 1, duration: 1 })]); // the audio clip an l_cut makes is thrown away with its refused batch: there the video is the clip to set
+    check("l_cut out of range offers loop on a forward clip, and not on a reversed one", /or set loop/.test((await refusedHint(mk([vid({ in: 1, duration: 1 })]), lcut))) && /trim_end/.test((await refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut))) && !/loop/.test((await refusedHint(mk([vid({ reverse: true, duration: 1 })]), lcut))));
     // trim_clip leaves a reversed picture's audio alone, so on such a video with detached audio the trim cure names each clip; trimming the video alone is refused again
     const cured = (h: string) => named(h.replace(/^[^;:]*[;:]/, "")); // the clip ids of the cure: the lead-in holds an apostrophe that `named` would read as a quote
-    const lcutRev = refusedHint(revDet, lcut);
-    const tsFmt = { format: "mpegts", key_gap: 1 }, tsDet = applyOps(null as any, mk([vid()], tsFmt), [{ op: "detach_audio", id: "y" }])[0], tsLinked = mk([vid({ in: 1, duration: 1 })], tsFmt), tsLooped = (() => { try { return applyOps(null as any, tsDet, [{ op: "update_clip", id: "aud1", set: { loop: true } }, ...lcut])[0]; } catch { return null; } })(); // a format that cannot loop refuses loop on the picture only: its detached sound loops
+    const lcutRev = (await refusedHint(revDet, lcut));
+    const tsFmt = { format: "mpegts", key_gap: 1 }, tsDet = (await applyOps(null as any, mk([vid()], tsFmt), [{ op: "detach_audio", id: "y" }]))[0], tsLinked = mk([vid({ in: 1, duration: 1 })], tsFmt), tsLooped = (await (async () => { try { return (await applyOps(null as any, tsDet, [{ op: "update_clip", id: "aud1", set: { loop: true } }, ...lcut]))[0]; } catch { return null; } })()); // a format that cannot loop refuses loop on the picture only: its detached sound loops
     check("l_cut names the audio clip to set loop on when the video already has one, the video when the l_cut would make the audio, and setting the named clip lets the same l_cut pass, also where the video's format cannot loop but its detached sound can; on a reversed video with detached audio it names each clip to trim",
-      lcutNamed.join() === "aud1" && follows(det, lcut, lcutNamed) && lcutName(linked).join() === "y" && follows(linked, lcut, lcutName(linked))
-      && lcutName(tsDet).join() === "aud1" && follows(tsDet, lcut, lcutName(tsDet)) && !!tsLooped && validate(tsLooped).every((i: any) => i.level !== "error") && /trim_end/.test(refusedHint(tsLinked, lcut)) && !/loop/.test(refusedHint(tsLinked, lcut))
-      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first/.test(lcutRev) && cured(lcutRev).join() === "y,aud1" && cured(refusedHint(revDet, [{ op: "l_cut", id: "aud1", seconds: 1 }])).join() === "y,aud1"
-      && after(revDet, [trimEnd("y"), trimEnd("aud1"), { op: "l_cut", id: "y", seconds: 0.5 }]) === inLine(0, 0.5) && !follows(revDet, lcut, ["y"], trimEnd) && /trim_clip trim_end on 'y' first/.test(refusedHint(det, lcut))
-      && /^an L-cut needs source after the clip's out-point; 'aud1' plays backwards but 'y' plays forwards, so trimming 'y' gives it no source$/.test(refusedHint(reversedSound, lcut)) && !follows(reversedSound, lcut, ["y"], trimEnd) // a piece that plays the other way round from its video: no trim gives it source
-      && /^an L-cut needs source after the clip's out-point; 'aud1' plays forwards but 'y' plays backwards, so trimming 'y' gives it no source; or set loop: true on 'aud1'$/.test(refusedHint(mirror, lcut)) && follows(mirror, lcut, ["aud1"]), // loop is tested on the clip it is set on, not on the video
-      [refusedHint(det, lcut), refusedHint(linked, lcut), lcutRev, refusedHint(reversedSound, lcut), refusedHint(mirror, lcut), refusedHint(tsDet, lcut), refusedHint(tsLinked, lcut), tsLooped && validate(tsLooped).filter((i: any) => i.level === "error")]);
+      lcutNamed.join() === "aud1" && (await follows(det, lcut, lcutNamed)) && (await lcutName(linked)).join() === "y" && (await follows(linked, lcut, (await lcutName(linked))))
+      && (await lcutName(tsDet)).join() === "aud1" && (await follows(tsDet, lcut, (await lcutName(tsDet)))) && !!tsLooped && validate(tsLooped).every((i: any) => i.level !== "error") && /trim_end/.test((await refusedHint(tsLinked, lcut))) && !/loop/.test((await refusedHint(tsLinked, lcut)))
+      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first/.test(lcutRev) && cured(lcutRev).join() === "y,aud1" && cured((await refusedHint(revDet, [{ op: "l_cut", id: "aud1", seconds: 1 }]))).join() === "y,aud1"
+      && (await after(revDet, [trimEnd("y"), trimEnd("aud1"), { op: "l_cut", id: "y", seconds: 0.5 }])) === inLine(0, 0.5) && !(await follows(revDet, lcut, ["y"], trimEnd)) && /trim_clip trim_end on 'y' first/.test((await refusedHint(det, lcut)))
+      && /^an L-cut needs source after the clip's out-point; 'aud1' plays backwards but 'y' plays forwards, so trimming 'y' gives it no source$/.test((await refusedHint(reversedSound, lcut))) && !(await follows(reversedSound, lcut, ["y"], trimEnd)) // a piece that plays the other way round from its video: no trim gives it source
+      && /^an L-cut needs source after the clip's out-point; 'aud1' plays forwards but 'y' plays backwards, so trimming 'y' gives it no source; or set loop: true on 'aud1'$/.test((await refusedHint(mirror, lcut))) && (await follows(mirror, lcut, ["aud1"])), // loop is tested on the clip it is set on, not on the video
+      [(await refusedHint(det, lcut)), (await refusedHint(linked, lcut)), lcutRev, (await refusedHint(reversedSound, lcut)), (await refusedHint(mirror, lcut)), (await refusedHint(tsDet, lcut)), (await refusedHint(tsLinked, lcut)), tsLooped && validate(tsLooped).filter((i: any) => i.level === "error")]);
     // j_cut: each bound that tripped names its own cure, and following it lets the same j_cut pass
     const jcut = [{ op: "j_cut", id: "y", seconds: 0.5 }], behind = (o: any = {}) => mk([vid({ id: "x1", duration: 1 }), vid(o)]);
     const addBefore = (id: string): any => ({ op: "add_clip", track: "main", asset: "va", id: "pre", in: 0, duration: 1, before: id }), trimHalf = (id: string): any => ({ op: "trim_clip", id, trim_start: 0.5 });
-    const jRev = detachY(behind({ reverse: true })), jRevHint = refusedHint(jRev, jcut), jFwd = refusedHint(behind(), jcut), jLinked = behind({ reverse: true });
-    const atZero = mk([vid({ in: 1, duration: 1 })]), zeroHint = refusedHint(atZero, jcut), zeroDet = detachY(atZero), overlay = mk([]), bothHint = refusedHint(mk([vid()]), jcut);
+    const jRev = (await detachY(behind({ reverse: true }))), jRevHint = (await refusedHint(jRev, jcut)), jFwd = (await refusedHint(behind(), jcut)), jLinked = behind({ reverse: true });
+    const atZero = mk([vid({ in: 1, duration: 1 })]), zeroHint = (await refusedHint(atZero, jcut)), zeroDet = (await detachY(atZero)), overlay = mk([]), bothHint = (await refusedHint(mk([vid()]), jcut));
     overlay.tracks[1].clips = [vid({ in: 1, duration: 1 })];
-    const ovHint = refusedHint(overlay, jcut), onM2 = applyOps(null as any, structuredClone(atZero), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "move_clip", id: "y", track: "m2" }])[0]; // a magnetic track other than main
+    const ovHint = (await refusedHint(overlay, jcut)), onM2 = (await applyOps(null as any, structuredClone(atZero), [{ op: "add_track", id: "m2", kind: "video", magnetic: true }, { op: "move_clip", id: "y", track: "m2" }]))[0]; // a magnetic track other than main
     // on a reversed video trim_start on the audio would also move it, so the hint cuts its head by a shorter duration; the J-cut then leads the picture by what was asked, and the two stay in line (also on a track that is not magnetic, and after an earlier J-cut)
     const onOverlay = (c: any) => { const t = mk([]); t.tracks[1].clips = [c]; return t; };
-    const jRevOv = detachY(onOverlay(vid({ reverse: true, start: 1 }))), jLed = applyOps(null as any, detachY(behind({ reverse: true, duration: 1.5 })), [{ op: "j_cut", id: "y", seconds: 0.5 }])[0];
+    const jRevOv = (await detachY(onOverlay(vid({ reverse: true, start: 1 })))), jLed = (await applyOps(null as any, (await detachY(behind({ reverse: true, duration: 1.5 }))), [{ op: "j_cut", id: "y", seconds: 0.5 }]))[0];
     const jTrim = [{ op: "trim_clip", id: "y", trim_start: 0.5 }, shorten("aud1", 0.5, 2), ...jcut];
-    const jMixedT = setAud(detachY(behind()), { reverse: true }), jMixed = refusedHint(jMixedT, jcut), jMirror = refusedHint(setAud(jRev, { reverse: false }), jcut);
+    const jMixedT = (await setAud((await detachY(behind())), { reverse: true })), jMixed = (await refusedHint(jMixedT, jcut)), jMirror = (await refusedHint((await setAud(jRev, { reverse: false })), jcut));
     check("j_cut with no source at the audio's head names the video, and for a reversed video with detached audio cuts the audio's head by a shorter duration; the J-cut then leads by what was asked with the audio in line, and trimming the video alone is refused again",
-      /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first/.test(jFwd) && cured(jFwd).join() === "y" && follows(behind(), jcut, ["y"], trimStart)
-      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount \(trim_clip id='aud1' duration=/.test(jRevHint) && !follows(jRev, jcut, ["y"], trimStart)
-      && after(jRev, jTrim) === inLine(-0.5, 0) && after(jRevOv, jTrim) === inLine(-0.5, 0) && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten/.test(refusedHint(jLed, jcut)) && after(jLed, jTrim) === inLine(-1, 0)
-      && cured(refusedHint(jLinked, jcut)).join() === "y" && follows(jLinked, jcut, ["y"], trimStart)
-      && /^a J-cut needs spare source at the audio's head: 'aud1' plays backwards but 'y' plays forwards, so trimming 'y' gives it no source$/.test(jMixed) && !follows(jMixedT, jcut, ["y"], trimStart) // a piece that plays the other way round from its video
-      && /^a J-cut needs spare source at the audio's head: 'aud1' plays forwards but 'y' plays backwards, so trimming 'y' gives it no source$/.test(jMirror), [jFwd, jRevHint, refusedHint(jLinked, jcut), after(jRev, jTrim), after(jRevOv, jTrim), after(jLed, jTrim), jMixed, jMirror]);
+      /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first/.test(jFwd) && cured(jFwd).join() === "y" && (await follows(behind(), jcut, ["y"], trimStart))
+      && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten 'aud1' by the same amount \(trim_clip id='aud1' duration=/.test(jRevHint) && !(await follows(jRev, jcut, ["y"], trimStart))
+      && (await after(jRev, jTrim)) === inLine(-0.5, 0) && (await after(jRevOv, jTrim)) === inLine(-0.5, 0) && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first, then shorten/.test((await refusedHint(jLed, jcut))) && (await after(jLed, jTrim)) === inLine(-1, 0)
+      && cured((await refusedHint(jLinked, jcut))).join() === "y" && (await follows(jLinked, jcut, ["y"], trimStart))
+      && /^a J-cut needs spare source at the audio's head: 'aud1' plays backwards but 'y' plays forwards, so trimming 'y' gives it no source$/.test(jMixed) && !(await follows(jMixedT, jcut, ["y"], trimStart)) // a piece that plays the other way round from its video
+      && /^a J-cut needs spare source at the audio's head: 'aud1' plays forwards but 'y' plays backwards, so trimming 'y' gives it no source$/.test(jMirror), [jFwd, jRevHint, (await refusedHint(jLinked, jcut)), (await after(jRev, jTrim)), (await after(jRevOv, jTrim)), (await after(jLed, jTrim)), jMixed, jMirror]);
     check("j_cut on a clip that starts at 0 offers a clip before it and a move to a non-magnetic track on a magnetic track, a move to a later time on any other, and not trim_start; each cure lets the same j_cut pass",
       /^a J-cut needs a clip that starts after timeline 0: add a clip before it \(add_clip track='main' before='y'\), or move_clip 'y' to a non-magnetic track/.test(zeroHint) && !/trim_clip/.test(zeroHint)
-      && /add_clip track='m2' before='y'/.test(refusedHint(onM2, jcut)) && follows(onM2, jcut, ["y"], (id) => ({ ...addBefore(id), track: "m2" }))
-      && follows(atZero, jcut, ["y"], addBefore) && follows(zeroDet, jcut, ["y"], addBefore) && follows(atZero, jcut, ["y"], (id) => ({ op: "move_clip", id, track: "overlay", at: 1 })) && !follows(atZero, jcut, ["y"], trimHalf)
-      && /^a J-cut needs a clip that starts after timeline 0: move_clip 'y' to a later time/.test(ovHint) && !/add_clip/.test(ovHint) && follows(overlay, jcut, ["y"], (id) => ({ op: "move_clip", id, shift: 1 }))
+      && /add_clip track='m2' before='y'/.test((await refusedHint(onM2, jcut))) && (await follows(onM2, jcut, ["y"], (id) => ({ ...addBefore(id), track: "m2" })))
+      && (await follows(atZero, jcut, ["y"], addBefore)) && (await follows(zeroDet, jcut, ["y"], addBefore)) && (await follows(atZero, jcut, ["y"], (id) => ({ op: "move_clip", id, track: "overlay", at: 1 }))) && !(await follows(atZero, jcut, ["y"], trimHalf))
+      && /^a J-cut needs a clip that starts after timeline 0: move_clip 'y' to a later time/.test(ovHint) && !/add_clip/.test(ovHint) && (await follows(overlay, jcut, ["y"], (id) => ({ op: "move_clip", id, shift: 1 })))
       && /^a J-cut needs spare source at the audio's head: trim_clip trim_start on 'y' first; and a clip that starts after timeline 0: add a clip before it/.test(bothHint)
-      && /^a J-cut needs spare source at the audio's head/.test(refusedHint(applyOps(null as any, mk([vid()]), [addBefore("y")])[0], jcut)), [zeroHint, ovHint, bothHint]);
+      && /^a J-cut needs spare source at the audio's head/.test((await refusedHint((await applyOps(null as any, mk([vid()]), [addBefore("y")]))[0], jcut))), [zeroHint, ovHint, bothHint]);
     // several audio clips: trim_clip refuses such a video, so a forward cut splits it at the inner edge of the clip that was refused (that clip then has a picture of its own, and the repeat names the trim); a reversed one has no trim_start that keeps them in line
-    const lTwo = manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5), lCut = { op: "l_cut", id: "aud2", seconds: 0.25 }, lSplit = { op: "split_clip", id: "y", at: 0.5 };
-    const half = /trim_clip trim_end on '(\w+)' first/.exec(refusedHint(lTwo, [lSplit, lCut]))?.[1] ?? "";
-    const jTwo = manyAudio(behind(), 2), jAud = { op: "j_cut", id: "aud1", seconds: 0.5 }, jSplit = { op: "split_clip", id: "y", at: 2 };
-    const revL = manyAudio(mk([vid({ reverse: true })]), 1), revJ = manyAudio(behind({ reverse: true }), 2);
+    const lTwo = (await manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5)), lCut = { op: "l_cut", id: "aud2", seconds: 0.25 }, lSplit = { op: "split_clip", id: "y", at: 0.5 };
+    const half = /trim_clip trim_end on '(\w+)' first/.exec((await refusedHint(lTwo, [lSplit, lCut])))?.[1] ?? "";
+    const jTwo = (await manyAudio(behind(), 2)), jAud = { op: "j_cut", id: "aud1", seconds: 0.5 }, jSplit = { op: "split_clip", id: "y", at: 2 };
+    const revL = (await manyAudio(mk([vid({ reverse: true })]), 1)), revJ = (await manyAudio(behind({ reverse: true }), 2));
     check("a cut on a video with several audio clips splits it at the edge of the clip refused, and the repeat then passes with the audio in line; for a reversed video the tail cut trims both clips and the head cut offers no trim",
-      /^an L-cut needs source after the clip's out-point; 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 0.5 first so that 'aud2' has a picture of its own, then repeat the l_cut; or set loop: true on 'aud2'/.test(refusedHint(lTwo, [lCut]))
-      && half !== "" && half !== "y" && after(lTwo, [lSplit, { op: "trim_clip", id: half, trim_end: 0.25 }, lCut], "aud2", half) === inLine(0, 0.25)
-      && /^a J-cut needs spare source at the audio's head: 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 2 first so that 'aud1' has a picture of its own, then repeat the j_cut/.test(refusedHint(jTwo, [jAud]))
-      && /trim_clip trim_start on 'y' first/.test(refusedHint(jTwo, [jSplit, jAud])) && after(jTwo, [jSplit, { op: "trim_clip", id: "y", trim_start: 0.5 }, jAud]) === inLine(-0.5, 0)
-      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first, on each of 'y', 'aud2'/.test(refusedHint(revL, [{ ...lCut, seconds: 0.5 }])) && after(revL, [trimEnd("y"), trimEnd("aud2"), { ...lCut, seconds: 0.5 }], "aud2") === inLine(1, 0.5)
-      && /^a J-cut needs spare source at the audio's head: 'y' is reversed and has 2 audio clips, which no trim_start keeps in line/.test(refusedHint(revJ, [jAud])) && !/trim_clip|split_clip/.test(refusedHint(revJ, [jAud])),
-      [refusedHint(lTwo, [lCut]), refusedHint(lTwo, [lSplit, lCut]), refusedHint(jTwo, [jAud]), refusedHint(jTwo, [jSplit, jAud]), refusedHint(revL, [{ ...lCut, seconds: 0.5 }]), refusedHint(revJ, [jAud])]);
+      /^an L-cut needs source after the clip's out-point; 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 0.5 first so that 'aud2' has a picture of its own, then repeat the l_cut; or set loop: true on 'aud2'/.test((await refusedHint(lTwo, [lCut])))
+      && half !== "" && half !== "y" && (await after(lTwo, [lSplit, { op: "trim_clip", id: half, trim_end: 0.25 }, lCut], "aud2", half)) === inLine(0, 0.25)
+      && /^a J-cut needs spare source at the audio's head: 'y' has 2 audio clips, so trim_clip refuses it: split_clip 'y' at 2 first so that 'aud1' has a picture of its own, then repeat the j_cut/.test((await refusedHint(jTwo, [jAud])))
+      && /trim_clip trim_start on 'y' first/.test((await refusedHint(jTwo, [jSplit, jAud]))) && (await after(jTwo, [jSplit, { op: "trim_clip", id: "y", trim_start: 0.5 }, jAud])) === inLine(-0.5, 0)
+      && /^an L-cut needs source after the clip's out-point; trim_clip trim_end first, on each of 'y', 'aud2'/.test((await refusedHint(revL, [{ ...lCut, seconds: 0.5 }]))) && (await after(revL, [trimEnd("y"), trimEnd("aud2"), { ...lCut, seconds: 0.5 }], "aud2")) === inLine(1, 0.5)
+      && /^a J-cut needs spare source at the audio's head: 'y' is reversed and has 2 audio clips, which no trim_start keeps in line/.test((await refusedHint(revJ, [jAud]))) && !/trim_clip|split_clip/.test((await refusedHint(revJ, [jAud]))),
+      [(await refusedHint(lTwo, [lCut])), (await refusedHint(lTwo, [lSplit, lCut])), (await refusedHint(jTwo, [jAud])), (await refusedHint(jTwo, [jSplit, jAud])), (await refusedHint(revL, [{ ...lCut, seconds: 0.5 }])), (await refusedHint(revJ, [jAud]))]);
     // the split time is the stored edge: printed to the millisecond it would split the piece and leave a sliver (an edge of 0.5006 or 0.5004 rounds up or down)
-    const splitCure = (t: any) => {
-      const at = Number(/split_clip 'y' at ([\d.]+)/.exec(refusedHint(t, [lCut]))?.[1]), sp = { op: "split_clip", id: "y", at }, h = /trim_clip trim_end on '(\w+)' first/.exec(refusedHint(t, [sp, lCut]))?.[1] ?? "";
-      return after(t, [sp, { op: "trim_clip", id: h, trim_end: 0.25 }, lCut], "aud2", h);
+    const splitCure = async (t: any) => {
+      const at = Number(/split_clip 'y' at ([\d.]+)/.exec((await refusedHint(t, [lCut])))?.[1]), sp = { op: "split_clip", id: "y", at }, h = /trim_clip trim_end on '(\w+)' first/.exec((await refusedHint(t, [sp, lCut])))?.[1] ?? "";
+      return (await after(t, [sp, { op: "trim_clip", id: h, trim_end: 0.25 }, lCut], "aud2", h));
     };
-    const edgeUp = manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5006), edgeDown = manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5004);
+    const edgeUp = (await manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5006)), edgeDown = (await manyAudio(mk([vid({ in: 1, duration: 1 })]), 0.5004));
     check("the split cure names the stored edge of the piece, so following it leaves the audio in line whether the edge is off the millisecond upwards or downwards",
-      /split_clip 'y' at 0\.5006 first/.test(refusedHint(edgeUp, [lCut])) && /split_clip 'y' at 0\.5004 first/.test(refusedHint(edgeDown, [lCut])) && splitCure(edgeUp) === inLine(0, 0.25) && splitCure(edgeDown) === inLine(0, 0.25),
-      [refusedHint(edgeUp, [lCut]), splitCure(edgeUp), splitCure(edgeDown)]);
+      /split_clip 'y' at 0\.5006 first/.test((await refusedHint(edgeUp, [lCut]))) && /split_clip 'y' at 0\.5004 first/.test((await refusedHint(edgeDown, [lCut]))) && (await splitCure(edgeUp)) === inLine(0, 0.25) && (await splitCure(edgeDown)) === inLine(0, 0.25),
+      [(await refusedHint(edgeUp, [lCut])), (await splitCure(edgeUp)), (await splitCure(edgeDown))]);
     // audio that is not the video's own sound (another file attached to it): trimming the video does not reach it, so no trim of the video is offered
     const foreignOn = (t: any) => { t.assets.au = { path: "x.wav", kind: "audio", duration: 1 }; t.tracks.find((x: any) => x.id === "voice").clips = [{ id: "vo", type: "audio", asset: "au", in: 0, duration: 1, attach_to: "y", offset: 0 }]; return t; };
-    const foreign = foreignOn(mk([vid({ in: 1, duration: 1 })])), foreignHead = foreignOn(mk([vid({ id: "x1", duration: 1 }), vid({ in: 1, duration: 1 })])), foreignPiece = foreignOn(detachY(mk([vid({ in: 1, duration: 1 })])));
-    const foreignHints = [refusedHint(foreign, [{ op: "l_cut", id: "vo", seconds: 0.5 }]), refusedHint(foreignHead, [{ op: "j_cut", id: "vo", seconds: 0.5 }]), refusedHint(foreignPiece, [{ op: "l_cut", id: "vo", seconds: 0.5 }])];
-    const foreignCut = [{ op: "l_cut", id: "vo", seconds: 0.5 }], foreignRev = foreignOn(mk([vid({ in: 1, duration: 1, reverse: true })])), foreignRevHint = refusedHint(foreignRev, foreignCut);
+    const foreign = foreignOn(mk([vid({ in: 1, duration: 1 })])), foreignHead = foreignOn(mk([vid({ id: "x1", duration: 1 }), vid({ in: 1, duration: 1 })])), foreignPiece = foreignOn((await detachY(mk([vid({ in: 1, duration: 1 })]))));
+    const foreignHints = [(await refusedHint(foreign, [{ op: "l_cut", id: "vo", seconds: 0.5 }])), (await refusedHint(foreignHead, [{ op: "j_cut", id: "vo", seconds: 0.5 }])), (await refusedHint(foreignPiece, [{ op: "l_cut", id: "vo", seconds: 0.5 }]))];
+    const foreignCut = [{ op: "l_cut", id: "vo", seconds: 0.5 }], foreignRev = foreignOn(mk([vid({ in: 1, duration: 1, reverse: true })])), foreignRevHint = (await refusedHint(foreignRev, foreignCut));
     check("a cut on audio of another file attached to the video says trimming the video gives it no source, and names no trim of the video, also where the video has its own detached sound",
       /^an L-cut needs source after the clip's out-point; 'vo' is not the sound of 'y', so trimming 'y' gives it no source/.test(foreignHints[0]) && /^a J-cut needs spare source at the audio's head: 'vo' is not the sound of 'y', so trimming 'y' gives it no source/.test(foreignHints[1])
       && /^an L-cut needs source after the clip's out-point; 'vo' is not the sound of 'y'/.test(foreignHints[2]) && foreignHints.every((h) => !/trim_clip/.test(h))
-      && /; or set loop: true on 'vo'$/.test(foreignHints[0]) && /^an L-cut needs source after the clip's out-point; 'vo' is not the sound of 'y', so trimming 'y' gives it no source; or set loop: true on 'vo'$/.test(foreignRevHint) && follows(foreignRev, foreignCut, ["vo"]), // a reversed video does not hide the loop a forward foreign audio takes
+      && /; or set loop: true on 'vo'$/.test(foreignHints[0]) && /^an L-cut needs source after the clip's out-point; 'vo' is not the sound of 'y', so trimming 'y' gives it no source; or set loop: true on 'vo'$/.test(foreignRevHint) && (await follows(foreignRev, foreignCut, ["vo"])), // a reversed video does not hide the loop a forward foreign audio takes
       [...foreignHints, foreignRevHint]);
     check("the clip-past-its-source warning offers loop on a forward clip, a forward ramped clip, and not on a reversed one",
       /set loop: true/.test(warnHint(mk([vid({ duration: 5 })]))) && /set loop: true/.test(warnHint(mk([vid({ duration: 5, keyframes: { speed: [[0, 1], [1, 2]] } })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true })]))) && !/loop/.test(warnHint(mk([vid({ duration: 5, reverse: true, keyframes: { speed: [[0, 1], [1, 2]] } })]))));

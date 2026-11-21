@@ -2,7 +2,7 @@
 // outside apply_ops, then re-apply the pending vision requests so their keyframes land. Preview/render fail fast with
 // not_prepared until this ran (ops-vision attachPrepared). Results are cached per file hash + params (vision.ts).
 import { type Clip, allClips, type Dict, EditError, type Timeline } from "./model.ts";
-import { applyOps } from "./ops.ts";
+import { applyOps, applyPendingOps } from "./ops.ts";
 import { collectMissing, mattesFor } from "./ops-vision.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -17,7 +17,7 @@ export function missingFor(p: Project, tl: Timeline) {
   p.requireValid(tl); // the asset record and the clip values are checked before any job is built
   const ops = pendingOps(tl);
   const [, analyses] = collectMissing(() => {
-    try { return applyOps(p, tl, ops); }
+    try { return applyPendingOps(p, tl, ops); }
     catch (e) {
       if (!(e instanceof EditError)) throw e;
       const i = Number(/^ops\[(\d+)\]/.exec(e.path ?? "")?.[1]), q = ops[i];
@@ -59,7 +59,7 @@ export async function prepare(p: Project, o: { progress?: (done: number, total: 
     const tl = p.load(), { ops, jobs } = missingFor(p, tl);
     if (!jobs.length) {
       if (ops.length) {
-        const [next, results] = applyOps(p, tl, ops);
+        const [next, results] = (await applyOps(p, tl, ops));
         if ([...allClips(next.tracks)].some((c) => c.pending))
           throw new EditError("prepare could not resolve every pending vision request", "vision_failed", "inspect clip.pending in the full project info; remove a stale request with update_clip set={pending:null}");
         try { revision = p.save(next, "prepare", o.author); }

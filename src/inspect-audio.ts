@@ -69,7 +69,7 @@ function runs(n: number, pred: (k: number) => boolean, min = 0, gap = 0): [numbe
 }
 
 async function toWav(src: string, out: string, sr: number, signal?: AbortSignal) {
-  needFfmpeg();
+  (await needFfmpeg());
   // keep the channel layout: upmixing mono to stereo pans it down 3 dB and would hide clipping
   const r = await run("ffmpeg", ["-v", "error", "-y", "-nostdin", ...inp(src), "-vn", "-ar", String(sr), "-c:a", "pcm_s16le", out], { signal });
   if (r.status !== 0) throw new EditError(`cannot decode audio from ${src}: ${r.stderr.slice(-300)}`, "decode_failed", "is it a media file with an audio stream?");

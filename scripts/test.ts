@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SUITES = ["smoke", "mcp", "edit-ops", "compound", "codecs", "frames", "export", "ui", "audio", "color-tts", "verify", "writes", "vision", "review", "jobs", "ui-browser", "realmedia", "launchers"]
+const SUITES = ["ffmpeg-version", "smoke", "mcp", "edit-ops", "compound", "codecs", "frames", "export", "ui", "audio", "color-tts", "verify", "writes", "vision", "review", "jobs", "ui-browser", "realmedia", "launchers"]
   .map((n) => `tests/${n}.ts`);
 const suites = process.argv.length > 2 ? process.argv.slice(2) : SUITES;
 

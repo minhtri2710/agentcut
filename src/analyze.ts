@@ -13,7 +13,7 @@ import { run } from "./proc.ts";
 import { has, httpSpeech, pickProvider, piperSpeech, providerInfo } from "./tts.ts";
 
 async function decodeMono(path: string, sr: number, signal?: AbortSignal): Promise<Float32Array> {
-  needFfmpeg();
+  (await needFfmpeg());
   const r = await run("ffmpeg", ["-v", "error", "-nostdin", ...inp(path), "-vn", "-ac", "1", "-ar", String(sr), "-f", "f32le", "-"], { signal, maxBuffer: 1 << 30, binary: true });
   if (r.status !== 0) throw new EditError(`cannot decode audio from ${path}: ${r.stderr.slice(0, 300)}`, "decode_failed");
   const b = r.stdout;
@@ -164,8 +164,8 @@ export async function beats(path: string, signal?: AbortSignal, minBpm = 60, max
 }
 
 export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal) {
-  needFfmpeg();
-  const info = probe(path);
+  (await needFfmpeg());
+  const info = (await probe(path));
   const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
   const cuts = [...r.stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
   const dur = info.duration ?? 0;
@@ -175,8 +175,8 @@ export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal
 }
 
 export async function silence(path: string, noiseDb = -35, minSilence = 0.4, signal?: AbortSignal) {
-  needFfmpeg();
-  const info = probe(path);
+  (await needFfmpeg());
+  const info = (await probe(path));
   if (!info.has_audio && info.kind !== "audio") throw new EditError("file has no audio", "no_audio");
   const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
   const st = [...r.stderr.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => +m[1]);
@@ -238,7 +238,7 @@ export function ttsVoices() {
 export async function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string, signal?: AbortSignal) {
   if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "pass the text to speak, e.g. \"Hello\"");
   if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${typeof rate === "string" ? JSON.stringify(rate) : String(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
-  needFfmpeg();
+  (await needFfmpeg());
   const part = tmpSibling(outPath, base);
   const { provider, voice: v } = pickProvider(voice);
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
@@ -253,7 +253,7 @@ export async function tts(text: string | undefined, outPath: string, voice?: str
       const c = await run("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", wav], { signal });
       if (c.status !== 0) throw new EditError(`tts convert failed: ${c.stderr.slice(0, 300)}`, "tts_failed");
       const start = sentences.length ? sentences[sentences.length - 1].end : 0;
-      sentences.push({ text: s, start, end: start + probe(wav).duration });
+      sentences.push({ text: s, start, end: start + (await probe(wav)).duration });
       wavs.push(wav);
     }
     const list = join(tmp, "parts.txt");
@@ -262,7 +262,7 @@ export async function tts(text: string | undefined, outPath: string, voice?: str
     if (j.status !== 0) throw new EditError(`tts join failed: ${j.stderr.slice(0, 300)}`, "tts_failed");
     commit(part, outPath);
   } finally { rmSync(tmp, { recursive: true, force: true }); rmSync(part, { force: true }); }
-  return { path: outPath, duration: probe(outPath).duration, voice: voice ?? null, provider, sentences };
+  return { path: outPath, duration: (await probe(outPath)).duration, voice: voice ?? null, provider, sentences };
 }
 
 const SAPI_VOICE = "AGENTCUT_SAPI_VOICE", SAPI_OUT = "AGENTCUT_SAPI_OUT", SAPI_NO_VOICE = 3; // SAPI_NO_VOICE: PowerShell exit code for a voice that is not installed
@@ -409,7 +409,7 @@ function spoken(words: { text: string; start: number; end: number }[]) {
  * Its sound notes are not words (spoken()): a spoken aside it puts in brackets or parentheses goes with them.
  */
 export async function transcribe(path: string, language?: string, model?: string, range?: [number, number | undefined], signal?: AbortSignal) {
-  const info = probe(path);
+  const info = (await probe(path));
   if (!info.has_audio && info.kind !== "audio") throw new EditError(`${path} has no audio`, "no_audio");
   const length = Number(info.duration ?? 0);
   if (Array.isArray(range) && length > 0 && range[0] >= length)
