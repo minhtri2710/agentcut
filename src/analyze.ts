@@ -167,6 +167,7 @@ export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal
   (await needFfmpeg());
   const info = (await probe(path));
   const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  if (r.status !== 0) throw new EditError(`scene analysis failed: ${r.stderr.slice(-600)}`, "decode_failed", "check that the file contains decodable video");
   const cuts = [...r.stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
   const dur = info.duration ?? 0;
   const b = [0, ...cuts, dur];
@@ -179,6 +180,7 @@ export async function silence(path: string, noiseDb = -35, minSilence = 0.4, sig
   const info = (await probe(path));
   if (!info.has_audio && info.kind !== "audio") throw new EditError("file has no audio", "no_audio");
   const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-vn", "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  if (r.status !== 0) throw new EditError(`silence analysis failed: ${r.stderr.slice(-600)}`, "decode_failed", "check that the file contains decodable audio");
   const st = [...r.stderr.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => +m[1]);
   const en = [...r.stderr.matchAll(/silence_end: ([\d.]+)/g)].map((m) => +m[1]);
   const dur = Number(info.duration ?? 0);

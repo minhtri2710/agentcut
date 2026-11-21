@@ -34,6 +34,18 @@ const moves = (hint = "") => /\bmove\b/.test(hint) && !/delete/.test(hint);
 const m = join(tmp, "media"); mkdirSync(m);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4", "-f", "lavfi", "-i", "sine=f=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", join(m, "av.mp4"));
 ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
+{
+  const scenes = await AN.scenes(join(m, "av.mp4")), silence = await AN.silence(join(m, "reply.wav"));
+  check("analysis succeeds with no scene cuts or silence", scenes.cuts.length === 0 && scenes.shots.length === 1 && silence.silences.length === 0 && silence.speech.length === 1, { scenes, silence });
+  for (const [name, run] of [
+    ["scenes without video", () => AN.scenes(join(m, "reply.wav"))],
+    ["silence with a rejected filter", () => AN.silence(join(m, "reply.wav"), -35, -1)],
+  ] as const) {
+    let error: any;
+    try { await run(); } catch (e) { error = e; }
+    check(`${name}: failed ffmpeg is decode_failed with its stderr tail`, error?.code === "decode_failed" && /Error|Invalid|stream/.test(error.message) && !!error.hint, error);
+  }
+}
 const P = join(tmp, "proj");
 api.create(P, { preset: "reels" });
 const tl = async () => (await api.info(P, "json")).timeline as any;
