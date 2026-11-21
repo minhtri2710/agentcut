@@ -4,7 +4,7 @@ import * as Skia from "@napi-rs/canvas";
 import { type Canvas, createCanvas, ImageData, LottieAnimation, type SKRSContext2D } from "@napi-rs/canvas";
 import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
-import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
+import { applyEffects, applyMask, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
 import { safeZones } from "./safe.ts";
 import {

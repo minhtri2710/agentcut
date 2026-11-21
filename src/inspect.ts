@@ -5,7 +5,7 @@ import * as AN from "./analyze.ts";
 import { loadDarkMemo, saveDarkMemo } from "./cache.ts";
 import type { FrameSource } from "./media.ts";
 import {
-  type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
+  type Clip, clipDur, clipEnd, clipStart, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
 } from "./model.ts";
 import { type Layer, refuseJpegSize, Renderer, renderTiles, tileSize } from "./render.ts";
 import { safeZones } from "./safe.ts";
