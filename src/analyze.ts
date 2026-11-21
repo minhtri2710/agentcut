@@ -4,7 +4,7 @@ import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
-import { inp } from "./ffinput.ts";
+import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { needFfmpeg, probe } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
 import { commit, createFile, tmpSibling } from "./safe-write.ts";
@@ -166,7 +166,7 @@ export async function beats(path: string, signal?: AbortSignal, minBpm = 60, max
 export async function scenes(path: string, threshold = 0.3, signal?: AbortSignal) {
   (await needFfmpeg());
   const info = (await probe(path));
-  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), ...VIDEO_MAP, "-an", "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
   if (r.status !== 0) throw new EditError(`scene analysis failed: ${r.stderr.slice(-600)}`, "decode_failed", "check that the file contains decodable video");
   const cuts = [...r.stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => +(+m[1]).toFixed(3));
   const dur = info.duration ?? 0;
