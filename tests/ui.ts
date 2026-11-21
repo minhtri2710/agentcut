@@ -139,6 +139,24 @@ check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] 
   rmSync(srcAbs); renameSync(keep, srcAbs);
   check("a thumbnail follows the file: a replacement of another size with the old mtime -> a new picture", sameMtime && second.status === 200 && !second.body.equals(first.body), [sameMtime, first.status, second.status]);
 }
+{ // a thumbnail is the picture at its time where an input seek there does not land: near the picture's start of an flv (h264, sound) or an avi (mpeg4, B-frames), and in an mpegts with a keyframe each second (its seek can land after the target)
+  const T = join(tmp, "thumbs"), shots: [string, number][] = [["ns.flv", 0], ["ns.avi", 0], ["key.ts", 0.5], ["key.ts", 2.5]];
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2", "-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-c:a", "aac", join(media, "ns.flv"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2", "-c:v", "mpeg4", "-bf", "2", join(media, "ns.avi"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=4", "-c:v", "libx264", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", "-f", "mpegts", join(media, "key.ts"));
+  const tm = api.create(T, { preset: "square" });
+  await api.apply(T, ["ns.flv", "ns.avi", "key.ts"].map((f) => ({ op: "add_clip", track: "main", src: join(media, f), duration: 1 })), { revision: tm.revision });
+  const assets = Object.entries(JSON.parse(readFileSync(join(T, "project.json"), "utf8")).assets as Record<string, { path: string; container_start: number }>);
+  const tu = await startUi(T, { port: 0 }), got: unknown[] = [];
+  for (const [f, t] of shots) {
+    const [id, a] = assets.find(([, a]) => basename(a.path) === f)!, r = await raw(`/api/thumb/${id}?t=${t}`, { port: tu.port });
+    // the picture at t on the container's clock, decoded from the file's start
+    const want = spawnSync("ffmpeg", ["-v", "error", "-copyts", "-i", join(media, f), "-map", "0:V:0", "-ss", String(t + a.container_start), "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]).stdout;
+    got.push([f, t, r.status, r.body.length, want.length, r.body.equals(want)]);
+  }
+  tu.server.close();
+  check("a thumbnail near the picture's start of an flv or avi, and one in an mpegts, is the picture at its time", got.every((g: any) => g[2] === 200 && g[5]), got);
+}
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);
 

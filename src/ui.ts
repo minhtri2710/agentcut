@@ -8,7 +8,8 @@ import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
-import { EditError, resolve as resolveTimeline, totalDuration, type Dict } from "./model.ts";
+import { seekArgs } from "./media.ts";
+import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
@@ -93,7 +94,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (a.kind === "image") return sendFile(req, res, a.abs);
       const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
       const st = statSync(a.abs, { throwIfNoEntry: false }), key = `${a.abs}|${st?.mtimeMs}|${st?.size}|${t.toFixed(2)}`; // the file changing (relinked, or replaced in place) is a new picture
-      if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t).catch((e) => { thumbs.delete(key); throw e; })); }
+      if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t, a.kind === "video" ? (a as Dict as VideoFacts) : undefined, a.fps).catch((e) => { thumbs.delete(key); throw e; })); }
       const jpg = await thumbs.get(key); // a failure here is an error response, not an empty cached 200
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-cache" });
       return res.end(jpg);
@@ -179,10 +180,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     return job;
   }
 
-  function asset(id: string) {
+  function asset(id: string): Asset & { abs: string } {
     const a = p.load().assets[id];
     if (!a?.path) throw new EditError(`no asset '${id}' in this project`, "not_found");
-    return { kind: a.kind, abs: p.abs(a.path) };
+    return { ...a, abs: p.abs(a.path) };
   }
 
   function servedFile(rel: string) {
@@ -257,9 +258,10 @@ function pipe(rs: ReturnType<typeof createReadStream>, res: ServerResponse) {
   rs.pipe(res);
 }
 
-function thumbnail(abs: string, t: number): Promise<Buffer> {
+function thumbnail(abs: string, t: number, facts?: VideoFacts, fps?: number | null): Promise<Buffer> {
   return new Promise((ok, fail) => {
-    const ff = spawn("ffmpeg", ["-v", "error", "-ss", String(t), ...inp(abs), ...VIDEO_MAP, "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
+    const ss = seekArgs(t, facts, fps);
+    const ff = spawn("ffmpeg", ["-v", "error", ...ss.input, ...inp(abs), ...VIDEO_MAP, ...ss.output, "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
     const chunks: Buffer[] = [];
     ff.stdout.on("data", (c) => chunks.push(c));
     ff.on("error", fail);

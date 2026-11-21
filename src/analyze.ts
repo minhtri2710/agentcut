@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitSentences } from "./captions.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
-import { needFfmpeg, probe } from "./media.ts";
+import { needFfmpeg, probe, seekArgs } from "./media.ts";
 import { EditError, suggest } from "./model.ts";
 import { commit, createFile, tmpSibling } from "./safe-write.ts";
 import type { Project } from "./project.ts";
@@ -425,7 +425,8 @@ export async function transcribe(path: string, language?: string, model?: string
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-asr-"));
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
-    const cut = await run("ffmpeg", ["-v", "error", "-y", ...(range ? ["-ss", String(from)] : []), ...inp(path), ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
+    const ss = seekArgs(from, info.kind === "video" ? info : undefined, info.fps);
+    const cut = await run("ffmpeg", ["-v", "error", "-y", ...ss.input, ...inp(path), ...ss.output, ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
     if (cut.status !== 0) throw new EditError(`cannot extract audio from ${path}: ${cut.stderr.trim().slice(0, 300)}`, "decode_failed");
     const { speech, duration: heard } = await silence(raw, undefined, undefined, signal);
     const pieces = speech.map(([a, b]) => [Math.max(0, +(a - LEAD_PAD).toFixed(3)), Math.min(heard, +(b + LEAD_PAD).toFixed(3))]);

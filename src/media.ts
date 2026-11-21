@@ -387,9 +387,27 @@ export const FPS_END = "eof_action=pass";
  *  The vision helper seeks this far before its in-point too. */
 export const preRoll = (f: VideoFacts, srcFps?: number | null) => Math.max(0.25, srcFps ? (f.reorder + 1) / srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
 
-/** How far past the picture's start (s) a stream reads from the file's start instead of seeking. ffmpeg aims an input seek 3/23 s early when a stream holds frames back, and in flv and avi a seek aimed before
- *  the first keyframe does not land: the read goes on from the end of the file, or from a frame that is not a keyframe. 0.25 s of margin keeps a seek's rounding off that edge. */
+/** How far past the picture's start (s) a read starts from the file's start instead of seeking. ffmpeg aims an input seek 3/23 s early when a stream holds frames back, and in flv and avi a seek aimed before
+ *  the first keyframe does not land: the read goes on from the end of the file, or from a frame that is not a keyframe, for the sound too. 0.25 s of margin keeps a seek's rounding off that edge. */
 const NO_SEEK_SPAN = 3 / 23 + 0.25;
+/** Whether a read may seek its input to `t` (s from the container start): only past NO_SEEK_SPAN of the picture's start (a file with no picture counts from 0). */
+const seeksInput = (t: number, videoStart = 0) => t >= videoStart + NO_SEEK_SPAN;
+/** Where a read at `t` seeks its input: `pre` seconds ahead of it, or null (from the file's start) when that is within NO_SEEK_SPAN of the picture's start. */
+export function inputSeek(t: number, pre: number, videoStart?: number): number | null {
+  const s = Math.max(0, t - pre);
+  return seeksInput(s, videoStart) ? s : null;
+}
+/** The args of a read that starts exactly at `t` (s from the container start): `input` before -i seeks with the picture's pre-roll (none for a file with no picture), `output` after -i decodes the rest of the way to t.
+ *  In a file with a picture the rest is cut on the file's own clock (-copyts, t past the container start): a cut on the clock a seek restarts puts out a frame early when the picture holds frames back,
+ *  and one with no seek counts from the picture's start (a frame late in an mpegts whose picture starts after its sound). */
+export function seekArgs(t: number, f?: VideoFacts, fps?: number | null): { input: string[]; output: string[] } {
+  const miss = f ? missingFacts(f) : [];
+  if (miss.length) throw new EditError(`the probe record has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
+  const s = inputSeek(t, f ? preRoll(f, fps) : 0, f?.video_start);
+  if (s === null && t === 0) return { input: [], output: [] };
+  if (!f) return s === null ? { input: [], output: ["-ss", t.toFixed(6)] } : { input: ["-ss", s.toFixed(6)], output: [] };
+  return { input: ["-copyts", ...(s === null ? [] : ["-ss", s.toFixed(6)])], output: ["-ss", (t + f.container_start).toFixed(6)] };
+}
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
@@ -495,7 +513,7 @@ export class FrameSource {
     if (loop && D) { n = this.passOf(k); ss = unsought ? 0 : Math.max(0, srcIn + k / r - n * D - this.pre); } // a slot's pre-roll in the pass before is not read: the fill below stands in for it
     if (unsought) a.push("-stream_loop", "-1");
     const shift = n * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
-    const sought = ss >= f.video_start + NO_SEEK_SPAN; // a read near the picture's start has no seek: it reads from the file's start
+    const sought = seeksInput(ss, f.video_start); // a read near the picture's start has no seek: it reads from the file's start
     const fill = !sought || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
       ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
