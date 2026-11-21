@@ -3,7 +3,7 @@
 import { closeSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCanvas, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import * as AN from "./analyze.ts";
 import { audioSources, buildAudio } from "./audio.ts";
 import { inp } from "./ffinput.ts";
