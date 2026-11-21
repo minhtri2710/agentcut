@@ -759,6 +759,8 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       const refuses = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
       const hdUntagged = mj(1920, 1080, "unknown"), hdNamed = mj(1920, 1080, "bt470bg"), sdNamed = mj(640, 360, "bt709"), sdUntagged = mj(640, 360, "unknown");
       const wideUntagged = mj(640, 360, "reserved", "video", ["bt2020", "bt709"]);
+      const pixelJob = (pixFmt: string, colorSpace = "unknown") => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, container_start: 0, srcW: 1920, srcH: 1080, pixFmt, colorSpace, colorPrimaries: "unknown", colorTransfer: "unknown", model: MODEL, root: G });
+      check("matte job: RGB and palette formats carry no matrix, even when named; YUV keeps its matrix", ["rgb24", "rgba", "pal8", "gbrp"].every((fmt) => !("matrix" in pixelJob(fmt).job) && !("matrix" in pixelJob(fmt, "bt709").job)) && pixelJob("yuv420p").job.matrix === "bt709");
       check("matte job: the job carries the matrix the picture is read with (untagged HD: bt709; untagged with BT.2020 primaries converted: bt2020nc at any size; a name on the asset: that name, at any size; untagged SD or an image: none)",
         hdUntagged.job.matrix === "bt709" && wideUntagged.job.matrix === "bt2020nc" && hdNamed.job.matrix === "bt470bg" && sdNamed.job.matrix === "bt709" && !("matrix" in sdUntagged.job) && !("matrix" in mj(1920, 1080, "unknown", "image").job),
         { hd: hdUntagged.job.matrix, wide: wideUntagged.job.matrix, named: hdNamed.job.matrix, sd: sdNamed.job.matrix, sdUntagged: sdUntagged.job.matrix });

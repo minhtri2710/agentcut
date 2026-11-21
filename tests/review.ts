@@ -35,6 +35,12 @@ const m = join(tmp, "media"); mkdirSync(m);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4", "-f", "lavfi", "-i", "sine=f=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", join(m, "av.mp4"));
 ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
 {
+  const multi = join(m, "scenes-two-stream.mp4");
+  ff("-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=1,drawbox=color=white:t=fill:enable='gte(t,0.5)'", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10:d=1", "-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-disposition:v:0", "0", "-disposition:v:1", "default", multi);
+  const scenes = await AN.scenes(multi);
+  check("scene analysis reads the first video stream, not the default stream", scenes.cuts.length === 1 && Math.abs(scenes.cuts[0] - 0.5) < 0.01, scenes.cuts);
+}
+{
   const scenes = await AN.scenes(join(m, "av.mp4")), silence = await AN.silence(join(m, "reply.wav"));
   check("analysis succeeds with no scene cuts or silence", scenes.cuts.length === 0 && scenes.shots.length === 1 && silence.silences.length === 0 && silence.speech.length === 1, { scenes, silence });
   for (const [name, run] of [
@@ -637,6 +643,16 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   const unreadable = await scan(reuse.d), rewritten = await scan(reuse.d);
   check("a memo file that cannot be read is a miss: the review still runs and writes the memo again, which the next review uses",
     !canBlock || unreadable.stats.memo === 0 && unreadable.stats.frames > 0 && !unreadable.black.length && rewritten.stats.memo > 0 && rewritten.stats.frames === 0, { unreadable: unreadable.stats, rewritten: rewritten.stats });
+  {
+    const { saveDarkMemo } = await import("../src/cache.ts");
+    const memoFile = join(reuse.d, ".agentcut", "cache", names()[0]), memo = JSON.parse(readFileSync(memoFile, "utf8")), key = JSON.parse(memo.key), pixels = JSON.parse(key[3]);
+    check("brightness cache keys include the explicit video stream mapping", JSON.stringify(pixels[9]) === JSON.stringify(["-map", "0:V:0"]), pixels);
+    key[3] = JSON.stringify(pixels.slice(0, 9));
+    saveDarkMemo(reuse.d, JSON.stringify(key), new Map(memo.runs.flatMap(([start, counts]: [number, number[]]) => counts.map((_, i) => [start + i, 0]))));
+    rmSync(memoFile);
+    const fresh = await scan(reuse.d);
+    check("brightness samples cached before explicit stream selection are ignored", fresh.stats.memo === 0 && fresh.stats.frames > 0 && !fresh.black.length, fresh);
+  }
 
   const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
   const mx = await scan(mixed.d);

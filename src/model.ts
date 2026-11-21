@@ -120,6 +120,7 @@ export const ASSET_FIELDS: Record<string, [string[], string]> = {
   duration: [["number"], "seconds, a number >= 0"], video_duration: [["number"], "seconds the picture lasts when the sound is longer (absent: the file's duration)"], width: [["number"], "px, a positive integer"], height: [["number"], "px, a positive integer"],
   fps: [["number"], "a number > 0 (null: a still or unknown)"], has_audio: [["boolean"], "has an audio stream"], alpha: [["boolean"], "has an alpha channel"],
   codec: [["string"], "video codec name"], sample_rate: [["number"], "Hz, a positive integer"], channels: [["number"], "audio channels, a positive integer"],
+  pix_fmt: [["string"], "video pixel format from ffprobe; only YUV formats use the source matrix rule; relink older assets to record it"],
   container_start: [["number"], "video file: seconds the container starts at (ffprobe format start_time); `in` counts from it"],
   video_start: [["number"], "video file: seconds from the container start to the first picture, a number >= 0"],
   format: [["string"], "video file: the demuxer's format name (ffprobe format_name)"],
@@ -154,7 +155,7 @@ const loopRefusal = (c: Clip, aid: string, a: Dict): { message: string; hint: st
 /** Whether validate accepts `loop` on every one of these clips: not reversed, and no `loopRefusal`. A hint offers loop only when this holds. */
 export const canLoop = (assets: Dict, ...clips: Clip[]) => clips.every((c) => !c.reverse && !(own(assets, c.asset) && loopRefusal(c, c.asset, assets[c.asset])));
 /** What the probe records about a video file for FrameSource (the asset fields above). `key_gap` is present for a format off the SEEK_BEFORE list. */
-export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; color_primaries: string; color_transfer: string; key_gap?: number }
+export interface VideoFacts { container_start: number; video_start: number; format: string; reorder: number; color_space: string; color_primaries: string; color_transfer: string; key_gap?: number; pix_fmt?: string }
 /** The probe fields a video asset lacks (an asset imported before the probe recorded them): none for a complete record. */
 export function missingFacts(a: Dict): string[] {
   const miss = ["container_start", "video_start", "format", "reorder", "color_space", "color_primaries", "color_transfer"].filter((k) => a[k] === undefined || a[k] === null);
@@ -210,10 +211,11 @@ export function colourWarnings(tl: Timeline): string[] {
 }
 /** The asset's matrix name, or bt2020nc when it names none and its conversion key has the primaries step (BT.2020 primaries, or PQ/HLG with no primaries tag: those files are made with the BT.2020 matrix). */
 const namedMatrix = (colorSpace: string, convert: string | undefined) => (NO_MATRIX.includes(colorSpace) && convert?.endsWith("+2020") ? "bt2020nc" : colorSpace);
-/** The matrix a video picture is read with (undefined: the decoder's default, BT.601). The asset's own name when it names one, else bt2020nc for a picture converted from BT.2020 primaries (`convert`, the key of conversionFor);
+/** The matrix a YUV video picture is read with (undefined: the decoder's default, BT.601). Non-YUV pixel formats bypass matrix tagging. The asset's own name when it names one, else bt2020nc for a picture converted from BT.2020 primaries (`convert`, the key of conversionFor);
  *  else BT.709 when the picture is HD, a short side of 720 or more or a long side of 1280 or more. The size rule is AgentCut's own: a browser's guess goes by height alone, so the two differ on odd sizes (1280x544, a 480x854 portrait).
  *  A name outside the lists is refused, so no project string reaches an ffmpeg argument. */
-export function matrixFor(colorSpace: string, w: number, h: number, convert: string | undefined): string | undefined {
+export function matrixFor(colorSpace: string, w: number, h: number, convert: string | undefined, pixFmt?: string): string | undefined {
+  if (pixFmt !== undefined && !/^(?:yuv|nv\d|p[024]\d\d|yuyv|uyvy|yvyu|uyyvyy|ayuv|y21[02]|xv3[06]|vuya|vuyx)/.test(pixFmt)) return undefined;
   const name = namedMatrix(colorSpace, convert);
   if (COLOR_SPACES.includes(name)) return name;
   if (!NO_MATRIX.includes(colorSpace)) throw new EditError(`color_space ${JSON.stringify(colorSpace)} is not a matrix name`, "bad_media", `use one of: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}`);
