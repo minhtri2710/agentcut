@@ -750,6 +750,7 @@ console.log("decode and render failures");
       return (Buffer.isBuffer(streamed) && Buffer.isBuffer(held) && streamed.equals(held)) || [f, streamed?.code ?? "frame", held?.code ?? "frame"];
     }));
     check("a clip read past a cut avi's picture, with sound and without, holds the frame a fresh read there shows", pastCut.every((x) => x === true), pastCut);
+    const mad = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length; i++) if (i % 4 !== 3) s += Math.abs(a[i] - b[i]); return s / (a.length * 0.75); };
     { // one worker streams the whole clip: the render holds the frame the preview shows past the end (64x64 at draft quality; the encode's loss stays well under the step to the frame before)
       const CH = join(tmp, "cut-hold"), out = join(CH, "renders", "w1.mp4");
       api.create(CH, { width: 64, height: 64, fps: 25 });
@@ -757,7 +758,6 @@ console.log("decode and render failures");
       const rendered: any = await api.render(CH, { out, workers: 1, quality: "draft", sheet: false }).catch((e: any) => e);
       const rgba = (args: string[], input?: Buffer) => spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...args, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input, maxBuffer: 1 << 26 }).stdout as Buffer;
       const preview = async (t: number) => rgba(["-i", "-"], Buffer.from((await api.frameImage(CH, t, { scale: 1 })).data));
-      const mad = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length; i++) if (i % 4 !== 3) s += Math.abs(a[i] - b[i]); return s / (a.length * 0.75); };
       const raw = rendered?.code ? Buffer.alloc(0) : rgba(["-i", out]), fb = 64 * 64 * 4, last = raw.subarray(raw.length - fb);
       const held = await preview(1.96), before = await preview(cutPic.duration - 0.08); // the picture's last slot but one
       const d = raw.length === 50 * fb ? [mad(last, held), mad(last, before)] : [];
@@ -765,21 +765,21 @@ console.log("decode and render failures");
     }
     const pipedAvi = (await piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi"));
     check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
-    // flv and avi files where a seek near the picture's start does not land (h264 and mpeg4 holding frames back, sorenson with its sound ahead of the picture): slot 0 is the file's first picture, and slot 12 streamed from 0 is slot 12 read fresh
+    // flv and avi files where a seek near the picture's start does not land (h264 and mpeg4 holding frames back, sorenson with its sound ahead of the picture): slot 0 is the file's first picture, and slot 17 streamed from 0 is slot 17 read fresh (a read that seeks)
     const nearStart = await Promise.all(([["ns-h264-aac.flv", [...pic, ...sine(2), ...MKV]], ["ns-h264.avi", [...pic, ...MKV.slice(0, 4)]], ["ns-flv1-mp3.flv", [...pic, ...sine(2), "-c:v", "flv", "-c:a", "libmp3lame"]],
       ["ns-mpeg4.avi", [...pic, "-c:v", "mpeg4", "-bf", "2"]]] as const).map(async ([f, args]) => {
       ff(...args, join(m, f));
       const first = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", join(m, f), "-map", "0:V:0", "-frames:v", "1", "-vf", "scale=64:64:flags=bicubic,format=rgba", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { maxBuffer: 1 << 26 }).stdout as Buffer;
       const fresh = (await cutSrc(f)), streamed = (await cutSrc(f)), late = (await cutSrc(f));
-      const at0: any = await fresh.readAt(0).catch((e) => e), f12: any = await late.readAt(12 / 25).catch((e) => e);
-      let s12: any;
-      for (let k = 0; k <= 12 && !(s12 instanceof Error); k++) s12 = await streamed.readAt(k / 25).catch((e) => e);
+      const at0: any = await fresh.readAt(0).catch((e) => e), f17: any = await late.readAt(17 / 25).catch((e) => e);
+      let s17: any;
+      for (let k = 0; k <= 17 && !(s17 instanceof Error); k++) s17 = await streamed.readAt(k / 25).catch((e) => e);
       for (const x of [fresh, streamed, late]) x.close();
-      let d = -1; // mean absolute RGB difference of slot 0 from the first picture
-      if (Buffer.isBuffer(at0)) { d = 0; for (let i = 0; i < first.length; i++) if (i % 4 !== 3) d += Math.abs(at0[i] - first[i]) / (first.length * 0.75); }
-      return (d >= 0 && d < 1 && Buffer.isBuffer(s12) && Buffer.isBuffer(f12) && s12.equals(f12)) || [f, at0?.code ?? d, s12?.code ?? "frame", f12?.code ?? "frame"];
+      const why = (x: any) => x?.code ?? x?.message ?? "frame";
+      const d0 = Buffer.isBuffer(at0) && first.length > 0 && first.length === at0.length ? mad(at0, first) : -1, frames = Buffer.isBuffer(s17) && Buffer.isBuffer(f17);
+      return (d0 >= 0 && d0 < 1 && frames && s17.equals(f17)) || [f, Buffer.isBuffer(at0) ? { d0, first: first.length } : why(at0), frames ? mad(s17, f17) : [why(s17), why(f17)]];
     }));
-    check("an flv or avi whose seek near the picture's start does not land shows its first picture at slot 0, and the same slot 12 streamed from 0 as read fresh", nearStart.every((x) => x === true), nearStart);
+    check("an flv or avi whose seek near the picture's start does not land shows its first picture at slot 0, and the same slot 17 streamed from 0 as read fresh", nearStart.every((x) => x === true), nearStart);
     // an mkv, a webm, an mp4 and a mov (header in front) cut short (a copy or download that stopped) keep the length their header plans (2 s), which is not recorded: the record is where their packets end
     const cutOff = async (name: string, args: string[], share: number) => {
       ff(...args, join(m, name));
