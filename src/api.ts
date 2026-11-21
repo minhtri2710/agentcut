@@ -102,18 +102,22 @@ type ApplyOpts = { allowInvalid?: boolean; label?: string; author?: string; sign
  *  is kept until the call ends, and the batch is re-run from a fresh load, checked against the revision again: one round per analysis the batch asks for, plus the last.
  *  A conflict ends the call and the analysis with it: the resend runs it again. */
 export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: ApplyOpts) {
+  o.signal?.throwIfAborted();
   const list = Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops.ops ?? [ops] : undefined;
   if (!Array.isArray(list)) throw new M.EditError("ops must be an array of op objects, or one op object", "bad_request", "each op is {op: name, ...args}");
   if (!o.dryRun) { checkAuthor(o.author); requireRevision(o.revision); } // before any analysis or font work: a call with no identity or no revision does nothing
   if (TEXTY.test(JSON.stringify(list))) await loadCanvas(); // glyph coverage checks for fonts/presets
+  o.signal?.throwIfAborted();
   const p = openProject(project);
   try { return await applyRounds(p, list, o); } finally { AN.release(p); }
 }
 
 async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
   for (;;) {
+    o.signal?.throwIfAborted();
     const tl = p.load();
     await loadForText(tl);
+    o.signal?.throwIfAborted();
     if (o.revision !== undefined) p.checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
@@ -127,6 +131,7 @@ async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
+        o.signal?.throwIfAborted();
         p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true;
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};

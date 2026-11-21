@@ -1963,6 +1963,29 @@ console.log("a video whose sound outlasts its picture");
   check("roll_edit cannot grow a video clip past its picture (2.5 s of 2 s spare: out_of_range), and 1.5 s is fine", rc === "out_of_range" && okRoll.ok !== false && near(okRoll.results[0].left.duration, 2.5), { rc, okRoll });
 }
 
+{
+  const R = join(tmp, "ramp-cut");
+  api.create(R, { width: 64, height: 64 });
+  await applyLatest(R, [
+    { op: "add_clip", track: "main", src: join(m, "a.mp4"), id: "lead", duration: 1 },
+    { op: "add_clip", track: "main", src: join(m, "a.mp4"), id: "left", duration: 1 },
+    { op: "add_clip", track: "main", src: join(m, "a.mp4"), id: "right", in: 1, duration: 2 },
+    { op: "add_clip", track: "main", src: join(m, "a.mp4"), id: "last", duration: 1 },
+    { op: "set_keyframes", id: "right", prop: "speed", keyframes: [[0, 2], [2, 2]] },
+  ]);
+  const before = readFileSync(join(R, "project.json"), "utf8");
+  for (const op of [{ op: "roll_edit", id: "left", by: 0.2 }, { op: "slide_clip", id: "left", by: 0.2 }, { op: "roll_edit", id: "right", by: 0.2 }]) {
+    let error: any;
+    try { await applyLatest(R, [op]); } catch (e) { error = e; }
+    check(`${op.op} refuses a ramped cut without changing the timeline`, error?.code === "unsupported" && !!error.hint && readFileSync(join(R, "project.json"), "utf8") === before, error);
+  }
+  const raw = await import("../src/api.ts");
+  for (const ops of [[], [{ op: "add_marker", t: 0 }]]) {
+    const reason = new Error("cancelled edit"); let error: unknown;
+    try { await raw.apply(R, ops, { revision: (await api.info(R)).revision, author: "test", signal: AbortSignal.abort(reason) }); } catch (e) { error = e; }
+    check("pre-aborted apply, including an empty batch, preserves revision and history", error === reason && readFileSync(join(R, "project.json"), "utf8") === before);
+  }
+}
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);
