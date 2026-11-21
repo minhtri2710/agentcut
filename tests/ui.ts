@@ -241,6 +241,18 @@ check("rendered preview served from previews/", vid2?.status === 200 && vid2.typ
 const lsDir = await raw("/files/previews/ui");
 check("a directory under previews/ answers 404 and the server keeps serving", lsDir.status === 404 && (await raw("/api/state")).status === 200, lsDir.status);
 check("SSE reported the job", await waitJob(job.id));
+{
+  const fps = (await api.info(dir, "json")).timeline.settings.fps;
+  const play = async (start: number, end: number) => (await jget("/api/render", { method: "POST", body: { play: true, start, end } })).j;
+  const normalized = await play(0.001, 1.001);
+  check("play ranges in the same frame slots reuse the normalized cached range", normalized.status === "done" && normalized.url === done.url, normalized);
+  const next = await play(0, 1 + 1 / fps);
+  let ended = next;
+  for (let i = 0; i < 300 && ended.status === "running"; i++) { await Bun.sleep(50); ended = (await jget(`/api/jobs/${next.id}`)).j; }
+  check("play ranges in different frame slots render exactly their normalized range", ended.status === "done" && ended.url !== done.url && ended.result.frames === fps + 1 && Math.abs(ended.result.range[1] - (1 + 1 / fps)) < 1e-6, ended);
+  const empty = await play(0, 0.001), invalid = await play(-1, 1);
+  check("play refuses empty normalized ranges and invalid starts before making jobs", empty.error?.code === "empty" && invalid.error?.code === "bad_value", { empty, invalid });
+}
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
 console.log("prepare");
@@ -365,7 +377,7 @@ console.log("job retention");
     const [ghost, ghostCancel] = [await get("i"), await cancel("i")];
     check("a play request that fails before it starts leaves no job: GET and cancel on it answer 404 not_found", failed.status >= 400 && failed.j.ok === false && ghost.status === 404 && ghost.j.error?.code === "not_found" && ghostCancel.status === 404 && ghostCancel.j.error?.code === "not_found", { failed, ghost, ghostCancel });
     mkdirSync(join(dirJ, "previews", "ui"), { recursive: true });
-    writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-0.00-3.00.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
+    writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-f0-${(await api.info(dirJ, "json")).timeline.settings.fps}.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
     const hits: string[] = [];
     for (let i = 0; i < JOBS_KEPT + 2; i++) hits.push((await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 3 } })).j.id);
     const [firstHit, lastHit] = [await get(hits[0]), await get(hits.at(-1)!)];
