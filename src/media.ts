@@ -137,11 +137,11 @@ async function packetEnds(path: string): Promise<Map<number, number>> {
   }
   return ends;
 }
-/** Whether a file is shorter than its container says (a file cut off mid-write), by `format_name`: avi by its first RIFF chunk (avidec's own test, 8 bytes), matroska by its Segment's size
+/** Whether a file is shorter than its container says (cut short: a copy or download that stopped, or an avi cut off mid-write), by `format_name`: avi by its first RIFF chunk (avidec's own test, 8 bytes), matroska by its Segment's size
  *  (two 12-byte reads; a file written live or to a pipe gives no size), mov/mp4 by its top-level boxes (16 bytes per box). Any other format is not checked.
  *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met.
  *  shortcut: an mp4 box of size 0 runs to the end of the file, so it is not checked; read its contents when a writer of such a box is met.
- *  shortcut: fewer than 8 stray bytes after the last mp4 box read as cut, which costs a packet scan and records where the packets end; tell them apart when such a writer is met. */
+ *  shortcut: trailing bytes after the last mp4 box that are not a box read as cut, which costs a packet scan and records where the packets end; tell them apart when such a writer is met. */
 function cutShort(path: string, size: number, format: string): boolean {
   const kind = ["avi", "matroska", "mov"].find((k) => format.split(",").includes(k));
   if (!kind) return false;
@@ -153,9 +153,9 @@ function cutShort(path: string, size: number, format: string): boolean {
     if (kind === "matroska") {
       if (at(0, 12) !== 12 || b.readUInt32BE(0) !== 0x1a45dfa3) return false;
       const [hl, hv] = vint(4), seg = 4 + hl + hv;
-      if (!(seg > 0) || at(seg, 12) !== 12 || b.readUInt32BE(0) !== 0x18538067) return false;
-      const [sl, sv] = vint(4);
-      return seg + 4 + sl + sv > size; // NaN (an unknown size) is not cut
+      if (!Number.isSafeInteger(seg) || at(seg, 12) !== 12 || b.readUInt32BE(0) !== 0x18538067) return false;
+      const [sl, sv] = vint(4), end = seg + 4 + sl + sv;
+      return Number.isSafeInteger(end) && end > size; // NaN (an unknown size) is not cut
     }
     for (let o = 0; o < size;) {
       const got = at(o, 16);
@@ -189,7 +189,7 @@ export async function probe(path: string): Promise<any> {
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
-    // An avi, mkv/webm or mp4/mov cut off mid-write, or an avi never finished (written to a pipe), has only the lengths its header planned, which ffprobe gives as they are (an avi's scaled by the bytes present).
+    // An mkv/webm or mp4/mov cut short (a copy or download that stopped), or an avi cut off mid-write or never finished (written to a pipe), has only the lengths its header planned, which ffprobe gives as they are (an avi's scaled by the bytes present).
     // They are dropped: the file is read as one with no length in it, from its packets.
     const cut = cutShort(path, size, String(j.format?.format_name));
     if (cut) for (const x of [j.format, ...streams]) delete x.duration;
@@ -219,7 +219,8 @@ export async function probe(path: string): Promise<any> {
       const [num, den] = String(v.avg_frame_rate || v.r_frame_rate || "0/1").split("/").map(Number);
       const fps = den ? num / den : 0;
       const nb = +(v.nb_frames || 0);
-      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && dur < 0.1) || (ext === ".gif" && nb <= 1);
+      // a cut file has no length left to tell one frame from many: its packets tell
+      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && (cut ? (await measured()) : dur) < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),

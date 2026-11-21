@@ -765,7 +765,7 @@ console.log("decode and render failures");
     }
     const pipedAvi = (await piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi"));
     check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
-    // an mkv, a webm, an mp4 and a mov (header in front) cut off mid-write keep the length their header plans (2 s), which is not recorded: the record is where their packets end
+    // an mkv, a webm, an mp4 and a mov (header in front) cut short (a copy or download that stopped) keep the length their header plans (2 s), which is not recorded: the record is where their packets end
     const cutOff = async (name: string, args: string[], share: number) => {
       ff(...args, join(m, name));
       const whole = readFileSync(join(m, name)), cut = join(m, `cut-${name}`);
@@ -775,16 +775,19 @@ console.log("decode and render failures");
     };
     const H264 = [...MKV.slice(0, 4), "-bf", "0"], FAST = ["-movflags", "+faststart"]; // no B-frames: the packets a cut leaves are the first frames, so their count is the picture's length
     const cutPics = [(await cutOff("half-pic.mkv", [...pic, ...H264], 0.5)), (await cutOff("half-pic.webm", [...pic, ...VP9], 0.5)), (await cutOff("half-pic.mp4", [...pic, ...H264, ...FAST], 0.5)), (await cutOff("half-pic.mov", [...pic, ...H264, ...FAST], 0.5))];
-    check("an mkv, a webm, an mp4 and a mov cut off mid-write record the picture their packets hold, not the length their header plans", cutPics.every((i) => is(i.duration, i.packets / 25)), cutPics.map((i) => [i.duration, i.packets]));
+    check("an mkv, a webm, an mp4 and a mov cut short record the picture their packets hold, not the length their header plans", cutPics.every((i) => is(i.duration, i.packets / 25)), cutPics.map((i) => [i.duration, i.packets]));
     // with sound: at this cut the picture is the longer stream, so the record is still where its packets end
     const cutSound = [(await cutOff("half-snd.mkv", [...pic, ...sine(2), ...H264, "-c:a", "aac"], 0.57)), (await cutOff("half-snd.mp4", [...pic, ...sine(2), ...H264, "-c:a", "aac", ...FAST], 0.57))];
-    check("an mkv and an mp4 with sound cut off mid-write record where their packets end", cutSound.every((i) => i.has_audio && is(i.duration, i.packets / 25)), cutSound.map((i) => [i.duration, i.packets]));
-    { // a default clip of a cut mkv plays to where its packets end, so one worker renders it whole
+    check("an mkv and an mp4 with sound cut short record where their packets end", cutSound.every((i) => i.has_audio && is(i.duration, i.packets / 25)), cutSound.map((i) => [i.duration, i.packets]));
+    // a picture in an image codec has no length left either: its packets, not the missing length, tell a video from a still
+    const cutMjpeg = (await cutOff("half-mjpeg.mkv", [...pic, "-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], 0.5));
+    check("an mjpeg mkv cut short records a video of its packets' length, not an image", cutMjpeg.kind === "video" && is(cutMjpeg.duration, cutMjpeg.packets / 25), [cutMjpeg.kind, cutMjpeg.duration, cutMjpeg.packets]);
+    { // a default clip of an mkv cut short plays to where its packets end, so one worker renders it whole
       const CM = join(tmp, "cut-mkv"), out = join(CM, "renders", "w1.mp4");
       api.create(CM, { width: 64, height: 64, fps: 25 });
       await applyLatest(CM, [{ op: "add_clip", track: "main", src: join(m, "cut-half-snd.mkv") }]);
       const rendered: any = await api.render(CM, { out, workers: 1, quality: "draft", sheet: false }).catch((e: any) => e);
-      check("a default clip of a cut mkv renders with one worker", !rendered?.code && is(rendered.duration, cutSound[0].duration), rendered?.code ? [rendered.code, rendered.message] : rendered.duration);
+      check("a default clip of an mkv cut short renders with one worker", !rendered?.code && is(rendered.duration, cutSound[0].duration), rendered?.code ? [rendered.code, rendered.message] : rendered.duration);
     }
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
     const shiftedMp4 = (await made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]));
