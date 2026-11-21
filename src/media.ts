@@ -408,7 +408,7 @@ export class FrameSource {
     const dec = alphaDecoder(o.codec, o.alpha, o.path);
     if (dec) this.hw = false;
     this.dec = dec;
-    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path)];
+    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path), "-map", "0:V:0"];
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,

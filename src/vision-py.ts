@@ -54,7 +54,7 @@ def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, 
     clock = "settb=1/1000000,setpts=PTS-%.6f/TB,fps=%.6f:start_time=0:${FPS_END}," % (container_start + (start or 0), float(fps)) if fps else ""
     cut = "trim=end=%.6f," % ((int(dur * fps + 0.5) - 0.25) / fps) if fps and dur is not None else ""
     vf = clock + cut + ("setparams=colorspace=%s," % matrix if matrix else "") + (_CONVERT[convert] + "," if convert else "") + "scale=%d:%d:flags=bicubic" % (w, h)
-    args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
+    args += ["-protocol_whitelist", "file,pipe", "-i", path, "-map", "0:V:0", "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
     p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
