@@ -102,8 +102,8 @@ async function firstVideoPacket(path: string): Promise<number | null> {
 /** The line ffprobe logs (at warning level) when it guesses a file's length from its bitrate: the file records none (an mkv written to a pipe with uncompressed sound, a raw aac stream).
  *  shortcut: ffprobe gives no field for the estimate; if FFmpeg rewords this line the guess passes through again (the codecs row catches it). */
 const BITRATE_GUESS = "Estimating duration from bitrate";
-/** The level tag `-v level+…` puts on a line ffprobe logs at error level or above (after the `[ctx @ addr] ` part, when there is one). */
-const ERROR_TAG = /\[(?:error|fatal|panic)\] /;
+/** The level tag `-v +level+warning` puts on each message ffprobe logs (after the `[ctx @ addr] ` part, when there is one); a line with none continues the message before it. */
+const LOG_TAG = /\[(warning|error|fatal|panic)\] /;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -188,10 +188,12 @@ export async function probe(path: string): Promise<any> {
     info = { path, kind: "lottie", width: Math.round(j.w), height: Math.round(j.h), fps: +j.fr, duration: Math.max(0, +((j.op - j.ip) / j.fr).toFixed(3)), has_audio: false, alpha: true };
   } else {
     await needFfmpeg();
-    const r = await run("ffprobe", ["-v", "level+warning", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
+    const r = await run("ffprobe", ["-v", "+level+warning", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
     if (r.status !== 0) {
-      const errors = (r.stderr || "").split("\n").filter((l) => ERROR_TAG.test(l)).map((l) => l.replace(ERROR_TAG, "")); // what -v error prints; a warning never leads the message
-      throw new EditError(`ffprobe cannot read ${path}: ${(errors.length ? errors.join("\n") : r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+      // what -v error prints: each error line, untagged, with the lines that continue it
+      const errors: string[] = []; let inError = false;
+      for (const l of (r.stderr || "").split("\n")) { const t = LOG_TAG.exec(l)?.[1]; if (t) inError = t !== "warning"; if (inError) errors.push(t ? l.replace(LOG_TAG, "") : l); }
+      throw new EditError(`ffprobe cannot read ${path}: ${(errors.length ? errors.join("\n") : r.stderr || "").trim().slice(0, 300)}`, "bad_media"); // warnings lead it only when no error line exists
     }
     const j = JSON.parse(r.stdout);
     const streams: any[] = j.streams || [];
