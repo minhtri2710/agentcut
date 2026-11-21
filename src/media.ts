@@ -99,6 +99,11 @@ async function firstVideoPacket(path: string): Promise<number | null> {
   const t = pts !== "" && Number.isFinite(Number(pts)) ? Number(pts) : Number(dts);
   return dts !== undefined && Number.isFinite(t) ? t : null;
 }
+/** The line ffprobe logs (at warning level) when it guesses a file's length from its bitrate: the file records none (an mkv written to a pipe with uncompressed sound, a raw aac stream).
+ *  shortcut: ffprobe gives no field for the estimate; if FFmpeg rewords this line the guess passes through again (the codecs row catches it). */
+const BITRATE_GUESS = "Estimating duration from bitrate";
+/** The level tag `-v level+…` puts on a line ffprobe logs at error level or above (after the `[ctx @ addr] ` part, when there is one). */
+const ERROR_TAG = /\[(?:error|fatal|panic)\] /;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
@@ -183,16 +188,19 @@ export async function probe(path: string): Promise<any> {
     info = { path, kind: "lottie", width: Math.round(j.w), height: Math.round(j.h), fps: +j.fr, duration: Math.max(0, +((j.op - j.ip) / j.fr).toFixed(3)), has_audio: false, alpha: true };
   } else {
     await needFfmpeg();
-    const r = await run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
-    if (r.status !== 0) throw new EditError(`ffprobe cannot read ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+    const r = await run("ffprobe", ["-v", "level+warning", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
+    if (r.status !== 0) {
+      const errors = (r.stderr || "").split("\n").filter((l) => ERROR_TAG.test(l)).map((l) => l.replace(ERROR_TAG, "")); // what -v error prints; a warning never leads the message
+      throw new EditError(`ffprobe cannot read ${path}: ${(errors.length ? errors.join("\n") : r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+    }
     const j = JSON.parse(r.stdout);
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
     // An mkv/webm or mp4/mov cut short (a copy or download that stopped), or an avi cut off mid-write or never finished (written to a pipe), has only the lengths its header planned, which ffprobe gives as they are (an avi's scaled by the bytes present).
-    // They are dropped: the file is read as one with no length in it, from its packets.
-    const cut = cutShort(path, size, String(j.format?.format_name));
-    if (cut) for (const x of [j.format, ...streams]) delete x.duration;
+    // A length ffprobe guessed from the bitrate, which it also gives every stream, is none either. They are dropped: the file is read as one with no length in it, from its packets.
+    const cut = cutShort(path, size, String(j.format?.format_name)), noLength = cut || (r.stderr || "").includes(BITRATE_GUESS);
+    if (noLength) for (const x of [j.format, ...streams]) delete x.duration;
     // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
     const cStart = Number(j.format?.start_time) || 0;

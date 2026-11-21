@@ -787,6 +787,12 @@ console.log("decode and render failures");
       (await piped("pipe.mjpeg", [...pic, ...MJ], "mjpeg")), (await piped("pipe-mjpeg-aac.mkv", [...pic, ...sine(2), ...MJ, "-c:a", "aac"], "matroska"))], pipedOne = (await piped("pipe-one.mkv", [...pic, "-frames:v", "1", ...MJ], "matroska"));
     check("an mjpeg and a png mkv, a raw mjpeg stream and an mjpeg mkv with sound written to a pipe record a video of their packets' length, and a one-frame one an image",
       pipedPics.every((i) => i.kind === "video" && is(i.duration, 2)) && pipedOne.kind === "image", [...pipedPics, pipedOne].map((i) => [i.kind, i.duration]));
+    // a file that records no length, where ffprobe guesses one from the bitrate (4.09 s for this mjpeg mkv, 0.28 s short for this aac): its packets give the length
+    const guessed = [(await piped("pipe-mjpeg-pcm.mkv", [...pic, ...sine(3), ...MJ, "-c:a", "pcm_s16le"], "matroska")), (await piped("pipe-vp9-pcm.mkv", [...pic, ...sine(2), ...VP9, "-c:a", "pcm_s16le"], "matroska"))];
+    check("an mjpeg and a vp9 mkv with uncompressed sound written to a pipe record the lengths their packets hold, not a guess from the bitrate",
+      is(guessed[0].duration, 3) && is(guessed[0].video_duration, 2) && is(guessed[1].duration, 2), guessed.map((i) => [i.duration, i.video_duration]));
+    const rawAac = (await made("raw-20s.aac", [...sine(20), "-c:a", "aac"])), aacPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "a:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "raw-20s.aac")], { encoding: "utf8" }).stdout;
+    check("a raw aac stream records the length its packets hold, not a guess from the bitrate", is(rawAac.duration, (aacPackets * 1024) / rawAac.sample_rate), [rawAac.duration, aacPackets]); // an aac packet holds 1024 samples
     { // a default clip of an mkv cut short plays to where its packets end, so one worker renders it whole
       const CM = join(tmp, "cut-mkv"), out = join(CM, "renders", "w1.mp4");
       api.create(CM, { width: 64, height: 64, fps: 25 });
