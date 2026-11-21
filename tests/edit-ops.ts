@@ -1361,6 +1361,50 @@ console.log("templates and beats");
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
 }
 
+console.log("colour validation and atomic batches");
+{
+  const Q = join(tmp, "colours-proj");
+  api.create(Q, { preset: "720p" });
+  const shape = { id: "shape1", type: "shape", shape: "rect", start: 0, duration: 1 };
+  const text = { id: "text1", type: "text", text: "Hello", start: 0, duration: 1 };
+  const cases: [string, any, string][] = [
+    ["shape fill", { ...shape, fill: "notacolor" }, ".fill"],
+    ["text color", { ...text, color: "notacolor" }, ".color"],
+    ["solid color", { ...shape, type: "color", shape: undefined, color: "notacolor" }, ".color"],
+    ...["stroke", "border", "shadow", "glow", "background"].map((key): [string, any, string] =>
+      [key, { ...text, [key]: { color: "notacolor" } }, `.${key}.color`]),
+    ...["glow", "background", "highlight_color", "highlight_bg"].map((key): [string, any, string] =>
+      [key, { ...text, type: "captions", words: [{ text: "Hello", start: 0, end: 1 }], [key]: "notacolor" }, `.${key}`]),
+    ...["shape", "text", "color"].map((type): [string, any, string] =>
+      [`${type} gradient`, { id: "gradient1", type, text: "Hello", start: 0, duration: 1, gradient: { colors: ["red", "notacolor"] } }, ".gradient.colors[1]"]),
+  ];
+  for (const [name, clip, suffix] of cases) {
+    const t = newTimeline(640, 360, 30);
+    t.tracks[0].clips.push(clip);
+    const issues = validate(t);
+    check(`validate rejects invalid ${name} at its field`, issues.some((i) => i.level === "error" && i.path.endsWith(suffix) && /unknown colour/.test(i.message) && !!i.hint), issues);
+  }
+  const t = newTimeline(640, 360, 30);
+  t.settings.background = "notacolor";
+  check("validate rejects invalid canvas background", validate(t).some((i) => i.level === "error" && i.path === "$.settings.background"));
+  t.settings.background = "transparent";
+  check("validate accepts absent optional colours on an empty timeline", !validate(t).some((i) => i.level === "error"), validate(t));
+  t.tracks[0].clips.push({ id: "compound1", type: "compound", start: 0, duration: 1, tracks: [{ id: "nested", kind: "video", clips: [{ ...shape, fill: "notacolor" }] }] });
+  check("validate rejects invalid colours inside compounds", validate(t).some((i) => i.level === "error" && i.path.includes("<compound1>") && i.path.endsWith("<shape1>.fill")), validate(t));
+  for (const [name, clip] of cases.slice(0, 2)) {
+    const { start, ...args } = clip;
+    const before = readFileSync(join(Q, "project.json"), "utf8");
+    let error: any;
+    try { await applyLatest(Q, [{ op: "add_clip", track: "overlay", ...args, at: start }]); } catch (e) { error = e; }
+    check(`ops batch rejects invalid ${name} without saving`, error?.code === "validation_failed" && readFileSync(join(Q, "project.json"), "utf8") === before, error?.details);
+  }
+  const valid = await applyLatest(Q, [
+    { op: "add_clip", track: "overlay", id: shape.id, type: "shape", shape: "rect", duration: 1, fill: "#f08a", stroke: { color: "rgba(1,2,3,0.5)", width: 2 } },
+    { op: "add_clip", track: "text", id: text.id, text: "Hello", duration: 1, color: "white", background: "#12345678", glow: { color: "rgb(1,2,3)" }, gradient: { colors: ["red", "#aabbcc"] } },
+  ]);
+  check("valid colours pass ops batch and validate", valid.errors === 0 && (await api.validate(Q)).valid === true, valid);
+}
+
 console.log("op arguments, documented ranges, undo steps");
 {
   const Q = join(tmp, "args-proj");
