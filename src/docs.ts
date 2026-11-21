@@ -131,6 +131,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"slip_clip","id":"vid2","by":0.5}            different part of the source, same place on the timeline
 {"op":"roll_edit","id":"vid1","by":-0.3}           move the cut between vid1 and the next clip (total length unchanged)
 {"op":"slide_clip","id":"vid2","by":0.4}           move a clip between its neighbours (they absorb it)
+   roll_edit and slide_clip refuse a cut whose edited clips have keyframes.speed (unsupported): remove the speed ramp first; these edits do not rebase speed curves.
 {"op":"make_compound","ids":["main#1","main#2","txt1"],"name":"intro"}   group clips into ONE compound clip (move/trim/fade/mask/effects as a unit)
 {"op":"expand_compound","id":"cmp1"}                put the clips back (each placed clip/gap gets group {id:"cmp1",name,track}); the compound's volume/muted/enabled go to its clips; effects, opacity and other layer fields (also until_end, pending, a transition off a storyline or with nothing back on it) are refused (layer_properties: clear them first)
 {"op":"make_compound","from":"cmp1"}                regroup: takes every clip/gap stamped group.id "cmp1" (also after split_clip), same id + name, clears the stamps; rebuild inner groups before outer ones (inner_expanded); a rebuilt inner compound rejoins its outer group (group.parent)

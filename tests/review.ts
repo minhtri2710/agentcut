@@ -40,6 +40,18 @@ ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
   const scenes = await AN.scenes(multi);
   check("scene analysis reads the first video stream, not the default stream", scenes.cuts.length === 1 && Math.abs(scenes.cuts[0] - 0.5) < 0.01, scenes.cuts);
 }
+{
+  const scenes = await AN.scenes(join(m, "av.mp4")), silence = await AN.silence(join(m, "reply.wav"));
+  check("analysis succeeds with no scene cuts or silence", scenes.cuts.length === 0 && scenes.shots.length === 1 && silence.silences.length === 0 && silence.speech.length === 1, { scenes, silence });
+  for (const [name, run] of [
+    ["scenes without video", () => AN.scenes(join(m, "reply.wav"))],
+    ["silence with a rejected filter", () => AN.silence(join(m, "reply.wav"), -35, -1)],
+  ] as const) {
+    let error: any;
+    try { await run(); } catch (e) { error = e; }
+    check(`${name}: failed ffmpeg is decode_failed with its stderr tail`, error?.code === "decode_failed" && /Error|Invalid|stream/.test(error.message) && !!error.hint, error);
+  }
+}
 const P = join(tmp, "proj");
 api.create(P, { preset: "reels" });
 const tl = async () => (await api.info(P, "json")).timeline as any;
@@ -464,7 +476,7 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
     const T = Math.min(4, (await api.info(P)).duration as number); // a long range keeps the draft alive while it is polled and pruned
     const [a, b] = await Promise.all([post({ play: true, start: 0, end: T }), post({ play: true, start: 0, end: T })]);
     const rev = (await api.info(P)).revision;
-    const final = join(P, "previews", "ui", `play-r${rev}-0.00-${T.toFixed(2)}.mp4`);
+    const final = join(P, "previews", "ui", `play-r${rev}-f0-${Math.round(T * (await tl()).settings.fps)}.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
     const uiDir = join(P, "previews", "ui"), parts = () => existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.includes(".part")) : [];
@@ -718,6 +730,10 @@ console.log("templates: the text of every template stays inside the safe area at
       if (unsafe.length) bad[preset] = unsafe.map((f: any) => f.message).join("; ");
     }
     check(`${name}: no text_unsafe at any preset size`, !Object.keys(bad).length, bad);
+  }
+  for (const name of ["promo", "quote"]) {
+    const d = join(tmp, `tpl-${name}-portrait`), text = (await api.info(d, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
+    check(`${name}: portrait text has an explicit button-safe width`, parseFloat(text.max_width) < 75, text.max_width);
   }
 }
 
