@@ -15,6 +15,10 @@ const api = await import("./author-api.ts");
 const { resolve } = await import("../src/model.ts");
 const { Project } = await import("../src/project.ts");
 const { exportFcpxml, exportOtio, exportTimeline } = await import("../src/export.ts");
+const { loadCanvas } = await import("../src/canvas.ts");
+const { resolveFont } = await import("../src/fonts.ts");
+await loadCanvas();
+const font = resolveFont(undefined, 700).family;
 
 let failures = 0;
 function check(name: string, cond: unknown, info?: unknown) {
@@ -42,7 +46,7 @@ const r = await api.apply(dir, [
   { op: "add_clip", track: "main", src: P, duration: 2, transition: "crossfade", fit: "contain" },        // img1 60..120 (15f overlap)
   { op: "add_clip", track: "main", src: B, duration: 2, speed: 2, transition: { type: "dip_black", duration: 0.4 } }, // vid2 108..168
   { op: "add_clip", track: "main", src: A, in: 1, duration: 1.5, muted: true, effects: [{ type: "grain" }] }, // vid3 168..213
-  { op: "add_clip", track: "text", text: "Hello & <world>", attach_to: "main#0", offset: 0.5, duration: 1.5, font: "Arial Bold", font_size: 72, color: "#ffcc00" },
+  { op: "add_clip", track: "text", text: "Hello & <world>", attach_to: "main#0", offset: 0.5, duration: 1.5, font: `${font} Bold`, font_size: 72, color: "#ffcc00" },
   { op: "add_clip", track: "overlay", src: G, at: 1, duration: 2 },
   { op: "add_clip", track: "overlay", src: G, at: 2, duration: 1.5 },                                    // overlaps -> second lane
   { op: "add_clip", track: "overlay", type: "shape", shape: "star", size: [100, 100], at: 0, duration: 1 }, // skipped
@@ -76,7 +80,7 @@ const tr = tag("transition");
 check("two transitions centred on the cuts", tr.length === 2 && tr[0].offset === "2s" && tr[0].duration === "1500/3000s" && tr[1].offset === "10800/3000s" && tr[1].duration === "1200/3000s", tr);
 const t1 = byName("title", txt1);
 check("title anchored to vid1 at local 30f, lane 3", t1.lane === "3" && t1.offset === "1s" && t1.duration === "4500/3000s", t1);
-check("title text escaped + style", xml.includes("Hello &amp; &lt;world&gt;") && /font="Arial" fontSize="72" fontFace="Bold" fontColor="1 0.8 0 1"/.test(xml));
+check("title text escaped + style", xml.includes("Hello &amp; &lt;world&gt;") && xml.includes(`font="${font}" fontSize="72" fontFace="Bold" fontColor="1 0.8 0 1"`));
 check("Basic Title effect", xml.includes('name="Basic Title"'));
 const o1 = byName("asset-clip", ov1), o2 = byName("asset-clip", ov2);
 check("overlapping overlays on lanes 1 and 2", o1.lane === "1" && o1.offset === "4500/3000s" && o2.lane === "2" && o2.offset === "7500/3000s", [o1, o2]);
