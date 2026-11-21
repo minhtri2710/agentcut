@@ -1408,7 +1408,9 @@ console.log("op arguments, documented ranges, undo steps");
     ["a gradient stop", { op: "add_clip", track: "text", text: "hi", gradient: { colors: ["#fff", "bad"] } }, ".gradient.colors[1]"],
     ["a text background", { op: "add_clip", track: "text", text: "hi", background: { color: "zzz" } }, ".background.color"],
     ["a solid colour clip", { op: "add_clip", track: "overlay", type: "color", color: "#12", duration: 1 }, ".color"],
-    ["the canvas background", { op: "set_settings", background: "darkish" }, "$.settings.background"]];
+    ["the canvas background", { op: "set_settings", background: "darkish" }, "$.settings.background"],
+    ["an rgb() stop with a channel missing", { op: "add_clip", track: "overlay", type: "shape", shape: "rect", duration: 1, gradient: { colors: ["#fff", "rgb(255,0)"] } }, ".gradient.colors[1]"],
+    ["an rgba() with an alpha that is not a number", { op: "add_clip", track: "text", text: "hi", color: "rgba(1,2,3,half)" }, ".color"]];
   for (const [name, o, end] of colours) {
     const e = await err(o), is = e.details?.issues?.[0];
     check(`a colour that does not parse is refused at apply, not left to fail the render: ${name}`, e.code === "validation_failed" && is?.path?.endsWith(end) && /unknown colour/.test(is.message) && /#RRGGBB/.test(is.hint), { code: e.code, issues: e.details?.issues });
