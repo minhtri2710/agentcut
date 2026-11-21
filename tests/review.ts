@@ -470,7 +470,7 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
     const T = Math.min(4, (await api.info(P)).duration as number); // a long range keeps the draft alive while it is polled and pruned
     const [a, b] = await Promise.all([post({ play: true, start: 0, end: T }), post({ play: true, start: 0, end: T })]);
     const rev = (await api.info(P)).revision;
-    const final = join(P, "previews", "ui", `play-r${rev}-0.00-${T.toFixed(2)}.mp4`);
+    const final = join(P, "previews", "ui", `play-r${rev}-f0-${Math.round(T * (await tl()).settings.fps)}.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
     const uiDir = join(P, "previews", "ui"), parts = () => existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.includes(".part")) : [];
