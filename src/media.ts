@@ -9,25 +9,42 @@ import { COLOR_SPACES, conversionChain, conversionFor, EditError, FILTER_SPECS, 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
 
+export const MIN_FFMPEG_VERSION = "5.1";
+const FFMPEG_INSTALL = "install FFmpeg >= " + MIN_FFMPEG_VERSION + ": macOS `brew install ffmpeg` · Windows `winget install Gyan.FFmpeg` · Linux: upgrade your distribution package or get a newer build from https://ffmpeg.org/download.html; put ffmpeg and ffprobe on PATH";
+
+/** Release builds only: unknown and git snapshot versions are allowed, not guessed from their build numbers. */
+export function parseFfmpegVersion(output: string): [number, number, number] | null {
+  const m = /^ffmpeg version n?(\d+)\.(\d+)(?:\.(\d+))?(?=[\s+-]|$)/i.exec(output.trim());
+  return m ? [+m[1], +m[2], +(m[3] ?? 0)] : null;
+}
+
+export function checkFfmpegVersion(output: string): void {
+  const v = parseFfmpegVersion(output), [major, minor] = MIN_FFMPEG_VERSION.split(".").map(Number);
+  if (v && (v[0] < major || (v[0] === major && v[1] < minor)))
+    throw new EditError(`FFmpeg ${output.trim().split(/\s+/)[2]} found; AgentCut requires FFmpeg >= ${MIN_FFMPEG_VERSION}`, "missing_dependency", FFMPEG_INSTALL);
+}
+
 let ffChecked = false;
+let ffVersion: string | undefined;
 export function needFfmpeg() {
   if (ffChecked) return;
   for (const b of ["ffmpeg", "ffprobe"]) {
-    const r = spawnSync(b, ["-version"], { stdio: "ignore" });
+    const r = spawnSync(b, ["-version"], { encoding: "utf8" });
     if (r.error) throw new EditError(`'${b}' not found on PATH`, "missing_dependency",
-      "install FFmpeg: macOS `brew install ffmpeg` · Windows `winget install Gyan.FFmpeg` · Linux `apt install ffmpeg`");
+      FFMPEG_INSTALL);
+    if (r.status !== 0) throw new EditError(`'${b} -version' failed`, "missing_dependency", FFMPEG_INSTALL);
+    if (b === "ffmpeg") {
+      checkFfmpegVersion(r.stdout);
+      ffVersion = r.stdout.split("\n")[0].trim();
+    }
   }
   ffChecked = true;
 }
 
-let ffVersion: string | undefined;
 /** The first line of `ffmpeg -version` (version and build), read once per process: a different FFmpeg may decode other pixels. */
 export function ffmpegVersion(): string {
-  if (ffVersion === undefined) {
-    needFfmpeg();
-    ffVersion = (spawnSync("ffmpeg", ["-version"], { encoding: "utf8" }).stdout ?? "").split("\n")[0].trim();
-  }
-  return ffVersion;
+  needFfmpeg();
+  return ffVersion!;
 }
 
 /** FFmpeg's native vp8/vp9 decoders drop the alpha plane of a webm; the libvpx decoders keep it. */
