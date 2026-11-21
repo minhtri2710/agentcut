@@ -14,7 +14,7 @@ const api = await import("./author-api.ts");
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
 const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project, "json")).revision }); // "json": the text summary cannot print a clip without an id, which some rows save on purpose
 const { applyOps } = await import("../src/ops.ts");
-const { newTimeline, validate, resolve, canLoop } = await import("../src/model.ts");
+const { newTimeline, validate, resolve, canLoop, parseColor } = await import("../src/model.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -1417,6 +1417,8 @@ console.log("op arguments, documented ranges, undo steps");
   }
   check("colours that parse are accepted: #RGB, #RRGGBBAA, rgba(), a basic name, a glow string, a shadow object", (await Promise.all([{ op: "add_clip", track: "overlay", type: "shape", shape: "circle", duration: 1, fill: "#f0f", stroke: { color: "#00000080", width: 2 } },
     { op: "add_clip", track: "text", text: "hi", color: "rgba(10,20,30,0.5)", glow: "magenta", shadow: { color: "black" }, background: "#0008" }].map((o) => err(o)))).every((e) => e.code === undefined));
+  check("an rgb() channel or rgba() alpha may be a percentage, as in CSS", JSON.stringify([parseColor("rgba(0,0,0,0%)"), parseColor("rgba(100%,0%,50%,50%)")]) === JSON.stringify([[0, 0, 0, 0], [255, 0, 128, 128]])
+    && (await err({ op: "set_settings", background: "rgba(0,0,0,0%)" })).code === undefined, [parseColor("rgba(0,0,0,0%)"), parseColor("rgba(100%,0%,50%,50%)")]);
   check("a value at the edge of its range is accepted: opacity 0 and 1, volume 4, scale_x -1 (a mirror), a scale keyframe of 0 (pop-in)", (await Promise.all([{ opacity: 1 }, { opacity: 0 }, { volume: 4 }, { scale_x: -1 }, { keyframes: { scale: [[0, 0], [0.3, 1]] } }].map((patch) => err({ op: "update_clip", id: "c1", set: patch })))).every((e) => e.code === undefined));
 
   const both = await err({ op: "update_clip", id: "c1", set: { reverse: true, loop: true } }), pair = both.details?.issues?.[0];
