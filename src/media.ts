@@ -219,8 +219,8 @@ export async function probe(path: string): Promise<any> {
       const [num, den] = String(v.avg_frame_rate || v.r_frame_rate || "0/1").split("/").map(Number);
       const fps = den ? num / den : 0;
       const nb = +(v.nb_frames || 0);
-      // a cut file has no length left to tell one frame from many: its packets tell
-      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && (cut ? (await measured()) : dur) < 0.1) || (ext === ".gif" && nb <= 1);
+      // a file with no recorded length (cut short, written to a pipe or live) has nothing to tell one frame from many: its packets tell
+      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && (dur || (await measured())) < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),

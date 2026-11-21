@@ -782,6 +782,11 @@ console.log("decode and render failures");
     // a picture in an image codec has no length left either: its packets, not the missing length, tell a video from a still
     const cutMjpeg = (await cutOff("half-mjpeg.mkv", [...pic, "-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], 0.5));
     check("an mjpeg mkv cut short records a video of its packets' length, not an image", cutMjpeg.kind === "video" && is(cutMjpeg.duration, cutMjpeg.packets / 25), [cutMjpeg.kind, cutMjpeg.duration, cutMjpeg.packets]);
+    // nor does one written to a pipe or live (a webcam's mjpeg saved as it streams); a one-frame one is still a still
+    const MJ = ["-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], pipedPics = [(await piped("pipe-mjpeg.mkv", [...pic, ...MJ], "matroska")), (await piped("pipe-png.mkv", [...pic, "-c:v", "png"], "matroska")),
+      (await piped("pipe.mjpeg", [...pic, ...MJ], "mjpeg")), (await piped("pipe-mjpeg-aac.mkv", [...pic, ...sine(2), ...MJ, "-c:a", "aac"], "matroska"))], pipedOne = (await piped("pipe-one.mkv", [...pic, "-frames:v", "1", ...MJ], "matroska"));
+    check("an mjpeg and a png mkv, a raw mjpeg stream and an mjpeg mkv with sound written to a pipe record a video of their packets' length, and a one-frame one an image",
+      pipedPics.every((i) => i.kind === "video" && is(i.duration, 2)) && pipedOne.kind === "image", [...pipedPics, pipedOne].map((i) => [i.kind, i.duration]));
     { // a default clip of an mkv cut short plays to where its packets end, so one worker renders it whole
       const CM = join(tmp, "cut-mkv"), out = join(CM, "renders", "w1.mp4");
       api.create(CM, { width: 64, height: 64, fps: 25 });
