@@ -25,7 +25,7 @@ const GRAPH = [
  * The image is written under a new name and renamed to outPath; `base` is the project folder when outPath is inside it.
  */
 export async function scopes(still: Buffer, outPath: string, base?: string, signal?: AbortSignal) {
-  needFfmpeg();
+  (await needFfmpeg());
   const tmp = tmpSibling(outPath, base);
   let r;
   try {

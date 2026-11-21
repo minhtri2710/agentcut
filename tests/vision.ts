@@ -269,7 +269,7 @@ ff("-itsoffset", "0.54", "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,f
   process.env.FAKE_JOB_LOG = join(tmp, "late-jobs.jsonl");
   await applyPrep(LP, [{ op: "add_clip", track: "main", src: lateTs, duration: 1, id: "late1" }, { op: "auto_reframe", id: "late1" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
   const sj = readFileSync(join(tmp, "late-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((j) => j.cmd === "subject");
-  const lp = api.probe(lateTs);
+  const lp = (await api.probe(lateTs));
   check("a subject job carries the container start and the pre-roll the asset records (an mpegts that starts at its sound)", lp.container_start > 1 && sj?.container_start === lp.container_start && sj?.pre > 1 && sj.pre === preRoll(lp as any, lp.fps), { job: sj, probe: lp.container_start });
 }
 
@@ -917,7 +917,7 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
           return r.status === 0 && b.length >= o + 3 ? [b[o], b[o + 1], b[o + 2]] : { status: r.status, err: r.stderr.toString().slice(-300) };
         };
         const { FrameSource } = await import("../src/media.ts");
-        const info = api.probe(hd), src = new FrameSource({ path: hd, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 36], facts: info as any });
+        const info = (await api.probe(hd)), src = new FrameSource({ path: hd, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 36], facts: info as any });
         const fs = await src.readAt(0); src.close();
         const mine = [fs[(18 * 64 + 32) * 4], fs[(18 * 64 + 32) * 4 + 1], fs[(18 * 64 + 32) * 4 + 2]], withRule = read({ matrix: "bt709" }), without = read({});
         const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 3);
@@ -931,7 +931,7 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
         const pqFile = join(m, "pq-flat.mp4");
         ff("-f", "lavfi", "-i", "color=c=0x7a9ec8:s=1280x720:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv,format=yuv420p", "-c:v", "libx264", pqFile);
         const keyFor = (primaries: string, transfer: string) => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, container_start: 0, srcW: 1280, srcH: 720, colorSpace: "bt2020nc", colorPrimaries: primaries, colorTransfer: transfer }).job.convert as string;
-        const pqKey = keyFor("bt2020", "smpte2084"), pqInfo = api.probe(pqFile), pqSrc = new FrameSource({ path: pqFile, kind: "video", srcW: pqInfo.width, srcH: pqInfo.height, rate: 24, fit: "fill", box: [64, 36], facts: pqInfo as any });
+        const pqKey = keyFor("bt2020", "smpte2084"), pqInfo = (await api.probe(pqFile)), pqSrc = new FrameSource({ path: pqFile, kind: "video", srcW: pqInfo.width, srcH: pqInfo.height, rate: 24, fit: "fill", box: [64, 36], facts: pqInfo as any });
         const pqFs = await pqSrc.readAt(0); pqSrc.close();
         const pqMine = [pqFs[(18 * 64 + 32) * 4], pqFs[(18 * 64 + 32) * 4 + 1], pqFs[(18 * 64 + 32) * 4 + 2]], pqHelper = read({ matrix: "bt2020nc", convert: pqKey }, pqFile), pqPlain = read({ matrix: "bt2020nc" }, pqFile);
         check("helper: the frame reader, given the PQ conversion key, gives the same RGB as FrameSource for a PQ source; without the key it gives the unconverted picture",
@@ -951,29 +951,29 @@ a = json.loads(sys.argv[3])
 print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 3] > 127) for f in g["frames"](a["path"], a["start"], a["dur"], a["fps"], 160, 120, container_start=a["cs"], pre=a["pre"])]))
 `);
         // the frame number each sample shows, the way the helper's subject job reads: start and duration in source seconds, fps samples a second
-        const slots = (path: string, start: number | null, dur: number | null, fps: number): number[] | string => {
-          const r = spawnSync("python3", ["-I", "-S", "-B", sdriver, stubs, script, JSON.stringify({ path, start, dur, fps, cs: api.probe(path).container_start, pre: preRoll(api.probe(path) as any, api.probe(path).fps) })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
+        const slots = async (path: string, start: number | null, dur: number | null, fps: number): Promise<number[] | string> => {
+          const r = spawnSync("python3", ["-I", "-S", "-B", sdriver, stubs, script, JSON.stringify({ path, start, dur, fps, cs: (await api.probe(path)).container_start, pre: preRoll((await api.probe(path)) as any, (await api.probe(path)).fps) })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
           return r.status === 0 ? JSON.parse(r.stdout) : r.stderr.slice(-300);
         };
         // sample i is at start + i / fps on the clip clock; the picture's frame n is at video_start + n / 25 there, and the held first picture shows before it; a slot is within 3 frames of that
-        const wrong = (got: number[] | string, path: string, start: number, fps: number, count: number) => {
+        const wrong = async (got: number[] | string, path: string, start: number, fps: number, count: number) => {
           if (typeof got === "string") return got;
-          const vs = api.probe(path).video_start;
+          const vs = (await api.probe(path)).video_start;
           const bad = got.map((n, i) => ({ i, n, want: Math.min(99, Math.max(0, Math.round((start + i / fps - vs) * 25))) })).filter((x) => Math.abs(x.n - x.want) > 3);
           return got.length === count && !bad.length ? null : { count: got.length, want: count, n: bad.length, first: bad.slice(0, 3) };
         };
         for (const [what, file, start] of [["an mpegts that starts at its sound", lateTs, 0], ["an mpegts that starts at its sound, in-point before the picture", lateTs, 0.3], ["an mkv with the picture 1.4 s late, in-point before the picture", lateMkv, 0.5], ["an mkv with the picture 1.4 s late, in-point after it", lateMkv, 2], ["an mpegts with a keyframe every second, in-point after the first keyframe", keyTs, 2], ["an mpegts with one keyframe, in-point after it", lateTs, 2]] as const) {
-          const bad = wrong(slots(file, start, 2, 6), file, start, 6, 12);
+          const bad = (await wrong((await slots(file, start, 2, 6)), file, start, 6, 12));
           check(`helper: ${what} (in ${start}): 12 samples at 6 a second for 2 s, each the frame of its own time`, bad === null, bad);
         }
         // a range's slots start at the in-point and there are round(duration * fps) of them: a half-slot start phase (15 a second from 0.5 s) and a length of 2.1 s at 6 a second (12.6 slots)
-        const half = wrong(slots(lateMkv, 0.5, 2, 15), lateMkv, 0.5, 15, 30), frac = wrong(slots(lateMkv, 0.5, 2.1, 6), lateMkv, 0.5, 6, 13);
+        const half = (await wrong((await slots(lateMkv, 0.5, 2, 15)), lateMkv, 0.5, 15, 30)), frac = (await wrong((await slots(lateMkv, 0.5, 2.1, 6)), lateMkv, 0.5, 6, 13));
         check("helper: a range has round(duration * fps) samples: 30 for 2 s at 15 a second from 0.5 s, 13 for 2.1 s at 6 a second", half === null && frac === null, { half, frac });
         // the end of the file: the picture's last frame (99, at 1.4 + 3.96 s) is the last sample of a range that reaches the end; fps's default drops the slot of a frame that ends the file
-        const tail = slots(lateMkv, 3, 2.5, 6);
+        const tail = (await slots(lateMkv, 3, 2.5, 6));
         check("helper: a range that reaches the end of the file keeps the slot of the last frame (3 s, 2.5 s long at 6 a second: 15 samples, the last is frame 99)", Array.isArray(tail) && tail.length === 15 && tail.at(-1) === 99, tail);
         // the whole file, as the matte reads it (no start, no length): the gap before the picture is filled from 0, so the matte's frame i is at i / fps
-        const whole = slots(lateTs, null, null, 6), vsTs = api.probe(lateTs).video_start;
+        const whole = (await slots(lateTs, null, null, 6)), vsTs = (await api.probe(lateTs)).video_start;
         check("helper: a read of the whole file (the matte) starts at the clip clock's 0: the first samples are the first picture, held to its start, and the count covers the picture's end",
           Array.isArray(whole) && whole[0] === 0 && whole[Math.floor(vsTs * 6) - 1] === 0 && Math.abs(whole.length - (vsTs + 4) * 6) <= 1, { whole, vs: vsTs });
       }
