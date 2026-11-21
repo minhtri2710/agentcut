@@ -530,8 +530,9 @@ export function parseColor(v: unknown, dflt: [number, number, number, number] = 
   }
   m = /^rgba?\(([^)]+)\)$/.exec(s);
   if (m) {
-    const p = m[1].split(",").map((x) => parseFloat(x));
-    return [p[0], p[1], p[2], p.length > 3 ? Math.round((p[3] <= 1 ? p[3] * 255 : p[3])) : 255];
+    // a channel may be a percentage of 255 and the alpha a percentage of 1, as in CSS
+    const p = m[1].split(",").map((x, i) => { const t = x.trim(), pc = t.endsWith("%"), n = t && t !== "%" ? Number(pc ? t.slice(0, -1) : t) : NaN; return pc ? (i < 3 ? Math.round(n * 255 / 100) : n / 100) : n; });
+    if ((p.length === 3 || p.length === 4) && p.every((x) => Number.isFinite(x))) return [p[0], p[1], p[2], p.length > 3 ? Math.round((p[3] <= 1 ? p[3] * 255 : p[3])) : 255];
   }
   throw new EditError(`unknown colour ${JSON.stringify(v)}`, "bad_color", "use #RRGGBB, #RRGGBBAA, rgba(r,g,b,a) or a basic name like 'white'");
 }
