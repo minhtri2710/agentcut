@@ -1757,8 +1757,8 @@ console.log("empty batch, source-length wording, sub-frame clips, odd canvas dra
     const D = join(tmp, `${name}-canvas`);
     api.create(D, { width: W, height: H, fps: 30 });
     await applyLatest(D, [{ op: "add_clip", track: "main", type: "color", color: "#336699", duration: 0.2 }]);
-    const a: any = await api.render(D, { out: join(tmp, `${name}-full.mp4`), quality: "draft" });
-    const b: any = await api.render(D, { out: join(tmp, `${name}-draft.mp4`), draft: true });
+    await api.render(D, { out: join(tmp, `${name}-full.mp4`), quality: "draft" });
+    await api.render(D, { out: join(tmp, `${name}-draft.mp4`), draft: true });
     check(`${name} ${W}x${H} canvas renders ${full} at scale 1 and ${draft} as a draft`, dims(join(tmp, `${name}-full.mp4`)) === full && dims(join(tmp, `${name}-draft.mp4`)) === draft, { a: dims(join(tmp, `${name}-full.mp4`)), b: dims(join(tmp, `${name}-draft.mp4`)) });
   }
 }
@@ -1822,7 +1822,7 @@ console.log("relink_asset");
   console.log("  copy");
   const mediaDir = join(R, "media"), listing = () => readdirSync(mediaDir).sort();
   const none = listing();
-  const cp = (await ra([{ op: "relink_asset", id: "ip", path: join(m, "silent.mp4"), copy: true }]));
+  await ra([{ op: "relink_asset", id: "ip", path: join(m, "silent.mp4"), copy: true }]);
   check("copy=true copies into media/ and points the asset at the copy", listing().length === none.length + 1 && (await rtl()).assets.ip.path.startsWith("media/") && existsSync(join(R, (await rtl()).assets.ip.path)), { files: listing(), path: (await rtl()).assets.ip.path });
   const kept = listing();
   const rej = await code([{ op: "relink_asset", id: "snd", path: join(m, "short.mp4"), copy: true }]);

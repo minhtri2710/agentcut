@@ -754,12 +754,12 @@ fi
         const bRev = (await applyLatest(B, cuts)).revision;
         const undoB = api.history(B).undo.length;
         process.env.PATH = `${binB}:${pathNow}`;
-        let b1: any, used = -1, n1 = -1, b2: any, n2 = -1;
+        let b1: any, used = -1, n1 = -1, n2 = -1;
         try {
           rounds = 0;
           b1 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks }, { op: "snap_to_beats", track: "main", beats: clicks, every: 2 }, { op: "add_marker", t: 1, label: "m" }], { revision: bRev }); // passed, not read: reading would add loads to the count
           used = rounds; n1 = decodes();
-          b2 = await applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
+          await applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
           n2 = decodes();
         } finally { process.env.PATH = pathNow; }
         check("snap_to_beats of an audio file twice and an edit: 2 rounds, one decode, one save; a later call decodes nothing",
