@@ -479,5 +479,3 @@ export function summarize(tl: Timeline): string {
   if (tl.markers?.length) L.push("markers: " + tl.markers.slice(0, 40).map((m) => `${m.t}s ${m.label ?? ""}`.trim()).join(", "));
   return L.join("\n");
 }
-
-export const fileSize = (p: string) => statSync(p).size;
