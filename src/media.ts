@@ -213,7 +213,7 @@ export async function probe(path: string): Promise<any> {
         // a matrix name the pipeline cannot read (one not in COLOR_SPACES) is refused here, so the record only ever holds a name matrixFor accepts
         const cs = String(v.color_space ?? "unknown");
         if (!COLOR_SPACES.includes(cs) && !NO_MATRIX.includes(cs)) throw new EditError(`${path} names the colour matrix '${cs}', which AgentCut cannot read with`, "bad_media", `supported: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}; re-encode the file with a tag from that list`);
-        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs,
+        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, pix_fmt: String(v.pix_fmt ?? "unknown"), color_space: cs,
           color_primaries: String(v.color_primaries ?? "unknown"), color_transfer: String(v.color_transfer ?? "unknown") });
         if (!seeksBefore(info.format)) info.key_gap = (await keyGap(path, dur));
       }
@@ -389,7 +389,7 @@ export class FrameSource {
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
     // the picture is tagged with the matrix it is read with first (the asset's own name, else bt2020nc for an untagged one converted from BT.2020, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix;
     // PQ, HLG and BT.2020 primaries are then converted to BT.709 (conversionChain), before crop, the clip's filters and the grade
-    const convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined, matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH, convert) : undefined;
+    const convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined, matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH, convert, o.facts!.pix_fmt) : undefined;
     const vf: string[] = [...(matrix ? [`setparams=colorspace=${matrix}`] : []), ...(convert ? conversionChain(convert) : [])];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
     vf.push(...filterChain(o.filters), ...gradeChain(o.color));

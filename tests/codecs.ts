@@ -1060,11 +1060,18 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     /setparams=colorspace=smpte170m/.test(new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: MATTE_FACTS }).pixelKey));
   const refusal = (color_space: string) => { try { new FrameSource({ path: hd709, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any }); return "built"; } catch (e: any) { return e.code; } };
   check("a name outside the list never reaches the decode chain: the source is refused", ["bt.709", "709", "", "bt709,format=gray", "BT709"].every((n) => refusal(n) === "bad_media"), ["bt.709", "709", "", "bt709,format=gray", "BT709"].map(refusal));
-  // an HD gif (a palette picture): the rule puts its tag on it too, and it must still decode to the colour drawn
+  // RGB and palette pictures bypass YUV matrix tagging even at HD sizes.
   const gifHd = join(m, "hd.gif");
   ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-frames:v", "2", gifHd);
   const gifInfo = (await api.probe(gifHd)), gifPx = await centre(gifHd).catch((e) => String(e?.message ?? e).slice(0, 200));
   check("an HD gif (probe: kind video, color_space recorded as given) decodes through FrameSource to the colour drawn", gifInfo.kind === "video" && Array.isArray(gifPx) && green(gifPx), { kind: gifInfo.kind, color_space: gifInfo.color_space, gifPx });
+  const rgbHd = join(m, "hd-rgb.nut");
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-c:v", "rawvideo", "-pix_fmt", "rgb24", rgbHd);
+  const rgbInfo = await api.probe(rgbHd), rgbPx = await centre(rgbHd), namedRgbPx = await centre(rgbHd, { color_space: "bt709" });
+  check("an HD RGB source records its pixel format and preserves green with or without a matrix name", rgbInfo.pix_fmt === "rgb24" && green(rgbPx) && green(namedRgbPx), { rgbInfo, rgbPx, namedRgbPx });
+  const matrixOf = (pix_fmt: string, color_space = "unknown") => /setparams=colorspace=/.test(new FrameSource({ path: rgbHd, kind: "video", srcW: 1280, srcH: 720, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, pix_fmt, color_space } }).pixelKey);
+  check("non-YUV formats never acquire a YUV matrix, named or inferred", ["rgb24", "rgba", "pal8", "gbrp", "gray", "xyz12le"].every((fmt) => !matrixOf(fmt) && !matrixOf(fmt, "bt709")));
+  check("planar and packed YUV formats retain matrix selection", ["yuv420p", "yuva444p10le", "nv12", "p010le", "yuyv422", "ayuv64le"].every((fmt) => matrixOf(fmt)));
 
   // PQ, HLG and BT.2020 with an SDR curve are converted to BT.709 before anything else: six flat patches of known SDR colour are authored into each
   // (SDR RGB -> linear light -> BT.2020 primaries -> the curve, from the published formulas; 8-bit signal in a 10-bit 4:4:4 ProRes file), and each comes back as the colour it was made from.

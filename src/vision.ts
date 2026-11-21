@@ -358,7 +358,7 @@ export function trackJob(path: string, o: { start: number; duration: number; at:
 }
 
 /** Alpha version of a video (ProRes 4444 .mov, source audio kept) or image (.png), cached by content hash + model. */
-export function matteJob(path: string, o: { kind: string; fps?: number | null; duration?: number; container_start?: number; srcW: number; srcH: number; colorSpace?: string; colorPrimaries?: string; colorTransfer?: string; model?: string; root?: string }) {
+export function matteJob(path: string, o: { kind: string; fps?: number | null; duration?: number; container_start?: number; srcW: number; srcH: number; pixFmt?: string; colorSpace?: string; colorPrimaries?: string; colorTransfer?: string; model?: string; root?: string }) {
   const model = o.model ?? "u2netp";
   if (!MATTE_MODELS.includes(model)) throw new EditError(`unknown matte model '${model}'`, "bad_value", `models: ${MATTE_MODELS.join(", ")}`);
   const s = Math.min(1, 1920 / Math.max(o.srcW, o.srcH)), w = even(o.srcW * s), h = even(o.srcH * s);
@@ -366,7 +366,7 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   // the helper's frame reader reads a video with the same matrix FrameSource does (the asset's name, else bt2020nc for an untagged one converted from BT.2020, else bt709 for an untagged HD one) and converts it the same way (the key of conversionFor);
   // the job carries each only when there is one, and a video with no color_space, color_primaries or color_transfer is refused
   if (o.kind === "video" && (o.colorSpace === undefined || o.colorPrimaries === undefined || o.colorTransfer === undefined)) throw new EditError("a video matte job needs the asset's color_space, color_primaries and color_transfer", "bad_media", "relink_asset with the file's path records them");
-  const convert = o.kind === "video" ? conversionFor(o.colorPrimaries!, o.colorTransfer!) : undefined, matrix = o.kind === "video" ? matrixFor(o.colorSpace!, o.srcW, o.srcH, convert) : undefined;
+  const convert = o.kind === "video" ? conversionFor(o.colorPrimaries!, o.colorTransfer!) : undefined, matrix = o.kind === "video" ? matrixFor(o.colorSpace!, o.srcW, o.srcH, convert, o.pixFmt) : undefined;
   const params = { cmd: "matte", kind: o.kind, fps, ...(fps ? { container_start: o.container_start } : {}), w, h, model, ...(matrix ? { matrix } : {}), ...(convert ? { convert } : {}) };
   const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
   d.job.model_file = modelFile(model);
