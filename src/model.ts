@@ -791,6 +791,29 @@ export function totalDuration(tl: Timeline): number {
 // ------------------------------------------------------------------ validation
 const jtype = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
 
+function colorIssue(v: unknown, path: string, issues: Issue[]) {
+  try { parseColor(v); }
+  catch (e) {
+    if (!(e instanceof EditError)) throw e;
+    issues.push({ level: "error", path, message: e.message, hint: e.hint });
+  }
+}
+
+function clipColorIssues(c: Clip, path: string, issues: Issue[]) {
+  const fields = fieldsFor(c.type);
+  for (const key of ["color", "fill", "highlight_color", "highlight_bg"]) {
+    if (fields[key]?.[0].includes("string")) colorIssue(c[key], `${path}.${key}`, issues);
+  }
+  for (const key of ["stroke", "border", "shadow", "glow", "background"]) {
+    if (!fields[key]) continue;
+    const v = c[key];
+    if (typeof v === "string" && (key === "glow" || key === "background")) colorIssue(v, `${path}.${key}`, issues);
+    else if (v && typeof v === "object") colorIssue(v.color, `${path}.${key}.color`, issues);
+  }
+  if (fields.gradient && Array.isArray(c.gradient?.colors))
+    c.gradient.colors.forEach((v: unknown, i: number) => colorIssue(v, `${path}.gradient.colors[${i}]`, issues));
+}
+
 function checkFields(obj: Dict, fields: F, path: string, issues: Issue[], what: string) {
   for (const [k, v] of Object.entries(obj)) {
     if (k.startsWith("_")) continue; // private/comment keys
@@ -836,6 +859,7 @@ export function validate(tl: Timeline, o: ValidateOpts = {}): Issue[] {
     issues.push({ level: "warning", path: `$.${k}`, message: `unknown top-level key '${k}' (ignored)` });
   const st = tl.settings || {};
   checkFields(st, SETTINGS_FIELDS, "$.settings", issues, "settings");
+  colorIssue(st.background, "$.settings.background", issues);
   if (st.effects != null && !Array.isArray(st.effects)) issues.push({ level: "error", path: "$.settings.effects", message: "effects must be a list", hint: `effects: ${Object.keys(EFFECTS).join(", ")}` });
   else (st.effects || []).forEach((f: any, fi: number) => {
     const ft = typeof f === "string" ? f : f?.type;
@@ -955,6 +979,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       p = `${p}<${c.id ?? "?"}>`;
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
+      clipColorIssues(c, p, issues);
       rangeIssues(c, p, issues);
       if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
