@@ -80,7 +80,7 @@ export const TEMPLATES: Record<string, Template> = {
     build: (a, { width, height }) => {
       const n = a.media.length, seg = a.seconds ?? 2;
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
-      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, ["top"], 16) });
+      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, ["top"], 16), max_width: safeWidth(width, height, width * 0.16, 26) });
       (a.points || []).slice(0, Math.max(0, n - 1)).forEach((p: string, i: number) =>
         ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
       if (a.cta) ops.push({ op: "add_clip", track: "main", type: "color", gradient: { colors: [a.brand_color ?? "#111111", "#000000"], angle: 160 }, duration: 2.5, transition: "flash" },
@@ -106,12 +106,12 @@ export const TEMPLATES: Record<string, Template> = {
   quote: tpl({
     doc: "single quote card over a background clip/photo or gradient",
     args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
-    build: (a) => {
+    build: (a, { width, height }) => {
       if (typeof a.text !== "string" || !a.text.trim()) throw new EditError("quote needs text", "missing_arg", "pass text: the quote");
       const d = a.seconds ?? 6;
       const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", color: { look: "moody" }, effects: [{ type: "vignette", intensity: 0.6 }] }
         : { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#0f2027", "#203a43", "#2c5364"], angle: 135 }, duration: d }];
-      ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, at: 0.4, duration: d - 0.6, preset: "quote", max_width: "80%" });
+      ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, at: 0.4, duration: d - 0.6, preset: "quote", max_width: safeZones(width, height).ui.length ? safeWidth(width, height, width * 0.14, 12) : "80%" });
       if (a.author) ops.push({ op: "add_clip", track: "text", text: `— ${a.author}`, at: 1.6, duration: d - 1.8, font_size: 44, color: "#ffffffcc", y: "72%", enter: "fade" });
       if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, duration: d, fade_in: 0.5, fade_out: 1.2 });
       return ops;

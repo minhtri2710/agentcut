@@ -715,6 +715,10 @@ console.log("templates: the text of every template stays inside the safe area at
     }
     check(`${name}: no text_unsafe at any preset size`, !Object.keys(bad).length, bad);
   }
+  for (const name of ["promo", "quote"]) {
+    const d = join(tmp, `tpl-${name}-portrait`), text = (await api.info(d, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
+    check(`${name}: portrait text has an explicit button-safe width`, parseFloat(text.max_width) < 75, text.max_width);
+  }
 }
 
 console.log("templates: placement is kept where it was safe, a preset's own placement is kept, margin takes x and y");
