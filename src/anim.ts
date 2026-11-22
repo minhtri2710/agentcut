@@ -1,6 +1,7 @@
 // Easing, keyframes and animation presets (enter/exit, transitions, motion).
 import { type Clip, normAnim, parseTime } from "./model.ts";
 import { own } from "./own.ts";
+import { kfPoint } from "./time-parse.ts";
 
 const backOut = (t: number, s = 1.70158) => { t -= 1; return t * t * ((s + 1) * t + s) + 1; };
 function bounceOut(t: number) {
@@ -27,7 +28,7 @@ const kfCache = new WeakMap<object, KF[]>();
 export function parseKfs(kfs: any[]): KF[] {
   let pts = kfCache.get(kfs);
   if (!pts) {
-    pts = kfs.map((k): KF => (Array.isArray(k) ? [parseTime(k[0]), Number(k[1]), k[2]] : [parseTime(k.t ?? 0), Number(k.v ?? k.value ?? 0), k.ease]))
+    pts = kfs.map((k) => kfPoint(k, parseTime))
       .sort((a, b) => a[0] - b[0]);
     kfCache.set(kfs, pts);
   }

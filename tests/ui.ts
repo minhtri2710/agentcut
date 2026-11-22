@@ -680,6 +680,18 @@ console.log("page modules");
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 
   check("num reads seconds from numbers, ms, s and clock strings", num(1.5) === 1.5 && num("500ms") === 0.5 && num("2s") === 2 && num("1:02") === 62 && num("0:00:01.5") === 1.5, [num("500ms"), num("1:02")]);
+  const { parseTime } = await import("../src/model.ts");
+  const { parseKfs } = await import("../src/anim.ts");
+  check("num shares the renderer's uppercase units and hour clock grammar", num("2.5S") === 2.5 && num("1:02:03") === 3723
+    && ["2.5S", "1:02:03", ""].every((v) => num(v) === parseTime(v)));
+  check("num returns NaN for garbage and non-time values without throwing", ["garbage", "a:b:c", null, undefined, {}, true].every((v) => Number.isNaN(num(v))));
+  check("parseTime still rejects non-finite and invalid times with bad_time", [Infinity, NaN, "garbage"].every((v) => {
+    try { parseTime(v); return false; } catch (e: any) { return e.code === "bad_time" && !!e.hint; }
+  }));
+  const objectKeys = [{ t: 1 }, { t: 1, v: null, value: 3 }];
+  check("keyframe object defaults match parseKfs", pts(objectKeys)[0]?.[1] === 0 && pts(objectKeys)[1]?.[1] === 3
+    && JSON.stringify(pts(objectKeys)) === JSON.stringify(parseKfs(objectKeys)));
+  check("empty keyframes match parseKfs", pts(undefined).length === 0 && parseKfs([]).length === 0);
 
   // render.ts subT: a nested time u plays at s + (u - in) / speed, level by level; the view is off + k * u
   const inner = clip("ci", { type: "compound", start: 0, in: 1, speed: 2, duration: 1.5, tracks: [{ id: "n", clips: [clip("x1")] }] });
