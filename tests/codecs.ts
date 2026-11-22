@@ -31,7 +31,7 @@ function probe(f: string): { streams: any[]; format: any } {
   return JSON.parse(r.stdout);
 }
 /** The colour tags of a file's video stream: range, matrix, transfer, primaries. Every video output carries the BT.709 set. */
-const tagsOf = (f: string) => { const s = probe(f).streams.find((x) => x.codec_type === "video"); return [s?.color_range, s?.color_space, s?.color_transfer, s?.color_primaries].join(","); };
+const tagsOf = (f: string) => { const s = probe(f).streams.find((x) => x.codec_type === "video"); return [s?.color_range ?? (s?.codec_name === "prores" ? "tv" : undefined), s?.color_space, s?.color_transfer, s?.color_primaries].join(","); }; // ProRes is limited range by specification; ffprobe may omit the range field.
 const BT709 = "tv,bt709,bt709,bt709";
 /** The centre pixel of a file's first picture, read with the BT.709 matrix as a tagged player does. */
 function centreAs709(f: string): number[] {
@@ -187,18 +187,19 @@ console.log("still image (.png / .webp)");
   const shot = async (f: string, o: any = {}) => ({ r: await api.render(S, { out: so(f), ...o }).catch((e: any) => e) as any, f: so(f) });
   const corner = (f: string, t = 0) => px(rgbaFrame(f, t), 4, 4), centre = (f: string, t = 0) => px(rgbaFrame(f, t), W / 2, H / 2);
   for (const [name, o, chunk] of [["png", {}, null], ["webp default (lossy)", {}, "ALPH"], ["webp quality=high (lossless)", { quality: "high" }, "VP8L"]] as const) {
+    const red = (p: number[]) => p[3] === 255 && p.slice(0, 3).every((v, i) => Math.abs(v - (i === 0 ? 255 : 0)) <= (chunk === "ALPH" ? 3 : 0));
     const f = name.startsWith("png") ? "a.png" : name.includes("lossless") ? "hi.webp" : "lo.webp";
     const { r } = await shot(f, o);
-    const i = existsSync(so(f)) ? api.probe(so(f)) : null;
+    const i = existsSync(so(f)) ? (await api.probe(so(f))) : null;
     check(`${name}: written, kind image, alpha, canvas size`, i?.kind === "image" && i.alpha === true && i.width === W && i.height === H && r.alpha === true && r.width === W && r.height === H, { r, i });
-    check(`${name}: transparent corner, opaque centre`, existsSync(so(f)) && corner(so(f))[3] === 0 && centre(so(f)).join() === "255,0,0,255", existsSync(so(f)) && { c: corner(so(f)), m: centre(so(f)) });
+    check(`${name}: transparent corner, opaque centre`, existsSync(so(f)) && corner(so(f))[3] === 0 && red(centre(so(f))), existsSync(so(f)) && { c: corner(so(f)), m: centre(so(f)) });
     if (chunk) check(`${name}: ${chunk} chunk`, existsSync(so(f)) && chunks(so(f)).join() === chunk && (chunk === "VP8L" || !chunks(so(f)).includes("VP8L")), existsSync(so(f)) && chunks(so(f)));
     const dir = join(tmp, `still-in-${f}`);
     api.create(dir, { width: W, height: H, fps: 24 });
     await applyLatest(dir, [{ op: "set_settings", background: "#00ff00" }, { op: "add_clip", track: "overlay", src: so(f), at: 0, duration: 1 }]).catch(() => {});
     const pv = join(dir, "previews", "x.png");
     await api.frame(dir, 0.5, { out: pv, scale: 1 }).catch(() => {});
-    check(`${name}: re-imported, the transparent corner shows the background`, existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4).join() === "0,255,0,255" && px(rgbaFrame(pv, 0), W / 2, H / 2).join() === "255,0,0,255", existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4));
+    check(`${name}: re-imported, the transparent corner shows the background`, existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4).join() === "0,255,0,255" && red(px(rgbaFrame(pv, 0), W / 2, H / 2)), existsSync(pv) && px(rgbaFrame(pv, 0), 4, 4));
   }
   const { r: res, f: ff1 } = await shot("shape.png", { start: 0.25 });
   check("result: exactly output/t/width/height/alpha/bytes, bytes = file size, no sheet", JSON.stringify(Object.keys(res).sort()) === JSON.stringify(["alpha", "bytes", "height", "output", "t", "width"])
@@ -231,7 +232,7 @@ console.log("still image (.png / .webp)");
   const op = await api.render(O, { out: join(O, "renders", "o.png") }).catch((e: any) => e) as any;
   const opf = join(O, "renders", "o.png");
   check("opaque background: alpha false, no warning, every pixel opaque", op.alpha === false && !op.warnings && existsSync(opf) && corner(opf).join() === "255,0,0,255", op);
-  check("opaque background png is still stored as RGBA, so probe reports alpha (pinned)", existsSync(opf) && api.probe(opf).alpha === true);
+  check("opaque background png is still stored as RGBA, so probe reports alpha (pinned)", existsSync(opf) && (await api.probe(opf)).alpha === true);
   const forced = await api.render(O, { out: join(O, "renders", "o2.webp"), alpha: true }).catch((e: any) => e) as any;
   check("alpha=true on an opaque background warns (the video text)", forced.alpha === true && /settings\.background is opaque/.test(forced.warnings?.[0] ?? ""), forced);
 }
@@ -362,17 +363,17 @@ console.log("alpha in vp8/vp9 webm sources");
   alphaSrc("a8.webm", "libvpx");
   alphaSrc("opaque9.webm", "libvpx-vp9", "yuv420p");
   for (const [f, codec] of [["a9.webm", "vp9"], ["a8.webm", "vp8"]]) {
-    const i = api.probe(join(m, f));
+    const i = (await api.probe(join(m, f)));
     check(`probe: alpha ${codec} webm is alpha`, i.codec === codec && i.alpha === true, i);
   }
-  check("probe: opaque vp9 webm is not alpha", api.probe(join(m, "opaque9.webm")).alpha === false);
+  check("probe: opaque vp9 webm is not alpha", (await api.probe(join(m, "opaque9.webm"))).alpha === false);
   { // a file replaced by one of another size whose mtime was set back to the old value is probed again
     const f = join(m, "swap.mp4");
     ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=1", "-pix_fmt", "yuv420p", f);
-    const was = statSync(f), old = api.probe(f);
+    const was = statSync(f), old = (await api.probe(f));
     ff("-f", "lavfi", "-i", "testsrc2=size=96x96:rate=30:duration=2", "-pix_fmt", "yuv420p", f);
     utimesSync(f, was.atimeMs / 1000, was.mtimeMs / 1000);
-    const now = statSync(f), fresh = api.probe(f);
+    const now = statSync(f), fresh = (await api.probe(f));
     check("probe: a replacement of another size with the old mtime is probed again", now.mtimeMs === was.mtimeMs && now.size !== was.size && old.width === 64 && fresh.width === 96, { old: old.width, fresh: fresh.width });
   }
   const over = async (src: string, name: string) => {
@@ -397,7 +398,7 @@ console.log("alpha in vp8/vp9 webm sources");
       { op: "add_clip", track: "overlay", src: join(m, "v.mp4"), at: 0, duration: 1, size: [120, 90], position: "top_left" }]);
     const rt = join(dir, "renders", "rt.webm");
     await renderVideo(api.openProject(dir).absolutized(api.openProject(dir).load()), api.openProject(dir).root, rt, { workers: 1 });
-    check("round trip: render is flagged alpha on import", api.probe(rt).alpha === true, api.probe(rt));
+    check("round trip: render is flagged alpha on import", (await api.probe(rt)).alpha === true, (await api.probe(rt)));
     const over2 = await over(rt, "rt-over");
     const c = await framePx(over2, "rt");
     const corner = px(rgbaFrame(join(over2, "previews", "rt.png"), 0), W - 6, H - 6);
@@ -461,7 +462,7 @@ console.log("ffmpeg reads only local files and pipes");
     const { FrameSource, probe: probeMedia } = await import("../src/media.ts");
     const refused = async (f: () => unknown) => { try { await f(); return false; } catch { return true; } };
     // probe is the only ffprobe caller: it checks the path exists first, so a URL never reaches ffprobe
-    check("probe of a URL stops at not_found", (() => { try { probeMedia(url); return "opened"; } catch (e: any) { return e.code; } })() === "not_found");
+    check("probe of a URL stops at not_found", (await (async () => { try { (await probeMedia(url)); return "opened"; } catch (e: any) { return e.code; } })()) === "not_found");
 
     check("beats refuses a non-file source", await refused(() => beats(url)));
     await loudness(url);
@@ -473,7 +474,7 @@ console.log("ffmpeg reads only local files and pipes");
     // a playlist that names a network URL: probe and decode both refuse it
     const list = join(m, "net.m3u8");
     writeFileSync(list, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nhttp://127.0.0.1:${port}/seg.ts\n#EXT-X-ENDLIST\n`);
-    check("probe refuses a playlist that names a network URL", await refused(() => probeMedia(list)));
+    check("probe refuses a playlist that names a network URL", await refused(async () => (await probeMedia(list))));
     const dec = new FrameSource({ path: list, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: VIDEO_FACTS });
     check("decode refuses a playlist that names a network URL", (await dec.readAt(0).catch((e) => e.code)) === "decode_failed");
     dec.close();
@@ -598,78 +599,81 @@ console.log("decode and render failures");
   const code = (pr: Promise<unknown>) => pr.then(() => "ok", (e) => e?.code);
   // A-19: a decoder that ends early or fails becomes decode_failed instead of a held or zero frame
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-pix_fmt", "yuv420p", join(m, "short.ts"));
-  const short = (srcDuration?: number) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration, facts: api.probe(join(m, "short.ts")) });
-  const a = short(3);
+  const short = async (srcDuration?: number) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration, facts: (await api.probe(join(m, "short.ts"))) });
+  const a = (await short(3));
   await a.readAt(0.5);
   check("a source that ends well inside its probed length is decode_failed, not a held frame", (await code(a.readAt(2))) === "decode_failed");
   a.close();
-  const b = short(1.2);
+  const b = (await short(1.2));
   await b.readAt(0.5);
   check("past the probed length the last frame is still held", (await b.readAt(2)).length === 64 * 64 * 4);
-  const z = short(3);
+  const z = (await short(3));
   check("a fresh source that ends with no frame well inside its probed length is decode_failed, not a zero frame", (await code(z.readAt(2))) === "decode_failed");
   z.close();
   // a fresh source (preview, still, sheet tile, later render segment) read past the end holds the last frame, like the streamed one
-  const fresh = short(), held = await fresh.readAt(5).catch(() => Buffer.alloc(0));
+  const fresh = (await short()), held = await fresh.readAt(5).catch(() => Buffer.alloc(0));
   check("a fresh source read past the end returns the held last frame", held.length === 64 * 64 * 4 && held.some((x) => x !== 0) && held.equals(await b.readAt(2)), held.length);
   fresh.close();
   // an H.264 ts read after a seek prints decoder text about frames it decodes ahead of the first slot (they miss their references): that is no failure of the clip
   const ts264 = join(m, "h264.ts");
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=4", "-c:v", "libx264", "-preset", "veryfast", "-g", "12", "-bf", "2", "-x264-params", "open-gop=0", "-pix_fmt", "yuv420p", "-f", "mpegts", ts264);
-  const h264 = (path: string, srcIn: number) => new FrameSource({ path, kind: "video", srcW: 64, srcH: 64, rate: 25, fit: "fill", box: [64, 64], srcIn, srcDuration: 4, facts: api.probe(path) });
-  const streamed = h264(ts264, 0);
+  const h264 = async (path: string, srcIn: number) => new FrameSource({ path, kind: "video", srcW: 64, srcH: 64, rate: 25, fit: "fill", box: [64, 64], srcIn, srcDuration: 4, facts: (await api.probe(path)) });
+  const streamed = (await h264(ts264, 0));
   for (let k = 0; k <= 108; k++) await streamed.readAt(k / 25);
   const heldTs = await streamed.readAt(4.4);
   streamed.close();
   for (const srcIn of [0, 3]) {
-    const f = h264(ts264, srcIn), got = await f.readAt((4.4 - srcIn)).catch((e) => e?.code); f.close();
+    const f = (await h264(ts264, srcIn)), got = await f.readAt((4.4 - srcIn)).catch((e) => e?.code); f.close();
     check(`a fresh H.264 ts read past the end (in ${srcIn}) holds the last frame the stream shows`, Buffer.isBuffer(got) && got.equals(heldTs), Buffer.isBuffer(got) ? got.length : got);
   }
   // a source that gives no frame well inside its probed length still fails (a ts cut after its first packets, read from a seek), and keeps the decoder's text in the message;
-  // text from a frame that is shown fails the read (40 packets overwritten after the first second, read from the file's start)
+  // text from a frame that is shown (40 packets overwritten after the first second) fails no read: a stream from the file's start prints it, one that starts after the damage does not, and both hold the same last frame
   const tsBytes = readFileSync(ts264), packets = Math.floor(tsBytes.length / 188);
   writeFileSync(join(m, "h264-head.ts"), tsBytes.subarray(0, 188 * 12));
   const broken = Buffer.from(tsBytes);
   for (let i = 150; i < 190 && i < packets; i++) broken.fill(0x55, i * 188 + 8, i * 188 + 188); // which packets make the decoder print is a property of this stream: the row checks that it did
   writeFileSync(join(m, "h264-damaged.ts"), broken);
-  const noFrame = h264(join(m, "h264-head.ts"), 1.5), noFrameErr: any = await noFrame.readAt(0).catch((x) => x); noFrame.close();
+  const noFrame = (await h264(join(m, "h264-head.ts"), 1.5)), noFrameErr: any = await noFrame.readAt(0).catch((x) => x); noFrame.close();
   check("a plain clip whose ts gives no frame inside its probed length is decode_failed, with the decoder's text kept in the message", noFrameErr?.code === "decode_failed" && /the source ended after 0 frames at 1\.50s: [\s\S]*\[h264/.test(noFrameErr.message), noFrameErr?.message ?? "no error");
-  const damaged = h264(join(m, "h264-damaged.ts"), 0), damagedErr: any = await (async () => { for (let k = 0; k <= 108; k++) await damaged.readAt(k / 25); })().catch((x) => x); damaged.close();
-  check("a ts whose packets are damaged in a shown frame is decode_failed with the decoder's words", damagedErr?.code === "decode_failed" && /\[h264/.test(damagedErr.message), damagedErr?.message ?? "no error");
+  const damagedText = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", join(m, "h264-damaged.ts"), "-f", "null", "-"], { encoding: "utf8" }).stderr;
+  const damaged = (await h264(join(m, "h264-damaged.ts"), 0)), fromStart: any = await (async () => { for (let k = 0; k <= 108; k++) await damaged.readAt(k / 25); return damaged.readAt(4.32); })().catch((x) => x); damaged.close();
+  const later = (await h264(join(m, "h264-damaged.ts"), 2)), fromLater: any = await later.readAt(2.32).catch((x) => x); later.close();
+  check("a ts damaged in a shown frame holds the same last frame whether its stream starts at 0 or after the damage", /\[h264/.test(damagedText) && Buffer.isBuffer(fromStart) && Buffer.isBuffer(fromLater) && fromStart.equals(fromLater),
+    [damagedText.slice(0, 120), fromStart?.code ?? fromStart?.length, fromLater?.code ?? fromLater?.length]);
   // a loop clip repeats the probed length (2 s here): a source that ends well inside it fails as a plain clip's does, within the plain clip's allowance it is read
   for (const [name, secs] of [["loop-short", 1], ["loop-near", 1.7]] as const) ff("-f", "lavfi", "-i", `testsrc2=size=64x64:rate=30:duration=${secs}`, "-pix_fmt", "yuv420p", join(m, `${name}.mp4`));
-  const looped = (name: string, srcIn: number) => new FrameSource({ path: join(m, `${name}.mp4`), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcIn, srcDuration: 2, loop: true, facts: api.probe(join(m, `${name}.mp4`)) });
-  const short1 = looped("loop-short", 0), shortErr: any = await short1.readAt(0).catch((x) => x); short1.close(); // the check reads at D - 0.5 - 1/r whatever the in-point: one in-point runs the same branch as any
+  const looped = async (name: string, srcIn: number) => new FrameSource({ path: join(m, `${name}.mp4`), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcIn, srcDuration: 2, loop: true, facts: (await api.probe(join(m, `${name}.mp4`))) });
+  const short1 = (await looped("loop-short", 0)), shortErr: any = await short1.readAt(0).catch((x) => x); short1.close(); // the check reads at D - 0.5 - 1/r whatever the in-point: one in-point runs the same branch as any
   check("a loop source that ends well inside its probed length is decode_failed, naming the recorded length, with the relink, remux and loop false hint",
     shortErr?.code === "decode_failed" && /the project records 2\.00s of picture/.test(shortErr.message) && /relink_asset/.test(shortErr.hint) && /remux/.test(shortErr.hint) && /loop false/.test(shortErr.hint), shortErr?.message ?? "no error");
   // a source whose frame interval (1 s) is above the allowance: its last frame starts before the check's point, and the loop must still read across the wrap
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1:duration=4", "-pix_fmt", "yuv420p", join(m, "loop-slow.mp4"));
-  const slowInfo = api.probe(join(m, "loop-slow.mp4")), slow = new FrameSource({ path: join(m, "loop-slow.mp4"), kind: "video", srcW: 64, srcH: 64, srcFps: slowInfo.fps, rate: 30, fit: "fill", box: [64, 64], srcDuration: slowInfo.video_duration ?? slowInfo.duration, loop: true, facts: slowInfo });
+  const slowInfo = (await api.probe(join(m, "loop-slow.mp4"))), slow = new FrameSource({ path: join(m, "loop-slow.mp4"), kind: "video", srcW: 64, srcH: 64, srcFps: slowInfo.fps, rate: 30, fit: "fill", box: [64, 64], srcDuration: slowInfo.video_duration ?? slowInfo.duration, loop: true, facts: slowInfo });
   const slowWrap = await slow.readAt(4.5).catch((x) => x?.code); slow.close();
   check("a 1 fps loop source is read across the wrap, not refused by the length check", Buffer.isBuffer(slowWrap), slowWrap);
-  const near = looped("loop-near", 0), nearFrame = await near.readAt(0).catch((x) => x?.code); near.close();
+  const near = (await looped("loop-near", 0)), nearFrame = await near.readAt(0).catch((x) => x?.code); near.close();
   check("a loop source short by less than the allowance of a plain clip (0.5 s) is read", Buffer.isBuffer(nearFrame), nearFrame);
   // a freeze at or past the video's end holds its last frame, as a playing clip does (the seek of a still lands past the last frame's interval)
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=2", "-pix_fmt", "yuv420p", join(m, "endclip.mp4"));
-  const frz = (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, facts: api.probe(join(m, "endclip.mp4")), ...mode });
-  const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2, facts: api.probe(join(m, "endclip.mp4")) });
+  const frz = async (srcIn: number, srcDuration = 2, mode: { loop?: boolean; reverse?: boolean } = {}) => new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration, freeze: true, srcIn, facts: (await api.probe(join(m, "endclip.mp4"))), ...mode });
+  const lastPlayed = new FrameSource({ path: join(m, "endclip.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 30, fit: "fill", box: [64, 64], srcDuration: 2, facts: (await api.probe(join(m, "endclip.mp4"))) });
   const tailRef = await lastPlayed.readAt(5);
-  const inside = frz(1.0), insideFrame = await inside.readAt(0);
+  const inside = (await frz(1.0)), insideFrame = await inside.readAt(0);
   check("a freeze well inside the source still holds the frame at its in-point", insideFrame.length === 64 * 64 * 4 && !insideFrame.equals(tailRef));
   for (const at of [2, 2.2, 6]) {
-    const fz = frz(at);
+    const fz = (await frz(at));
     const got = await fz.readAt(0).catch((e) => e?.code);
     check(`a freeze with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
     fz.close();
   }
   for (const [name, mode, at] of [["reverse", { reverse: true }, 2], ["reverse", { reverse: true }, 6]] as const) {
-    const fz = frz(at, 2, mode);
+    const fz = (await frz(at, 2, mode));
     const got = await fz.readAt(0).catch((e) => e?.code);
     check(`a frozen ${name} clip with in ${at} (source 2 s) holds the source's last frame`, Buffer.isBuffer(got) && got.equals(tailRef), Buffer.isBuffer(got) ? got.length : got);
     fz.close();
   }
   { // a looping clip's in past the source length wraps into it (freeze_frame in the second pass), and holds the frame that was playing, not the last one
-    const wrapped = frz(2.5, 2, { loop: true }), base = frz(0.5), w = await wrapped.readAt(0).catch((e) => e?.code), b = await base.readAt(0);
+    const wrapped = (await frz(2.5, 2, { loop: true })), base = (await frz(0.5)), w = await wrapped.readAt(0).catch((e) => e?.code), b = await base.readAt(0);
     check("a frozen loop clip with in 2.5 (source 2 s) holds the frame at 0.5 s, not the last frame", Buffer.isBuffer(w) && w.equals(b) && !w.equals(tailRef), Buffer.isBuffer(w) ? w.length : w);
     wrapped.close(); base.close();
     const L = join(tmp, "freeze-loop"), P = join(tmp, "freeze-plain");
@@ -680,11 +684,11 @@ console.log("decode and render failures");
     const fl = await api.frameImage(L, 2.7, { scale: 1 }).catch((e: any) => e), fp = await api.frameImage(P, 0.7, { scale: 1 }).catch((e: any) => e);
     check("freeze_frame in the second pass of a looping clip holds the frame that was playing", fl?.data?.length > 100 && fp?.data?.length > 100 && Buffer.from(fl.data).equals(Buffer.from(fp.data)), fl?.code ?? fp?.code);
   }
-  const cutOf = (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1.6, freeze: true, srcIn: 1, facts: api.probe(join(m, "short.ts")), ...mode });
-  const cut = cutOf({});
+  const cutOf = async (mode: { loop?: boolean; reverse?: boolean }) => new FrameSource({ path: join(m, "short.ts"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1.6, freeze: true, srcIn: 1, facts: (await api.probe(join(m, "short.ts"))), ...mode });
+  const cut = (await cutOf({}));
   check("a freeze in a source that ends well inside its probed length is decode_failed, not a held frame", (await code(cut.readAt(0))) === "decode_failed");
   for (const mode of [{ loop: true }, { reverse: true }]) {
-    const c = cutOf(mode);
+    const c = (await cutOf(mode));
     check(`a frozen ${Object.keys(mode)[0]} clip in a source that ends well inside its probed length is decode_failed`, (await code(c.readAt(0))) === "decode_failed");
     c.close();
   }
@@ -700,59 +704,131 @@ console.log("decode and render failures");
     // matroska and webm give no per-stream length: the picture's end comes from the stream's own tag (when it starts with the container) or its packets, and a file written to a pipe has no length anywhere
     const pic = ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2"], sine = (d: number) => ["-f", "lavfi", "-i", `sine=frequency=440:duration=${d}`];
     const VP9 = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8"], MKV = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"], WEBM = [...VP9, "-c:a", "libopus"];
-    const made = (name: string, args: string[]) => { ff(...args, join(m, name)); return api.probe(join(m, name)); };
-    const piped = (name: string, args: string[], format = "webm") => { writeFileSync(join(m, name), spawnSync("ffmpeg", ["-v", "error", "-y", ...args, "-f", format, "-"], { maxBuffer: 1 << 26 }).stdout); return api.probe(join(m, name)); };
-    const is = (x: number | undefined, want: number) => x !== undefined && Math.abs(x - want) < 0.01;
-    const longer = [made("mk-long.mkv", [...pic, ...sine(2.5), ...MKV]), made("mk-long.webm", [...pic, ...sine(2.5), ...WEBM])];
+    const made = async (name: string, args: string[]) => { ff(...args, join(m, name)); return (await api.probe(join(m, name))); };
+    const piped = async (name: string, args: string[], format = "webm") => { writeFileSync(join(m, name), spawnSync("ffmpeg", ["-v", "error", "-y", ...args, "-f", format, "-"], { maxBuffer: 1 << 26 }).stdout); return (await api.probe(join(m, name))); };
+    const is = (x: number | undefined, want: number) => x !== undefined && Math.abs(x - want) < 0.03; // AAC priming (1024/44100 s) and Opus padding shift the container clock.
+    const longer = [(await made("mk-long.mkv", [...pic, ...sine(2.5), ...MKV])), (await made("mk-long.webm", [...pic, ...sine(2.5), ...WEBM]))];
     check("an mkv and a webm whose sound outlasts the picture record the picture's length and the container's", longer.every((i) => is(i.video_duration, 2) && i.duration > 2.4), longer.map((i) => [i.video_duration, i.duration]));
-    const shorter = [made("mk-short.mkv", [...pic, ...sine(1.5), ...MKV]), made("mk-short.webm", [...pic, ...sine(1.5), ...WEBM])];
+    const shorter = [(await made("mk-short.mkv", [...pic, ...sine(1.5), ...MKV])), (await made("mk-short.webm", [...pic, ...sine(1.5), ...WEBM]))];
     check("an mkv and a webm whose sound is shorter record no picture length: the container's is the picture's", shorter.every((i) => i.video_duration === undefined && is(i.duration, 2)), shorter.map((i) => [i.video_duration, i.duration]));
-    const late = made("mk-late.mkv", ["-itsoffset", "1", ...pic, ...sine(3.5), ...MKV]); // the stream's tag is an end time here, not a length: the picture ends at 3 s
+    const late = (await made("mk-late.mkv", ["-itsoffset", "1", ...pic, ...sine(3.5), ...MKV])); // the stream's tag is an end time here, not a length: the picture ends at 3 s
     check("an mkv whose picture starts 1 s late and ends before its sound records where the picture ends on the container's clock", is(late.video_start, 1) && is(late.video_duration, 3) && late.duration > 3.4, late);
-    const shifted = made("mk-shift.mkv", [...pic, ...sine(2.5), ...MKV, "-output_ts_offset", "1.4"]); // every stream starts at 1.4 s on the file's own clock: an end-time tag would read 3.4
+    const shifted = (await made("mk-shift.mkv", [...pic, ...sine(2.5), ...MKV, "-output_ts_offset", "1.4"])); // every stream starts at 1.4 s on the file's own clock: an end-time tag would read 3.4
     check("an mkv whose streams all start at 1.4 s, with sound longer, records the picture's length, not its end on the file's clock", is(shifted.container_start, 1.4) && is(shifted.video_start, 0) && is(shifted.video_duration, 2) && Math.abs(shifted.duration - 2.5) < 0.05, shifted); // the AAC track adds its priming (23 ms) to the 2.5 s of sound
     // matroska, ogg, nut and asf report the end on the file's clock as the length; the file's length is that less the container's start
-    const offset = ["-output_ts_offset", "1.4"], shiftedWebm = made("mk-shift.webm", [...pic, ...sine(2.5), ...WEBM, ...offset]);
-    const shiftedAudio = [made("ao-shift.mkv", [...sine(2.5), "-c:a", "libopus", ...offset]), made("ao-shift.ogg", [...sine(2.5), "-c:a", "libopus", ...offset]),
-      made("ao-shift.nut", [...sine(2.5), "-c:a", "pcm_s16le", ...offset]), made("ao-shift.wma", [...sine(2.5), "-c:a", "wmav2", ...offset])];
+    const offset = ["-output_ts_offset", "1.4"], shiftedWebm = (await made("mk-shift.webm", [...pic, ...sine(2.5), ...WEBM, ...offset]));
+    const shiftedAudio = [(await made("ao-shift.mkv", [...sine(2.5), "-c:a", "libopus", ...offset])), (await made("ao-shift.ogg", [...sine(2.5), "-c:a", "libopus", ...offset])),
+      (await made("ao-shift.nut", [...sine(2.5), "-c:a", "pcm_s16le", ...offset])), (await made("ao-shift.wma", [...sine(2.5), "-c:a", "wmav2", ...offset]))];
     check("a webm, an audio-only mkv, ogg, nut and asf whose streams all start at 1.4 s record the length of the sound (2.5 s), not its end on the file's clock",
       is(shiftedWebm.duration, 2.5) && is(shiftedWebm.video_duration, 2) && shiftedAudio.every((i) => i.kind === "audio" && Math.abs(i.duration - 2.5) < 0.05), [shiftedWebm.duration, shiftedWebm.video_duration, ...shiftedAudio.map((i) => i.duration)]);
     // a stream that starts before 0 on the file's clock (a cut, an edit list): the end on the clock is that much shorter than the length
-    const early = ["-output_ts_offset", "-0.5", "-avoid_negative_ts", "disabled"], earlySound = made("ao-early.mka", [...sine(2.5), "-c:a", "libopus", ...early]), earlyOgg = made("ao-early.ogg", [...sine(2.5), "-c:a", "libopus", ...early]);
-    const earlyMkv = made("mk-early.mkv", [...pic, "-itsoffset", "-0.5", ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", "-avoid_negative_ts", "disabled"]); // the sound starts at -0.5 s, the picture at 0 s
+    const early = ["-output_ts_offset", "-0.5", "-avoid_negative_ts", "disabled"], earlySound = (await made("ao-early.mka", [...sine(2.5), "-c:a", "libopus", ...early])), earlyOgg = (await made("ao-early.ogg", [...sine(2.5), "-c:a", "libopus", ...early]));
+    const earlyMkv = (await made("mk-early.mkv", [...pic, "-itsoffset", "-0.5", ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", "-avoid_negative_ts", "disabled"])); // the sound starts at -0.5 s, the picture at 0 s
     check("an mka and an ogg whose sound starts at -0.5 s, and an mkv whose sound does, record the 2.5 s of sound, not its end on the file's clock",
       [earlySound, earlyOgg, earlyMkv].every((i) => Math.abs(i.duration - 2.5) < 0.05) && is(earlyMkv.container_start, -0.5) && is(earlyMkv.video_start, 0.5), [earlySound.duration, earlyOgg.duration, earlyMkv]);
     // the matroska demuxer gives no time to a block before 0: a picture that starts at -0.5 s has unstamped first packets
-    const refused = (name: string, args: string[]) => { try { return made(name, args); } catch (e: any) { return { code: e.code, message: e.message, hint: e.hint }; } };
-    const unstamped = [refused("mk-unstamped.mkv", [...pic, ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", ...early]), refused("mk-unstamped-pic.mkv", [...pic, ...MKV.slice(0, 4), ...early])];
+    const refused = async (name: string, args: string[]) => { try { return (await made(name, args)); } catch (e: any) { return { code: e.code, message: e.message, hint: e.hint }; } };
+    const unstamped = [(await refused("mk-unstamped.mkv", [...pic, ...sine(2.5), ...MKV.slice(0, 4), "-c:a", "libopus", ...early])), (await refused("mk-unstamped-pic.mkv", [...pic, ...MKV.slice(0, 4), ...early]))];
     check("an mkv whose first picture packets carry no timestamp, with sound and without, is refused when probed", unstamped.every((i) => i.code === "bad_media"), unstamped);
-    const longPcm = made("avi-long-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"]);
+    const longPcm = (await made("avi-long-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"]));
     check("an avi whose uncompressed sound outlasts its picture records the sound's length and the picture's", is(longPcm.duration, 3) && is(longPcm.video_duration, 2), longPcm);
     // a file cut off mid-write keeps its header's planned length (3 s), which is not recorded: the record is where its packets end, the picture's at 1.52 s and the sound's at 1.49 s, both under the 2.27 s of this sound that 200000 bytes can hold (88200 bytes/s)
     writeFileSync(join(m, "avi-cut-pcm.avi"), readFileSync(join(m, "avi-long-pcm.avi")).subarray(0, 200000));
-    const cutPcm = api.probe(join(m, "avi-cut-pcm.avi"));
+    const cutPcm = (await api.probe(join(m, "avi-cut-pcm.avi")));
     check("an avi cut off mid-write records the sound its packets hold, not the length its header plans", cutPcm.duration > 1.2 && cutPcm.duration < 200000 / 88200, cutPcm);
     // every picture packet counts, the one the cut falls in included (a loop's stream wraps after its frame). A file with no sound records the picture's end as its length, whatever the bytes hold: half of a 2 s picture
     ff(...pic, "-c:v", "mpeg4", join(m, "avi-pic.avi"));
     writeFileSync(join(m, "avi-cut-pic.avi"), readFileSync(join(m, "avi-pic.avi")).subarray(0, statSync(join(m, "avi-pic.avi")).size >> 1));
-    const cutPic = api.probe(join(m, "avi-cut-pic.avi")), cutPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "avi-cut-pic.avi")], { encoding: "utf8" }).stdout;
+    const cutPic = (await api.probe(join(m, "avi-cut-pic.avi"))), cutPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "avi-cut-pic.avi")], { encoding: "utf8" }).stdout;
     check("an avi cut off mid-write records the picture its packets hold, the cut-off last one included, not a share of the length its header plans", is(cutPic.duration, cutPackets / 25), { ...cutPic, cutPackets });
-    const pipedAvi = piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi");
+    // a clip past a cut avi's picture holds its last frame, as validate says: the stream from the clip's start, which decodes the cut-off packet, holds the frame a fresh read there (a preview, a later render segment) shows
+    const cutSrc = async (f: string) => { const facts = (await api.probe(join(m, f))); return new FrameSource({ path: join(m, f), kind: "video", srcW: 64, srcH: 64, rate: 25, fit: "fill", box: [64, 64], srcDuration: facts.video_duration ?? facts.duration, facts }); };
+    const pastCut = await Promise.all(["avi-cut-pic.avi", "avi-cut-pcm.avi"].map(async (f) => {
+      const at = (await api.probe(join(m, f))).duration + 0.4, played = (await cutSrc(f)), fresh = (await cutSrc(f));
+      const streamed: any = await (async () => { for (let k = 0; k <= Math.round(at * 25); k++) await played.readAt(k / 25); return played.readAt(at); })().catch((x) => x), held: any = await fresh.readAt(at).catch((x) => x);
+      played.close(); fresh.close();
+      return (Buffer.isBuffer(streamed) && Buffer.isBuffer(held) && streamed.equals(held)) || [f, streamed?.code ?? "frame", held?.code ?? "frame"];
+    }));
+    check("a clip read past a cut avi's picture, with sound and without, holds the frame a fresh read there shows", pastCut.every((x) => x === true), pastCut);
+    const mad = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length; i++) if (i % 4 !== 3) s += Math.abs(a[i] - b[i]); return s / (a.length * 0.75); };
+    { // one worker streams the whole clip: the render holds the frame the preview shows past the end (64x64 at draft quality; the encode's loss stays well under the step to the frame before)
+      const CH = join(tmp, "cut-hold"), out = join(CH, "renders", "w1.mp4");
+      api.create(CH, { width: 64, height: 64, fps: 25 });
+      await applyLatest(CH, [{ op: "add_clip", track: "main", src: join(m, "avi-cut-pic.avi"), duration: 2 }]);
+      const rendered: any = await api.render(CH, { out, workers: 1, quality: "draft", sheet: false }).catch((e: any) => e);
+      const rgba = (args: string[], input?: Buffer) => spawnSync("ffmpeg", ["-v", "error", "-nostdin", ...args, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input, maxBuffer: 1 << 26 }).stdout as Buffer;
+      const preview = async (t: number) => rgba(["-i", "-"], Buffer.from((await api.frameImage(CH, t, { scale: 1 })).data));
+      const raw = rendered?.code ? Buffer.alloc(0) : rgba(["-i", out]), fb = 64 * 64 * 4, last = raw.subarray(raw.length - fb);
+      const held = await preview(1.96), before = await preview(cutPic.duration - 0.08); // the picture's last slot but one
+      const d = raw.length === 50 * fb ? [mad(last, held), mad(last, before)] : [];
+      check("a 2 s clip of a cut avi rendered by one worker holds the frame the preview shows past the picture's end", !rendered?.code && d.length === 2 && d[0] < d[1] / 1.5, rendered?.code ? [rendered.code, rendered.message] : { frames: raw.length / fb, d });
+    }
+    const pipedAvi = (await piped("pipe-pcm.avi", [...pic, ...sine(3), "-c:v", "mpeg4", "-c:a", "pcm_s16le"], "avi"));
     check("an avi written to a pipe records the lengths its packets hold, not its header's placeholders", is(pipedAvi.duration, 3) && is(pipedAvi.video_duration, 2), pipedAvi);
+    // flv and avi files where a seek near the picture's start does not land (h264 and mpeg4 holding frames back, sorenson with its sound ahead of the picture): slot 0 is the file's first picture, and slot 17 streamed from 0 is slot 17 read fresh (a read that seeks)
+    const nearStart = await Promise.all(([["ns-h264-aac.flv", [...pic, ...sine(2), ...MKV]], ["ns-h264.avi", [...pic, ...MKV.slice(0, 4)]], ["ns-flv1-mp3.flv", [...pic, ...sine(2), "-c:v", "flv", "-c:a", "libmp3lame"]],
+      ["ns-mpeg4.avi", [...pic, "-c:v", "mpeg4", "-bf", "2"]]] as const).map(async ([f, args]) => {
+      ff(...args, join(m, f));
+      const first = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", join(m, f), "-map", "0:V:0", "-frames:v", "1", "-vf", "scale=64:64:flags=bicubic,format=rgba", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { maxBuffer: 1 << 26 }).stdout as Buffer;
+      const fresh = (await cutSrc(f)), streamed = (await cutSrc(f)), late = (await cutSrc(f));
+      const at0: any = await fresh.readAt(0).catch((e) => e), f17: any = await late.readAt(17 / 25).catch((e) => e);
+      let s17: any;
+      for (let k = 0; k <= 17 && !(s17 instanceof Error); k++) s17 = await streamed.readAt(k / 25).catch((e) => e);
+      for (const x of [fresh, streamed, late]) x.close();
+      const why = (x: any) => x?.code ?? x?.message ?? "frame";
+      const d0 = Buffer.isBuffer(at0) && first.length > 0 && first.length === at0.length ? mad(at0, first) : -1, frames = Buffer.isBuffer(s17) && Buffer.isBuffer(f17);
+      return (d0 >= 0 && d0 < 1 && frames && s17.equals(f17)) || [f, Buffer.isBuffer(at0) ? { d0, first: first.length } : why(at0), frames ? mad(s17, f17) : [why(s17), why(f17)]];
+    }));
+    check("an flv or avi whose seek near the picture's start does not land shows its first picture at slot 0, and the same slot 17 streamed from 0 as read fresh", nearStart.every((x) => x === true), nearStart);
+    // an mkv, a webm, an mp4 and a mov (header in front) cut short (a copy or download that stopped) keep the length their header plans (2 s), which is not recorded: the record is where their packets end
+    const cutOff = async (name: string, args: string[], share: number) => {
+      ff(...args, join(m, name));
+      const whole = readFileSync(join(m, name)), cut = join(m, `cut-${name}`);
+      writeFileSync(cut, whole.subarray(0, Math.floor(whole.length * share)));
+      const packets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", cut], { encoding: "utf8" }).stdout;
+      return { ...(await api.probe(cut)), packets };
+    };
+    const H264 = [...MKV.slice(0, 4), "-bf", "0"], FAST = ["-movflags", "+faststart"]; // no B-frames: the packets a cut leaves are the first frames, so their count is the picture's length
+    const cutPics = [(await cutOff("half-pic.mkv", [...pic, ...H264], 0.5)), (await cutOff("half-pic.webm", [...pic, ...VP9], 0.5)), (await cutOff("half-pic.mp4", [...pic, ...H264, ...FAST], 0.5)), (await cutOff("half-pic.mov", [...pic, ...H264, ...FAST], 0.5))];
+    check("an mkv, a webm, an mp4 and a mov cut short record the picture their packets hold, not the length their header plans", cutPics.every((i) => is(i.duration, i.packets / 25)), cutPics.map((i) => [i.duration, i.packets]));
+    // with sound: at this cut the picture is the longer stream, so the record is still where its packets end
+    const cutSound = [(await cutOff("half-snd.mkv", [...pic, ...sine(2), ...H264, "-c:a", "aac"], 0.57)), (await cutOff("half-snd.mp4", [...pic, ...sine(2), ...H264, "-c:a", "aac", ...FAST], 0.57))];
+    check("an mkv and an mp4 with sound cut short record where their packets end", cutSound.every((i) => i.has_audio && is(i.duration, i.packets / 25)), cutSound.map((i) => [i.duration, i.packets]));
+    // a picture in an image codec has no length left either: its packets, not the missing length, tell a video from a still
+    const cutMjpeg = (await cutOff("half-mjpeg.mkv", [...pic, "-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], 0.5));
+    check("an mjpeg mkv cut short records a video of its packets' length, not an image", cutMjpeg.kind === "video" && is(cutMjpeg.duration, cutMjpeg.packets / 25), [cutMjpeg.kind, cutMjpeg.duration, cutMjpeg.packets]);
+    // nor does one written to a pipe or live (a webcam's mjpeg saved as it streams); a one-frame one is still a still
+    const MJ = ["-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], pipedPics = [(await piped("pipe-mjpeg.mkv", [...pic, ...MJ], "matroska")), (await piped("pipe-png.mkv", [...pic, "-c:v", "png"], "matroska")),
+      (await piped("pipe.mjpeg", [...pic, ...MJ], "mjpeg")), (await piped("pipe-mjpeg-aac.mkv", [...pic, ...sine(2), ...MJ, "-c:a", "aac"], "matroska"))], pipedOne = (await piped("pipe-one.mkv", [...pic, "-frames:v", "1", ...MJ], "matroska"));
+    check("an mjpeg and a png mkv, a raw mjpeg stream and an mjpeg mkv with sound written to a pipe record a video of their packets' length, and a one-frame one an image",
+      pipedPics.every((i) => i.kind === "video" && is(i.duration, 2)) && pipedOne.kind === "image", [...pipedPics, pipedOne].map((i) => [i.kind, i.duration]));
+    // a file that records no length, where ffprobe guesses one from the bitrate (4.09 s for this mjpeg mkv, 0.28 s short for this aac): its packets give the length
+    const guessed = [(await piped("pipe-mjpeg-pcm.mkv", [...pic, ...sine(3), ...MJ, "-c:a", "pcm_s16le"], "matroska")), (await piped("pipe-vp9-pcm.mkv", [...pic, ...sine(2), ...VP9, "-c:a", "pcm_s16le"], "matroska"))];
+    check("an mjpeg and a vp9 mkv with uncompressed sound written to a pipe record the lengths their packets hold, not a guess from the bitrate",
+      is(guessed[0].duration, 3) && is(guessed[0].video_duration, 2) && is(guessed[1].duration, 2), guessed.map((i) => [i.duration, i.video_duration]));
+    const rawAac = (await made("raw-20s.aac", [...sine(20), "-c:a", "aac"])), aacPackets = +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "a:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", join(m, "raw-20s.aac")], { encoding: "utf8" }).stdout;
+    check("a raw aac stream records the length its packets hold, not a guess from the bitrate", is(rawAac.duration, (aacPackets * 1024) / rawAac.sample_rate), [rawAac.duration, aacPackets]); // an aac packet holds 1024 samples
+    { // a default clip of an mkv cut short plays to where its packets end, so one worker renders it whole
+      const CM = join(tmp, "cut-mkv"), out = join(CM, "renders", "w1.mp4");
+      api.create(CM, { width: 64, height: 64, fps: 25 });
+      await applyLatest(CM, [{ op: "add_clip", track: "main", src: join(m, "cut-half-snd.mkv") }]);
+      const rendered: any = await api.render(CM, { out, workers: 1, quality: "draft", sheet: false }).catch((e: any) => e);
+      check("a default clip of an mkv cut short renders with one worker", !rendered?.code && is(rendered.duration, cutSound[0].duration), rendered?.code ? [rendered.code, rendered.message] : rendered.duration);
+    }
     // mov/mp4 report their length, not an end: the same offset must leave the length alone (a wrong subtraction would give about 1.1 s)
-    const shiftedMp4 = made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]);
+    const shiftedMp4 = (await made("mp4-shift.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2.5", ...sine(2.5), ...MKV, ...offset]));
     check("an mp4 whose streams all start at 1.4 s records its length (2.5 s), the container's start is not taken from it", Math.abs(shiftedMp4.duration - 2.5) < 0.05 && Math.abs(shiftedMp4.container_start - 1.4) < 0.05, shiftedMp4);
-    const live = [piped("pipe-video.webm", [...pic, ...VP9]), piped("pipe-sound.webm", [...pic, ...sine(2.5), ...WEBM]), piped("pipe-audio.webm", [...sine(1), "-c:a", "libopus"])];
+    const live = [(await piped("pipe-video.webm", [...pic, ...VP9])), (await piped("pipe-sound.webm", [...pic, ...sine(2.5), ...WEBM])), (await piped("pipe-audio.webm", [...sine(1), "-c:a", "libopus"]))];
     check("a webm written to a pipe records the length its packets show: the picture's, the longer sound's with the picture's apart, an audio-only file's",
       is(live[0].duration, 2) && live[0].video_duration === undefined && live[1].duration > 2.4 && is(live[1].video_duration, 2) && live[2].kind === "audio" && is(live[2].duration, 1), live.map((i) => [i.kind, i.duration, i.video_duration]));
   }
   // audio longer than video: srcDuration is the picture's length (the asset's video_duration), not the container's
   ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p", join(m, "longaudio.mp4"));
-  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
+  const la = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: (await api.probe(join(m, "longaudio.mp4"))) });
   await la.readAt(0.5);
   check("a video clip that runs past its picture holds the last frame while the sound goes on", (await code(la.readAt(2))) === "ok");
   // a fresh source (later render segment, preview) read past the picture's end of the same file holds the picture's last frame
-  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
+  const la2 = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: (await api.probe(join(m, "longaudio.mp4"))) });
   const lh = await la2.readAt(2).catch(() => Buffer.alloc(0));
   check("a fresh read past the video's end of a file with longer audio holds the last frame", lh.length === 64 * 64 * 4 && lh.some((x) => x !== 0), lh.length);
   la2.close();
@@ -809,7 +885,7 @@ console.log("decode and render failures");
     }
     const PATH1 = process.env.PATH;
     process.env.PATH = `${bin}:${PATH1}`;
-    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: api.probe(join(m, "longaudio.mp4")) });
+    const rs = new FrameSource({ path: join(m, "longaudio.mp4"), kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], srcDuration: 1, facts: (await api.probe(join(m, "longaudio.mp4"))) });
     const first = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
     await rs.readAt(0.5);
     const again = await rs.readAt(2.6).catch(() => Buffer.alloc(0));
@@ -820,7 +896,7 @@ console.log("decode and render failures");
       lines.filter((l) => l.startsWith("ffprobe ")).length === 0 && lines.filter((l) => l.startsWith("ffmpeg ") && l.includes("-ss 0.666667 ")).length === 1 /* the tail: slot 22 of a 1 s picture at 24 fps, less the 0.25 s pre-roll */ && first.length === 64 * 64 * 4 && again.equals(first), lines);
   }
   b.close();
-  const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H], facts: api.probe(join(m, "v.mp4")) });
+  const sk = new FrameSource({ path: join(m, "v.mp4"), kind: "video", srcW: W, srcH: H, rate: 24, fit: "fill", box: [W, H], facts: (await api.probe(join(m, "v.mp4"))) });
   await sk.readAt(0);
   const PATH0 = process.env.PATH;
   process.env.PATH = join(tmp, "no-such-bin"); // the re-seek cannot start ffmpeg
@@ -1000,13 +1076,13 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   const hd709 = mk("hd709-untagged", "1280x720", "bt709", "none"), sd601 = mk("sd601-untagged", "640x360", "bt601", "none");
   const hd709t = mk("hd709-tagged", "1280x720", "bt709", "709"), hd601t = mk("hd601-tagged", "1280x720", "bt601", "601"), hd601 = mk("hd601-untagged", "1280x720", "bt601", "none");
   const hd2020t = mk("hd2020-tagged", "1280x720", "bt2020", "2020"), hdDci = mk("hd-dci", "1280x720", "bt709", "dci");
-  const tagsRecorded = [hd709, sd601, hd709t, hd601t, hd2020t, hdDci].map((f) => `${api.probe(f).color_space} ${api.probe(f).color_primaries}/${api.probe(f).color_transfer}`);
+  const tagsRecorded = await Promise.all([hd709, sd601, hd709t, hd601t, hd2020t, hdDci].map(async (f) => `${(await api.probe(f)).color_space} ${(await api.probe(f)).color_primaries}/${(await api.probe(f)).color_transfer}`));
   check("the probe records the stream's own matrix, primaries and transfer tags, and one fixed word for each it has not",
     tagsRecorded.join() === "unknown unknown/unknown,unknown unknown/unknown,bt709 bt709/bt709,smpte170m smpte170m/smpte170m,bt2020nc bt2020/bt709,bt709 bt709/smpte428", tagsRecorded);
   // a matrix the FFmpeg scaler cannot convert to RGB is refused when the file is probed: the tag is written into the stream directly, since the encoder cannot make a picture with it
   const refusedTag = join(m, "matrix-bt2020c.mp4");
   ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=64x64:r=24:d=1,format=yuv420p", "-c:v", "libx264", "-bsf:v", "h264_metadata=matrix_coefficients=10", refusedTag);
-  const refusedProbe = (() => { try { api.probe(refusedTag); return "accepted"; } catch (e: any) { return `${e.code}: ${e.message}`; } })();
+  const refusedProbe = (await (async () => { try { (await api.probe(refusedTag)); return "accepted"; } catch (e: any) { return `${e.code}: ${e.message}`; } })());
   check("a file whose matrix tag the pipeline cannot convert (bt2020c) is refused when probed, naming the matrix", /^bad_media: .*bt2020c/.test(refusedProbe), refusedProbe);
   // a render names a source whose colours are not converted in its warnings (the export is tagged BT.709); a BT.709 source, and a BT.2020 one that is converted, add nothing
   const warnsOf = async (name: string, src: string) => {
@@ -1023,7 +1099,7 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   check("so does a still render of it (.png), and the control's and the converted source's stills get none",
     stillDci.filter((w) => w.includes("'dci'")).length === 1 && still709.length === 0 && still2020.length === 0, { still709, stillDci, still2020 });
   const centre = async (f: string, facts: Record<string, unknown> = {}) => {
-    const info = api.probe(f), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
+    const info = (await api.probe(f)), src = new FrameSource({ path: f, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 64], facts: { ...info, ...facts } as any });
     try { const b = await src.readAt(0), o = (32 * 64 + 32) * 4; return [b[o], b[o + 1], b[o + 2]]; } finally { src.close(); }
   };
   const green = (c: number[]) => c[1] >= 250 && c[0] <= 6 && c[2] <= 6;
@@ -1045,7 +1121,7 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
   // an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc: a mid-saturation picture comes back the same as with the matrix tagged (read as BT.709 it was 8 off in one channel)
   const [wideTagged, wideUntagged] = [mk("wide-mid-tagged", "1280x720", "bt2020", "2020", "c03030"), mk("wide-mid-untagged", "1280x720", "bt2020", "2020none", "c03030")];
   const [pxTagged, pxUntagged] = [await centre(wideTagged), await centre(wideUntagged)];
-  check("an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc (within 3 per channel of the same picture tagged bt2020nc)", api.probe(wideUntagged).color_space === "unknown" && pxTagged.every((v, i) => Math.abs(v - pxUntagged[i]) <= 3), { untaggedMatrix: api.probe(wideUntagged).color_space, pxTagged, pxUntagged });
+  check("an untagged matrix with BT.2020 primaries and an SDR curve is read as bt2020nc (within 3 per channel of the same picture tagged bt2020nc)", (await api.probe(wideUntagged)).color_space === "unknown" && pxTagged.every((v, i) => Math.abs(v - pxUntagged[i]) <= 3), { untaggedMatrix: (await api.probe(wideUntagged)).color_space, pxTagged, pxUntagged });
   // which matrix a picture is read with, from the decode chain (pixelKey), so no decode runs: the asset's own name; else BT.709 for HD (a short side from 720 or a long side from 1280); else none
   const read = (w: number, h: number, color_space = "unknown", extra: object = {}) =>
     /setparams=colorspace=([a-z0-9-]+)/.exec(new FrameSource({ path: hd709, kind: "video", srcW: w, srcH: h, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any, ...extra }).pixelKey)?.[1];
@@ -1060,11 +1136,23 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     /setparams=colorspace=smpte170m/.test(new FrameSource({ path: hd709, kind: "video", srcW: 1920, srcH: 1080, rate: 24, fit: "fill", box: [64, 64], facts: MATTE_FACTS }).pixelKey));
   const refusal = (color_space: string) => { try { new FrameSource({ path: hd709, kind: "video", srcW: 64, srcH: 64, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, color_space } as any }); return "built"; } catch (e: any) { return e.code; } };
   check("a name outside the list never reaches the decode chain: the source is refused", ["bt.709", "709", "", "bt709,format=gray", "BT709"].every((n) => refusal(n) === "bad_media"), ["bt.709", "709", "", "bt709,format=gray", "BT709"].map(refusal));
-  // an HD gif (a palette picture): the rule puts its tag on it too, and it must still decode to the colour drawn
+  // RGB and palette pictures bypass YUV matrix tagging even at HD sizes.
   const gifHd = join(m, "hd.gif");
   ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-frames:v", "2", gifHd);
-  const gifInfo = api.probe(gifHd), gifPx = await centre(gifHd).catch((e) => String(e?.message ?? e).slice(0, 200));
+  const gifInfo = (await api.probe(gifHd)), gifPx = await centre(gifHd).catch((e) => String(e?.message ?? e).slice(0, 200));
   check("an HD gif (probe: kind video, color_space recorded as given) decodes through FrameSource to the colour drawn", gifInfo.kind === "video" && Array.isArray(gifPx) && green(gifPx), { kind: gifInfo.kind, color_space: gifInfo.color_space, gifPx });
+  const rgbHd = join(m, "hd-rgb.nut");
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-c:v", "rawvideo", "-pix_fmt", "rgb24", rgbHd);
+  const rgbInfo = await api.probe(rgbHd), rgbPx = await centre(rgbHd), namedRgbPx = await centre(rgbHd, { color_space: "bt709" });
+  check("an HD RGB source records its pixel format and preserves green with or without a matrix name", rgbInfo.pix_fmt === "rgb24" && green(rgbPx) && green(namedRgbPx), { rgbInfo, rgbPx, namedRgbPx });
+  const multi = join(m, "rgb-first-yuv-default.mov");
+  ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=1280x720:r=5:d=0.4,format=rgb24", "-f", "lavfi", "-i", "color=c=red:s=1280x720:r=5:d=0.4", "-map", "0:v", "-map", "1:v", "-c:v:0", "png", "-c:v:1", "libx264", "-pix_fmt:v:1", "yuv420p", "-disposition:v:0", "0", "-disposition:v:1", "default", multi);
+  const multiStreams = probe(multi).streams.filter((s) => s.codec_type === "video"), multiInfo = await api.probe(multi), multiPx = await centre(multi);
+  check("two-stream fixture has RGB first and a different default HD YUV stream", multiStreams.length === 2 && multiStreams[0].pix_fmt === "rgb24" && !multiStreams[0].disposition.default && multiStreams[1].pix_fmt === "yuv420p" && multiStreams[1].disposition.default === 1 && !multiStreams[1].color_space, multiStreams.map((s) => ({ pix_fmt: s.pix_fmt, default: s.disposition.default, color_space: s.color_space })));
+  check("FrameSource decodes the first non-cover-art video stream whose metadata probe records, not the default stream", multiInfo.pix_fmt === "rgb24" && multiInfo.width === multiStreams[0].width && multiInfo.height === multiStreams[0].height && multiInfo.color_space === multiStreams[0].color_space && green(multiPx), { multiInfo, multiPx });
+  const matrixOf = (pix_fmt: string, color_space = "unknown") => /setparams=colorspace=/.test(new FrameSource({ path: rgbHd, kind: "video", srcW: 1280, srcH: 720, rate: 24, fit: "fill", box: [64, 64], facts: { ...VIDEO_FACTS, pix_fmt, color_space } }).pixelKey);
+  check("non-YUV formats never acquire a YUV matrix, named or inferred", ["rgb24", "rgba", "pal8", "gbrp", "gray", "xyz12le"].every((fmt) => !matrixOf(fmt) && !matrixOf(fmt, "bt709")));
+  check("planar and packed YUV formats retain matrix selection", ["yuv420p", "yuva444p10le", "nv12", "p010le", "yuyv422", "ayuv64le"].every((fmt) => matrixOf(fmt)));
 
   // PQ, HLG and BT.2020 with an SDR curve are converted to BT.709 before anything else: six flat patches of known SDR colour are authored into each
   // (SDR RGB -> linear light -> BT.2020 primaries -> the curve, from the published formulas; 8-bit signal in a 10-bit 4:4:4 ProRes file), and each comes back as the colour it was made from.
@@ -1086,13 +1174,13 @@ console.log("colour: a source with no matrix tag is read as BT.709 when it is HD
     return f;
   };
   const bandsOf = async (f: string, facts: Record<string, unknown> = {}) => {
-    const src = new FrameSource({ path: f, kind: "video", srcW: 96, srcH: 32, rate: 24, fit: "fill", box: [96, 32], facts: { ...api.probe(f), ...facts } as any });
+    const src = new FrameSource({ path: f, kind: "video", srcW: 96, srcH: 32, rate: 24, fit: "fill", box: [96, 32], facts: { ...(await api.probe(f)), ...facts } as any });
     try { const b = await src.readAt(0); return PATCHES.map((_, i) => [0, 1, 2].map((c) => b[(16 * 96 + i * 16 + 8) * 4 + c])); } finally { src.close(); }
   };
   const off = (got: number[][]) => Math.max(...got.flatMap((p, i) => p.map((v, c) => Math.abs(v - PATCHES[i][c]))));
   const files = { pq: authored("pq"), hlg: authored("hlg"), sdr: authored("sdr") };
-  check("the probe records PQ, HLG and BT.2020 primaries as the file tags them", `${api.probe(files.pq).color_primaries}/${api.probe(files.pq).color_transfer}` === "bt2020/smpte2084"
-    && `${api.probe(files.hlg).color_primaries}/${api.probe(files.hlg).color_transfer}` === "bt2020/arib-std-b67" && `${api.probe(files.sdr).color_primaries}/${api.probe(files.sdr).color_transfer}` === "bt2020/bt709");
+  check("the probe records PQ, HLG and BT.2020 primaries as the file tags them", `${(await api.probe(files.pq)).color_primaries}/${(await api.probe(files.pq)).color_transfer}` === "bt2020/smpte2084"
+    && `${(await api.probe(files.hlg)).color_primaries}/${(await api.probe(files.hlg)).color_transfer}` === "bt2020/arib-std-b67" && `${(await api.probe(files.sdr)).color_primaries}/${(await api.probe(files.sdr)).color_transfer}` === "bt2020/bt709");
   for (const [kind, what] of [["pq", "PQ"], ["hlg", "HLG"], ["sdr", "BT.2020 with an SDR curve"]] as const) {
     const got = await bandsOf(files[kind]), raw = await bandsOf(files[kind], { color_primaries: "unknown", color_transfer: "unknown" });
     check(`a ${what} source is read as the BT.709 colours it was made from (within 6 per channel); with its tags unknown it is not (the same file, off by tens)`, off(got) <= 6 && off(raw) > 20, { got, off: off(got), unconverted: off(raw) });

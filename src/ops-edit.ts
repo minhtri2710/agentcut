@@ -77,6 +77,8 @@ const alongReversed = (end: "trim_start" | "trim_end", v: Clip, aud: Clip, first
   ? `trim_clip trim_end${first}, on ${named([v, aud])} (${REVERSED_AUDIO})`
   : `trim_clip trim_start on '${v.id}'${first}, then shorten '${aud.id}' by the same amount (trim_clip id='${aud.id}' duration=<its duration minus that amount>); ${REVERSED_AUDIO}`;
 function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
+  for (const [c] of edges) if (c.keyframes?.speed)
+    throw new EditError(`${what}: '${c.id}' has a speed ramp`, "unsupported", "remove keyframes.speed before rolling or sliding this cut; speed-ramped content cannot yet be rebased by these edits");
   for (const [c] of edges) ownDuration(c); // a computed length would be overwritten
   for (const [c, side, sg] of edges) {
     const r = room(tl, c, side), d = clipDur(c), s0 = clipStart(c);

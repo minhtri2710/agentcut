@@ -4,14 +4,14 @@ import * as Skia from "@napi-rs/canvas";
 import { type Canvas, createCanvas, ImageData, LottieAnimation, type SKRSContext2D } from "@napi-rs/canvas";
 import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
-import { applyEffects, applyMask, scratch, shapePath } from "./effects.ts";
+import { applyEffects, applyMask, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
-import { safeZones } from "./safe.ts";
+import { edgesOf, safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
   TEXTY, type Track, type VideoFacts, VISUAL_TYPES,
 } from "./model.ts";
-import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
+import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, textMargin, TextStyle, widestWord } from "./text.ts";
 
 setCanvas(Skia);
 
@@ -49,7 +49,7 @@ export class Layer {
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
-  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle;
+  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle; private wrap?: [number, number]; private floors = new Map<number, number>();
   private pan = false; private panBuf?: Buffer;
   private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
@@ -129,6 +129,32 @@ export class Layer {
     await this.media().readAt(this.srcOffset(tl));
   }
 
+  /** Project px a text box adds around its wrapped text (outline, padding, shadow or glow, pill) as review measures it, at reviewScale. */
+  ring(highlightBg?: string): number {
+    const { W0, H0 } = this.r, k = reviewScale(W0);
+    return (2 * textMargin(new TextStyle(this.c, k, Math.min(W0, H0)), highlightBg) + 2) / k;
+  }
+
+  /** Wrap width in canvas px for `text` (the clip's text, or caption page `key`). The default and the safe width are worked out once in project px so every
+   *  render scale wraps the same words: with no max_width, a horizontally centred box stays inside the title area and, unless anchored to the top or bottom
+   *  or given a y, clear of the side UI zones. Never narrower than the widest word of `text` that layout would keep whole, in canvas px as layout measures it. */
+  private wrapWidth(text: string, key: number, d?: string, highlightBg?: string): number {
+    if (!this.wrap) {
+      const c = this.c, { W0, H0 } = this.r, edges = edgesOf(c.position), def = maxWidthPx(c, W0, 1, d);
+      let safe = def;
+      if (c.max_width === undefined && c.x === undefined && !edges.some((e) => e === "left" || e === "right")) {
+        const z = safeZones(W0, H0), side = c.y === undefined && !edges.some((e) => e === "top" || e === "bottom") ? z.ui.filter(([, , , uw]) => uw < W0).map(([, ux]) => ux) : [];
+        safe = 2 * (Math.min(z.title[0] + z.title[2], ...side) - W0 / 2) - this.ring(highlightBg);
+      }
+      this.wrap = [def, safe];
+    }
+    const [def, safe] = this.wrap, k = this.r.k;
+    if (safe >= def) return def * k;
+    let floor = this.floors.get(key);
+    if (floor === undefined) this.floors.set(key, (floor = widestWord(text, this.textStyle())));
+    return Math.min(def * k, Math.max(safe * k, floor));
+  }
+
   textStyle(): TextStyle {
     if (!this.style) {
       this.style = new TextStyle(this.c, this.r.k, Math.min(this.r.W0, this.r.H0));
@@ -172,7 +198,7 @@ export class Layer {
       case "text": {
         const st = this.textStyle();
         const text = String(c.text ?? "");
-        const mw = maxWidthPx(c, r.W0, r.k);
+        const mw = this.wrapWidth(text, 0);
         const n = [...(st.uppercase ? text.toUpperCase() : text)].length;
         const vc = m.chars === null ? null : Math.floor(m.chars * n + 1e-6);
         const nw = splitWords(text).length;
@@ -220,7 +246,7 @@ export class Layer {
   }
 
   private captionFrame(tl: number, m: A.Mods): Canvas | null {
-    const c = this.c, r = this.r, words = this.words, pages = this.pages;
+    const c = this.c, words = this.words, pages = this.pages;
     if (!words.length) return null;
     const cur = this.spans.findIndex(([s, e]) => s <= tl && tl < e);
     if (cur < 0) return null;
@@ -229,7 +255,8 @@ export class Layer {
     pg.forEach((wi, j) => { if (words[wi].start <= tl) active = j; });
     const style = c.style ?? "karaoke";
     const st = this.textStyle();
-    const mw = maxWidthPx(c, r.W0, r.k, "84%");
+    const text = pg.map((i) => words[i].text).join(" ");
+    const mw = this.wrapWidth(text, cur, "84%", c.highlight_bg);
     const pageStart = words[pg[0]].start;
     if (style === "word") {
       const j = active ?? 0;
@@ -239,7 +266,6 @@ export class Layer {
       return this.cache.getOr(`w${cur}|${j}`, () => renderText(w.text, st, mw, { activeWord: c.highlight_color ? 0 : null, highlightColor: c.highlight_color }));
     }
     if (tl - pageStart < 0.1) m.scale *= 0.92 + 0.08 * A.ease("ease_out", (tl - pageStart) / 0.1);
-    const text = pg.map((i) => words[i].text).join(" ");
     if (style === "reveal") { const vis = (active ?? 0) + 1; return this.cache.getOr(`r${cur}|${vis}`, () => renderText(text, st, mw, { visibleWords: vis })); }
     if (style === "line") return this.cache.getOr(`l${cur}`, () => renderText(text, st, mw));
     return this.cache.getOr(`k${cur}|${active}`, () => renderText(text, st, mw, { activeWord: active, highlightColor: c.highlight_color ?? "#FFD60A", highlightBg: c.highlight_bg }));
@@ -314,6 +340,8 @@ export const frameSize = (st: Timeline["settings"], scale: number) => ({ W: even
 /** A sheet or strip tile: `tileW` wide, never wider than the timeline. */
 const tileScale = (tl: Timeline, tileW: number) => Math.min(1, tileW / tl.settings.width);
 export const tileSize = (tl: Timeline, tileW: number) => frameSize(tl.settings, tileScale(tl, tileW));
+/** The scale review lays text out at for its safe-area check: the smallest scale whose boxes must stay safe. */
+export const reviewScale = (W: number) => Math.min(1, 540 / W);
 
 export class Renderer {
   W0: number; H0: number; W: number; H: number; k: number; fps: number; duration: number;
@@ -366,7 +394,10 @@ export class Renderer {
     const [mx, my = mx] = typeof c.margin === "string" ? c.margin.trim().split(/\s+/) : [c.margin]; // "x y": the left/right and the top/bottom distance
     const mgx = parseLen(mx, mn, pos ? 0.06 * mn : 0) * k, mgy = parseLen(my, mn, pos ? 0.06 * mn : 0) * k;
     let cx = W / 2, cy = H / 2;
-    if (c.type === "captions" && !pos && c.y === undefined) cy = H * (H > W ? 0.7 : 0.84);
+    if (c.type === "captions" && !pos && c.y === undefined) { // a tall page rises so its box ends above the full-width bottom UI zone, or the title area where there is none
+      const z = safeZones(W0, H0), bar = z.ui.find(([, , uy, uw, uh]) => uw >= W0 && uy + uh >= H0);
+      cy = Math.min(H * (H > W ? 0.7 : 0.84), (bar ? bar[2] : z.title[1] + z.title[3]) * k - lh / 2);
+    }
     if (pos) {
       if (pos.includes("top")) cy = mgy + lh / 2;
       if (pos.includes("bottom")) cy = H - mgy - lh / 2;

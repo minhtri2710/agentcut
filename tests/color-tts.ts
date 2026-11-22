@@ -688,7 +688,7 @@ fi
         r.results.map((x: any) => x.op).join() === "add_captions,add_voiceover,add_marker" && (await api.info(Z, "json")).timeline.tracks.some((t: any) => t.clips.some((c: any) => c.type === "captions" && c.words.length)) && r.results[1].duration > 0.5, r.results);
 
       // a caller that is not api.apply (prepare, a test) gets an internal error, never a result without the analysis
-      const pz = api.openProject(Z), direct = (() => { try { applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }]); return null; } catch (x: any) { return x; } })();
+      const pz = api.openProject(Z), direct = (await (async () => { try { (await applyOps(pz, pz.load(), [{ op: "add_voiceover", text: "Chào bạn", voice: "piper" }])); return null; } catch (x: any) { return x; } })());
       check("applyOps without the api.apply runner fails closed on an analysis: an internal error, not an EditError, and no piper start", direct && !(direct instanceof Error && "code" in direct) && /^internal: /.test(direct.message) && started("piper.calls") === p0 + 1, direct && direct.message);
 
       // add_voiceover captions are timed for the voice clip: moving it warns, and the captions end with it
@@ -754,12 +754,12 @@ fi
         const bRev = (await applyLatest(B, cuts)).revision;
         const undoB = api.history(B).undo.length;
         process.env.PATH = `${binB}:${pathNow}`;
-        let b1: any, used = -1, n1 = -1, b2: any, n2 = -1;
+        let b1: any, used = -1, n1 = -1, n2 = -1;
         try {
           rounds = 0;
           b1 = await api.apply(B, [{ op: "snap_to_beats", track: "main", beats: clicks }, { op: "snap_to_beats", track: "main", beats: clicks, every: 2 }, { op: "add_marker", t: 1, label: "m" }], { revision: bRev }); // passed, not read: reading would add loads to the count
           used = rounds; n1 = decodes();
-          b2 = await applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
+          await applyLatest(B, [{ op: "snap_to_beats", track: "main", beats: clicks, every: 2 }]);
           n2 = decodes();
         } finally { process.env.PATH = pathNow; }
         check("snap_to_beats of an audio file twice and an edit: 2 rounds, one decode, one save; a later call decodes nothing",

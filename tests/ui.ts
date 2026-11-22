@@ -101,6 +101,17 @@ check("a frame time at the duration is refused as bad_value", late.status >= 400
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
 const th = await raw(`/api/thumb/${vid.asset}?t=0.5`);
 check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] === 0xd8);
+{
+  const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), keep = srcAbs + ".keep";
+  renameSync(srcAbs, keep);
+  let thumb: Awaited<ReturnType<typeof raw>>;
+  try {
+    ff("-f", "lavfi", "-i", "color=c=0x00ff00:s=64x64:r=10:d=1", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1", "-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-disposition:v:0", "0", "-disposition:v:1", "default", srcAbs);
+    thumb = await raw(`/api/thumb/${vid.asset}?t=0.5`);
+  } finally { rmSync(srcAbs, { force: true }); renameSync(keep, srcAbs); }
+  const rgb = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { input: thumb.body }).stdout;
+  check("a thumbnail reads the first video stream, not the default stream", thumb.status === 200 && rgb.length === 3 && rgb[0] < 30 && rgb[1] > 200 && rgb[2] < 30, [...rgb]);
+}
 { // a thumbnail ffmpeg cannot make is an error response that is not cached, never an empty 200
   const srcAbs = resolve(dir, st.j.timeline.assets[vid.asset].path), away = srcAbs + ".away";
   renameSync(srcAbs, away);
@@ -127,6 +138,24 @@ check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] 
   const second = await raw(`/api/thumb/${vid.asset}?t=0.5`);
   rmSync(srcAbs); renameSync(keep, srcAbs);
   check("a thumbnail follows the file: a replacement of another size with the old mtime -> a new picture", sameMtime && second.status === 200 && !second.body.equals(first.body), [sameMtime, first.status, second.status]);
+}
+{ // a thumbnail is the picture at its time where an input seek there does not land: near the picture's start of an flv (h264, sound) or an avi (mpeg4, B-frames), and in an mpegts with a keyframe each second (its seek can land after the target)
+  const T = join(tmp, "thumbs"), shots: [string, number][] = [["ns.flv", 0], ["ns.avi", 0], ["key.ts", 0.5], ["key.ts", 2.5]];
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2", "-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-c:a", "aac", join(media, "ns.flv"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=2", "-c:v", "mpeg4", "-bf", "2", join(media, "ns.avi"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25:duration=4", "-c:v", "libx264", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", "-f", "mpegts", join(media, "key.ts"));
+  const tm = api.create(T, { preset: "square" });
+  await api.apply(T, ["ns.flv", "ns.avi", "key.ts"].map((f) => ({ op: "add_clip", track: "main", src: join(media, f), duration: 1 })), { revision: tm.revision });
+  const assets = Object.entries(JSON.parse(readFileSync(join(T, "project.json"), "utf8")).assets as Record<string, { path: string; container_start: number }>);
+  const tu = await startUi(T, { port: 0 }), got: unknown[] = [];
+  for (const [f, t] of shots) {
+    const [id, a] = assets.find(([, a]) => basename(a.path) === f)!, r = await raw(`/api/thumb/${id}?t=${t}`, { port: tu.port });
+    // the picture at t on the container's clock, decoded from the file's start
+    const want = spawnSync("ffmpeg", ["-v", "error", "-copyts", "-i", join(media, f), "-map", "0:V:0", "-ss", String(t + a.container_start), "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]).stdout;
+    got.push([f, t, r.status, r.body.length, want.length, r.body.equals(want)]);
+  }
+  tu.server.close();
+  check("a thumbnail near the picture's start of an flv or avi, and one in an mpegts, is the picture at its time", got.every((g: any) => g[2] === 200 && g[5]), got);
 }
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);
@@ -241,6 +270,18 @@ check("rendered preview served from previews/", vid2?.status === 200 && vid2.typ
 const lsDir = await raw("/files/previews/ui");
 check("a directory under previews/ answers 404 and the server keeps serving", lsDir.status === 404 && (await raw("/api/state")).status === 200, lsDir.status);
 check("SSE reported the job", await waitJob(job.id));
+{
+  const fps = (await api.info(dir, "json")).timeline.settings.fps;
+  const play = async (start: number, end: number) => (await jget("/api/render", { method: "POST", body: { play: true, start, end } })).j;
+  const normalized = await play(0.001, 1.001);
+  check("play ranges in the same frame slots reuse the normalized cached range", normalized.status === "done" && normalized.url === done.url, normalized);
+  const next = await play(0, 1 + 1 / fps);
+  let ended = next;
+  for (let i = 0; i < 300 && ended.status === "running"; i++) { await Bun.sleep(50); ended = (await jget(`/api/jobs/${next.id}`)).j; }
+  check("play ranges in different frame slots render exactly their normalized range", ended.status === "done" && ended.url !== done.url && ended.result.frames === fps + 1 && Math.abs(ended.result.range[1] - (1 + 1 / fps)) < 1e-6, ended);
+  const empty = await play(0, 0.001), invalid = await play(-1, 1);
+  check("play refuses empty normalized ranges and invalid starts before making jobs", empty.error?.code === "empty" && invalid.error?.code === "bad_value", { empty, invalid });
+}
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
 console.log("prepare");
@@ -365,7 +406,7 @@ console.log("job retention");
     const [ghost, ghostCancel] = [await get("i"), await cancel("i")];
     check("a play request that fails before it starts leaves no job: GET and cancel on it answer 404 not_found", failed.status >= 400 && failed.j.ok === false && ghost.status === 404 && ghost.j.error?.code === "not_found" && ghostCancel.status === 404 && ghostCancel.j.error?.code === "not_found", { failed, ghost, ghostCancel });
     mkdirSync(join(dirJ, "previews", "ui"), { recursive: true });
-    writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-0.00-3.00.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
+    writeFileSync(join(dirJ, "previews", "ui", `play-r${(await api.info(dirJ)).revision}-f0-${(await api.info(dirJ, "json")).timeline.settings.fps}.mp4`), "x"); // a cached range: a play on it is done at once, with no job end to follow
     const hits: string[] = [];
     for (let i = 0; i < JOBS_KEPT + 2; i++) hits.push((await jget("/api/render", { method: "POST", port: uj.port, body: { play: true, start: 0, end: 3 } })).j.id);
     const [firstHit, lastHit] = [await get(hits[0]), await get(hits.at(-1)!)];

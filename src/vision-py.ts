@@ -2,6 +2,7 @@
 // same script ships with src/, dist/ and the compiled binary. It reads one JSON job from argv[1], prints one JSON result.
 // Frames are decoded by FFmpeg (same decoder as the renderer) and handed over as raw bytes; progress lines go to stderr.
 import { FPS_END } from "./media.ts";
+import { VIDEO_MAP } from "./ffinput.ts";
 import { COLOR_SPACES, CONVERSIONS, conversionChain } from "./model.ts";
 
 export const VISION_PY = String.raw`
@@ -40,21 +41,20 @@ _MATRICES = ${JSON.stringify(COLOR_SPACES)}  # the project's COLOR_SPACES
 
 _CONVERT = ${JSON.stringify(Object.fromEntries(CONVERSIONS.map((k) => [k, conversionChain(k).join(",")])))}  # the project's conversion to BT.709 for each key (conversionChain in model.ts): the filters FrameSource runs
 
-def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, container_start=None, pre=None):  # matrix: the picture is tagged with it before the conversion, as FrameSource reads it; only a name in the list above. convert: a key of _CONVERT, run right after
+def frames(path, start, dur, fps, w, h, fmt="bgr24", matrix=None, convert=None, container_start=None, seek=None):  # matrix: the picture is tagged with it before the conversion, as FrameSource reads it; only a name in the list above. convert: a key of _CONVERT, run right after
     if matrix is not None and matrix not in _MATRICES: raise SystemExit("matrix is not a name this helper reads with: %r" % (matrix,))
     if convert is not None and convert not in _CONVERT: raise SystemExit("convert is not a conversion this helper has: %r" % (convert,))
     if fps and container_start is None: raise SystemExit("a read at a frame rate needs the file's container_start")
-    if fps and start is not None and pre is None: raise SystemExit("a read of a range needs the pre-roll to seek before its start")
     args = ["ffmpeg", "-v", "error", "-nostdin"]
     if fps: args += ["-copyts"]  # the file's own times stay; the filters below put them on the clip clock
-    # The seek aims pre seconds before the in-point (FrameSource's pre-roll), so a format whose seek can land after its target still lands on a keyframe at or before the in-point; fps with start_time=0 drops what comes before it.
-    if start is not None: args += ["-ss", "%.6f" % max(0.0, start - (pre or 0))]
+    # seek: where the job builder put the input seek (FrameSource's pre-roll before the in-point), or None to read from the file's start; fps with start_time=0 drops what comes before the in-point.
+    if seek is not None: args += ["-ss", "%.6f" % seek]
     # Sample i is the picture at start + i/fps on the clip clock (the container start and the in-point are subtracted), as FrameSource slots a clip: before the first picture, the first one holds.
     # A range has round(dur * fps) samples while the picture lasts. The read ends with the last slot that starts before the picture ends; eof_action=pass keeps that slot when the last frame rounds into it.
     clock = "settb=1/1000000,setpts=PTS-%.6f/TB,fps=%.6f:start_time=0:${FPS_END}," % (container_start + (start or 0), float(fps)) if fps else ""
     cut = "trim=end=%.6f," % ((int(dur * fps + 0.5) - 0.25) / fps) if fps and dur is not None else ""
     vf = clock + cut + ("setparams=colorspace=%s," % matrix if matrix else "") + (_CONVERT[convert] + "," if convert else "") + "scale=%d:%d:flags=bicubic" % (w, h)
-    args += ["-protocol_whitelist", "file,pipe", "-i", path, "-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
+    args += ["-protocol_whitelist", "file,pipe", "-i", path] + ${JSON.stringify(VIDEO_MAP)} + ["-an", "-sn", "-vf", vf, "-f", "rawvideo", "-pix_fmt", fmt, "-"]
     errf = tempfile.TemporaryFile()  # a file, not a pipe: ffmpeg never blocks on a full stderr pipe while we read stdout
     p = _spawn(args, stdout=subprocess.PIPE, stderr=errf)
     n = w * h * (3 if fmt in ("bgr24", "rgb24") else 4)
@@ -86,7 +86,7 @@ def subject(j):
     sal = cv2.saliency.StaticSaliencyFineGrained_create()  # spectral residual aliases on flat footage
     c01 = lambda v: min(1.0, max(0.0, v))  # a face box may reach past the frame edge
     out = []
-    for i, f in enumerate(frames(j["path"], j.get("start"), j.get("duration"), j.get("fps"), w, h, container_start=j.get("container_start"), pre=j.get("pre"))):
+    for i, f in enumerate(frames(j["path"], j.get("start"), j.get("duration"), j.get("fps"), w, h, container_start=j.get("container_start"), seek=j.get("seek"))):
         t = (j.get("start") or 0) + i / j["fps"] if j.get("fps") else 0
         _, fs = det.detect(f)  # None, or one row per face: x, y, w, h, ten landmark values, score
         fs = [r for r in (fs if fs is not None else []) if float(r[14]) >= face_min]
@@ -112,7 +112,7 @@ def subject(j):
 def track(j):
     import cv2
     w, h, fps, s = j["w"], j["h"], j["fps"], j["start"]
-    fr = list(frames(j["path"], s, j["duration"], fps, w, h, container_start=j.get("container_start"), pre=j.get("pre")))
+    fr = list(frames(j["path"], s, j["duration"], fps, w, h, container_start=j.get("container_start"), seek=j.get("seek")))
     if not fr: raise SystemExit("no frames decoded in the tracking range")
     i0 = min(len(fr) - 1, max(0, round((j["at"] - s) * fps)))
     bx, by, bw, bh = j["box"]

@@ -34,6 +34,24 @@ const moves = (hint = "") => /\bmove\b/.test(hint) && !/delete/.test(hint);
 const m = join(tmp, "media"); mkdirSync(m);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4", "-f", "lavfi", "-i", "sine=f=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac", join(m, "av.mp4"));
 ff("-f", "lavfi", "-i", "sine=f=300:duration=2", join(m, "reply.wav"));
+{
+  const multi = join(m, "scenes-two-stream.mp4");
+  ff("-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=1,drawbox=color=white:t=fill:enable='gte(t,0.5)'", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10:d=1", "-map", "0:v", "-map", "1:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-disposition:v:0", "0", "-disposition:v:1", "default", multi);
+  const scenes = await AN.scenes(multi);
+  check("scene analysis reads the first video stream, not the default stream", scenes.cuts.length === 1 && Math.abs(scenes.cuts[0] - 0.5) < 0.01, scenes.cuts);
+}
+{
+  const scenes = await AN.scenes(join(m, "av.mp4")), silence = await AN.silence(join(m, "reply.wav"));
+  check("analysis succeeds with no scene cuts or silence", scenes.cuts.length === 0 && scenes.shots.length === 1 && silence.silences.length === 0 && silence.speech.length === 1, { scenes, silence });
+  for (const [name, run] of [
+    ["scenes without video", () => AN.scenes(join(m, "reply.wav"))],
+    ["silence with a rejected filter", () => AN.silence(join(m, "reply.wav"), -35, -1)],
+  ] as const) {
+    let error: any;
+    try { await run(); } catch (e) { error = e; }
+    check(`${name}: failed ffmpeg is decode_failed with its stderr tail`, error?.code === "decode_failed" && /Error|Invalid|stream/.test(error.message) && !!error.hint, error);
+  }
+}
 const P = join(tmp, "proj");
 api.create(P, { preset: "reels" });
 const tl = async () => (await api.info(P, "json")).timeline as any;
@@ -458,7 +476,7 @@ console.log("ui: concurrent play renders share one job, the cache never sees a p
     const T = Math.min(4, (await api.info(P)).duration as number); // a long range keeps the draft alive while it is polled and pruned
     const [a, b] = await Promise.all([post({ play: true, start: 0, end: T }), post({ play: true, start: 0, end: T })]);
     const rev = (await api.info(P)).revision;
-    const final = join(P, "previews", "ui", `play-r${rev}-0.00-${T.toFixed(2)}.mp4`);
+    const final = join(P, "previews", "ui", `play-r${rev}-f0-${Math.round(T * (await tl()).settings.fps)}.mp4`);
     check("second request joins the running job", a.id === b.id, [a.id, b.id]);
     check("final path absent while rendering", a.status !== "running" || !existsSync(final));
     const uiDir = join(P, "previews", "ui"), parts = () => existsSync(uiDir) ? readdirSync(uiDir).filter((f) => f.includes(".part")) : [];
@@ -625,6 +643,16 @@ console.log("review: the black-frame scan remembers each source frame and reads 
   const unreadable = await scan(reuse.d), rewritten = await scan(reuse.d);
   check("a memo file that cannot be read is a miss: the review still runs and writes the memo again, which the next review uses",
     !canBlock || unreadable.stats.memo === 0 && unreadable.stats.frames > 0 && !unreadable.black.length && rewritten.stats.memo > 0 && rewritten.stats.frames === 0, { unreadable: unreadable.stats, rewritten: rewritten.stats });
+  {
+    const { saveDarkMemo } = await import("../src/cache.ts");
+    const memoFile = join(reuse.d, ".agentcut", "cache", names()[0]), memo = JSON.parse(readFileSync(memoFile, "utf8")), key = JSON.parse(memo.key), pixels = JSON.parse(key[3]);
+    check("brightness cache keys include the explicit video stream mapping", JSON.stringify(pixels[9]) === JSON.stringify(["-map", "0:V:0"]), pixels);
+    key[3] = JSON.stringify(pixels.slice(0, 9));
+    saveDarkMemo(reuse.d, JSON.stringify(key), new Map(memo.runs.flatMap(([start, counts]: [number, number[]]) => counts.map((_, i) => [start + i, 0]))));
+    rmSync(memoFile);
+    const fresh = await scan(reuse.d);
+    check("brightness samples cached before explicit stream selection are ignored", fresh.stats.memo === 0 && fresh.stats.frames > 0 && !fresh.black.length, fresh);
+  }
 
   const mixed = await build("mixed", [vid({ in: 0, duration: 2 }), vid({ speed: 2, duration: 2 }), { op: "add_clip", track: "text", text: "Hi", at: 0.5, duration: 1 }]);
   const mx = await scan(mixed.d);
@@ -687,7 +715,7 @@ console.log("templates: the text of every template stays inside the safe area at
   const args: Record<string, object> = {
     slideshow: { media, title: "Our summer trip" },
     promo: { media, hook: "Meet the new Model X", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
-    beat_montage: { media, music: join(m, "beat.wav"), title: "Album" },
+    beat_montage: { media, music: join(m, "beat.wav"), title: "BEST OF THE SUMMER" },
     quote: { text: "Stay hungry, stay foolish", author: "Steve" },
     listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Noise-cancelling wireless earbuds with a charging case", media: png }] },
   };
@@ -703,6 +731,31 @@ console.log("templates: the text of every template stays inside the safe area at
     }
     check(`${name}: no text_unsafe at any preset size`, !Object.keys(bad).length, bad);
   }
+  for (const name of ["promo", "quote"]) {
+    const d = join(tmp, `tpl-${name}-portrait`), text = (await api.info(d, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
+    check(`${name}: portrait text has an explicit button-safe width`, parseFloat(text.max_width) < 75, text.max_width);
+  }
+  const { CAPTION_PRESETS } = await import("../src/presets.ts"), d = join(tmp, "captions-default-9x16");
+  const words = "Welcome back everybody, today we cut a short video together".split(" ").map((text, i) => ({ text, start: i * 0.4, end: (i + 1) * 0.4 }));
+  words.push({ text: "responsibilities", start: 4.8, end: 5.4 }); // its own last page, wider than the safe width: that page may be flagged
+  api.create(d, { preset: "reels" });
+  await applyLatest(d, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 6 },
+    ...[...Object.keys(CAPTION_PRESETS), undefined].map((preset, i) => ({ op: "add_captions", words, track: `subs${i}`, ...(preset ? { preset } : {}) }))]);
+  const all = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe"), unsafe = all.filter((f: any) => f.t < 4.8);
+  const tiktok = (await api.info(d, "json")).timeline.tracks.find((t: any) => t.id === `subs${Object.keys(CAPTION_PRESETS).indexOf("tiktok")}`).clips[0].id;
+  const longFlagged = all.some((f: any) => f.id === tiktok && f.t >= 4.8); // the word is wider than the safe width on this host's font, or the row proves nothing
+  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe, a long word's page leaves the others narrowed", longFlagged && !unsafe.length, { longFlagged, unsafe: unsafe.map((f: any) => f.message) });
+  const c9 = join(tmp, "centred-9x16"), short = "we go to the sea and we swim in it as the sun is up and we sit on the sand to eat";
+  api.create(c9, { preset: "reels" });
+  await applyLatest(c9, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 3 },
+    { op: "add_clip", track: "text", id: "mid", text: "A long centred line of text that fills the frame", position: "center", at: 0, duration: 3 },
+    { op: "add_clip", track: "text2", id: "wide", text: short, font_size: 60, shadow: { blur: 40, y: 0 }, max_width: "95%", at: 0, duration: 3 }]);
+  const flagged = async () => ((await api.review(c9, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
+  const first = await flagged(), px = Number(/(\d+)px/.exec(first.find((f: any) => f.id === "wide")?.hint ?? "")?.[1]);
+  check("a full-line text at position center on 9:16 is narrowed like the default: no text_unsafe", !first.some((f: any) => f.id === "mid"), first);
+  await applyLatest(c9, [{ op: "update_clip", id: "wide", set: { max_width: px } }]);
+  const after = (await flagged()).filter((f: any) => f.id === "wide");
+  check(`a centred box that is only too wide: the max_width its hint gives (${px}) clears the finding`, px > 0 && !after.length, after);
 }
 
 console.log("templates: placement is kept where it was safe, a preset's own placement is kept, margin takes x and y");

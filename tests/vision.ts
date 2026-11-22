@@ -260,17 +260,33 @@ for (const [file, late, mux] of [[lateTs, 0.54, ["-f", "mpegts"]], [lateMkv, 1.4
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", ...mux, file);
 // the same mpegts with a keyframe every second (lateTs has the one): a seek into it can land on a keyframe after its target
 const keyTs = join(m, "key.ts");
-const { preRoll } = await import("../src/media.ts");
+const { inputSeek, preRoll } = await import("../src/media.ts");
 ff("-itsoffset", "0.54", "-f", "lavfi", "-i", "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128", "-f", "lavfi", "-i", "sine=f=440:r=48000",
   "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-g", "25", "-x264-params", "keyint=25:min-keyint=25:scenecut=0", "-c:a", "aac", "-shortest", "-f", "mpegts", keyTs);
+// the same numbered picture where a seek near the picture's start does not land: h264 with sound in an flv, mpeg4 with B-frames in an avi
+const nsFlv = join(m, "ns.flv"), nsAvi = join(m, "ns.avi"), numbered = "color=c=gray:s=160x120:r=25:d=4,format=yuv420p,geq=lum='if(lt(Y,15),255*bitand(floor(N/pow(2,floor(X/10))),1),128)':cb=128:cr=128";
+ff("-f", "lavfi", "-i", numbered, "-f", "lavfi", "-i", "sine=f=440:r=48000", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", nsFlv);
+ff("-f", "lavfi", "-i", numbered, "-c:v", "mpeg4", "-bf", "2", "-q:v", "2", nsAvi);
 { // the job carries the container start the asset records, since the helper cannot learn it from a read that drops the sound
   const LP = join(tmp, "late-project");
   api.create(LP, { preset: "youtube" });
   process.env.FAKE_JOB_LOG = join(tmp, "late-jobs.jsonl");
-  await applyPrep(LP, [{ op: "add_clip", track: "main", src: lateTs, duration: 1, id: "late1" }, { op: "auto_reframe", id: "late1" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
+  await applyPrep(LP, [{ op: "add_clip", track: "main", src: keyTs, in: 3, duration: 1, id: "late1" }, { op: "auto_reframe", id: "late1" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
   const sj = readFileSync(join(tmp, "late-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((j) => j.cmd === "subject");
-  const lp = api.probe(lateTs);
-  check("a subject job carries the container start and the pre-roll the asset records (an mpegts that starts at its sound)", lp.container_start > 1 && sj?.container_start === lp.container_start && sj?.pre > 1 && sj.pre === preRoll(lp as any, lp.fps), { job: sj, probe: lp.container_start });
+  const lp = (await api.probe(keyTs));
+  check("a subject job carries the container start the asset records and seeks the asset's pre-roll before its in-point (an mpegts that starts at its sound, in 3 s)", lp.container_start > 1 && sj?.container_start === lp.container_start && sj?.seek > 0 && sj.seek === 3 - preRoll(lp as any, lp.fps), { job: sj, probe: lp.container_start });
+}
+{ // the job builder seeks by the picture's start the asset records: no seek near it (an flv at in 0), the pre-roll before the in-point past it (the mpegts above, whose picture starts 0.54 s after its sound, at in 2.5)
+  const SP = join(tmp, "seek-project");
+  api.create(SP, { preset: "youtube" });
+  process.env.FAKE_JOB_LOG = join(tmp, "seek-jobs.jsonl");
+  await applyPrep(SP, [{ op: "add_clip", track: "main", src: nsFlv, duration: 1, id: "near" }, { op: "auto_reframe", id: "near" },
+    { op: "add_clip", track: "main", src: keyTs, in: 2.5, duration: 1, id: "past" }, { op: "auto_reframe", id: "past" }]).finally(() => { delete process.env.FAKE_JOB_LOG; });
+  const jobs = readFileSync(join(tmp, "seek-jobs.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((j) => j.cmd === "subject");
+  const near = jobs.find((j) => j.path === nsFlv), past = jobs.find((j) => j.path === keyTs);
+  const kp = (await api.probe(keyTs)), want = inputSeek(2.5, preRoll(kp as any, kp.fps), kp.video_start);
+  check("a subject job seeks by the picture's start the asset records: none at in 0 of an flv, the pre-roll before the in-point at in 2.5 of an mpegts whose picture starts after its sound",
+    near?.seek === null && typeof want === "number" && past?.seek === want, { near: near?.seek, past: past?.seek, want });
 }
 
 // ---------------------------------------------------------------- track_to
@@ -678,7 +694,7 @@ console.log("asset record");
   check("the restored project prepares again", (await api.prepare(W)).ready === true);
   // 3. fail closed where the values are built, whatever validate saw
   const code = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
-  const base = { srcW: 640, srcH: 360, container_start: 0, pre: 0.25 };
+  const base = { srcW: 640, srcH: 360, container_start: 0, pre: 0.25, video_start: 0 };
   for (const bad of ["30,more", Number.NaN, Infinity, 0, -5]) {
     check(`matteJob refuses fps ${String(bad)}`, code(() => V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: bad as any, duration: 2, ...base })) === "bad_media");
     check(`subjectJob refuses fps ${String(bad)}`, code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: bad as any, ...base })) === "bad_media");
@@ -686,8 +702,8 @@ console.log("asset record");
     check(`FrameSource refuses rate ${String(bad)}`, code(() => new FrameSource({ path: join(m, "green.mp4"), kind: "video", ...base, rate: bad as any, fit: "fill", box: [64, 64] })) === "bad_media");
   }
   check("subjectJob refuses a non-numeric start", code(() => V.subjectJob(join(m, "green.mp4"), { start: "1,more" as any, duration: 2, fps: 6, ...base })) === "bad_media");
-  check("subjectJob refuses a video read at a frame rate with no container_start", code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: 6, pre: 0.25, srcW: 640, srcH: 360 })) === "bad_media");
-  check("subjectJob refuses a video range read at a frame rate with no pre-roll", code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: 6, container_start: 0, srcW: 640, srcH: 360 })) === "bad_media");
+  check("subjectJob refuses a video read at a frame rate with no container_start", code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: 6, pre: 0.25, video_start: 0, srcW: 640, srcH: 360 })) === "bad_media");
+  check("subjectJob refuses a video range read at a frame rate with no pre-roll", code(() => V.subjectJob(join(m, "green.mp4"), { start: 0, duration: 2, fps: 6, container_start: 0, video_start: 0, srcW: 640, srcH: 360 })) === "bad_media");
   check("matteJob keeps null fps for an image and a finite fps for video", V.matteJob(join(m, "still.png"), { kind: "image", fps: null, ...base }).job.fps === null && V.matteJob(join(m, "green.mp4"), { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: null, duration: 2, ...base }).job.fps === 30);
 }
 
@@ -759,6 +775,8 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
       const refuses = (f: () => unknown) => { try { f(); return "none"; } catch (e: any) { return e.code; } };
       const hdUntagged = mj(1920, 1080, "unknown"), hdNamed = mj(1920, 1080, "bt470bg"), sdNamed = mj(640, 360, "bt709"), sdUntagged = mj(640, 360, "unknown");
       const wideUntagged = mj(640, 360, "reserved", "video", ["bt2020", "bt709"]);
+      const pixelJob = (pixFmt: string, colorSpace = "unknown") => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, container_start: 0, srcW: 1920, srcH: 1080, pixFmt, colorSpace, colorPrimaries: "unknown", colorTransfer: "unknown", model: MODEL, root: G });
+      check("matte job: RGB and palette formats carry no matrix, even when named; YUV keeps its matrix", ["rgb24", "rgba", "pal8", "gbrp"].every((fmt) => !("matrix" in pixelJob(fmt).job) && !("matrix" in pixelJob(fmt, "bt709").job)) && pixelJob("yuv420p").job.matrix === "bt709");
       check("matte job: the job carries the matrix the picture is read with (untagged HD: bt709; untagged with BT.2020 primaries converted: bt2020nc at any size; a name on the asset: that name, at any size; untagged SD or an image: none)",
         hdUntagged.job.matrix === "bt709" && wideUntagged.job.matrix === "bt2020nc" && hdNamed.job.matrix === "bt470bg" && sdNamed.job.matrix === "bt709" && !("matrix" in sdUntagged.job) && !("matrix" in mj(1920, 1080, "unknown", "image").job),
         { hd: hdUntagged.job.matrix, wide: wideUntagged.job.matrix, named: hdNamed.job.matrix, sd: sdNamed.job.matrix, sdUntagged: sdUntagged.job.matrix });
@@ -886,7 +904,7 @@ def remove(*a, **k): raise SystemExit("stub rembg")
       mkdirSync(bin);
       const fakeFfmpeg = (body: string) => { writeFileSync(join(bin, "ffmpeg"), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, "ffmpeg"), 0o755); };
       const decode = (timeout: number) => {
-        const job = JSON.stringify({ cmd: "track", path: "x", w: 2, h: 2, fps: 1, container_start: 0, pre: 0.25, start: 0, duration: 2, at: 0, box: [0, 0, 0.5, 0.5] });
+        const job = JSON.stringify({ cmd: "track", path: "x", w: 2, h: 2, fps: 1, container_start: 0, seek: null, start: 0, duration: 2, at: 0, box: [0, 0, 0.5, 0.5] });
         const r = spawnSync("python3", ["-I", "-S", "-B", "-c", boot, stubs, script, job], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout,
           env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "home") } });
         return { status: r.status, signal: r.signal, stderr: r.stderr.slice(-300) };
@@ -917,10 +935,10 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
           return r.status === 0 && b.length >= o + 3 ? [b[o], b[o + 1], b[o + 2]] : { status: r.status, err: r.stderr.toString().slice(-300) };
         };
         const { FrameSource } = await import("../src/media.ts");
-        const info = api.probe(hd), src = new FrameSource({ path: hd, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 36], facts: info as any });
+        const info = (await api.probe(hd)), src = new FrameSource({ path: hd, kind: "video", srcW: info.width, srcH: info.height, rate: 24, fit: "fill", box: [64, 36], facts: info as any });
         const fs = await src.readAt(0); src.close();
         const mine = [fs[(18 * 64 + 32) * 4], fs[(18 * 64 + 32) * 4 + 1], fs[(18 * 64 + 32) * 4 + 2]], withRule = read({ matrix: "bt709" }), without = read({});
-        const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 3);
+        const same = (a: unknown) => Array.isArray(a) && a.every((x, i) => Math.abs(x - mine[i]) <= 6); // swscale's rgb24 and rgba paths can differ by 5 levels.
         check("helper: the frame reader, told to read with bt709, gives the same RGB as FrameSource for an untagged HD source (green); told nothing it keeps the BT.601 read (R 20, B 9)",
           same(withRule) && Array.isArray(without) && without[0] >= 12 && without[2] >= 5, { fs: mine, withRule, without });
         const run1 = (job: object) => spawnSync("python3", ["-I", "-S", "-B", driver, stubs, script, JSON.stringify({ path: hd, ...job })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
@@ -931,7 +949,7 @@ sys.stdout.buffer.write(next(g["frames"](a["path"], None, None, None, 64, 36, "r
         const pqFile = join(m, "pq-flat.mp4");
         ff("-f", "lavfi", "-i", "color=c=0x7a9ec8:s=1280x720:r=24:d=1,format=rgba", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv,format=yuv420p", "-c:v", "libx264", pqFile);
         const keyFor = (primaries: string, transfer: string) => V.matteJob(join(m, "rb.mp4"), { kind: "video", fps: 30, duration: 2, container_start: 0, srcW: 1280, srcH: 720, colorSpace: "bt2020nc", colorPrimaries: primaries, colorTransfer: transfer }).job.convert as string;
-        const pqKey = keyFor("bt2020", "smpte2084"), pqInfo = api.probe(pqFile), pqSrc = new FrameSource({ path: pqFile, kind: "video", srcW: pqInfo.width, srcH: pqInfo.height, rate: 24, fit: "fill", box: [64, 36], facts: pqInfo as any });
+        const pqKey = keyFor("bt2020", "smpte2084"), pqInfo = (await api.probe(pqFile)), pqSrc = new FrameSource({ path: pqFile, kind: "video", srcW: pqInfo.width, srcH: pqInfo.height, rate: 24, fit: "fill", box: [64, 36], facts: pqInfo as any });
         const pqFs = await pqSrc.readAt(0); pqSrc.close();
         const pqMine = [pqFs[(18 * 64 + 32) * 4], pqFs[(18 * 64 + 32) * 4 + 1], pqFs[(18 * 64 + 32) * 4 + 2]], pqHelper = read({ matrix: "bt2020nc", convert: pqKey }, pqFile), pqPlain = read({ matrix: "bt2020nc" }, pqFile);
         check("helper: the frame reader, given the PQ conversion key, gives the same RGB as FrameSource for a PQ source; without the key it gives the unconverted picture",
@@ -948,32 +966,33 @@ sys.path.insert(0, sys.argv[1])
 g = {"__name__": "helper"}
 exec(compile(open(sys.argv[2]).read().split("\\njob = json.loads(")[0], "helper", "exec"), g)
 a = json.loads(sys.argv[3])
-print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 3] > 127) for f in g["frames"](a["path"], a["start"], a["dur"], a["fps"], 160, 120, container_start=a["cs"], pre=a["pre"])]))
+print(json.dumps([sum(1 << k for k in range(16) if f.b[(2 * 160 + 10 * k + 5) * 3] > 127) for f in g["frames"](a["path"], a["start"], a["dur"], a["fps"], 160, 120, container_start=a["cs"], seek=a["seek"])]))
 `);
         // the frame number each sample shows, the way the helper's subject job reads: start and duration in source seconds, fps samples a second
-        const slots = (path: string, start: number | null, dur: number | null, fps: number): number[] | string => {
-          const r = spawnSync("python3", ["-I", "-S", "-B", sdriver, stubs, script, JSON.stringify({ path, start, dur, fps, cs: api.probe(path).container_start, pre: preRoll(api.probe(path) as any, api.probe(path).fps) })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
+        const slots = async (path: string, start: number | null, dur: number | null, fps: number): Promise<number[] | string> => {
+          const p = await api.probe(path), seek = start === null ? null : inputSeek(start, preRoll(p as any, p.fps), p.video_start); // the seek the job builder puts in a range job
+          const r = spawnSync("python3", ["-I", "-S", "-B", sdriver, stubs, script, JSON.stringify({ path, start, dur, fps, cs: p.container_start, seek })], { cwd: run, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: join(run, "home") } });
           return r.status === 0 ? JSON.parse(r.stdout) : r.stderr.slice(-300);
         };
         // sample i is at start + i / fps on the clip clock; the picture's frame n is at video_start + n / 25 there, and the held first picture shows before it; a slot is within 3 frames of that
-        const wrong = (got: number[] | string, path: string, start: number, fps: number, count: number) => {
+        const wrong = async (got: number[] | string, path: string, start: number, fps: number, count: number) => {
           if (typeof got === "string") return got;
-          const vs = api.probe(path).video_start;
+          const vs = (await api.probe(path)).video_start;
           const bad = got.map((n, i) => ({ i, n, want: Math.min(99, Math.max(0, Math.round((start + i / fps - vs) * 25))) })).filter((x) => Math.abs(x.n - x.want) > 3);
           return got.length === count && !bad.length ? null : { count: got.length, want: count, n: bad.length, first: bad.slice(0, 3) };
         };
-        for (const [what, file, start] of [["an mpegts that starts at its sound", lateTs, 0], ["an mpegts that starts at its sound, in-point before the picture", lateTs, 0.3], ["an mkv with the picture 1.4 s late, in-point before the picture", lateMkv, 0.5], ["an mkv with the picture 1.4 s late, in-point after it", lateMkv, 2], ["an mpegts with a keyframe every second, in-point after the first keyframe", keyTs, 2], ["an mpegts with one keyframe, in-point after it", lateTs, 2]] as const) {
-          const bad = wrong(slots(file, start, 2, 6), file, start, 6, 12);
+        for (const [what, file, start] of [["an mpegts that starts at its sound", lateTs, 0], ["an mpegts that starts at its sound, in-point before the picture", lateTs, 0.3], ["an mkv with the picture 1.4 s late, in-point before the picture", lateMkv, 0.5], ["an mkv with the picture 1.4 s late, in-point after it", lateMkv, 2], ["an mpegts with a keyframe every second, in-point after the first keyframe", keyTs, 2], ["an mpegts with one keyframe, in-point after it", lateTs, 2], ["an flv with h264 and sound, whose seek near the picture's start does not land", nsFlv, 0], ["an avi with mpeg4 B-frames, whose seek near the picture's start does not land", nsAvi, 0]] as const) {
+          const bad = (await wrong((await slots(file, start, 2, 6)), file, start, 6, 12));
           check(`helper: ${what} (in ${start}): 12 samples at 6 a second for 2 s, each the frame of its own time`, bad === null, bad);
         }
         // a range's slots start at the in-point and there are round(duration * fps) of them: a half-slot start phase (15 a second from 0.5 s) and a length of 2.1 s at 6 a second (12.6 slots)
-        const half = wrong(slots(lateMkv, 0.5, 2, 15), lateMkv, 0.5, 15, 30), frac = wrong(slots(lateMkv, 0.5, 2.1, 6), lateMkv, 0.5, 6, 13);
+        const half = (await wrong((await slots(lateMkv, 0.5, 2, 15)), lateMkv, 0.5, 15, 30)), frac = (await wrong((await slots(lateMkv, 0.5, 2.1, 6)), lateMkv, 0.5, 6, 13));
         check("helper: a range has round(duration * fps) samples: 30 for 2 s at 15 a second from 0.5 s, 13 for 2.1 s at 6 a second", half === null && frac === null, { half, frac });
         // the end of the file: the picture's last frame (99, at 1.4 + 3.96 s) is the last sample of a range that reaches the end; fps's default drops the slot of a frame that ends the file
-        const tail = slots(lateMkv, 3, 2.5, 6);
+        const tail = (await slots(lateMkv, 3, 2.5, 6));
         check("helper: a range that reaches the end of the file keeps the slot of the last frame (3 s, 2.5 s long at 6 a second: 15 samples, the last is frame 99)", Array.isArray(tail) && tail.length === 15 && tail.at(-1) === 99, tail);
         // the whole file, as the matte reads it (no start, no length): the gap before the picture is filled from 0, so the matte's frame i is at i / fps
-        const whole = slots(lateTs, null, null, 6), vsTs = api.probe(lateTs).video_start;
+        const whole = (await slots(lateTs, null, null, 6)), vsTs = (await api.probe(lateTs)).video_start;
         check("helper: a read of the whole file (the matte) starts at the clip clock's 0: the first samples are the first picture, held to its start, and the count covers the picture's end",
           Array.isArray(whole) && whole[0] === 0 && whole[Math.floor(vsTs * 6) - 1] === 0 && Math.abs(whole.length - (vsTs + 4) * 6) <= 1, { whole, vs: vsTs });
       }
@@ -1098,7 +1117,7 @@ console.log("the face model: descriptor, job, gate, download");
     const job = jobs()[before];
     check("the helper job carries face_model = the cached model's path and face_min = FACE_MIN", sub.cached === false && jobs().length === before + 1 && job?.cmd === "subject" && job.face_model === faceFile(mainCache) && typeof job.face_min === "number" && job.face_min === V.FACE_MIN, { job, want: faceFile(mainCache) });
     const A = fresh("key-a"), B = fresh("key-b"), R = join(tmp, "key-root");
-    const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, container_start: 0, pre: 0.25, srcW: 640, srcH: 360, root: R }));
+    const jobIn = (cache: string) => inCache(cache, () => V.subjectJob(rb, { fps: 6, duration: 4, container_start: 0, pre: 0.25, video_start: 0, srcW: 640, srcH: 360, root: R }));
     const ja = await jobIn(A), jb = await jobIn(B);
     check("the cache key is the same under two cache roots, while face_model follows the root", basename(ja.file) === basename(jb.file) && ja.job.face_model === faceFile(A) && jb.job.face_model === faceFile(B), { a: ja.file, b: jb.file, fa: ja.job.face_model, fb: jb.job.face_model });
     { // the key is the hash of the job's own parameters (the path and the model file excluded), face_min among them
@@ -1295,8 +1314,8 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
   let n = 0;
   const root = () => { const d = join(tmp, `py-root-${n++}`); mkdirSync(d); return d; }; // a fresh project dir: nothing is cached
   const jobs = {
-    subject: () => V.subjectJob(rb, { fps: 10, duration: 1, container_start: 0, pre: 0.25, srcW: 640, srcH: 360, root: root() }),
-    track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], container_start: 0, pre: 0.25, srcW: 640, srcH: 360, root: root() }),
+    subject: () => V.subjectJob(rb, { fps: 10, duration: 1, container_start: 0, pre: 0.25, video_start: 0, srcW: 640, srcH: 360, root: root() }),
+    track: () => V.trackJob(rb, { start: 0, duration: 1, at: 0, box: [0.4, 0.4, 0.2, 0.2], container_start: 0, pre: 0.25, video_start: 0, srcW: 640, srcH: 360, root: root() }),
     matte: () => V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, root: root() }),
   };
   /** compute one job under the failing uv; the run it logged, and the error */

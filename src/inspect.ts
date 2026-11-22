@@ -5,9 +5,9 @@ import * as AN from "./analyze.ts";
 import { loadDarkMemo, saveDarkMemo } from "./cache.ts";
 import type { FrameSource } from "./media.ts";
 import {
-  type Clip, clipDur, clipEnd, clipStart, type Dict, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
+  type Clip, clipDur, clipEnd, clipStart, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
 } from "./model.ts";
-import { type Layer, refuseJpegSize, Renderer, renderTiles, tileSize } from "./render.ts";
+import { type Layer, refuseJpegSize, Renderer, renderTiles, reviewScale, tileSize } from "./render.ts";
 import { safeZones } from "./safe.ts";
 
 const r3 = (x: number) => +x.toFixed(3);
@@ -120,7 +120,7 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
 
   // text: reading time + safe area (boxes measured by the renderer's own layout at a small scale)
   const cps = o.cps ?? 15;
-  const r = new Renderer(structuredClone(tl), root, Math.min(1, 540 / W));
+  const r = new Renderer(structuredClone(tl), root, reviewScale(W));
   try {
     const z = safeZones(W, H), [sx, sy, sw, sh] = z.title, tol = Math.max(0.5, 1 / r.k); // the preview is drawn at scale k with its height rounded to an even size: a box edge is known to one preview pixel
     const texts = r.layers.filter((L) => TEXTY.has(L.type));
@@ -135,11 +135,17 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
         const b = await r.layoutBox(L, t);
         if (!b) continue;
         const [x, y, w, h] = b.map((v) => v / r.k);
-        const where: string[] = [];
-        if (x < sx - tol || y < sy - tol || x + w > sx + sw + tol || y + h > sy + sh + tol) where.push("outside the title-safe area (5% inset)");
-        for (const [name, ux, uy, uw, uh] of z.ui) if (x < ux + uw - tol && x + w > ux + tol && y < uy + uh - tol && y + h > uy + tol) where.push(`under the ${name}`);
+        const where: string[] = [], yIn = y >= sy - tol && y + h <= sy + sh + tol;
+        if (x < sx - tol || !yIn || x + w > sx + sw + tol) where.push("outside the title-safe area (5% inset)");
+        const hits = z.ui.filter(([, ux, uy, uw, uh]) => x < ux + uw - tol && x + w > ux + tol && y < uy + uh - tol && y + h > uy + tol);
+        for (const [name] of hits) where.push(`under the ${name}`);
         if (where.length) {
-          out.push({ type: "text_unsafe", t: r3(L.start + t), id: c.id, message: `${c.id} box [${[x, y, w, h].map(Math.round).join(", ")}] is ${where.join(" and ")}`, hint: "move it toward the centre (position/margin or y: \"40%\"-\"75%\"), shrink font_size/max_width; check with preview_frame guides=true" });
+          // a centred box flagged only across (title-safe sides, side zones) is too wide: moving it does not help
+          const wide = Math.abs(x + w / 2 - W / 2) <= tol && yIn && hits.every(([, , , uw]) => uw < W);
+          const fit = Math.floor(2 * (Math.min(sx + sw, ...hits.map(([, ux]) => ux)) - W / 2) - L.ring(c.highlight_bg)); // the box adds its ring to the wrap width
+          const hint = wide ? `the box is centred and too wide: set max_width to at most ${fit}px (or shrink font_size); check with preview_frame guides=true`
+            : "move it toward the centre (position/margin or y: \"40%\"-\"75%\"), shrink font_size/max_width; check with preview_frame guides=true";
+          out.push({ type: "text_unsafe", t: r3(L.start + t), id: c.id, message: `${c.id} box [${[x, y, w, h].map(Math.round).join(", ")}] is ${where.join(" and ")}`, hint });
           break;
         }
       }

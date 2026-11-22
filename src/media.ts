@@ -3,31 +3,54 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gradeChain, type Grade } from "./color.ts";
-import { inp } from "./ffinput.ts";
+import { inp, VIDEO_MAP } from "./ffinput.ts";
+import { run } from "./proc.ts";
 import { COLOR_SPACES, conversionChain, conversionFor, EditError, FILTER_SPECS, filterParam, matrixFor, missingFacts, NO_LENGTH_HINT, NO_MATRIX, seeksBefore, type VideoFacts } from "./model.ts";
 
 export const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".avif"]);
 export const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
 
+export const MIN_FFMPEG_VERSION = "5.1";
+const FFMPEG_INSTALL = "install FFmpeg >= " + MIN_FFMPEG_VERSION + ": macOS `brew install ffmpeg` · Windows `winget install Gyan.FFmpeg` · Linux: upgrade your distribution package or get a newer build from https://ffmpeg.org/download.html; put ffmpeg and ffprobe on PATH";
+
+/** Release builds only: unknown and git snapshot versions are allowed, not guessed from their build numbers. */
+export function parseFfmpegVersion(output: string): [number, number, number] | null {
+  const m = /^ffmpeg version n?(\d+)\.(\d+)(?:\.(\d+))?(?=[\s+-]|$)/i.exec(output.trim());
+  return m ? [+m[1], +m[2], +(m[3] ?? 0)] : null;
+}
+
+export function checkFfmpegVersion(output: string): void {
+  const v = parseFfmpegVersion(output), [major, minor] = MIN_FFMPEG_VERSION.split(".").map(Number);
+  if (v && (v[0] < major || (v[0] === major && v[1] < minor)))
+    throw new EditError(`FFmpeg ${output.trim().split(/\s+/)[2]} found; AgentCut requires FFmpeg >= ${MIN_FFMPEG_VERSION}`, "missing_dependency", FFMPEG_INSTALL);
+}
+
 let ffChecked = false;
-export function needFfmpeg() {
+let ffVersion: string | undefined;
+function checkFfmpeg() {
   if (ffChecked) return;
-  for (const b of ["ffmpeg", "ffprobe"]) {
-    const r = spawnSync(b, ["-version"], { stdio: "ignore" });
-    if (r.error) throw new EditError(`'${b}' not found on PATH`, "missing_dependency",
-      "install FFmpeg: macOS `brew install ffmpeg` · Windows `winget install Gyan.FFmpeg` · Linux `apt install ffmpeg`");
-  }
+  const r = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
+  if (r.error) throw new EditError("'ffmpeg' not found on PATH", "missing_dependency", FFMPEG_INSTALL);
+  if (r.status !== 0) throw new EditError("'ffmpeg -version' failed", "missing_dependency", FFMPEG_INSTALL);
+  checkFfmpegVersion(r.stdout);
+  ffVersion = r.stdout.split("\n")[0].trim();
   ffChecked = true;
 }
 
-let ffVersion: string | undefined;
+let probeChecked = false;
+export async function needFfmpeg() {
+  checkFfmpeg();
+  if (probeChecked) return;
+  const r = await run("ffprobe", ["-version"]);
+  if (r.status === null) throw new EditError("'ffprobe' not found on PATH", "missing_dependency", FFMPEG_INSTALL);
+  if (r.status !== 0) throw new EditError("'ffprobe -version' failed", "missing_dependency", FFMPEG_INSTALL);
+  probeChecked = true;
+}
+
 /** The first line of `ffmpeg -version` (version and build), read once per process: a different FFmpeg may decode other pixels. */
 export function ffmpegVersion(): string {
-  if (ffVersion === undefined) {
-    needFfmpeg();
-    ffVersion = (spawnSync("ffmpeg", ["-version"], { encoding: "utf8" }).stdout ?? "").split("\n")[0].trim();
-  }
-  return ffVersion;
+  checkFfmpeg();
+  return ffVersion!;
 }
 
 /** FFmpeg's native vp8/vp9 decoders drop the alpha plane of a webm; the libvpx decoders keep it. */
@@ -37,7 +60,7 @@ const codecLists: Partial<Record<"encoders" | "decoders", string>> = {};
 /** Whether this FFmpeg build lists `name` among its encoders or decoders. The list is read once per process, and only a successful read is kept. */
 export function hasCodec(kind: "encoders" | "decoders", name: string): boolean {
   if (codecLists[kind] === undefined) {
-    needFfmpeg();
+    checkFfmpeg();
     const r = spawnSync("ffmpeg", ["-hide_banner", `-${kind}`], { encoding: "utf8" });
     if (r.status !== 0) return false;
     codecLists[kind] = r.stdout;
@@ -69,19 +92,24 @@ const endsOnClock = (format: string) => format.split(",").some((f) => END_ON_CLO
 const FIRST_PACKET_START_FORMATS = new Set(["avi"]);
 const startsOnFirstPacket = (format: string) => format.split(",").some((f) => FIRST_PACKET_START_FORMATS.has(f));
 /** Where the first packet of the first video stream is (s, the file's own clock), or null when it shows no time. One packet is read, nothing is scanned. */
-function firstVideoPacket(path: string): number | null {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8" });
+async function firstVideoPacket(path: string): Promise<number | null> {
+  const r = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_entries", "packet=pts_time,dts_time", "-of", "csv=p=0", ...inp(path)]);
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const [pts, dts] = r.stdout.split("\n")[0].split(",");
   const t = pts !== "" && Number.isFinite(Number(pts)) ? Number(pts) : Number(dts);
   return dts !== undefined && Number.isFinite(t) ? t : null;
 }
+/** The line ffprobe logs (at warning level) when it guesses a file's length from its bitrate: the file records none (an mkv written to a pipe with uncompressed sound, a raw aac stream).
+ *  shortcut: ffprobe gives no field for the estimate; if FFmpeg rewords this line the guess passes through again (the codecs row catches it). */
+const BITRATE_GUESS = "Estimating duration from bitrate";
+/** The level tag `-v +level+warning` puts on each message ffprobe logs (after the `[ctx @ addr] ` part, when there is one); a line with none continues the message before it. */
+const LOG_TAG = /\[(warning|error|fatal|panic)\] /;
 const probeCache = new Map<string, { mtime: number; size: number; info: any }>();
 /** vp8/vp9 in webm carry alpha as a side plane that pix_fmt does not show; the muxer flags it with an alpha_mode tag (key case varies). */
 const hasAlphaTag = (tags: Record<string, unknown> | undefined) => Object.entries(tags ?? {}).some(([k, x]) => k.toLowerCase() === "alpha_mode" && String(x) === "1");
 /** The longest stretch between two keyframes of the first video stream, counting the one after the last keyframe (packets only, nothing is decoded). `whole` stands for a stream with no stretch to measure. */
-function keyGap(path: string, whole: number): number {
-  const r = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+async function keyGap(path: string, whole: number): Promise<number> {
+  const r = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", ...inp(path)], { maxBuffer: 256 << 20 });
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const keys: number[] = []; let end = -Infinity;
   for (const line of r.stdout.split("\n")) {
@@ -104,8 +132,8 @@ function tagLength(tags: Record<string, unknown> | undefined): number {
   return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : 0;
 }
 /** Where the packets of each stream end (largest pts + duration, s, on the file's own clock), by stream index. The whole file is read once, no packet decoded. */
-function packetEnds(path: string): Map<number, number> {
-  const r = spawnSync("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,dts_time,duration_time", "-of", "csv=p=0", ...inp(path)], { encoding: "utf8", maxBuffer: 256 << 20 });
+async function packetEnds(path: string): Promise<Map<number, number>> {
+  const r = await run("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,dts_time,duration_time", "-of", "csv=p=0", ...inp(path)], { maxBuffer: 256 << 20 });
   if (r.status !== 0) throw new EditError(`ffprobe cannot read the packets of ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
   const ends = new Map<number, number>();
   for (const line of r.stdout.split("\n")) {
@@ -114,13 +142,39 @@ function packetEnds(path: string): Map<number, number> {
   }
   return ends;
 }
-/** Whether a RIFF file is shorter than its first chunk says (avidec's own test for a file cut off mid-write). Reads 8 bytes.
- *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met. */
-function cutShort(path: string, size: number): boolean {
-  const fd = openSync(path, "r"), b = Buffer.alloc(8);
-  try { return readSync(fd, b, 0, 8, 0) === 8 && b.readUInt32LE(4) + 8 > size; } finally { closeSync(fd); }
+/** Whether a file is shorter than its container says (cut short: a copy or download that stopped, or an avi cut off mid-write), by `format_name`: avi by its first RIFF chunk (avidec's own test, 8 bytes), matroska by its Segment's size
+ *  (two 12-byte reads; a file written live or to a pipe gives no size), mov/mp4 by its top-level boxes (16 bytes per box). Any other format is not checked.
+ *  shortcut: only the first RIFF chunk is checked, as avidec does; walk the AVIX chunks when a cut OpenDML file is met.
+ *  shortcut: an mp4 box of size 0 runs to the end of the file, so it is not checked; read its contents when a writer of such a box is met.
+ *  shortcut: trailing bytes after the last mp4 box that are not a box read as cut, which costs a packet scan and records where the packets end; tell them apart when such a writer is met. */
+function cutShort(path: string, size: number, format: string): boolean {
+  const kind = ["avi", "matroska", "mov"].find((k) => format.split(",").includes(k));
+  if (!kind) return false;
+  const fd = openSync(path, "r"), b = Buffer.alloc(16), at = (pos: number, n: number) => readSync(fd, b, 0, n, pos);
+  // an EBML size: the first set bit marks its length in bytes, and all value bits set means "unknown"
+  const vint = (o: number): [number, number] => { const len = Math.clz32(b[o]) - 23; let v = b[o] & (0xff >> len), ones = v === 0xff >> len; for (let i = 1; i < len; i++) { v = v * 256 + b[o + i]; ones &&= b[o + i] === 0xff; } return [len, ones ? NaN : v]; };
+  try {
+    if (kind === "avi") return at(0, 8) === 8 && b.readUInt32LE(4) + 8 > size;
+    if (kind === "matroska") {
+      if (at(0, 12) !== 12 || b.readUInt32BE(0) !== 0x1a45dfa3) return false;
+      const [hl, hv] = vint(4), seg = 4 + hl + hv;
+      if (!Number.isSafeInteger(seg) || at(seg, 12) !== 12 || b.readUInt32BE(0) !== 0x18538067) return false;
+      const [sl, sv] = vint(4), end = seg + 4 + sl + sv;
+      return Number.isSafeInteger(end) && end > size; // NaN (an unknown size) is not cut
+    }
+    for (let o = 0; o < size;) {
+      const got = at(o, 16);
+      if (got < 8) return true;
+      let n = b.readUInt32BE(0);
+      if (n === 0) return false;
+      if (n === 1) n = got === 16 ? Number(b.readBigUInt64BE(8)) : Infinity;
+      if (n < 8 || o + n > size) return true;
+      o += n;
+    }
+    return false;
+  } finally { closeSync(fd); }
 }
-export function probe(path: string): any {
+export async function probe(path: string): Promise<any> {
   if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   const st = statSync(path), mtime = st.mtimeMs, size = st.size;
   const hit = probeCache.get(path);
@@ -133,34 +187,39 @@ export function probe(path: string): any {
     if (!j || !Array.isArray(j.layers) || !(j.fr > 0) || !(j.w > 0) || !(j.h > 0) || !Number.isFinite(j.op - j.ip)) throw new EditError(`${path} is not a Lottie animation`, "bad_media");
     info = { path, kind: "lottie", width: Math.round(j.w), height: Math.round(j.h), fps: +j.fr, duration: Math.max(0, +((j.op - j.ip) / j.fr).toFixed(3)), has_audio: false, alpha: true };
   } else {
-    needFfmpeg();
-    const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { encoding: "utf8", maxBuffer: 32 << 20 });
-    if (r.status !== 0) throw new EditError(`ffprobe cannot read ${path}: ${(r.stderr || "").trim().slice(0, 300)}`, "bad_media");
+    await needFfmpeg();
+    const r = await run("ffprobe", ["-v", "+level+warning", "-show_streams", "-show_format", "-of", "json", ...inp(path)], { maxBuffer: 32 << 20 });
+    if (r.status !== 0) {
+      // what -v error prints: each error line, untagged, with the lines that continue it
+      const errors: string[] = []; let inError = false;
+      for (const l of (r.stderr || "").split("\n")) { const t = LOG_TAG.exec(l)?.[1]; if (t) inError = t !== "warning"; if (inError) errors.push(t ? l.replace(LOG_TAG, "") : l); }
+      throw new EditError(`ffprobe cannot read ${path}: ${(errors.length ? errors.join("\n") : r.stderr || "").trim().slice(0, 300)}`, "bad_media"); // warnings lead it only when no error line exists
+    }
     const j = JSON.parse(r.stdout);
     const streams: any[] = j.streams || [];
     const v = streams.find((s) => s.codec_type === "video" && !(s.disposition?.attached_pic));
     const a = streams.find((s) => s.codec_type === "audio");
-    // An avi cut off mid-write, or never finished (written to a pipe), has only the lengths its header planned, which ffprobe scales by the bytes present.
-    // They are dropped: the file is read as one with no length in it, from its packets.
-    const cut = j.format?.format_name === "avi" && cutShort(path, size);
-    if (cut) for (const x of [j.format, ...streams]) delete x.duration;
+    // An mkv/webm or mp4/mov cut short (a copy or download that stopped), or an avi cut off mid-write or never finished (written to a pipe), has only the lengths its header planned, which ffprobe gives as they are (an avi's scaled by the bytes present).
+    // A length ffprobe guessed from the bitrate, which it also gives every stream, is none either. They are dropped: the file is read as one with no length in it, from its packets.
+    const cut = cutShort(path, size, String(j.format?.format_name)), noLength = cut || (r.stderr || "").includes(BITRATE_GUESS);
+    if (noLength) for (const x of [j.format, ...streams]) delete x.duration;
     // shortcut: when a file records no length and its last packet has no duration, ffprobe ends it at the last pts, one frame short (seen: a video-only flv1 written to a pipe); upgrade when such a writer is met
     let dur = Number(j.format?.duration ?? v?.duration ?? a?.duration ?? 0) || 0;
     const cStart = Number(j.format?.start_time) || 0;
     let vAbs = Number(v?.start_time) || 0; // where the picture starts on the file's clock
     if (v && startsOnFirstPacket(String(j.format?.format_name))) {
-      vAbs = firstVideoPacket(path) ?? vAbs;
+      vAbs = (await firstVideoPacket(path)) ?? vAbs;
       if (Number(v.duration) > 0) dur = Math.max(dur, vAbs + Number(v.duration) - cStart); // the format's length counts from the picture's first frame, not from the container's start
     }
     let ends: Map<number, number> | undefined;
-    const end = (s: any) => { const e = (ends ??= packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
+    const end = async (s: any) => { const e = (ends ??= await packetEnds(path)).get(s.index) ?? 0; return e > 0 ? e - cStart : 0; }; // one read of the file for every stream; 0: the stream has no packets
     // an avi sound with a fixed sample size (PCM, ADPCM) shows no `duration`: the header gives its length as nb_frames in its time_base, and the format's length is the picture's.
     if (a && !cut && !(Number(a.duration) > 0) && j.format?.format_name === "avi") { const [n, d] = String(a.time_base).split("/").map(Number), head = (Number(a.nb_frames) * n) / d; dur = Math.max(dur, Number.isFinite(head) ? head : 0); }
-    if (v && String(j.format?.format_name).split(",").includes("matroska") && firstVideoPacket(path) === null)
+    if (v && String(j.format?.format_name).split(",").includes("matroska") && (await firstVideoPacket(path)) === null)
       throw new EditError(`${path} starts with picture packets that carry no timestamp, so AgentCut cannot place the picture`, "bad_media", "re-encode the file (for example ffmpeg -i in.mkv -c:v libx264 out.mp4)");
     if (cStart !== 0 && Number(j.format?.duration) > 0 && endsOnClock(String(j.format?.format_name))) dur = Math.max(0, dur - cStart);
     // a file with no length in it (a webm written to a pipe): the packets give it
-    const measured = () => Math.max(v ? end(v) : 0, a ? end(a) : 0);
+    const measured = async () => Math.max(v ? (await end(v)) : 0, a ? (await end(a)) : 0);
     info = { path, has_audio: !!a };
     if (v) {
       let w = +v.width, h = +v.height, rot = 0;
@@ -170,32 +229,33 @@ export function probe(path: string): any {
       const [num, den] = String(v.avg_frame_rate || v.r_frame_rate || "0/1").split("/").map(Number);
       const fps = den ? num / den : 0;
       const nb = +(v.nb_frames || 0);
-      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && dur < 0.1) || (ext === ".gif" && nb <= 1);
+      // a file with no recorded length (cut short, written to a pipe or live) has nothing to tell one frame from many: its packets tell
+      const still = IMAGE_EXT.has(ext) || (["png", "mjpeg", "webp", "bmp", "tiff"].includes(v.codec_name) && nb <= 1 && (dur || (await measured())) < 0.1) || (ext === ".gif" && nb <= 1);
       Object.assign(info, {
         kind: still ? "image" : "video", width: w, height: h, codec: v.codec_name,
         fps: still || !(fps > 0) ? null : +fps.toFixed(3), alpha: /^(rgba|yuva|argb|bgra|ya|pal8|gbrap)/.test(v.pix_fmt || "") || ext === ".gif" || (VPX_DECODER.has(v.codec_name) && hasAlphaTag(v.tags)),
       });
-      if (!still && !(dur > 0)) dur = measured();
+      if (!still && !(dur > 0)) dur = (await measured());
       if (!still) info.duration = sec(dur);
       // The picture ends before the container when the sound is longer: compared as end times (stream start + length against container start + length, a missing start is 0),
       // since a stream that starts late is not short. Recorded as seconds from the container start, the clock `in` is on. Matroska gives no per-stream duration: then, for a file with sound,
-      // the stream's own DURATION tag counts when the picture and the container both start at 0 on the file's clock (a writer may put a length or an end time there, which differ by the stream's absolute start), else the packets' end.
+      // the stream's own DURATION tag counts when the file is not cut and the picture and the container both start at 0 on the file's clock (a writer may put a length or an end time there, which differ by the stream's absolute start), else the packets' end.
       // A file with no sound ends with its picture, so no field is recorded.
       const vd = Number(v.duration), vStart = vAbs - cStart;
       let vEnd = vd > 0 ? vStart + vd : 0;
-      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : end(v); }
+      if (!still && !(vd > 0) && a) { const tag = tagLength(v.tags); vEnd = tag > 0 && !cut && Math.abs(Number(v.start_time) || 0) <= VIDEO_END_SLACK && Math.abs(cStart) <= VIDEO_END_SLACK ? vStart + tag : (await end(v)); }
       if (!still && vEnd > 0 && vEnd < dur - VIDEO_END_SLACK) info.video_duration = sec(vEnd);
       // What FrameSource needs to give a slot the same source frame wherever its stream starts (see seeksBefore in model.ts).
       if (!still) {
         // a matrix name the pipeline cannot read (one not in COLOR_SPACES) is refused here, so the record only ever holds a name matrixFor accepts
         const cs = String(v.color_space ?? "unknown");
         if (!COLOR_SPACES.includes(cs) && !NO_MATRIX.includes(cs)) throw new EditError(`${path} names the colour matrix '${cs}', which AgentCut cannot read with`, "bad_media", `supported: ${[...NO_MATRIX, ...COLOR_SPACES].join(", ")}; re-encode the file with a tag from that list`);
-        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, color_space: cs,
+        Object.assign(info, { container_start: cStart, video_start: Math.max(0, vStart), format: String(j.format?.format_name), reorder: Number(v.has_b_frames) || 0, pix_fmt: String(v.pix_fmt ?? "unknown"), color_space: cs,
           color_primaries: String(v.color_primaries ?? "unknown"), color_transfer: String(v.color_transfer ?? "unknown") });
-        if (!seeksBefore(info.format)) info.key_gap = keyGap(path, dur);
+        if (!seeksBefore(info.format)) info.key_gap = (await keyGap(path, dur));
       }
     } else if (a || AUDIO_EXT.has(ext)) {
-      if (!(dur > 0) && a) dur = measured();
+      if (!(dur > 0) && a) dur = (await measured());
       Object.assign(info, { kind: "audio", duration: sec(dur), sample_rate: a ? +a.sample_rate : null, channels: a?.channels ?? null });
     } else throw new EditError(`no audio or video stream in ${path}`, "bad_media");
   }
@@ -324,8 +384,30 @@ export const FPS_END = "eof_action=pass";
 
 /** Seconds decoded before a stream's first slot, so the frames a slot depends on (the reorder delay and, after a seek, the open-GOP frames before its keyframe) are decoded:
  *  at least a quarter second and the frames held back, plus, in a format whose seek can land after the target, the longest keyframe gap, so a keyframe lies in the stretch.
- *  The vision helper seeks this far before its in-point too. */
+ *  The vision job builder seeks this far before its in-point too (inputSeek). */
 export const preRoll = (f: VideoFacts, srcFps?: number | null) => Math.max(0.25, srcFps ? (f.reorder + 1) / srcFps : 0) + (seeksBefore(f.format) ? 0 : f.key_gap!);
+
+/** How far past the picture's start (s) a read starts from the file's start instead of seeking. ffmpeg aims an input seek 3/23 s early when a stream holds frames back, and in flv and avi a seek aimed before
+ *  the first keyframe does not land: the read goes on from the end of the file, or from a frame that is not a keyframe, for the sound too. 0.25 s of margin keeps a seek's rounding off that edge. */
+const NO_SEEK_SPAN = 3 / 23 + 0.25;
+/** Whether a read may seek its input to `t` (s from the container start): only past NO_SEEK_SPAN of the picture's start (a file with no picture counts from 0). */
+const seeksInput = (t: number, videoStart = 0) => t >= videoStart + NO_SEEK_SPAN;
+/** Where a read at `t` seeks its input: `pre` seconds ahead of it, or null (from the file's start) when that is within NO_SEEK_SPAN of the picture's start. */
+export function inputSeek(t: number, pre: number, videoStart?: number): number | null {
+  const s = Math.max(0, t - pre);
+  return seeksInput(s, videoStart) ? s : null;
+}
+/** The args of a read that starts exactly at `t` (s from the container start): `input` before -i seeks with the picture's pre-roll (none for a file with no picture), `output` after -i decodes the rest of the way to t.
+ *  In a file with a picture the rest is cut on the file's own clock (-copyts, t past the container start): a cut on the clock a seek restarts puts out a frame early when the picture holds frames back,
+ *  and one with no seek counts from the picture's start (a frame late in an mpegts whose picture starts after its sound). */
+export function seekArgs(t: number, f?: VideoFacts, fps?: number | null): { input: string[]; output: string[] } {
+  const miss = f ? missingFacts(f) : [];
+  if (miss.length) throw new EditError(`the probe record has no ${miss.join(", ")}`, "bad_media", "relink_asset with the file's path probes it again");
+  const s = inputSeek(t, f ? preRoll(f, fps) : 0, f?.video_start);
+  if (s === null && t === 0) return { input: [], output: [] };
+  if (!f) return s === null ? { input: [], output: ["-ss", t.toFixed(6)] } : { input: ["-ss", s.toFixed(6)], output: [] };
+  return { input: ["-copyts", ...(s === null ? [] : ["-ss", s.toFixed(6)])], output: ["-ss", (t + f.container_start).toFixed(6)] };
+}
 
 /** RGBA frames of a video/image fitted to an exact size. readAt(u) = frame at u source-seconds after the in-point. */
 export class FrameSource {
@@ -337,8 +419,8 @@ export class FrameSource {
   private tip: Buffer | null = null; // the newest frame the running stream produced: the frame at `pos` (null: the stream has produced none since it was spawned)
   private eof = false;
   private ending: Buffer | null = null; // the frame the clip holds after the stream ended (`tip` stays the frame at `pos`)
-  // What the running ffmpeg reports once it is done. fail: why it failed ("" for a clean exit whose text was only about frames never shown). retry: what a software retry answers
-  // (as fail, but a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
+  // What the running ffmpeg reports once it is done. fail: why it failed (a spawn error or a non-zero exit; "" for a clean exit, whatever the decoder printed). retry: what a software retry answers
+  // (as fail, and on a clean exit the decoder's text about shown frames; a run that put out no frame answers for all its text). all: everything it printed, for the message of a check that throws instead.
   private ended: Promise<{ fail: string; retry: string; all: string }> | null = null;
   private still: Buffer | null = null;
   private lengthCheck: Promise<void> | undefined; // a loop source: does the file hold its probed length (the first spawn starts it)
@@ -366,7 +448,7 @@ export class FrameSource {
     const cw = Math.max(2, Math.round(o.srcW * (1 - cl - cr))), ch = Math.max(2, Math.round(o.srcH * (1 - ct - cb)));
     // the picture is tagged with the matrix it is read with first (the asset's own name, else bt2020nc for an untagged one converted from BT.2020, else bt709 for an untagged HD one), so every conversion after it (a filter's own `format=rgba` included) uses that matrix;
     // PQ, HLG and BT.2020 primaries are then converted to BT.709 (conversionChain), before crop, the clip's filters and the grade
-    const convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined, matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH, convert) : undefined;
+    const convert = o.kind === "video" ? conversionFor(o.facts!.color_primaries, o.facts!.color_transfer) : undefined, matrix = o.kind === "video" ? matrixFor(o.facts!.color_space, o.srcW, o.srcH, convert, o.facts!.pix_fmt) : undefined;
     const vf: string[] = [...(matrix ? [`setparams=colorspace=${matrix}`] : []), ...(convert ? conversionChain(convert) : [])];
     if (cl || cr || ct || cb) vf.push(`crop=${cw}:${ch}:${Math.round(o.srcW * cl)}:${Math.round(o.srcH * ct)}`);
     vf.push(...filterChain(o.filters), ...gradeChain(o.color));
@@ -385,12 +467,12 @@ export class FrameSource {
     const dec = alphaDecoder(o.codec, o.alpha, o.path);
     if (dec) this.hw = false;
     this.dec = dec;
-    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path)];
+    this.input = [...(dec ? ["-c:v", dec] : []), ...inp(o.path), ...VIDEO_MAP];
   }
 
   /** Everything but the file, the in-point and the frame number that shapes a decoded frame: the filter chain, the forced decoder, hwaccel,
    *  the output rate, the source's own length and rate (they pick the held last frame), the rule that maps a slot to a source frame (TIE_BIAS, FPS_END), and the FFmpeg that decodes. */
-  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion()]); }
+  get pixelKey(): string { return JSON.stringify([this.vf, this.dec, this.hw, this.o.rate, this.o.srcDuration ?? null, this.o.srcFps ?? null, TIE_BIAS, FPS_END, ffmpegVersion(), VIDEO_MAP]); }
 
   /** A loop clip with a known picture length: it is read pass by pass (see `passOf`). */
   private get wraps() { return !!this.o.loop && this.o.kind === "video" && !!this.o.srcDuration && this.o.srcDuration > 0; }
@@ -414,9 +496,9 @@ export class FrameSource {
   }
 
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
-   *  It seeks to the keyframe before `pre` seconds ahead of the slot (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
+   *  It seeks to the keyframe before `pre` seconds ahead of the slot, or reads from the file's start when that point is within NO_SEEK_SPAN of the picture's start (`-noaccurate_seek` keeps the frames from there on, a gap in a variable-rate file included), puts every timestamp on the
    *  clip's clock (container start and in-point subtracted, TIE_BIAS added, the passes of a loop before the slot's added) and lets `fps` assign the slots, so the frame of a slot does not depend on the first frame decoded.
-   *  A stream whose first frame is later than its slot grid (the seek lands before the video starts, or in a format whose seek can land after the target) is filled back with that frame,
+   *  A stream whose first frame is later than its slot grid (a read with no seek, or a seek in a format whose seek can land after the target) is filled back with that frame,
    *  from a whole number of slots before the slot, which keeps the grid's phase. A loop clip's stream reads the pass of its first slot and no loop, except `unsought`: a read from the file's start
    *  (no seek, so ffmpeg's loop restarts at 0) that carries on through the passes after. */
   private args(k: number, mode: "stream" | "still" | "tail" | "reach", at?: number, unsought = false): string[] {
@@ -431,12 +513,12 @@ export class FrameSource {
     if (loop && D) { n = this.passOf(k); ss = unsought ? 0 : Math.max(0, srcIn + k / r - n * D - this.pre); } // a slot's pre-roll in the pass before is not read: the fill below stands in for it
     if (unsought) a.push("-stream_loop", "-1");
     const shift = n * (D ?? 0) - srcIn - f.container_start + TIE_BIAS / r;
-    const fill = ss <= f.video_start || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
+    const sought = seeksInput(ss, f.video_start); // a read near the picture's start has no seek: it reads from the file's start
+    const fill = !sought || !seeksBefore(f.format) ? `:start_time=${((k - Math.ceil(this.pre * r)) / r).toFixed(6)}` : "";
     const slots = reverse // reverse buffers the whole segment, so it always streams from its start and keeps the slots of the clip
       ? [`trim=start=${(-0.25 / r).toFixed(6)}:end=${((Math.round((o.segLen ?? 1) * r) - 0.25) / r).toFixed(6)}`, "reverse"]
       : [`trim=start=${((k - 0.25) / r).toFixed(6)}`];
-    const seek = startsOnFirstPacket(f.format) ? Math.max(ss, f.video_start) : ss; // an avi seek aimed before its first packet lands one frame late
-    a.push("-noaccurate_seek", "-copyts", "-ss", seek.toFixed(6), ...this.input, "-an", "-sn",
+    a.push("-noaccurate_seek", "-copyts", ...(sought ? ["-ss", ss.toFixed(6)] : []), ...this.input, "-an", "-sn",
       "-vf", ["settb=1/1000000", `setpts=PTS+(${shift.toFixed(6)})/TB`, `fps=${r}${mode === "tail" ? `:${FPS_END}` : ""}${fill}`, ...slots, ...this.vf].join(","));
     if (reverse) a.push("-to", ((o.segLen ?? 1) - 0.25 / r).toFixed(6));
     a.push("-fps_mode", "passthrough");
@@ -460,7 +542,8 @@ export class FrameSource {
     const proc = this.proc;
     if (!this.lengthCheck) { this.lengthCheck = this.checkLoopLength(); this.lengthCheck.catch(() => {}); } // awaited by readAt; this keeps a read that fails first from leaving it unhandled
     // Decoder text printed before the first frame is out belongs to the frames decoded ahead of the first slot (after a seek into a format whose seek can land mid-GOP, they miss their references)
-    // and is never shown: on a clean exit only the text after it fails the read. A run that put out no frame showed nothing, so no text fails it: the length checks and the held last frame decide.
+    // and is never shown: on a clean exit only the text after it (all its text, for a run that put out no frame) asks for a software retry. Decoder text never fails a clean exit: which frames print it depends on where the stream starts
+    // (a seek past a damaged frame prints nothing), so the length checks and the held last frame decide, as they do for a fresh read.
     const frameBytes = this.w * this.h * 4;
     let before = "", after = "", seen = 0, framed = false;
     proc.stderr?.on("data", (d) => { if (framed ? after.length < 2000 : before.length < 2000) { if (framed) after += d; else before += d; } });
@@ -471,7 +554,7 @@ export class FrameSource {
       proc.once("close", (code, sig) => {
         const text = `${before}${after}`;
         if (code !== 0) { const t = `${text}ffmpeg exited with ${code ?? sig}`.trim(); res({ fail: t, retry: t, all: t }); }
-        else res({ fail: after.trim(), retry: (framed ? after : before).trim(), all: text.trim() });
+        else res({ fail: "", retry: (framed ? after : before).trim(), all: text.trim() });
       });
     });
     this.stream = new FrameStream(this.proc, frameBytes);

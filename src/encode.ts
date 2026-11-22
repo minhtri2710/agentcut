@@ -9,7 +9,7 @@ import { availableParallelism } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { audioSources, buildAudio } from "./audio.ts";
-import { inp } from "./ffinput.ts";
+import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { own } from "./own.ts";
 import { hasCodec, needFfmpeg } from "./media.ts";
 import { run, stopOnAbort } from "./proc.ts";
@@ -257,7 +257,7 @@ export function outputDraw(tl: Timeline, extension: string, o: RenderOpts = {}) 
 }
 
 export async function renderVideo(tl: Timeline, root: string, output: string, o: RenderOpts = {}) {
-  needFfmpeg();
+  (await needFfmpeg());
   o.signal?.throwIfAborted();
   refuseSource(root, tl, output);
   const ext = extname(output).toLowerCase();
@@ -335,7 +335,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
       if (cc.status !== 0) throw new EditError(`concat failed: ${cc.stderr.slice(-600)}`, "encode_failed");
     }
     if (gif) {
-      const g = await run("ffmpeg", ["-v", "error", "-y", ...inp(target), "-vf",
+      const g = await run("ffmpeg", ["-v", "error", "-y", ...inp(target), ...VIDEO_MAP, "-vf",
         `fps=${Math.min(fps, 15)},scale=${Math.min(W, 540)}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`, part], { signal: o.signal });
       if (g.status !== 0) throw new EditError(`gif conversion failed: ${g.stderr.slice(-400)}`, "encode_failed");
     }

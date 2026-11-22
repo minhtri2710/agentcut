@@ -40,7 +40,11 @@ function make(file: string, rate: string, secs: number, enc: string[], o: { audi
   const out = join(m, file);
   // sound: the sound's length in seconds, when it outlasts the picture (no -shortest)
   ff(...(o.late ? ["-itsoffset", String(o.late)] : []), "-f", "lavfi", "-i", pic(rate, secs), ...(o.audio ? ["-f", "lavfi", "-i", `sine=f=440:r=48000${o.sound ? `:d=${o.sound}` : ""}`] : []), ...enc,
-    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", ...(o.sound ? [] : ["-shortest"])] : ["-an"]), ...(o.mux ?? []), out);
+    ...(o.audio ? ["-c:a", file.endsWith(".mpg") ? "mp2" : "aac", ...(o.sound ? [] : ["-shortest"])] : ["-an"]), "-fps_mode", "passthrough", ...(o.mux ?? []), out);
+  if (o.late) {
+    const { pts, S } = timingOf(out), [n, d = 1] = rate.split("/").map(Number);
+    check(`${file}: first picture really starts ${o.late} s after the container`, pts.length > 0 && pts[0] > S && Math.abs(pts[0] - S - o.late) <= d / n + 1024 / 48000, { first: pts[0], start: S }); // one video slot plus AAC priming on the container clock
+  }
   return out;
 }
 
@@ -77,8 +81,8 @@ function num(b: Buffer, w: number, h: number, bw = 10, px = 4): number {
 }
 
 interface Opts { loop?: boolean; reverse?: boolean; freeze?: boolean; segLen?: number; srcDuration?: number; facts?: any }
-function source(file: string, r: number, srcIn: number, o: Opts = {}) {
-  const info = api.probe(file);
+async function source(file: string, r: number, srcIn: number, o: Opts = {}) {
+  const info = (await api.probe(file));
   return new FrameSource({ path: file, kind: "video", srcW: W, srcH: H, srcFps: info.fps, srcIn, rate: r, fit: "fill", box: [W, H], srcDuration: info.video_duration ?? info.duration, facts: info, ...o });
 }
 const read = async (s: InstanceType<typeof FrameSource>, k: number, r: number) => num(await s.readAt(k / r), W, H);
@@ -86,15 +90,15 @@ const read = async (s: InstanceType<typeof FrameSource>, k: number, r: number) =
 /** Fresh reads (a new stream per slot) and one stream read in order, against the rule: the mismatches. */
 async function sweep(label: string, file: string, r: number, bases: number[], phases: number[], slots: number[], o: Opts = {}): Promise<string[]> {
   const bad: string[] = [];
-  const D = o.loop ? (api.probe(file).video_duration ?? api.probe(file).duration) : undefined;
+  const D = o.loop ? ((await api.probe(file)).video_duration ?? (await api.probe(file)).duration) : undefined;
   for (const base of bases) for (const ph of phases) {
     const srcIn = base + ph / r, last = Math.max(...slots), want = new Set(slots), streamed = new Map<number, number>();
     try {
-      const st = source(file, r, srcIn, o);
+      const st = (await source(file, r, srcIn, o));
       for (let k = 0; k <= last; k++) { const n = await read(st, k, r); if (want.has(k)) streamed.set(k, n); }
       st.close();
       for (const k of slots) {
-        const f = source(file, r, srcIn, o), fresh = await read(f, k, r); f.close();
+        const f = (await source(file, r, srcIn, o)), fresh = await read(f, k, r); f.close();
         const exp = rule(file, srcIn, r, k, D);
         if (fresh !== exp || streamed.get(k) !== exp) bad.push(`${label} in=${srcIn.toFixed(4)} k=${k}: fresh ${fresh} stream ${streamed.get(k)} rule ${exp}`);
       }
@@ -148,7 +152,7 @@ for (const [name, plain, aac, src, tl] of [["25 fps", v25.plain, v25.aac, 25, 24
   row(`${name} source on a ${tl} fps timeline, in-points at phases 0, .3, .5, .77 of a slot and at the file's start, video only and with AAC: fresh reads, a stream read in order and the rule agree`, bad);
 }
 row("a file whose container starts at 10 s (video and AAC): fresh, streamed and the rule agree at 24 and 30", [...await sweep("nz24", nz25, 24, [1], PHASES, SLOTS), ...await sweep("nz30", nz25, 30, [1], [0, 0.5], SLOTS)]);
-check("the probe records the container's start (10 s, less the AAC priming)", Math.abs(api.probe(nz25).container_start - 10) < 0.05 &&api.probe(v25.plain).container_start === 0, [api.probe(nz25).container_start, api.probe(v25.plain).container_start]);
+check("the probe records the container's start (10 s, less the AAC priming)", Math.abs((await api.probe(nz25)).container_start - 10) < 0.05 &&(await api.probe(v25.plain)).container_start === 0, [(await api.probe(nz25)).container_start, (await api.probe(v25.plain)).container_start]);
 
 console.log("millisecond containers, NTSC rates, ties and the highest timeline rate");
 for (const [label, file] of [["mkv", mkv24], ["webm", webm24]] as const) for (const tl of [30, 60, 120])
@@ -157,14 +161,14 @@ row("29.97 fps on 30 across the frame where the drift passes half a slot (source
 row("23.976 fps on 24 across the frame where the drift passes half a slot (source frame 500): fresh, streamed and the rule agree", await sweep("ntsc24", ntsc24, 24, [20.7], PHASES, [...Array(16).keys()].map((i) => i * 2)));
 row("30 and 25 fps sources on 120 fps: fresh, streamed and the rule agree", [...await sweep("30on120", v30.aac, 120, [1], [0, 0.5], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 40, 41]), ...await sweep("25on120", v25.plain, 120, [1], [0, 0.5], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 40, 41])]);
 { // a frame exactly halfway between two slots (24 fps source frame 2 at slot 2.5 of a 30 fps timeline) belongs to the later slot: the older frame shows through the tie
-  const s = [2, 3].map(() => source(v24.plain, 30, 0)), got = [await read(s[0], 2, 30), await read(s[1], 3, 30)];
+  const s = await Promise.all([2, 3].map(() => source(v24.plain, 30, 0))), got = [await read(s[0], 2, 30), await read(s[1], 3, 30)];
   s.forEach((x) => x.close());
   check("a source frame halfway between two slots shows from the later slot: slot 2 holds frame 1, slot 3 shows frame 2", got[0] === 1 && got[1] === 2, got);
 }
 row("split equals unsplit: 24 fps on 30 and 60 in mp4, mkv and webm, cut at slot 7 and 20", await attempt(async () => {
   const bad: string[] = [];
   for (const file of [v24.plain, v24.aac, mkv24, webm24]) for (const tl of [30, 60]) for (const cut of [7, 20]) {
-    const a = 1.013, whole = source(file, tl, a), tail = source(file, tl, a + cut / tl);
+    const a = 1.013, whole = (await source(file, tl, a)), tail = (await source(file, tl, a + cut / tl));
     for (let s = cut; s < cut + 12; s++) {
       const x = await read(whole, s, tl), y = await read(tail, s - cut, tl);
       if (x !== y) bad.push(`${file.split("/").pop()} ${tl} cut ${cut} slot ${s}: whole ${x} cut ${y}`);
@@ -183,10 +187,10 @@ row("h264 with open GOPs beside keyframes (mp4): fresh, streamed and the rule ag
 row("a 10 fps source with three B-frames on 30 fps: fresh, streamed and the rule agree", await sweep("low10", low10, 30, [0.9, 1, 2.05], [0, 0.5], [0, 1, 2, 3, 4, 6, 9, 12]));
 row("video that starts 2 s after the sound, with the in-point in the empty stretch (mkv): fresh, streamed and the rule agree", [...await sweep("late-mkv", mkvLate, 24, [0, 0.9, 1.9], [0, 0.5], [0, 1, 2, 12, 24, 30, 60]), ...await sweep("late-mkv", mkvLate, 30, [2.1], [0], [0, 1, 7])]);
 {
-  const p = (f: string) => api.probe(f);
+  const p = async (f: string) => (await api.probe(f));
   check("the probe records what a read needs: the video's start, the reorder delay, and the keyframe gap only where a seek may land late",
-    Math.abs(p(mkvLate).video_start - 2) < 0.05 && p(low10).reorder >= 2 && p(v25.plain).key_gap === undefined && Math.abs(p(tsLong).key_gap - 4) < 0.15 && p(tsLong).format === "mpegts" && p(gif).key_gap === undefined && p(gif).format === "gif" && p(v25.plain).color_space === "unknown" && p(v25.plain).color_primaries === "unknown" && p(v25.plain).color_transfer === "unknown",
-    { cs: p(v25.plain).color_space, prim: p(v25.plain).color_primaries, trc: p(v25.plain).color_transfer, late: p(mkvLate).video_start, reorder: p(low10).reorder, mp4: p(v25.plain).key_gap, ts: p(tsLong).key_gap, fmt: p(tsLong).format, gif: p(gif).format });
+    Math.abs((await p(mkvLate)).video_start - 2) < 0.05 && (await p(low10)).reorder >= 2 && (await p(v25.plain)).key_gap === undefined && Math.abs((await p(tsLong)).key_gap - 4) < 0.15 && (await p(tsLong)).format === "mpegts" && (await p(gif)).key_gap === undefined && (await p(gif)).format === "gif" && (await p(v25.plain)).color_space === "unknown" && (await p(v25.plain)).color_primaries === "unknown" && (await p(v25.plain)).color_transfer === "unknown",
+    { cs: (await p(v25.plain)).color_space, prim: (await p(v25.plain)).color_primaries, trc: (await p(v25.plain)).color_transfer, late: (await p(mkvLate)).video_start, reorder: (await p(low10)).reorder, mp4: (await p(v25.plain)).key_gap, ts: (await p(tsLong)).key_gap, fmt: (await p(tsLong)).format, gif: (await p(gif)).format });
 }
 {
   // an avi's stream header can start a stream late (1/rate units): ffprobe still reports 0, the packets carry the shift. ffmpeg cannot write one, so the test sets the video header's start in a copy of its own avi
@@ -204,7 +208,7 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
     [...await sweep("late-avi", aviLate, 24, [0, 0.9], [0, 0.5], [0, 1, 2, 12, 24, 35, 36, 60, 90]), ...await sweep("late-avi-end", aviLate, 25, [0, 0.9], [0, 0.3], [0, 36, 100, 133, 134, 135, 136, 140])]);
   row("a video-only avi whose picture starts at 1.4 s: fresh, streamed and the rule agree, from the first slot to the held frame after the last", await sweep("late-avi-v", aviVideoLate, 25, [0, 0.9], [0, 0.5], [0, 1, 34, 35, 36, 100, 133, 134, 135, 140]));
   row("a loop over a video-only avi whose picture starts at 1.4 s: fresh, streamed and the rule agree across the wrap", await sweep("loop-avi-v", aviVideoLate, 25, [0, 0.9], [0, 0.5], [0, 1, 134, 135, 136, 137, 138, 170, 171, 172, 270, 271], { loop: true }));
-  const a = api.probe(aviLate), vo = api.probe(aviVideoLate), pl = api.probe(aviPlain), last = timingOf(aviVideoLate).pts.length - 1;
+  const a = (await api.probe(aviLate)), vo = (await api.probe(aviVideoLate)), pl = (await api.probe(aviPlain)), last = timingOf(aviVideoLate).pts.length - 1;
   const close = (x: number, want: number) => Math.abs(x - want) < 0.01;
   const formatLen = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout);
   const pictureLen = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout); // the unshifted file's own picture length: the avi header's, which counts a frame more than the file holds when it has sound
@@ -212,7 +216,7 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
     a.container_start === 0 && close(a.video_start, 1.4) && close(a.duration, 1.4 + pictureLen(aviPlain)) && vo.container_start === 0 && close(vo.video_start, 1.4) && close(vo.duration, 1.4 + pictureLen(aviVideo))
     && pl.container_start === 0 && pl.video_start === 0 && Math.abs(pl.duration - formatLen(aviPlain)) < 0.001, [a, vo, pl].map((i) => [i.duration, i.container_start, i.video_start]).concat([[pictureLen(aviPlain), pictureLen(aviVideo), formatLen(aviPlain)]])); // an unshifted avi records the length ffprobe gives (the sound encoder varies it between runs)
   row("a video-only avi that starts at 1.4 s holds its first frame to the picture's start and shows its last frame at the slot after the picture's", await attempt(async () => {
-    const f = source(aviVideoLate, 25, 0), l = source(aviVideoLate, 25, 0), h = source(aviVideoLate, 25, 0);
+    const f = (await source(aviVideoLate, 25, 0)), l = (await source(aviVideoLate, 25, 0)), h = (await source(aviVideoLate, 25, 0));
     const first = await read(f, 0, 25), end = await read(l, 35 + last, 25), held = await read(h, 35 + last + 5, 25);
     f.close(); l.close(); h.close();
     return first === 0 && end === last && held === last ? [] : [`first slot frame ${first}, slot ${35 + last} frame ${end}, slot ${35 + last + 5} frame ${held}; want 0, ${last}, ${last}`];
@@ -222,14 +226,14 @@ row("video that starts 2 s after the sound, with the in-point in the empty stret
   // the last two pairs loop a picture 0.04 s shorter than its recorded length (sound outlasts it by less than VIDEO_END_SLACK): the pass runs dry at the last frame's slot, which the pass then holds
   for (const [file, r, o] of [[v25.plain, 24], [v25.aac, 24], [mkv25, 24], [aviPlain, 24], [aviLate, 24], [aviVideo, 24], [aviVideoLate, 24], [v25.plain, 20], [mkv25, 20], [aviLate, 20], [v30.aac, 24], [v50.plain, 30], [mkv24, 20],
     [loopSlack, 24, { loop: true }], [loopSlack, 20, { loop: true }]] as [string, number, Opts?][]) {
-    const { pts, S } = timingOf(file), pl = pts[pts.length - 1] - S, kl = Math.floor((pl - 0.5) * r), w = 1 - r / api.probe(file).fps;
+    const { pts, S } = timingOf(file), pl = pts[pts.length - 1] - S, kl = Math.floor((pl - 0.5) * r), w = 1 - r / (await api.probe(file)).fps;
     endBad.push(...await sweep(`${file.split("/").pop()}->${r}${o ? " loop" : ""}`, file, r, [pl - (kl + w / 2 - 0.5 - TIE) / r], [0], [kl - 1, kl, kl + 1, kl + 2, kl + 8], o));
   }
-  const slack = api.probe(loopSlack), slackEnd = timingOf(loopSlack).pts.at(-1)! + 1 / slack.fps; // the loop pairs need a recorded length past the picture and no video_duration, which the sound encoder's length can change
+  const slack = (await api.probe(loopSlack)), slackEnd = timingOf(loopSlack).pts.at(-1)! + 1 / slack.fps; // the loop pairs need a recorded length past the picture and no video_duration, which the sound encoder's length can change
   if (slack.video_duration != null || !(slack.duration > slackEnd)) endBad.push(`loopslack.mp4 no longer runs dry: duration ${slack.duration}, video_duration ${slack.video_duration}, picture ends ${slackEnd}`);
   row("a last frame that ends inside its own slot is shown there and held after it: mp4, mkv and avi, 25 to 24 and 20, 30 to 24, 50 to 30, 24 to 20, and a loop pass that runs dry there", endBad);
   row("a source read past its end and then at the slot before gives the held last frame, not nothing", await attempt(async () => {
-    const s = source(v25.plain, 24, 0), want = rule(v25.plain, 0, 24, 154), got = [await read(s, 154, 24), await read(s, 153, 24)];
+    const s = (await source(v25.plain, 24, 0)), want = rule(v25.plain, 0, 24, 154), got = [await read(s, 154, 24), await read(s, 153, 24)];
     s.close();
     return got.every((n) => n === want) ? [] : [`slots 154, 153 read ${got}; want ${want}`];
   }));
@@ -256,13 +260,13 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     ...await sweep("loopsoundmkv", loopSoundMkv, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound25", loopSound, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound30", loopSound, 30, [0, 1.99], [0], [0, 20, 59, 60, 61, 119, 120, 121, 179, 180], { loop: true })]);
-  const fills = (f: string, o: Opts = {}) => (source(f, 25, 0, { loop: true, ...o }) as any).fillsPass();
+  const fills = async (f: string, o: Opts = {}) => ((await source(f, 25, 0, { loop: true, ...o })) as any).fillsPass();
   check("the probe record of a file whose picture fills its pass lets later passes come from one looping stream, a picture shorter than the sound included; a late video (0.54 s, or 0.02 s), a longer recorded pass or a shorter picture does not",
-    api.probe(loopSound).video_duration > 1.9 && fills(loop2k) && fills(loop2kMov) && fills(loop18) && fills(loop04) && fills(loopSound) && !fills(loopLate) && !fills(nz25) && !fills(loop2k, { srcDuration: 2.2 }) && !fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } }),
-    [api.probe(loopSound).video_duration, fills(loop2k), fills(loop2kMov), fills(loop18), fills(loop04), fills(loopSound), fills(loopLate), fills(nz25), fills(loop2k, { srcDuration: 2.2 }), fills(loop2k, { facts: { ...api.probe(loop2k), video_duration: 1.9 } })]);
+    (await api.probe(loopSound)).video_duration > 1.9 && (await fills(loop2k)) && (await fills(loop2kMov)) && (await fills(loop18)) && (await fills(loop04)) && (await fills(loopSound)) && !(await fills(loopLate)) && !(await fills(nz25)) && !(await fills(loop2k, { srcDuration: 2.2 })) && !(await fills(loop2k, { facts: { ...(await api.probe(loop2k)), video_duration: 1.9 } })),
+    [(await api.probe(loopSound)).video_duration, (await fills(loop2k)), (await fills(loop2kMov)), (await fills(loop18)), (await fills(loop04)), (await fills(loopSound)), (await fills(loopLate)), (await fills(nz25)), (await fills(loop2k, { srcDuration: 2.2 })), (await fills(loop2k, { facts: { ...(await api.probe(loop2k)), video_duration: 1.9 } }))]);
   { // a named limit (not a defect): a record whose picture is shorter than its length (the picture is 1.7 s, the record says 2 s) passes the check above, so the first wrap is at the record's length and later wraps at the file's own period
     const bad = await attempt(async () => {
-      const s = source(loopShort, 25, 0.5, { loop: true, srcDuration: 2, facts: { ...api.probe(loopShort), duration: 2 } }), got: number[] = [];
+      const s = (await source(loopShort, 25, 0.5, { loop: true, srcDuration: 2, facts: { ...(await api.probe(loopShort)), duration: 2 } })), got: number[] = [];
       for (let k = 0; k < 124; k++) got.push(await read(s, k, 25));
       s.close();
       const want = [...Array.from({ length: 31 }, (_, i) => 12 + i), ...Array(7).fill(42), ...Array.from({ length: 43 }, (_, i) => i), ...Array.from({ length: 43 }, (_, i) => i)];
@@ -273,8 +277,8 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   { // a webm written to a pipe has no length in the file: the probe measures it from the packets, and the clip loops; a record without a length (written by hand) is still refused
     const live = join(m, "live.webm");
     writeFileSync(live, spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", pic("25", 1), ...VP9, "-f", "webm", "-"], { maxBuffer: 1 << 26 }).stdout);
-    const err = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e; } };
-    const refused: any = err(() => source(live, 25, 0, { loop: true, srcDuration: 0 })), freezeBare = err(() => source(live, 25, 0, { loop: true, freeze: true, srcDuration: 0 }));
+    const err = async (f: () => unknown) => { try { await f(); return null; } catch (e: any) { return e; } };
+    const refused: any = await err(() => source(live, 25, 0, { loop: true, srcDuration: 0 })), freezeBare = await err(() => source(live, 25, 0, { loop: true, freeze: true, srcDuration: 0 }));
     row("a loop over a webm written to a pipe: fresh, streamed and the rule agree across three wraps", await sweep("live", live, 25, [0, 0.5], [0, 0.5], [0, 12, 24, 25, 26, 49, 50, 51, 74, 75, 76], { loop: true }));
     check("a looping video whose record has no length is refused with bad_media and a hint that names the cure; a freeze reads no pass and is built",
       refused?.code === "bad_media" && /cannot loop/.test(refused.message) && /relink_asset the file to probe it again/.test(refused.hint) && /export it again from its source/.test(refused.hint) && freezeBare === null,
@@ -282,7 +286,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     // the one file that gives a record with no length: a stream with no frames (a remux of it to mkv cannot be read, so the old hint's cure fails)
     const empty = join(m, "empty.avi");
     ff("-f", "lavfi", "-i", pic("25", 1), "-frames:v", "0", "-an", "-c:v", "mpeg4", "-pix_fmt", "yuv420p", empty);
-    const emptyInfo = api.probe(empty), emptyRefused: any = err(() => source(empty, 25, 0, { loop: true }));
+    const emptyInfo = (await api.probe(empty)), emptyRefused: any = await err(() => source(empty, 25, 0, { loop: true }));
     check("a video file with no frames records no length, and a loop over it is refused with the hint that names the cure",
       emptyInfo.kind === "video" && emptyInfo.duration === 0 && emptyRefused?.code === "bad_media" && /export it again from its source/.test(emptyRefused.hint), { duration: emptyInfo.duration, code: emptyRefused?.code, hint: emptyRefused?.hint });
   }
@@ -296,17 +300,17 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
       for (let n = 0; n <= Math.ceil((k + 2) / 30 / D7) + 1; n++) for (let i = 0; i < 7; i++) { const slot = Math.floor((n * 7 + i) * tick * 30 + 0.5 + TIE); if (slot <= k && slot >= bestSlot) { bestSlot = slot; best = i; } }
       return best;
     };
-    const fresh = async (k: number) => { const s = source(f7, 30, 0, { loop: true }), got = await read(s, k, 30); s.close(); return got; };
+    const fresh = async (k: number) => { const s = (await source(f7, 30, 0, { loop: true })), got = await read(s, k, 30); s.close(); return got; };
     const bad = await attempt(async () => {
       const out: string[] = [];
       for (let n = 60; n < 64; n++) for (const k of [-1, 0, 1].map((d) => Math.round(n * D7 * 30) + d)) { const got = await fresh(k), want = exactFrame(k); if (got !== want) out.push(`pass ${n} slot ${k}: ${got} want ${want}`); }
       return out;
     });
-    check("the record of a picture that is not a whole millisecond long holds ffprobe's length to the microsecond", Math.abs(api.probe(f7).duration - exact) <= 1e-6, { record: api.probe(f7).duration, exact });
+    check("the record of a picture that is not a whole millisecond long holds ffprobe's length to the microsecond", Math.abs((await api.probe(f7)).duration - exact) <= 1e-6, { record: (await api.probe(f7)).duration, exact });
     row("a fresh read in the 60th to 63rd pass of that loop (the pass starts and a slot either side) shows the frame the exact period gives", bad);
     // the limit (see `sec` in media.ts): a pass starts at n times a decimal length, up to 5e-7 s off per wrap (1.5e-5 slot at 30 fps; 1e-5 slot here), so a slot whose margin to a frame boundary is below n x 1e-5 slot (3e-4 at slot 467) can differ between a fresh and a streamed read after n wraps
     const bad467 = await attempt(async () => {
-      const s = source(f7, 30, 0, { loop: true }), streamed: number[] = [];
+      const s = (await source(f7, 30, 0, { loop: true })), streamed: number[] = [];
       for (let k = 0; k <= 467; k++) streamed.push(await read(s, k, 30));
       s.close();
       const got = { exact: exactFrame(467), streamed: streamed[467], fresh: await fresh(467) };
@@ -319,7 +323,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   const bad = await attempt(async () => {
   const bad: string[] = [];
   for (const f of [v25.plain, v25.aac]) for (const tl of [24, 30]) for (const srcIn of [1, 1.013, 0.05]) {
-    const len = 2, n = Math.round(len * tl), s = source(f, tl, srcIn, { reverse: true, segLen: len }), got: number[] = [];
+    const len = 2, n = Math.round(len * tl), s = (await source(f, tl, srcIn, { reverse: true, segLen: len })), got: number[] = [];
     for (let j = 0; j < n; j++) got.push(await read(s, j, tl));
     s.close();
     for (let j = 0; j < n; j++) { const exp = rule(f, srcIn, tl, n - 1 - j); if (got[j] !== exp) bad.push(`${f.split("/").pop()} ${tl} in=${srcIn} j=${j}: ${got[j]} rule ${exp}`); }
@@ -331,7 +335,7 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   const bad = await attempt(async () => {
   const bad: string[] = [];
   for (const [f, tl] of [[v25.plain, 24], [v25.aac, 30], [v50.aac, 30], [v2997.plain, 30], [tsc, 24], [mkv24, 30]] as const) for (const srcIn of [1, 1.013, 2.37]) {
-    const stream = source(f, tl, srcIn), still = source(f, tl, srcIn, { freeze: true }), first = await read(stream, 0, tl), held = await read(still, 3, tl);
+    const stream = (await source(f, tl, srcIn)), still = (await source(f, tl, srcIn, { freeze: true })), first = await read(stream, 0, tl), held = await read(still, 3, tl);
     stream.close(); still.close();
     if (first !== held || first !== rule(f, srcIn, tl, 0)) bad.push(`${f.split("/").pop()} ${tl} in=${srcIn}: slot 0 ${first} still ${held} rule ${rule(f, srcIn, tl, 0)}`);
   }
@@ -342,9 +346,9 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   const bad = await attempt(async () => {
   const bad: string[] = [];
   for (const [f, tl] of [[loop2, 24], [loop2a, 30], [loop2k, 24], [loop2kMov, 30], [loopLate, 25], [loopLate, 30]] as const) {
-    const info = api.probe(f), D = info.video_duration ?? info.duration;
+    const info = (await api.probe(f)), D = info.video_duration ?? info.duration;
     for (const srcIn of [0, 0.1, 0.2, D + 0.1, D - 0.01, D + 1.04]) { // the late file's first 0.54 s are before its picture: in 0, 0.1 and 0.2 lie there
-      const stream = source(f, tl, srcIn, { loop: true }), still = source(f, tl, srcIn, { loop: true, freeze: true });
+      const stream = (await source(f, tl, srcIn, { loop: true })), still = (await source(f, tl, srcIn, { loop: true, freeze: true }));
       const first = await read(stream, 0, tl), held = await still.readAt(0).then((b) => num(b, W, H), (e) => e?.code ?? "threw");
       stream.close(); still.close();
       if (first !== held || first !== rule(f, srcIn, tl, 0, D)) bad.push(`${f.split("/").pop()} ${tl} in=${srcIn.toFixed(3)}: slot 0 ${first} still ${held} rule ${rule(f, srcIn, tl, 0, D)}`);
@@ -358,11 +362,11 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
   const bad: string[] = [];
   // the ts and m2ts files start these streams by a seek that lands mid-GOP: their decoder text about frames never shown is not a failure of the clip
   for (const f of [v25.plain, v25.aac, v50.aac, mkv24, webm24, tsc, tso, tsLate, m2ts]) for (const tl of [24, 30]) for (const srcIn of [4, 4.013]) {
-    const { pts, S } = timingOf(f), D = pts[pts.length - 1] - S + (pts[1] - pts[0]), s = source(f, tl, srcIn, { srcDuration: D });
+    const { pts, S } = timingOf(f), D = pts[pts.length - 1] - S + (pts[1] - pts[0]), s = (await source(f, tl, srcIn, { srcDuration: D }));
     let streamed = -1;
     for (let k = 0; k < Math.ceil((D - srcIn) * tl) + 40; k++) { const n = await read(s, k, tl); if ((s as any).eof) { streamed = n; break; } }
     s.close();
-    const fr = source(f, tl, srcIn, { srcDuration: D }), fresh = num(await fr.readAt(((D - srcIn) * tl + 70) / tl), W, H); fr.close();
+    const fr = (await source(f, tl, srcIn, { srcDuration: D })), fresh = num(await fr.readAt(((D - srcIn) * tl + 70) / tl), W, H); fr.close();
     if (streamed !== fresh) bad.push(`${f.split("/").pop()} ${tl} in=${srcIn}: streamed end ${streamed} fresh past the end ${fresh}`);
   }
   return bad; });
@@ -372,8 +376,8 @@ if (process.platform === "darwin" && process.env.AGENTCUT_HWACCEL !== "0") {
   const big = join(m, "big.mp4");
   ff("-f", "lavfi", "-i", pic("25", 2, 2560, 1440, 160), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", big);
   const bad: string[] = [];
-  const mk = (hw: boolean) => { const info = api.probe(big), s = new FrameSource({ path: big, kind: "video", srcW: 2560, srcH: 1440, srcFps: 25, srcIn: 0.31, rate: 30, fit: "fill", box: [2560, 1440], srcDuration: info.duration, facts: info }); (s as any).hw = hw; return s; };
-  const sw = mk(false), hw = mk(true), usesHw = (hw as any).hw;
+  const mk = async (hw: boolean) => { const info = (await api.probe(big)), s = new FrameSource({ path: big, kind: "video", srcW: 2560, srcH: 1440, srcFps: 25, srcIn: 0.31, rate: 30, fit: "fill", box: [2560, 1440], srcDuration: info.duration, facts: info }); (s as any).hw = hw; return s; };
+  const sw = (await mk(false)), hw = (await mk(true)), usesHw = (hw as any).hw;
   for (let k = 0; k < 20; k++) { const a = num(await sw.readAt(k / 30), 2560, 1440, 160), b = num(await hw.readAt(k / 30), 2560, 1440, 160); if (a !== b) bad.push(`k=${k} software ${a} hwaccel ${b}`); }
   sw.close(); hw.close();
   row("a 2560x1440 source decoded with hwaccel shows the frames software decoding shows", bad);

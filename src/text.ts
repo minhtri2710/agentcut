@@ -124,14 +124,25 @@ export function layout(text: string, style: TextStyle, maxWidth: number) {
 
 export interface TextOpts { visibleChars?: number | null; visibleWords?: number | null; activeWord?: number | null; highlightColor?: string; highlightBg?: string }
 
+const bgPad = (style: TextStyle) => (style.bg ? (style.bg.padding !== undefined ? Number(style.bg.padding) * style.k : 0.35 * style.size) : 0);
+
+/** px between the wrapped text and the edge of its canvas: stroke, background padding, shadow or glow, highlight pill */
+export function textMargin(style: TextStyle, highlightBg?: string): number {
+  const sh = style.shadow, gl = style.glow;
+  const fx = Math.max(sh ? Math.abs(sh.x) + Math.abs(sh.y) + sh.blur * 2 : 0, gl ? gl.blur * 2 : 0);
+  return Math.ceil(style.strokeW + 2 + bgPad(style) + fx + (highlightBg ? style.size * 0.25 : 0));
+}
+
+/** canvas px of the widest word of `text` (as renderText cases it) that layout keeps whole: a wrap width below it breaks that word (CJK breaks anyway) */
+export const widestWord = (text: string, style: TextStyle) =>
+  Math.max(0, ...splitWords(style.uppercase ? text.toUpperCase() : text).filter((w) => !CJK.test(w)).map((w) => measure(style, w)));
+
 export function renderText(text: string, style: TextStyle, maxWidth: number, o: TextOpts = {}): Canvas {
   if (style.uppercase) text = text.toUpperCase();
   const L = layout(text, style, maxWidth);
-  const bg = style.bg;
-  const bpad = bg ? (bg.padding !== undefined ? Number(bg.padding) * style.k : 0.35 * style.size) : 0;
+  const bg = style.bg, bpad = bgPad(style);
   const sh = style.shadow, gl = style.glow;
-  const fx = Math.max(sh ? Math.abs(sh.x) + Math.abs(sh.y) + sh.blur * 2 : 0, gl ? gl.blur * 2 : 0);
-  const margin = Math.ceil(style.strokeW + 2 + bpad + fx + (o.highlightBg ? style.size * 0.25 : 0));
+  const margin = textMargin(style, o.highlightBg);
   const textH = L.lh * (L.lines.length - 1) + L.glyphH;
   const W = Math.ceil(L.width + 2 * margin + 2), H = Math.ceil(textH + 2 * margin + 2);
   const cv = createCanvas(W, H);

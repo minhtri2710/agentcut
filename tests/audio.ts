@@ -422,6 +422,40 @@ console.log("a looping clip's sound repeats at the picture's period; a plain aud
   check(`a looping audio clip repeats at its container's length (${plain.map((x) => x.toFixed(5))})`, plain.length === 2 && Math.abs(plain[1] - plain[0] - (4 + 16 / 48000)) < 0.5 / 48000, plain);
 }
 
+console.log("a clip with an in-point > 0 sounds from its own start: the mix keeps the silence before it and its length");
+{
+  // a 1 kHz burst at the start of every source second; at 2 with in 0.25 the bursts land at 2.75, 3.75, ...
+  ff("-f", "lavfi", "-i", "aevalsrc='if(lt(mod(t,1),0.02),0.9*sin(2*PI*1000*t),0)':s=48000:d=10", "-ac", "2", "-c:a", "pcm_s16le", join(m, "bursts.wav"));
+  ff("-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=10", "-i", join(m, "bursts.wav"), "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", join(m, "pic-bursts.mov"));
+  const len = (f: string) => Number(spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f], { encoding: "utf8" }).stdout);
+  const after = async (name: string, ops: any[]) => {
+    const Q = join(tmp, `in-${name}`);
+    api.create(Q, { width: 320, height: 240, fps: 24 });
+    await applyLatest(Q, [{ op: "add_clip", track: "main", type: "color", color: "black", duration: 6 }, ...ops]);
+    const p = api.openProject(Q), tl = p.absolutized(p.load());
+    tl.settings.loudness = null;
+    return buildAudio(tl, join(tmp, `in-${name}.wav`));
+  };
+  const at2 = (track: string, src: string, extra: object = {}) => ({ op: "add_clip", track, src: join(m, src), at: 2, in: 0.25, duration: 4, ...extra });
+  const every = [2.75, 3.75, 4.75, 5.75];
+  for (const [name, ops, exp] of [
+    ["an audio clip", [at2("music", "bursts.wav")], every],
+    ["a looping video clip whose sound wraps at its 2 s picture", [at2("overlay", "pic2-sound4.mov", { loop: true })], [3.75, 5.75]], // one burst at source 0: heard at each wrap
+    ["a speed-ramped video clip", [at2("overlay", "pic-bursts.mov", { duration: 3, keyframes: { speed: [[0, 1], [3, 1]] } })], every.slice(0, 3)],
+    ["an audio clip on a track with bus processing", [at2("music", "bursts.wav"), { op: "update_track", id: "music", set: { eq: "voice_clarity" } }], every],
+  ] as [string, any[], number[]][]) {
+    const w = await after(name.replace(/\W+/g, "-"), ops), got = onsets(w);
+    check(`${name} at 2 s with in 0.25: the mix is 6 s and the bursts are at ${exp} (${got.map((x) => x.toFixed(3))}, ${len(w)} s)`,
+      Math.abs(len(w) - 6) < 1e-3 && got.length === exp.length && exp.every((e, k) => Math.abs(got[k] - e) < 0.002), { got, len: len(w) });
+  }
+  const Q = join(tmp, "in-check");
+  api.create(Q, { width: 320, height: 240, fps: 24 });
+  await applyLatest(Q, [{ op: "add_clip", track: "main", type: "color", color: "black", duration: 6 }, { op: "add_clip", track: "music", id: "late", src: join(m, "tone.wav"), at: 3, in: 0.5, duration: 3 }]);
+  const fs = ((await api.audioCheck(Q, { out: join(tmp, "in-check.png") })) as any).findings;
+  check("audio_check: the silence before a clip with in > 0 is found, and so is its abrupt end",
+    fs.some((f: any) => f.type === "silence" && f.start === 0 && Math.abs(f.end - 3) < 0.05) && fs.some((f: any) => f.type === "cut_off" && f.id === "late" && f.t === 6), fs);
+}
+
 console.log("the mix leaves the event loop free and an abort stops its ffmpeg");
 {
   let ticks = 0;
@@ -609,6 +643,14 @@ check("srt: 2 cues in timeline time (captions start at 0.5)", srt.cues === 2 && 
 const vtt = readFileSync(api.exportCaptions(P, { out: join(tmp, "s.vtt") }).output, "utf8");
 check("vtt header + dot millis", vtt.startsWith("WEBVTT\n\n00:00:00.600 --> 00:00:02.000\n"), vtt);
 check("no captions in ids -> empty", await rejects(() => api.exportCaptions(P, { out: join(tmp, "x.srt"), ids: ["nope"] }), "empty"));
+{
+  const Q = join(tmp, "pages"), said = ["Hello", "my", "good", "friends,", "welcome", "back.", "Yes."];
+  api.create(Q, { width: 320, height: 240, fps: 24 });
+  await applyLatest(Q, [{ op: "add_captions", words: said.map((text, i) => ({ text, start: i * 0.3, end: (i + 1) * 0.3 })), preset: "clean", max_words: 3 }]);
+  const cues = readFileSync(api.exportCaptions(Q, { out: join(tmp, "pages.srt") }).output, "utf8").trim().split(/\n\n/).map((b) => b.split("\n").slice(2).join(" "));
+  check("max_words 3 closes a page one word early rather than leave the word that ends the clause alone; a one-word sentence stays alone",
+    JSON.stringify(cues) === JSON.stringify(["Hello my", "good friends,", "welcome back.", "Yes."]), cues);
+}
 const out = join(tmp, "sub.mp4");
 const r: any = await api.render(P, { out, subtitles: true, start: 1, workers: 1, sheet: false });
 const streams = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", out], { encoding: "utf8" }).stdout).streams;

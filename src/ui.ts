@@ -6,9 +6,10 @@ import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, utim
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import * as api from "./api.ts";
-import { inp } from "./ffinput.ts";
+import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
-import { EditError, type Dict } from "./model.ts";
+import { seekArgs } from "./media.ts";
+import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
@@ -93,7 +94,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (a.kind === "image") return sendFile(req, res, a.abs);
       const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
       const st = statSync(a.abs, { throwIfNoEntry: false }), key = `${a.abs}|${st?.mtimeMs}|${st?.size}|${t.toFixed(2)}`; // the file changing (relinked, or replaced in place) is a new picture
-      if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t).catch((e) => { thumbs.delete(key); throw e; })); }
+      if (!thumbs.has(key)) { if (thumbs.size > 500) thumbs.clear(); thumbs.set(key, thumbnail(a.abs, t, a.kind === "video" ? (a as Dict as VideoFacts) : undefined, a.fps).catch((e) => { thumbs.delete(key); throw e; })); }
       const jpg = await thumbs.get(key); // a failure here is an error response, not an empty cached 200
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-cache" });
       return res.end(jpg);
@@ -135,8 +136,17 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   function render(body: Dict) {
     const id = Math.random().toString(36).slice(2, 10);
     const job: Dict = { id, kind: body.play ? "play" : "export", status: "running", progress: 0, started: Date.now() };
-    const start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
-    const out = body.play ? join(cacheDir, `play-r${p.load().revision}-${start.toFixed(2)}-${end?.toFixed(2) ?? "end"}.mp4`) : undefined;
+    let start = Number(body.start ?? 0), end = body.end === undefined ? undefined : Number(body.end);
+    let out: string | undefined;
+    if (body.play) {
+      const tl = resolveTimeline(p.load()), fps = tl.settings.fps, duration = totalDuration(tl);
+      if (!Number.isFinite(start) || start < 0 || (end !== undefined && (!Number.isFinite(end) || end <= start)))
+        throw new EditError("play range must have a finite non-negative start and an end after start", "bad_value");
+      const first = Math.round(start * fps), last = Math.round(Math.min(end ?? duration, duration) * fps);
+      if (last <= first) throw new EditError("play range contains no frames", "empty", "choose a range of at least one frame inside the timeline");
+      start = first / fps; end = last / fps;
+      out = join(cacheDir, `play-r${tl.revision}-f${first}-${last}.mp4`);
+    }
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
     if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
     const live = out ? playing.get(out) : undefined;
@@ -170,10 +180,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     return job;
   }
 
-  function asset(id: string) {
+  function asset(id: string): Asset & { abs: string } {
     const a = p.load().assets[id];
     if (!a?.path) throw new EditError(`no asset '${id}' in this project`, "not_found");
-    return { kind: a.kind, abs: p.abs(a.path) };
+    return { ...a, abs: p.abs(a.path) };
   }
 
   function servedFile(rel: string) {
@@ -248,9 +258,10 @@ function pipe(rs: ReturnType<typeof createReadStream>, res: ServerResponse) {
   rs.pipe(res);
 }
 
-function thumbnail(abs: string, t: number): Promise<Buffer> {
+function thumbnail(abs: string, t: number, facts?: VideoFacts, fps?: number | null): Promise<Buffer> {
   return new Promise((ok, fail) => {
-    const ff = spawn("ffmpeg", ["-v", "error", "-ss", String(t), ...inp(abs), "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
+    const ss = seekArgs(t, facts, fps);
+    const ff = spawn("ffmpeg", ["-v", "error", ...ss.input, ...inp(abs), ...VIDEO_MAP, ...ss.output, "-frames:v", "1", "-vf", "scale=160:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]);
     const chunks: Buffer[] = [];
     ff.stdout.on("data", (c) => chunks.push(c));
     ff.on("error", fail);

@@ -102,30 +102,36 @@ type ApplyOpts = { allowInvalid?: boolean; label?: string; author?: string; sign
  *  is kept until the call ends, and the batch is re-run from a fresh load, checked against the revision again: one round per analysis the batch asks for, plus the last.
  *  A conflict ends the call and the analysis with it: the resend runs it again. */
 export async function apply(project: string | undefined, ops: M.Dict[] | M.Dict, o: ApplyOpts) {
+  o.signal?.throwIfAborted();
   const list = Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops.ops ?? [ops] : undefined;
   if (!Array.isArray(list)) throw new M.EditError("ops must be an array of op objects, or one op object", "bad_request", "each op is {op: name, ...args}");
   if (!o.dryRun) { checkAuthor(o.author); requireRevision(o.revision); } // before any analysis or font work: a call with no identity or no revision does nothing
   if (TEXTY.test(JSON.stringify(list))) await loadCanvas(); // glyph coverage checks for fonts/presets
+  o.signal?.throwIfAborted();
   const p = openProject(project);
   try { return await applyRounds(p, list, o); } finally { AN.release(p); }
 }
 
 async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
   for (;;) {
+    o.signal?.throwIfAborted();
     const tl = p.load();
     await loadForText(tl);
+    o.signal?.throwIfAborted();
     if (o.revision !== undefined) p.checkRevision(o.revision, tl.revision);
     const cur = M.resolve(structuredClone(tl)); // validate resolves a copy, so its paths index the resolved order
     const curKey = issueKeyer(cur), before = new Set(p.validate(cur).filter((i) => i.level === "error").flatMap((i) => [curKey(i), curKey(i, true)]));
     let saved = false; // files the ops wrote into media/ stay only when the batch is saved
     try {
-      const [next, results] = applyOps(p, tl, list);
+      const [next, results] = await applyOps(p, tl, list);
+      o.signal?.throwIfAborted(); // probing yields: a call cancelled meanwhile saves nothing
       const issues = p.validate(next);
       const nextKey = issueKeyer(next), added = issues.filter((i) => i.level === "error" && !before.has(nextKey(i)));
       if (added.length && !o.allowInvalid)
         throw new M.EditError(`batch rejected: it would add ${added.length} validation error(s); nothing was changed`, "validation_failed",
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
+        o.signal?.throwIfAborted();
         p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true;
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
@@ -470,8 +476,8 @@ async function tts(text: string | undefined, out: string | undefined, voice?: st
   if (p) refuseSource(p.root, p.load(), path);
   return AN.tts(text, path, voice, rate, p?.root, signal);
 }
-export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { needFfmpeg(); return AN.loudness(presolve(p), signal); }, transcribe, tts,
-  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = probeMedia(f); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, pre: a.kind === "image" ? undefined : preRoll(a, a.fps), srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
+export const analyze = { beats: (p: string, signal?: AbortSignal) => AN.beats(presolve(p), signal), scenes: (p: string, th?: number, signal?: AbortSignal) => AN.scenes(presolve(p), th, signal), silence: (p: string, n?: number, m?: number, signal?: AbortSignal) => AN.silence(presolve(p), n, m, signal), loudness: async (p: string, signal?: AbortSignal) => { (await needFfmpeg()); return AN.loudness(presolve(p), signal); }, transcribe, tts,
+  subject: async (p: string, fps?: number, allowDownload?: boolean, project?: string) => { const f = presolve(p), a = (await probeMedia(f)); if (a.kind !== "video" && a.kind !== "image") throw new M.EditError(`${p} is not a video or image`, "bad_media"); return analyzeSubject(f, { still: a.kind === "image", fps, duration: a.duration, container_start: a.container_start, pre: a.kind === "image" ? undefined : preRoll(a, a.fps), video_start: a.video_start, srcW: a.width, srcH: a.height, root: project === undefined ? undefined : openProject(project).root }, allowDownload); } };
 
 export const feedback = {
   add: (a: M.Dict) => FB.addNote(a as any),
