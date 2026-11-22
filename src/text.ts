@@ -133,8 +133,9 @@ export function textMargin(style: TextStyle, highlightBg?: string): number {
   return Math.ceil(style.strokeW + 2 + bgPad(style) + fx + (highlightBg ? style.size * 0.25 : 0));
 }
 
-/** canvas px of the widest word of `text` (as renderText cases it): a wrap width below it breaks that word */
-export const widestWord = (text: string, style: TextStyle) => Math.max(0, ...splitWords(style.uppercase ? text.toUpperCase() : text).map((w) => measure(style, w)));
+/** canvas px of the widest word of `text` (as renderText cases it) that layout keeps whole: a wrap width below it breaks that word (CJK breaks anyway) */
+export const widestWord = (text: string, style: TextStyle) =>
+  Math.max(0, ...splitWords(style.uppercase ? text.toUpperCase() : text).filter((w) => !CJK.test(w)).map((w) => measure(style, w)));
 
 export function renderText(text: string, style: TextStyle, maxWidth: number, o: TextOpts = {}): Canvas {
   if (style.uppercase) text = text.toUpperCase();

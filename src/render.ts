@@ -49,7 +49,7 @@ export class Layer {
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
-  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle; private wrap?: number;
+  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle; private wrap?: [number, number]; private floors = new Map<number, number>();
   private pan = false; private panBuf?: Buffer;
   private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
@@ -135,20 +135,24 @@ export class Layer {
     return (2 * textMargin(new TextStyle(this.c, k, Math.min(W0, H0)), highlightBg) + 2) / k;
   }
 
-  /** Wrap width in canvas px, worked out once in project px so every render scale wraps the same words. With no max_width, a horizontally centred box stays
-   *  inside the title area and, unless anchored to the top or bottom or given a y, clear of the side UI zones; never narrower than the widest word. */
-  private wrapWidth(d?: string, highlightBg?: string): number {
-    if (this.wrap === undefined) {
-      const c = this.c, { W0, H0, k } = this.r, edges = edgesOf(c.position);
-      this.wrap = maxWidthPx(c, W0, 1, d);
+  /** Wrap width in canvas px for `text` (the clip's text, or caption page `key`). The default and the safe width are worked out once in project px so every
+   *  render scale wraps the same words: with no max_width, a horizontally centred box stays inside the title area and, unless anchored to the top or bottom
+   *  or given a y, clear of the side UI zones. Never narrower than the widest word of `text` that layout would keep whole, in canvas px as layout measures it. */
+  private wrapWidth(text: string, key: number, d?: string, highlightBg?: string): number {
+    if (!this.wrap) {
+      const c = this.c, { W0, H0 } = this.r, edges = edgesOf(c.position), def = maxWidthPx(c, W0, 1, d);
+      let safe = def;
       if (c.max_width === undefined && c.x === undefined && !edges.some((e) => e === "left" || e === "right")) {
         const z = safeZones(W0, H0), side = c.y === undefined && !edges.some((e) => e === "top" || e === "bottom") ? z.ui.filter(([, , , uw]) => uw < W0).map(([, ux]) => ux) : [];
-        const half = Math.min(z.title[0] + z.title[2], ...side) - W0 / 2;
-        const text = this.type === "captions" ? this.words.map((w) => w.text).join(" ") : String(c.text ?? "");
-        this.wrap = Math.min(this.wrap, Math.max(2 * half - this.ring(highlightBg), widestWord(text, this.textStyle()) / k));
+        safe = 2 * (Math.min(z.title[0] + z.title[2], ...side) - W0 / 2) - this.ring(highlightBg);
       }
+      this.wrap = [def, safe];
     }
-    return this.wrap * this.r.k;
+    const [def, safe] = this.wrap, k = this.r.k;
+    if (safe >= def) return def * k;
+    let floor = this.floors.get(key);
+    if (floor === undefined) this.floors.set(key, (floor = widestWord(text, this.textStyle())));
+    return Math.min(def * k, Math.max(safe * k, floor));
   }
 
   textStyle(): TextStyle {
@@ -194,7 +198,7 @@ export class Layer {
       case "text": {
         const st = this.textStyle();
         const text = String(c.text ?? "");
-        const mw = this.wrapWidth();
+        const mw = this.wrapWidth(text, 0);
         const n = [...(st.uppercase ? text.toUpperCase() : text)].length;
         const vc = m.chars === null ? null : Math.floor(m.chars * n + 1e-6);
         const nw = splitWords(text).length;
@@ -251,7 +255,8 @@ export class Layer {
     pg.forEach((wi, j) => { if (words[wi].start <= tl) active = j; });
     const style = c.style ?? "karaoke";
     const st = this.textStyle();
-    const mw = this.wrapWidth("84%", c.highlight_bg);
+    const text = pg.map((i) => words[i].text).join(" ");
+    const mw = this.wrapWidth(text, cur, "84%", c.highlight_bg);
     const pageStart = words[pg[0]].start;
     if (style === "word") {
       const j = active ?? 0;
@@ -261,7 +266,6 @@ export class Layer {
       return this.cache.getOr(`w${cur}|${j}`, () => renderText(w.text, st, mw, { activeWord: c.highlight_color ? 0 : null, highlightColor: c.highlight_color }));
     }
     if (tl - pageStart < 0.1) m.scale *= 0.92 + 0.08 * A.ease("ease_out", (tl - pageStart) / 0.1);
-    const text = pg.map((i) => words[i].text).join(" ");
     if (style === "reveal") { const vis = (active ?? 0) + 1; return this.cache.getOr(`r${cur}|${vis}`, () => renderText(text, st, mw, { visibleWords: vis })); }
     if (style === "line") return this.cache.getOr(`l${cur}`, () => renderText(text, st, mw));
     return this.cache.getOr(`k${cur}|${active}`, () => renderText(text, st, mw, { activeWord: active, highlightColor: c.highlight_color ?? "#FFD60A", highlightBg: c.highlight_bg }));

@@ -737,11 +737,12 @@ console.log("templates: the text of every template stays inside the safe area at
   }
   const { CAPTION_PRESETS } = await import("../src/presets.ts"), d = join(tmp, "captions-default-9x16");
   const words = "Welcome back everybody, today we cut a short video together".split(" ").map((text, i) => ({ text, start: i * 0.4, end: (i + 1) * 0.4 }));
+  words.push({ text: "responsibilities", start: 4.8, end: 5.4 }); // its own last page, wider than the safe width: that page may be flagged
   api.create(d, { preset: "reels" });
-  await applyLatest(d, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 5 },
+  await applyLatest(d, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 6 },
     ...[...Object.keys(CAPTION_PRESETS), undefined].map((preset, i) => ({ op: "add_captions", words, track: `subs${i}`, ...(preset ? { preset } : {}) }))]);
-  const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
-  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe", !unsafe.length, unsafe.map((f: any) => f.message));
+  const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe" && f.t < 4.8);
+  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe, a long word's page leaves the others narrowed", !unsafe.length, unsafe.map((f: any) => f.message));
   const c9 = join(tmp, "centred-9x16"), short = "we go to the sea and we swim in it as the sun is up and we sit on the sand to eat";
   api.create(c9, { preset: "reels" });
   await applyLatest(c9, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 3 },
