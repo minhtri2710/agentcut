@@ -173,7 +173,7 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     if (c.fade_in) ch.push(`afade=t=in:st=0:d=${Number(c.fade_in)}`);
     if (c.fade_out) ch.push(`afade=t=out:st=${Math.max(0, dur - Number(c.fade_out))}:d=${Number(c.fade_out)}`);
     // adelay stamps its lead-in silence from an unset pts when its first input frame is late (an in-point > 0 drops the first decoded frames), so a later atrim or amix drops it: restamp by sample count
-    ch.push(`adelay=${Math.round(start * 1000)}:all=1`, "asetpts=N/SR/TB");
+    ch.push(`adelay=${Math.round(start * sr)}S:all=1`, "asetpts=N/SR/TB");
     const onBus = bus(tr).length > 0;
     if (!onBus) ch.push(...duck(tr, start, start + dur));
     if (!runs) graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);

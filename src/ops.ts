@@ -14,7 +14,7 @@ import type { Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
 import { own } from "./own.ts";
-import { normWord, registerEditOps, shiftKfs } from "./ops-edit.ts";
+import { normWord, registerEditOps, scaleKfs, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
 import { registerVisionOps } from "./ops-vision.ts";
@@ -407,12 +407,15 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
 
-/** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length (d0 before the edit) scales by s0 / s1, unless the edit gives one or a rule owns it (freeze, until_end, match_duration).
- *  Its detached audio pieces at s0 take the new speed on every path and keep their source moments: offset and length scale too, and a piece that reaches the picture's end and starts before its new end ends with it, plus its tail past the end scaled. A speed ramp has no single ratio: nothing changes. */
-function retime(tl: Timeline, c: Clip, s0: number, d0: number, scaleOwn: boolean) {
+/** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length (d0 before the edit) scales by s0 / s1, unless the edit gives one or a rule owns it (freeze, until_end, match_duration);
+ *  when it scales, its keyframes, effect windows and fades scale with it (those sent in the same edit are kept as sent).
+ *  Its detached audio pieces at s0 take the new speed on every path and keep their source moments: offset and length scale too, and a piece that reaches the picture's end and starts before its new end ends with it, plus its tail past the end scaled;
+ *  their keyframes and fades scale when the picture's do. A speed ramp has no single ratio: nothing changes. */
+function retime(tl: Timeline, c: Clip, s0: number, d0: number, patch: Dict) {
   const r = s0 / (Number(c.speed ?? 1) || 1);
   if (r === 1 || c.keyframes?.speed) return;
-  if (scaleOwn && !c.freeze && !c.until_end && !computedDuration(c)) c.duration = round6(clipDur(c) * r);
+  const scaled = !("duration" in patch) && !c.freeze && !c.until_end && !computedDuration(c);
+  if (scaled) { c.duration = round6(clipDur(c) * r); scaleKfs(c, r, patch); }
   const d1 = clipDur(c);
   for (const [, au] of linkedAudio(tl, c)) {
     if (Math.abs((Number(au.speed ?? 1) || 1) - s0) > 1e-6 || au.until_end || computedDuration(au)) continue;
@@ -420,6 +423,7 @@ function retime(tl: Timeline, c: Clip, s0: number, d0: number, scaleOwn: boolean
     if (c.speed === undefined) delete au.speed; else au.speed = c.speed;
     au.offset = round6(off * r);
     au.duration = round6(tail > -1e-6 && off * r < d1 ? d1 + (tail - off) * r : ad * r);
+    if (scaled) scaleKfs(au, r);
   }
 }
 
@@ -444,7 +448,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     const s0 = Number(c.speed ?? 1) || 1, d0 = clipDur(c);
     deepMerge(c, patch);
     lengthOnce(c);
-    if ("speed" in patch) retime(tl, c, s0, d0, !("duration" in patch));
+    if ("speed" in patch) retime(tl, c, s0, d0, patch);
     if (patch.attach_to) refuseAttachedMagnetic(c, tr);
     if (c.attach_to && patch.start != null) { // an attached clip is placed by its offset, against the (new) target
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");

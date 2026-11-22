@@ -265,6 +265,7 @@ console.log("timeline without an audible clip: no audio track");
   }
   const gf: any = await api.render(SP, { out: so("mute.gif"), end: 1 });
   check("gif: has_audio false, no no-audible-clips warning", gf.has_audio === false && !gf.warnings?.some((w: string) => /audible/.test(w)), gf);
+  check("gif: the result names the gif encoder that wrote it", gf.encoder === "gif", gf.encoder);
   const hw: any = await api.render(SP, { out: so("mute-hw.mp4"), fast: true, workers: 1, end: 1, sheet: false });
   check("silent hardware-encode path (fast): no audio stream, has_audio false", kinds(so("mute-hw.mp4")) === "video" && hw.has_audio === false, { k: kinds(so("mute-hw.mp4")), hw });
   check("silent .mp4 keeps the faststart layout", (() => { const b = readFileSync(so("mute1.mp4")); return b.indexOf("moov") > 0 && b.indexOf("moov") < b.indexOf("mdat"); })());

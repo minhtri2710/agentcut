@@ -347,7 +347,7 @@ export async function renderVideo(tl: Timeline, root: string, output: string, o:
   const el = (performance.now() - began) / 1000;
   const res: Record<string, unknown> = {
     output, duration: +(n / fps).toFixed(3), frames: n, width: W, height: H, fps, range: [start, end], workers,
-    codec: gif ? "gif" : plan.codec, alpha: plan.alpha, has_audio: audible, encoder: v[1],
+    codec: gif ? "gif" : plan.codec, alpha: plan.alpha, has_audio: audible, encoder: gif ? "gif" : v[1],
     render_seconds: +el.toFixed(2), speed_x: +((n / fps) / el).toFixed(2), size_bytes: statSync(output).size,
   };
   if (plan.warnings.length) res.warnings = plan.warnings;

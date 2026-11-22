@@ -388,6 +388,18 @@ check("a failed validate is not an error event: no error row for validate and no
     check("the render line's p50 and min come from the same renders: p50 is not below min", all.render!.renders === 5 && all.render!.speed_x_min === 0.3 && all.render!.speed_x_p50 === 2 && /p50 2x realtime, min 0.3x/.test(FB.summaryMarkdown(all)), all.render);
   } finally { process.env.AGENTCUT_HOME = real; }
 }
+{
+  // repeated misses in an empty store: an unsupported format gets advice a format can take; a guessed name keeps the alias advice
+  const FB = await import("../src/feedback.ts");
+  const real = process.env.AGENTCUT_HOME;
+  process.env.AGENTCUT_HOME = join(tmp, "home-formats");
+  try {
+    for (let i = 0; i < 2; i++) { cli(["export", "-o", "x.mp4"], { ok: false, cwd: P }); cliLatest(["op", "updat_clip", "id=vid1"], { ok: false, cwd: P }); }
+    const rec = FB.summary().recommendations.map((r) => r.text);
+    check("feedback: a repeated format miss is not told to add an alias; a repeated name miss is",
+      rec.some((t) => /interchange format '\.mp4'/.test(t) && /supported/.test(t) && !/alias/.test(t)) && rec.some((t) => /'updat_clip'/.test(t) && /alias/.test(t)), rec);
+  } finally { process.env.AGENTCUT_HOME = real; }
+}
 check("bad feedback kind rejected", cli(["feedback", "add", "kind=rant", "title=x"], { ok: false }).error.code === "bad_kind");
 check("resolve note", cli(["feedback", "resolve", n1.id]).status === "resolved");
 {

@@ -132,7 +132,8 @@ async function applyRounds(p: Project, list: M.Dict[], o: ApplyOpts) {
           added[0].hint ?? "fix the listed fields and resend the whole batch", undefined, { issues: added.slice(0, 15) });
       if (!o.dryRun && list.length) { // an empty batch applies nothing: no revision, no undo entry, redo stays
         o.signal?.throwIfAborted();
-        p.save(next, o.label ?? [...new Set(list.map((x) => x.op))].join(", ").slice(0, 120), o.author); saved = true;
+        const names = [...new Set(list.map((x) => x.op))].join(", "); // the label keeps whole op names within 120 chars
+        p.save(next, o.label ?? (names.length <= 120 ? names : names.slice(0, names.lastIndexOf(", ", 120))), o.author); saved = true;
       }
       const prep = results.some((r) => r.pending) ? { prepare_needed: true, next: "prepare (vision requests recorded; preview/render need them)" } : {};
       return { ok: true, project: p.root, dry_run: !!o.dryRun, revision: next.revision, results, duration: M.totalDuration(next), ...brief(issues), ...prep };

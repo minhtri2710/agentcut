@@ -208,7 +208,9 @@ export function summary(o: { sinceDays?: number; limit?: number } = {}) {
   const rec: { priority: number; text: string; evidence: string }[] = [];
   for (const x of internal) rec.push({ priority: 100 + x.count, text: `Fix internal error: ${x.example}`, evidence: `${x.count}x in ${x.cmds.join(", ")}` });
   for (const n of notes) rec.push({ priority: score(n) * 5, text: `[${n.kind}/${n.severity}] ${n.title}${n.suggestion ? ` - suggested: ${n.suggestion}` : ""}`, evidence: `${n.id}, reported ${n.count}x` });
-  for (const m of misses) if (m.count >= 2) rec.push({ priority: 10 * m.count, text: `Agents guess ${m.kind} '${m.guess}'${m.suggestion ? ` (meant '${m.suggestion}')` : ""}: add it as an alias or rename`, evidence: `${m.count} failed calls` });
+  for (const m of misses) if (m.count >= 2) rec.push({ priority: 10 * m.count, evidence: `${m.count} failed calls`, text: / format$/.test(m.kind) // a format is not a name: an alias cannot make an unsupported one work
+    ? `Agents ask for unsupported ${m.kind} '${m.guess}': support it or point the docs and hint at the supported ones`
+    : `Agents guess ${m.kind} '${m.guess}'${m.suggestion ? ` (meant '${m.suggestion}')` : ""}: add it as an alias or rename` });
   for (const r of rejections) if (r.count >= 3) rec.push({ priority: 4 * r.count, text: `Frequent rejected batch: ${r.issue} - clarify docs/defaults or accept this input`, evidence: `${r.count}x` });
   for (const l of latency) if (l.slow >= 2 || (own(SLOW_MS, l.cmd) && l.p95_ms > SLOW_MS[l.cmd])) rec.push({ priority: 6 * l.slow + 5, text: `Speed up '${l.cmd}': p95 ${l.p95_ms} ms`, evidence: `${l.slow}/${l.calls} calls over ${own(SLOW_MS, l.cmd) ?? "?"} ms` });
   if (renderPerf?.slow_renders) rec.push({ priority: 8 * renderPerf.slow_renders, text: `Render slower than 0.5x realtime in ${renderPerf.slow_renders} job(s)`, evidence: JSON.stringify(renderPerf.slowest[0]) });

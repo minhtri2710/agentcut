@@ -53,9 +53,25 @@ export function shiftKfs(c: Clip, e: number, srtHint = "give the clip 'words' (s
     });
     if (!c.effects.length) delete c.effects;
   }
+  kfTimes(c, (t) => t + e);
+}
+/** map the times of a clip's keyframes (not a speed ramp) */
+function kfTimes(c: Clip, f: (t: number) => number) {
   if (!c.keyframes) return;
   for (const [k, list] of Object.entries(c.keyframes as Dict)) if (k !== "speed" && Array.isArray(list))
-    c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(parseTime(x[0]) + e), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(parseTime(x.t) + e) } : x);
+    c.keyframes[k] = list.map((x: any) => Array.isArray(x) ? [round6(f(parseTime(x[0]))), ...x.slice(1)] : x && typeof x === "object" && "t" in x ? { ...x, t: round6(f(parseTime(x.t))) } : x);
+}
+/** Scale a clip's content times by r, as a speed edit scales its length: keyframes (not a speed ramp), effect windows (a flash's moment, not its own length) and fades.
+ *  A field in `given` (sent in the same edit) is kept as sent. */
+export function scaleKfs(c: Clip, r: number, given: Dict = {}) {
+  const s = (v: unknown) => round6(parseTime(v as any) * r);
+  for (const k of ["fade_in", "fade_out"]) if (c[k] && !(k in given)) c[k] = s(c[k]);
+  if (Array.isArray(c.effects) && !("effects" in given))
+    c.effects = c.effects.map((f: any) => !f || typeof f !== "object" ? f : {
+      ...f, ...(f.start !== undefined ? { start: s(f.start) } : {}), ...(f.at !== undefined ? { at: s(f.at) } : {}),
+      ...(f.duration !== undefined && f.type !== "flash" ? { duration: s(f.duration) } : {}),
+    });
+  if (!("keyframes" in given)) kfTimes(c, (t) => t * r);
 }
 /** grow one side of a clip by e seconds (negative shrinks), keeping its content in place */
 function extend(c: Clip, side: Side, e: number) {

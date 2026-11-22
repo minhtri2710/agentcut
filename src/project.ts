@@ -229,7 +229,7 @@ export class Project {
   checkRevision(base: number, current: number) {
     if (!Number.isInteger(base) || base < 0) throw new EditError(`revision must be a non-negative integer (got ${JSON.stringify(base)})`, "bad_revision", "pass the revision from info / project_info, or from the previous result's revision");
     if (base === current) return;
-    const changes = this.changesSince(base), shown = changes.slice(0, 8).map((c) => `${JSON.stringify(c.author)} ${c.label.slice(0, 60)}`).join(", ");
+    const changes = this.changesSince(base), shown = changes.slice(0, 8).map((c) => `${JSON.stringify(c.author)} ${c.label}`).join(", ");
     throw new EditError(`project changed since revision ${base} (now ${current})${shown ? `: ${shown}${changes.length > 8 ? `, and ${changes.length - 8} more` : ""}` : ""}; nothing was changed`, "conflict",
       "reload the project (info / project_info), then resend your edit against the latest revision; an analysis the batch needed (transcription, speech, silence) runs again on the resend", undefined, { revision: current, changes });
   }

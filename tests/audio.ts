@@ -448,6 +448,9 @@ console.log("a clip with an in-point > 0 sounds from its own start: the mix keep
     check(`${name} at 2 s with in 0.25: the mix is 6 s and the bursts are at ${exp} (${got.map((x) => x.toFixed(3))}, ${len(w)} s)`,
       Math.abs(len(w) - 6) < 1e-3 && got.length === exp.length && exp.every((e, k) => Math.abs(got[k] - e) < 0.002), { got, len: len(w) });
   }
+  ff("-f", "lavfi", "-i", "aevalsrc=0.5|0.5:s=48000:d=1", "-c:a", "pcm_s16le", join(m, "dc.wav"));
+  const first = Math.round(onsets(await after("sample", [{ op: "add_clip", track: "music", src: join(m, "dc.wav"), at: 1001 / 48000, duration: 0.5 }]))[0] * 48000);
+  check(`a clip that starts between two milliseconds sounds from its own sample (${first}, want 1001)`, first === 1001, first);
   const Q = join(tmp, "in-check");
   api.create(Q, { width: 320, height: 240, fps: 24 });
   await applyLatest(Q, [{ op: "add_clip", track: "main", type: "color", color: "black", duration: 6 }, { op: "add_clip", track: "music", id: "late", src: join(m, "tone.wav"), at: 3, in: 0.5, duration: 3 }]);

@@ -377,6 +377,20 @@ console.log("required revision: every history-writing call names the state it wa
   check("a stale revision is a conflict that names who changed what since it, in order, and the details list them",
     stale.code === "conflict" && stale.message === 'project changed since revision 0 (now 2): "alice" add_marker, "bob" set_settings; nothing was changed'
     && JSON.stringify(stale.details) === JSON.stringify({ revision: 2, changes: [{ author: "alice", label: "add_marker" }, { author: "bob", label: "set_settings" }] }), { code: stale.code, message: stale.message, details: stale.details });
+  {
+    const L = join(tmp, "proj-long-label");
+    api.create(L, { preset: "720p" });
+    const many = [
+      { op: "add_clip", track: "main", type: "color", color: "red", duration: 4, id: "c1" }, { op: "add_clip", track: "main", type: "color", color: "blue", duration: 4, id: "c2" },
+      { op: "split_clip", id: "c1", at: 2 }, { op: "trim_clip", id: "c2", trim_start: 0.5 }, { op: "move_clip", id: "c2", index: 0 }, { op: "update_clip", id: "c2", opacity: 0.9 },
+      { op: "add_marker", t: 1 }, { op: "add_track", id: "x2", kind: "video" }, { op: "update_track", id: "x2", name: "two" }, { op: "add_effect", id: "c2", type: "grain" },
+      { op: "set_keyframes", id: "c2", prop: "opacity", keyframes: [[0, 1], [1, 0.5]] }, { op: "clear_markers" }, { op: "duplicate_clip", id: "c2" },
+    ];
+    await api.apply(L, many, { revision: 0, author: "alice" });
+    const label = api.history(L).undo[0].label, names = label.split(", "), long = await caught(() => api.apply(L, [{ op: "add_marker", t: 2 }], { revision: 0, author: "bob" }));
+    check("a batch label longer than 120 chars keeps whole op names, and a conflict shows each label whole",
+      label.length <= 120 && names.length >= 10 && names.every((n: string) => many.some((o) => o.op === n)) && long.code === "conflict" && long.message.includes(`"alice" ${label}; nothing was changed`), { label, message: long.message });
+  }
 
   api.undo(R, 1, 2, "carol"); // now 3: bob's edit sits on the redo stack
   const undone = await caught(() => api.apply(R, [{ op: "add_marker", t: 3 }], { revision: 2, author: "dave" }));
@@ -2031,6 +2045,19 @@ console.log("update_clip speed keeps the source a clip plays; ripple_delete is r
   ]);
   check("a duration given with the speed wins; a freeze, until_end and match_duration keep their length",
     near(at(g, "whole").duration, 4) && near(at(g, "fz").duration, 2) && near(at(g, "ue").duration, 9.5) && near(at(g, "md").duration, 1), ["whole", "fz", "ue", "md"].map((id) => at(g, id)));
+  const content = [
+    { op: "update_clip", id: "whole", fade_in: 0.5, fade_out: 1, keyframes: { opacity: [[0, 1], [8, 0.2]] }, effects: [{ type: "blur", start: 7, duration: 2, radius: 5 }, { type: "flash", at: 6 }, { type: "grain" }] },
+    { op: "detach_audio", id: "whole" }, { op: "update_clip", id: "aud1", keyframes: { volume: [[0, 1], [8, 0.5]] } },
+  ];
+  const sc = await base([...content, { op: "update_clip", id: "whole", speed: 2 }]), sv = at(sc, "whole"), sa = at(sc, "aud1");
+  check("a speed edit that rescales a clip scales its keyframes, effect windows (a flash's moment, not its length) and fades, and those of its detached audio",
+    JSON.stringify(sv.keyframes) === JSON.stringify({ opacity: [[0, 1], [4, 0.2]] }) && JSON.stringify(sv.effects) === JSON.stringify([{ type: "blur", start: 3.5, duration: 1, radius: 5 }, { type: "flash", at: 3 }, { type: "grain" }])
+    && sv.fade_in === 0.25 && sv.fade_out === 0.5 && JSON.stringify(sa.keyframes) === JSON.stringify({ volume: [[0, 1], [4, 0.5]] }) && sa.fade_in === 0.25 && sa.fade_out === 0.5 && near(sa.duration, 5), { sv, sa });
+  const kp = await base([...content, { op: "update_clip", id: "whole", speed: 2, duration: 10 }]);
+  const gv = at(await base([...content, { op: "update_clip", id: "whole", speed: 2, keyframes: { opacity: [[4, 0]] }, fade_out: 2 }]), "whole");
+  check("a speed edit that keeps the length scales nothing; keyframes and fades sent with the speed stay as sent while the rest scales",
+    at(kp, "whole").keyframes.opacity[1][0] === 8 && at(kp, "whole").effects[0].start === 7 && at(kp, "whole").fade_out === 1 && at(kp, "aud1").keyframes.volume[1][0] === 8 && at(kp, "aud1").fade_out === 1
+    && JSON.stringify(gv.keyframes) === JSON.stringify({ opacity: [[4, 0]] }) && gv.fade_out === 2 && gv.fade_in === 0.25 && gv.effects[0].start === 3.5, { kp: [at(kp, "whole"), at(kp, "aud1")], gv });
   const del = async (name: string) => applyOps(null as any, await base([{ op: "add_clip", track: "o1", asset: "av", id: "a", at: 0, duration: 1 }, { op: "add_clip", track: "o1", asset: "av", id: "b", at: 2, duration: 1 }]),
     [{ op: name, id: "cut" }, { op: name, id: "a", ripple: true }]).catch((e) => [e, e]);
   const [rt, rr] = await del("remove_clip"), [dt, dr] = await del("ripple_delete");
