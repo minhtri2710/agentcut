@@ -741,8 +741,10 @@ console.log("templates: the text of every template stays inside the safe area at
   api.create(d, { preset: "reels" });
   await applyLatest(d, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 6 },
     ...[...Object.keys(CAPTION_PRESETS), undefined].map((preset, i) => ({ op: "add_captions", words, track: `subs${i}`, ...(preset ? { preset } : {}) }))]);
-  const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe" && f.t < 4.8);
-  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe, a long word's page leaves the others narrowed", !unsafe.length, unsafe.map((f: any) => f.message));
+  const all = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe"), unsafe = all.filter((f: any) => f.t < 4.8);
+  const tiktok = (await api.info(d, "json")).timeline.tracks.find((t: any) => t.id === `subs${Object.keys(CAPTION_PRESETS).indexOf("tiktok")}`).clips[0].id;
+  const longFlagged = all.some((f: any) => f.id === tiktok && f.t >= 4.8); // the word is wider than the safe width on this host's font, or the row proves nothing
+  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe, a long word's page leaves the others narrowed", longFlagged && !unsafe.length, { longFlagged, unsafe: unsafe.map((f: any) => f.message) });
   const c9 = join(tmp, "centred-9x16"), short = "we go to the sea and we swim in it as the sun is up and we sit on the sand to eat";
   api.create(c9, { preset: "reels" });
   await applyLatest(c9, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 3 },
