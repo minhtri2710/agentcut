@@ -275,7 +275,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
   } else {
     if (a.at !== undefined) c.start = round6(parseAt(tl, a.at));
     else if (a.after) c.start = round6(clipEnd(findClip(tl, a.after)[2]));
-    else c.start = round6(trackEnd(tr));
+    else c.start = round6(c.until_end ? Math.max(0, ...clips.filter((x) => !x.until_end).map(clipEnd)) : trackEnd(tr)); // an until_end clip's end is the timeline end: another one starts with it
     clips.push(c);
     clips.sort((x, y) => clipStart(x) - clipStart(y));
   }
@@ -474,7 +474,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
     const [tr, , c] = findClip(tl, a.id);
     if (a.duration !== undefined || a.end !== undefined || a.trim_start || a.trim_end) ownDuration(c);
     const speed = Number(c.speed ?? 1) || 1;
-    const in0 = parseTime(c.in ?? 0), d0 = clipDur(c);
+    const in0 = parseTime(c.in ?? 0), d0 = clipDur(c), s0 = clipStart(c);
     if (a.in !== undefined) c.in = round6(parseTime(a.in));
     if (a.duration !== undefined) c.duration = round6(parseTime(a.duration));
     if (a.end !== undefined) c.duration = round6(parseAt(tl, a.end) - clipStart(c));
@@ -495,7 +495,8 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
       }
       c.duration = round6(clipDur(c) - e);
     }
-    if (clipDur(c) <= 0) throw new EditError("trim leaves a non-positive duration", "bad_trim");
+    if (clipDur(c) <= 0) throw new EditError(`trim leaves '${c.id}' with a non-positive duration (it is ${round6(d0)}s long)`, "bad_trim",
+      `keep trim_start + trim_end below ${round6(d0)}, duration above 0, or end after its start ${round6(s0)}`);
     const out: Dict = { id: c.id, in: c.in ?? 0, start: c.start, duration: c.duration };
     // detached audio follows: same source in-point change, same amount cut from the head/tail
     const la = c.reverse ? undefined : soleAudio(tl, c, "trim_clip"); // a reversed picture leaves its audio alone

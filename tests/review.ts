@@ -715,7 +715,7 @@ console.log("templates: the text of every template stays inside the safe area at
   const args: Record<string, object> = {
     slideshow: { media, title: "Our summer trip" },
     promo: { media, hook: "Meet the new Model X", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
-    beat_montage: { media, music: join(m, "beat.wav"), title: "Album" },
+    beat_montage: { media, music: join(m, "beat.wav"), title: "SUMMER HIGHLIGHTS" },
     quote: { text: "Stay hungry, stay foolish", author: "Steve" },
     listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Noise-cancelling wireless earbuds with a charging case", media: png }] },
   };
@@ -735,6 +735,13 @@ console.log("templates: the text of every template stays inside the safe area at
     const d = join(tmp, `tpl-${name}-portrait`), text = (await api.info(d, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "text");
     check(`${name}: portrait text has an explicit button-safe width`, parseFloat(text.max_width) < 75, text.max_width);
   }
+  const { CAPTION_PRESETS } = await import("../src/presets.ts"), d = join(tmp, "captions-default-9x16");
+  const words = "Welcome back everybody, today we cut a short video together".split(" ").map((text, i) => ({ text, start: i * 0.4, end: (i + 1) * 0.4 }));
+  api.create(d, { preset: "reels" });
+  await applyLatest(d, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 5 },
+    ...[...Object.keys(CAPTION_PRESETS), undefined].map((preset, i) => ({ op: "add_captions", words, track: `subs${i}`, ...(preset ? { preset } : {}) }))]);
+  const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
+  check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe", !unsafe.length, unsafe.map((f: any) => f.message));
 }
 
 console.log("templates: placement is kept where it was safe, a preset's own placement is kept, margin takes x and y");

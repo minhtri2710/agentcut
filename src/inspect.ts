@@ -135,11 +135,16 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
         const b = await r.layoutBox(L, t);
         if (!b) continue;
         const [x, y, w, h] = b.map((v) => v / r.k);
-        const where: string[] = [];
-        if (x < sx - tol || y < sy - tol || x + w > sx + sw + tol || y + h > sy + sh + tol) where.push("outside the title-safe area (5% inset)");
-        for (const [name, ux, uy, uw, uh] of z.ui) if (x < ux + uw - tol && x + w > ux + tol && y < uy + uh - tol && y + h > uy + tol) where.push(`under the ${name}`);
+        const where: string[] = [], yIn = y >= sy - tol && y + h <= sy + sh + tol;
+        if (x < sx - tol || !yIn || x + w > sx + sw + tol) where.push("outside the title-safe area (5% inset)");
+        const hits = z.ui.filter(([, ux, uy, uw, uh]) => x < ux + uw - tol && x + w > ux + tol && y < uy + uh - tol && y + h > uy + tol);
+        for (const [name] of hits) where.push(`under the ${name}`);
         if (where.length) {
-          out.push({ type: "text_unsafe", t: r3(L.start + t), id: c.id, message: `${c.id} box [${[x, y, w, h].map(Math.round).join(", ")}] is ${where.join(" and ")}`, hint: "move it toward the centre (position/margin or y: \"40%\"-\"75%\"), shrink font_size/max_width; check with preview_frame guides=true" });
+          // a centred box flagged only across (title-safe sides, side zones) is too wide: moving it does not help
+          const wide = Math.abs(x + w / 2 - W / 2) <= tol && yIn && hits.every(([, , , uw]) => uw < W);
+          const hint = wide ? `the box is centred and too wide: shrink max_width (or font_size) until the box is at most ${Math.floor(2 * (Math.min(sx + sw, ...hits.map(([, ux]) => ux)) - W / 2))}px wide; check with preview_frame guides=true`
+            : "move it toward the centre (position/margin or y: \"40%\"-\"75%\"), shrink font_size/max_width; check with preview_frame guides=true";
+          out.push({ type: "text_unsafe", t: r3(L.start + t), id: c.id, message: `${c.id} box [${[x, y, w, h].map(Math.round).join(", ")}] is ${where.join(" and ")}`, hint });
           break;
         }
       }

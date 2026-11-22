@@ -6,12 +6,12 @@ import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
 import { applyEffects, applyMask, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
-import { safeZones } from "./safe.ts";
+import { edgesOf, safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
   TEXTY, type Track, type VideoFacts, VISUAL_TYPES,
 } from "./model.ts";
-import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, TextStyle } from "./text.ts";
+import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, textMargin, TextStyle } from "./text.ts";
 
 setCanvas(Skia);
 
@@ -129,6 +129,15 @@ export class Layer {
     await this.media().readAt(this.srcOffset(tl));
   }
 
+  /** Wrap width in canvas px. With no max_width, a horizontally centred box (text + its margin) stays inside the title area and, at its default height, clear of the side UI zones. */
+  private wrapWidth(d?: string, highlightBg?: string): number {
+    const c = this.c, { W0, H0, k } = this.r, mw = maxWidthPx(c, W0, k, d);
+    if (c.max_width !== undefined || c.x !== undefined || edgesOf(c.position).some((e) => e === "left" || e === "right")) return mw;
+    const z = safeZones(W0, H0), side = !c.position && c.y === undefined ? z.ui.filter(([, , , uw]) => uw < W0).map(([, ux]) => ux) : [];
+    const half = Math.min(z.title[0] + z.title[2], ...side) - W0 / 2;
+    return Math.min(mw, 2 * half * k - 2 * textMargin(this.textStyle(), highlightBg) - 2);
+  }
+
   textStyle(): TextStyle {
     if (!this.style) {
       this.style = new TextStyle(this.c, this.r.k, Math.min(this.r.W0, this.r.H0));
@@ -172,7 +181,7 @@ export class Layer {
       case "text": {
         const st = this.textStyle();
         const text = String(c.text ?? "");
-        const mw = maxWidthPx(c, r.W0, r.k);
+        const mw = this.wrapWidth();
         const n = [...(st.uppercase ? text.toUpperCase() : text)].length;
         const vc = m.chars === null ? null : Math.floor(m.chars * n + 1e-6);
         const nw = splitWords(text).length;
@@ -220,7 +229,7 @@ export class Layer {
   }
 
   private captionFrame(tl: number, m: A.Mods): Canvas | null {
-    const c = this.c, r = this.r, words = this.words, pages = this.pages;
+    const c = this.c, words = this.words, pages = this.pages;
     if (!words.length) return null;
     const cur = this.spans.findIndex(([s, e]) => s <= tl && tl < e);
     if (cur < 0) return null;
@@ -229,7 +238,7 @@ export class Layer {
     pg.forEach((wi, j) => { if (words[wi].start <= tl) active = j; });
     const style = c.style ?? "karaoke";
     const st = this.textStyle();
-    const mw = maxWidthPx(c, r.W0, r.k, "84%");
+    const mw = this.wrapWidth("84%", c.highlight_bg);
     const pageStart = words[pg[0]].start;
     if (style === "word") {
       const j = active ?? 0;
@@ -366,7 +375,10 @@ export class Renderer {
     const [mx, my = mx] = typeof c.margin === "string" ? c.margin.trim().split(/\s+/) : [c.margin]; // "x y": the left/right and the top/bottom distance
     const mgx = parseLen(mx, mn, pos ? 0.06 * mn : 0) * k, mgy = parseLen(my, mn, pos ? 0.06 * mn : 0) * k;
     let cx = W / 2, cy = H / 2;
-    if (c.type === "captions" && !pos && c.y === undefined) cy = H * (H > W ? 0.7 : 0.84);
+    if (c.type === "captions" && !pos && c.y === undefined) { // a tall page rises so its box ends above the full-width bottom UI zone, or the title area where there is none
+      const z = safeZones(W0, H0), bar = z.ui.find(([, , uy, uw, uh]) => uw >= W0 && uy + uh >= H0);
+      cy = Math.min(H * (H > W ? 0.7 : 0.84), (bar ? bar[2] : z.title[1] + z.title[3]) * k - lh / 2);
+    }
     if (pos) {
       if (pos.includes("top")) cy = mgy + lh / 2;
       if (pos.includes("bottom")) cy = H - mgy - lh / 2;

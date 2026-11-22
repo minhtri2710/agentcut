@@ -14,7 +14,7 @@ const api = await import("./author-api.ts");
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
 const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project, "json")).revision }); // "json": the text summary cannot print a clip without an id, which some rows save on purpose
 const { applyOps } = await import("../src/ops.ts");
-const { newTimeline, validate, resolve, canLoop } = await import("../src/model.ts");
+const { newTimeline, validate, resolve, canLoop, totalDuration } = await import("../src/model.ts");
 
 let failures = 0;
 const t0 = performance.now();
@@ -200,6 +200,9 @@ console.log("explicit length edits, trim_start by clip type, edits at timeline 0
   check("update_clip duration on an until_end clip keeps the length", near(at(uu, "bed").duration, 5) && !at(uu, "bed").until_end, at(uu, "bed"));
   const [ur] = (await run((await bed()), [{ op: "update_clip", id: "bed", name: "x" }]));
   check("an until_end clip not edited in length keeps stretching", at(ur, "bed").until_end === true && near(at(ur, "bed").duration, 10), at(ur, "bed"));
+  const [u2] = (await run((await bed()), [{ op: "add_clip", track: "music", asset: "s", type: "audio", id: "bed2", until_end: true }]));
+  check("a second until_end clip with no start spans with the first and the timeline keeps its length", near(at(u2, "bed2").start, 0) && near(at(u2, "bed2").duration, 10) && near(totalDuration(u2), 10), at(u2, "bed2"));
+  (await refuses("trim_start past the clip's length is refused with a hint", (await bed()), [{ op: "trim_clip", id: "mv", trim_start: 12 }], "bad_trim"));
   // trim_start by clip type
   const kinds = (await run(mk(), [
     { op: "add_clip", track: "overlay", asset: "i", id: "im", at: 0, duration: 4, keyframes: { opacity: [[1, 0], [2, 1]] } },

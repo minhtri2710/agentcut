@@ -86,12 +86,16 @@ export function captionWords(c: Dict): CWord[] {
   return [];
 }
 
+const CLAUSE_END = /[.!?,;:]$/;
+/** Pages of at most maxWords words; a page also ends at clause punctuation and at a pause over maxGap. With maxWords >= 3 a page closes one word early
+ * when the word after this one ends the clause with no pause (<= maxGap/2), so that word does not stand alone. */
 export function captionPages(words: CWord[], maxWords = 3, maxGap = 0.6): number[][] {
   const pages: number[][] = [];
   let cur: number[] = [];
   words.forEach((w, i) => {
-    const last = cur.length ? words[cur[cur.length - 1]] : null;
-    if (last && (cur.length >= maxWords || w.start - last.end > maxGap || /[.!?,;:]$/.test(last.text))) { pages.push(cur); cur = []; }
+    const last = cur.length ? words[cur[cur.length - 1]] : null, next = words[i + 1];
+    const orphan = maxWords >= 3 && cur.length === maxWords - 1 && !CLAUSE_END.test(w.text) && !!next && CLAUSE_END.test(next.text) && next.start - w.end <= maxGap / 2;
+    if (last && (cur.length >= maxWords || w.start - last.end > maxGap || CLAUSE_END.test(last.text) || orphan)) { pages.push(cur); cur = []; }
     cur.push(i);
   });
   if (cur.length) pages.push(cur);

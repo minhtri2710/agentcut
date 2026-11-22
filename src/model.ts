@@ -353,7 +353,7 @@ export const TEXT_FIELDS: F = {
   glow: [T("object", "string"), "{color, blur} neon glow"],
   background: [T("object", "string"), "box behind text: colour or {color, padding, radius}"],
   align: [T("string"), "left|center|right"],
-  max_width: [T("number", "string"), "wrap width px or % (default 88%)"],
+  max_width: [T("number", "string"), "wrap width px or % (default 88%, captions 84%; narrower when a centred box would leave the safe area)"],
   line_height: [T("number"), "multiplier (1.15)"],
   uppercase: [T("boolean"), "force upper case"],
   letter_spacing: [T("number"), "extra px between characters"],
