@@ -14,7 +14,7 @@
     "AGENTS.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "bun --no-install scripts/build.ts",
@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.5",
-    "@types/node": "^26.6.6",
+    "@types/node": "^22.20.5",
     "typescript": "^7.0.2"
   },
   "keywords": [
