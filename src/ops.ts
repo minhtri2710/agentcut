@@ -408,7 +408,7 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
   });
 
 /** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length (d0 before the edit) scales by s0 / s1, unless the edit gives one or a rule owns it (freeze, until_end, match_duration).
- *  Its detached audio pieces at s0 take the new speed on every path and keep their source moments: offset and length scale too, and a piece that reaches the picture's end ends with it, plus its tail past the end scaled. A speed ramp has no single ratio: nothing changes. */
+ *  Its detached audio pieces at s0 take the new speed on every path and keep their source moments: offset and length scale too, and a piece that reaches the picture's end and starts before its new end ends with it, plus its tail past the end scaled. A speed ramp has no single ratio: nothing changes. */
 function retime(tl: Timeline, c: Clip, s0: number, d0: number, scaleOwn: boolean) {
   const r = s0 / (Number(c.speed ?? 1) || 1);
   if (r === 1 || c.keyframes?.speed) return;
@@ -419,7 +419,7 @@ function retime(tl: Timeline, c: Clip, s0: number, d0: number, scaleOwn: boolean
     const off = parseTime(au.offset ?? 0), ad = clipDur(au), tail = off + ad - d0;
     if (c.speed === undefined) delete au.speed; else au.speed = c.speed;
     au.offset = round6(off * r);
-    au.duration = round6(tail > -1e-6 ? d1 + (tail - off) * r : ad * r);
+    au.duration = round6(tail > -1e-6 && off * r < d1 ? d1 + (tail - off) * r : ad * r);
   }
 }
 

@@ -357,7 +357,7 @@ export const TEXT_FIELDS: F = {
   align: [T("string"), "left|center|right"],
   max_width: [T("number", "string"), "wrap width px or % (default 88%, captions 84%; narrower when a centred box would leave the safe area)"],
   line_height: [T("number"), "multiplier (1.15)"],
-  uppercase: [T("boolean"), "force upper case in the burned-in text only; subtitle files and the embedded subtitle stream keep the source case"],
+  uppercase: [T("boolean"), "force upper case in the burned-in text and exported titles; subtitle files and the embedded subtitle stream keep the source case"],
   letter_spacing: [T("number"), "extra px between characters"],
   italic: [T("boolean"), "italic style"],
   weight: ranged("weight", "a number or bold/black", "number", "string"),

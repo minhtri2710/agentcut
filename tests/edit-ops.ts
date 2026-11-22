@@ -2018,6 +2018,10 @@ console.log("update_clip speed keeps the source a clip plays; ripple_delete is r
   const kept = await tried(given), back = await tried([...given, { op: "attach_audio", id: "cut" }]), ka = at(kept, "aud1");
   check("a speed edit that gives the picture's length still carries the speed to the detached audio, which ends with the picture: attach_audio accepts it",
     ka?.speed === 2 && near(ka.duration, 3) && near(ka.offset, 0) && near(at(back, "cut")?.duration, 3) && !at(back, "aud1"), { ka, back });
+  const sp = await tried([{ op: "detach_audio", id: "cut" }, { op: "split_clip", id: "aud1", at: 12 }, { op: "update_clip", id: "cut", speed: 2, duration: 0.5 }]);
+  const pieces = ["aud1", "aud2"].map((id) => at(sp, id)), spErr = sp.tracks ? validate(sp).filter((i: any) => i.level === "error") : [sp];
+  check("a split detached audio under a speed edit that keeps a shorter picture: every piece keeps a positive length and the timeline stays valid",
+    pieces.every((x) => x?.speed === 2 && x.duration > 0) && near(pieces[1]?.offset, 1) && near(pieces[1]?.duration, 1.25) && !spErr.length, { pieces, spErr });
   const g = await base([
     { op: "add_clip", track: "o1", asset: "av", id: "fz", at: 0, freeze: true, duration: 2 },
     { op: "add_clip", track: "o2", asset: "av", id: "ue", at: 0, until_end: true },
