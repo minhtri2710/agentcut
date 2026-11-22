@@ -6,14 +6,13 @@ import { delimiter, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { check, failures } from "./harness.ts";
 
 const cmd = process.env.AGENTCUT_MCP ? [process.env.AGENTCUT_MCP] : [process.execPath, resolve(import.meta.dir, "../src/mcp.ts")];
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-mcp-"));
 const env = { ...(process.env as Record<string, string>), AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache") }; // isolated feedback store + cache
 spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=4", "-pix_fmt", "yuv420p", join(tmp, "a.mp4")]);
 spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "gradients=size=800x800", "-frames:v", "1", join(tmp, "p.png")]);
-let fails = 0;
-const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c || info === undefined ? "" : JSON.stringify(info)); if (!c) fails++; };
 
 const client = new Client({ name: "agentcut-test", version: "1" });
 await client.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env }));
@@ -393,6 +392,6 @@ if (process.platform !== "win32") {
   check("undo with the revision of the last result undoes", back.json.ok === true && back.json.revision === first.json.revision + 1, back.json);
 }
 await client.close();
-console.log(`${fails ? `✗ ${fails} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`${failures() ? `✗ ${failures()} failed` : "OK - MCP checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 rmSync(tmp, { recursive: true, force: true });
-process.exit(fails ? 1 : 0);
+process.exit(failures() ? 1 : 0);

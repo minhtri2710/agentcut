@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VIDEO_FACTS as VF } from "./video-facts.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-editops-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
@@ -12,21 +13,11 @@ process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set be
 const api = await import("./author-api.ts");
 // most rows here are about ops, not concurrency: a write reads the project's revision (info) and applies at it. The rows about revisions, conflicts and the history
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project, "json")).revision }); // "json": the text summary cannot print a clip without an id, which some rows save on purpose
 const { applyOps } = await import("../src/ops.ts");
 const { newTimeline, validate, resolve, canLoop, totalDuration } = await import("../src/model.ts");
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
 const near = (a: unknown, b: number, eps = 1e-3) => typeof a === "number" && Math.abs(a - b) < eps;
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 
 const m = join(tmp, "media");
 mkdirSync(m);
@@ -2081,6 +2072,6 @@ console.log("update_clip speed keeps the source a clip plays; ripple_delete is r
   check("ripple_delete runs remove_clip: the same timeline and results, on a magnetic track and with ripple=true on another",
     JSON.stringify(dt) === JSON.stringify(rt) && JSON.stringify(dr) === JSON.stringify(rr) && near(at(rt, "next").start, 10) && near(at(rt, "b").start, 1), dr);
 }
-console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
-if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
+if (!process.argv.includes("--keep") && !failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

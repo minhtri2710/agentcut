@@ -4,15 +4,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { check, failures, ff } from "./harness.ts";
 
 const CLI = process.env.AGENTCUT_BIN ? [process.env.AGENTCUT_BIN] : [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
-let failures = 0;
 const t0 = performance.now();
 
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: Record<string, string>; anon?: boolean } = {}): any {
   const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by; the test declares its own name unless anon
   const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", cwd: o.cwd, env: { ...inherited, ...(o.anon ? {} : { AGENTCUT_AUTHOR: "smoke" }), AGENTCUT_DEBUG: "1", ...o.env } });
@@ -23,10 +19,6 @@ function cli(args: (string | number)[], o: { ok?: boolean; cwd?: string; env?: R
 }
 // most rows are about edits, not concurrency: a write reads the project's revision (info, in the same folder) and passes it. The rows about revisions pass theirs by hand.
 const cliLatest = (args: (string | number)[], o: Parameters<typeof cli>[1] = {}) => cli([...args, "--revision", cli(["info"], { cwd: o.cwd }).revision], o);
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-smoke-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store (inherited by every CLI call)
@@ -534,6 +526,6 @@ console.log("schema version");
   }
 }
 
-console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
-if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
+if (!process.argv.includes("--keep") && !failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

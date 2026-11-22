@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const voices = spawnSync("say", ["-v", "?"], { encoding: "utf8" });
 if (voices.error || !/^Linh\b/m.test(voices.stdout ?? "")) {
@@ -17,20 +18,10 @@ process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about real media, not concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { buildAudio } = await import("../src/audio.ts");
 const AN = await import("../src/analyze.ts");
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-nostdin", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 /** mono 48 kHz samples of [a, b) */
 function pcm(f: string, a = 0, b = 1e9): Float32Array {
   const r = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-i", f, "-af", `atrim=start=${a}:end=${b},pan=mono|c0=0.5*c0+0.5*c1`, "-f", "f32le", "-ar", "48000", "-"], { maxBuffer: 1 << 28 });
@@ -218,5 +209,5 @@ console.log("TTS: add_voiceover (Linh) -> captions -> render");
 
 const el = ((performance.now() - t0) / 1000).toFixed(1);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-if (failures) { console.log(`\n${failures} check(s) FAILED in ${el}s`); process.exit(1); }
+if (failures()) { console.log(`\n${failures()} check(s) FAILED in ${el}s`); process.exit(1); }
 console.log(`\nOK - all realmedia checks passed in ${el}s`);

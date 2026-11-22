@@ -5,27 +5,18 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { VIDEO_FACTS } from "./video-facts.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-codecs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about media and rendering, not concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { renderVideo, workerFailure } = await import("../src/encode.ts");
 const { HOST_TAG } = await import("../src/safe-write.ts");
 const { openProject } = api;
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 function probe(f: string): { streams: any[]; format: any } {
   const r = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", f], { encoding: "utf8" });
   return JSON.parse(r.stdout);
@@ -1204,6 +1195,6 @@ console.log("the JPEG side limit render.ts refuses at");
   check("a blank canvas encodes as JPEG at the limit on either side and fails one pixel past it", enc(JPEG_MAX_SIDE, 1) && enc(1, JPEG_MAX_SIDE) && !enc(JPEG_MAX_SIDE + 1, 1) && !enc(1, JPEG_MAX_SIDE + 1), { limit: JPEG_MAX_SIDE });
 }
 
-console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
-if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
+if (!process.argv.includes("--keep") && !failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

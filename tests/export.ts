@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-export-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
@@ -19,16 +20,6 @@ const { loadCanvas } = await import("../src/canvas.ts");
 const { resolveFont } = await import("../src/fonts.ts");
 await loadCanvas();
 const font = resolveFont(undefined, 700).family;
-
-let failures = 0;
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 
 const m = join(tmp, "media dir"); // space + unicode exercise file:// URL encoding
 mkdirSync(m);
@@ -342,6 +333,6 @@ console.log("caption sources and subtitle export");
   } else console.log("  - running as root: the unreadable-srt row is skipped");
 }
 
-console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all export checks passed"}  (${tmp})`);
-if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all export checks passed"}  (${tmp})`);
+if (!process.argv.includes("--keep") && !failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

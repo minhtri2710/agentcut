@@ -7,18 +7,13 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-jobs-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const worker = resolve(import.meta.dir, "lock-worker.ts");
 const run = (...a: string[]) => new Promise<number>((res) => spawn(process.execPath, [worker, ...a], { stdio: "inherit" }).on("close", (c) => res(c ?? 1)));
 /** pid of a process that has exited */
@@ -256,7 +251,6 @@ console.log("render + cache");
 process.env.AGENTCUT_UV = fake;
 const api = await import("./author-api.ts");
 // this suite's rows are about jobs, prepare and the history files, not concurrency: a call reads the project's revision (info) and uses it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; author?: string; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
 const out = join(tmp, "out.mp4");
 const rr: any = await api.render(P, { out, quality: "draft", sheet: false });
@@ -1057,6 +1051,6 @@ console.log("cache containment (symlinks)");
   rmSync(join(outside, name), { force: true });
 }
 
-console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all jobs checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`\n${failures() ? `✗ ${failures()} failure(s)` : "✓ all jobs checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+process.exit(failures() ? 1 : 0);

@@ -5,28 +5,19 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { VIDEO_FACTS as VF } from "./video-facts.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-audio-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the API
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about audio, not concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean; signal?: AbortSignal } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { buildAudio, kfExpr } = await import("../src/audio.ts");
 const { hasCodec } = await import("../src/media.ts");
 const { run } = await import("../src/proc.ts");
 const { noiseFloor, denoiseFilters, eqFilters, compressorFilter } = await import("../src/audiofx.ts");
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 /** RMS dB of [a, b) of a file through an optional extra filter (channel: mono mix, or 0/1). */
 function rms(f: string, a: number, b: number, ch?: 0 | 1): number {
   const pick = ch === undefined ? "pan=mono|c0=0.5*c0+0.5*c1" : `pan=mono|c0=c${ch}`;
@@ -759,5 +750,5 @@ console.log("inherited names are no eq or compressor presets");
 
 const el = ((performance.now() - t0) / 1000).toFixed(1);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-if (failures) { console.log(`\n${failures} check(s) FAILED in ${el}s`); process.exit(1); }
+if (failures()) { console.log(`\n${failures()} check(s) FAILED in ${el}s`); process.exit(1); }
 console.log(`\nOK - all audio checks passed in ${el}s`);

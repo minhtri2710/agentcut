@@ -7,13 +7,9 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { CONTAINED_FLAGS, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
-let failures = 0;
-const check = (name: string, cond: unknown, info?: unknown) => {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-};
 const cliAsync = (args: (string | number)[]) => new Promise<any>((ok) => {
   const { AGENTCUT_AUTHOR: _inherited, ...inherited } = process.env; // a variable of the runner never decides who an edit is by; the test declares its own name
   const ch = spawn(CLI[0], [...CLI.slice(1), ...args.map(String)], { env: { ...inherited, AGENTCUT_AUTHOR: "ui-test" } });
@@ -31,11 +27,9 @@ const { startUi } = await import("../src/ui.ts");
 const { JOBS_KEPT } = await import("../src/jobs.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "a.mp4"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=320x240", "-frames:v", "1", join(media, "p.jpg"));
 // the fixtures a row sets up from outside are not about concurrency: they read the project's revision (info) and apply at it. The rows about revisions, conflicts and the page pass theirs by hand.
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const made = api.create(dir, { preset: "square" });
 await api.apply(dir, [
   { op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 },
@@ -810,5 +804,5 @@ ctl.abort();
 ui.server.closeAllConnections?.();
 await new Promise((ok) => ui.server.close(ok));
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-console.log(failures ? `\n${failures} FAILED` : "\nall ui checks passed");
-process.exit(failures ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILED` : "\nall ui checks passed");
+process.exit(failures() ? 1 : 0);

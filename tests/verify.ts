@@ -6,13 +6,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { check, failures, ff } from "./harness.ts";
 
 const CLI = [process.execPath, resolve(import.meta.dir, "../src/cli.ts")];
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-verify-"));
 const env = { ...(process.env as Record<string, string>), AGENTCUT_HOME: join(tmp, "home"), AGENTCUT_CACHE: join(tmp, "cache"), AGENTCUT_AUTHOR: "verify" };
-let fails = 0;
-const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c || info === undefined ? "" : JSON.stringify(info)); if (!c) fails++; };
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 function cli(...args: (string | number)[]): any {
   const r = spawnSync(CLI[0], [...CLI.slice(1), ...args.map(String)], { encoding: "utf8", env });
   const out = JSON.parse(r.stdout);
@@ -172,6 +170,6 @@ const mv = await call("review", { beats: [0, 1, 2, 3, 4, 5, 6, 7, 8] });
 check("review over MCP", mv.json.ok && typeof mv.json.clean === "boolean" && Array.isArray(mv.json.findings), mv.json);
 await client.close();
 
-console.log(`${fails ? `✗ ${fails} failed` : "OK - verify checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`${failures() ? `✗ ${failures()} failed` : "OK - verify checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true }); else console.log("kept", tmp);
-process.exit(fails ? 1 : 0);
+process.exit(failures() ? 1 : 0);

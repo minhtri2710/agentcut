@@ -1,12 +1,7 @@
 // Run: bun tests/ffmpeg-version.ts (no FFmpeg installation needed).
 import { checkFfmpegVersion, MIN_FFMPEG_VERSION, parseFfmpegVersion } from "../src/media.ts";
 import { EditError } from "../src/model.ts";
-
-let failures = 0;
-function check(name: string, cond: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`); }
-}
+import { check, failures } from "./harness.ts";
 
 for (const [input, expected] of [
   ["ffmpeg version 7.0.2-static https://example.com", [7, 0, 2]],
@@ -31,5 +26,5 @@ for (const version of ["5.1", "5.1.0", "5.10", "6.0", "7.0.2-static", "n8.1", "N
   try { checkFfmpegVersion(version ? `ffmpeg version ${version} Copyright` : ""); } catch { allowed = false; }
   check(`allow ${version || "empty output"}`, allowed);
 }
-console.log(`\nffmpeg-version: ${failures} failures`);
-process.exit(failures ? 1 : 0);
+console.log(`\nffmpeg-version: ${failures()} failures`);
+process.exit(failures() ? 1 : 0);
