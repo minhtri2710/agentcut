@@ -27,6 +27,13 @@ function check(name: string, cond: unknown, info?: unknown) {
 }
 const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const code = async (f: () => unknown) => { try { await f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
+const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
+/** every entry under dir with its content (a symlink with its target) and every directory's mtime, dir itself included: names and
+ *  contents alone would miss a file created and removed again behind a link */
+const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
+  const f = join(dir, n), st = lstatSync(f);
+  return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
+}).join("\n");
 
 /** a hint about a history entry that cannot be read advises moving it out, never deleting it (it may be the only copy of a timeline) */
 const moves = (hint = "") => /\bmove\b/.test(hint) && !/delete/.test(hint);
@@ -251,13 +258,6 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
   const { SCHEMA_VERSION } = await import("../src/model.ts");
   check("SCHEMA_VERSION is 1", SCHEMA_VERSION === 1, SCHEMA_VERSION);
   check("a new project and timeline_schema report SCHEMA_VERSION", (await tl()).version === SCHEMA_VERSION && (api.schema() as any).timeline.version === SCHEMA_VERSION, [(await tl()).version, (api.schema() as any).timeline.version]);
-  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  /** every entry under dir with its content (a symlink with its target) and every directory's mtime, dir itself included: names and
-   *  contents alone would miss a file created and removed again behind a link */
-  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
-    const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
-  }).join("\n");
   const setVersion = (dir: string, v: unknown) => {
     const t = JSON.parse(readFileSync(join(dir, "project.json"), "utf8"));
     if (v === undefined) delete t.version; else t.version = v;
@@ -323,11 +323,6 @@ console.log("schema version: any version but SCHEMA_VERSION fails closed, nothin
 console.log("undo/redo act only on history entries, never on a path named inside a snapshot");
 {
   const { SCHEMA_VERSION } = await import("../src/model.ts");
-  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
-    const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
-  }).join("\n");
   /** a project with `n` entries on `stack`; returns its dir */
   const make = async (name: string, stack: "undo" | "redo", n = 1) => {
     const d = join(tmp, name);
@@ -385,11 +380,6 @@ console.log("undo/redo act only on history entries, never on a path named inside
 
 console.log("history writes never follow a symlink, and nothing is written before a refusal");
 {
-  const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
-  const tree = (dir: string): string => [".", ...readdirSync(dir, { recursive: true }).map(String).sort()].map((n) => {
-    const f = join(dir, n), st = lstatSync(f);
-    return `${n}:${st.isSymbolicLink() ? "->" + readlinkSync(f) : st.isDirectory() ? "/" + st.mtimeMs : readFileSync(f, "utf8")}`;
-  }).join("\n");
   const make = async (name: string, stack: "undo" | "redo") => {
     const d = join(tmp, name);
     api.create(d, { preset: "reels" });

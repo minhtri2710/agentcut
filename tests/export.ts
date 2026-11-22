@@ -183,10 +183,8 @@ check("a clip longer than its source is approximated in both formats, with its n
 check("the margin is validate's: 0.04 s over is not listed, 0.06 s over is", !srcOf(edge.f).length && !srcOf(edge.o).length && srcOf(edge2.f).length === 1 && srcOf(edge2.o).length === 1);
 check("a loop clip is listed as well: neither format writes the loop, so its range runs past the source", srcOf(looped.f).length === 1 && srcOf(looped.o).length === 1 && fieldsOf(looped.f, mus1).some((x) => /loop/.test(x)) && fieldsOf(looped.o, mus1).some((x) => /loop/.test(x)), { f: looped.f, o: looped.o.approximated });
 const otioOut = join(tmp, "out", "edit.otio");
-if (typeof (api as any).exportTimeline === "function") { // wired through api.ts (CLI `export` / `render -o x.fcpxml`)
-  const viaApi = await (api as any).exportTimeline(dir, { out: join(tmp, "out", "api.otio") });
-  check("api.exportTimeline picks otio from the extension", viaApi.format === "otio" && viaApi.clips > 0, viaApi);
-}
+const viaApi = await api.exportTimeline(dir, { out: join(tmp, "out", "api.otio") });
+check("api.exportTimeline picks otio from the extension", viaApi.format === "otio" && viaApi.clips > 0, viaApi);
 check("exportTimeline writes otio", exportTimeline(tl, "otio", otioOut).format === "otio");
 let threw = false;
 try { exportTimeline(tl, "edl", join(tmp, "x.edl")); } catch (e: any) { threw = e.code === "bad_format"; }
