@@ -91,7 +91,12 @@ export interface Note {
 }
 
 function loadNotes(): Note[] {
-  try { return JSON.parse(readFileSync(notesFile(), "utf8")); } catch { return []; }
+  const file = notesFile();
+  let text: string;
+  try { text = readFileSync(file, "utf8"); }
+  catch (e: any) { if (e.code === "ENOENT") return []; throw e; }
+  try { return JSON.parse(text); }
+  catch (e: any) { throw new EditError(`${file} is not valid JSON: ${e.message}`, "bad_json", `fix or move ${file} before retrying`); }
 }
 function saveNotes(n: Note[]) {
   writeFile(notesFile(), JSON.stringify(n, null, 1), home());

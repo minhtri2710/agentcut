@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { EditError } from "../src/model.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-writes-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
@@ -550,6 +551,41 @@ console.log("the feedback store and the font cache");
     rmSync(join(fb, "events.jsonl"));
     FB.recordEvent({ type: "call", cmd: "probe", ms: 1 });
     check("a normal events.jsonl is still appended to", /"cmd":"probe"/.test(readFileSync(join(fb, "events.jsonl"), "utf8")));
+  }
+  {
+    const file = join(fb, "notes.json");
+    rmSync(file, { force: true });
+    check("missing notes.json lists no notes", FB.listNotes().length === 0);
+    check("resolving a missing store reports not_found", await code(() => FB.resolveNote("fb001")) === "not_found" && !existsSync(file));
+    const added = FB.addNote({ kind: "idea", title: "keep this note" });
+    check("a missing store can be created and read", FB.listNotes()[0]?.id === added.id);
+    FB.resolveNote(added.id);
+    check("a valid store can be resolved", FB.listNotes()[0]?.status === "resolved");
+    for (const contents of ["", '[{"id":"fb001"}']) {
+      writeFileSync(file, contents);
+      for (const [name, act] of [
+        ["add", () => FB.addNote({ title: "another note" })],
+        ["resolve", () => FB.resolveNote(added.id)],
+        ["list", () => FB.listNotes()],
+      ] as const) {
+        let err: any;
+        try { act(); } catch (e) { err = e; }
+        check(`${name} rejects invalid notes JSON without changing it (${JSON.stringify(contents)})`,
+          err instanceof EditError && err.code === "bad_json" && err.message.includes(file)
+          && err.hint?.includes("fix or move") && readFileSync(file, "utf8") === contents, err);
+      }
+    }
+    rmSync(file);
+    mkdirSync(file);
+    for (const [name, act] of [
+      ["add", () => FB.addNote({ title: "another note" })],
+      ["resolve", () => FB.resolveNote(added.id)],
+      ["list", () => FB.listNotes()],
+    ] as const) {
+      const c = await code(act);
+      check(`${name} rethrows a notes read error without replacing the directory`, c === "EISDIR" && lstatSync(file).isDirectory(), c);
+    }
+    rmSync(file, { recursive: true });
   }
   // font cache
   {
