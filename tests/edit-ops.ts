@@ -2046,18 +2046,35 @@ console.log("update_clip speed keeps the source a clip plays; ripple_delete is r
   check("a duration given with the speed wins; a freeze, until_end and match_duration keep their length",
     near(at(g, "whole").duration, 4) && near(at(g, "fz").duration, 2) && near(at(g, "ue").duration, 9.5) && near(at(g, "md").duration, 1), ["whole", "fz", "ue", "md"].map((id) => at(g, id)));
   const content = [
-    { op: "update_clip", id: "whole", fade_in: 0.5, fade_out: 1, keyframes: { opacity: [[0, 1], [8, 0.2]] }, effects: [{ type: "blur", start: 7, duration: 2, radius: 5 }, { type: "flash", at: 6 }, { type: "grain" }] },
+    { op: "update_clip", id: "whole", fade_in: 0.5, fade_out: 1, keyframes: { opacity: [[0, 1], [8, 0.2]], scale: [{ t: "7s", v: 1.5 }] },
+      effects: [{ type: "blur", start: "7s", duration: 2, radius: 5 }, { type: "flash", at: 6 }, { type: "flash", start: 2, at: 1 }, { type: "grain" }] },
     { op: "detach_audio", id: "whole" }, { op: "update_clip", id: "aud1", keyframes: { volume: [[0, 1], [8, 0.5]] } },
   ];
   const sc = await base([...content, { op: "update_clip", id: "whole", speed: 2 }]), sv = at(sc, "whole"), sa = at(sc, "aud1");
-  check("a speed edit that rescales a clip scales its keyframes, effect windows (a flash's moment, not its length) and fades, and those of its detached audio",
-    JSON.stringify(sv.keyframes) === JSON.stringify({ opacity: [[0, 1], [4, 0.2]] }) && JSON.stringify(sv.effects) === JSON.stringify([{ type: "blur", start: 3.5, duration: 1, radius: 5 }, { type: "flash", at: 3 }, { type: "grain" }])
+  check("a speed edit that rescales a clip scales its keyframes (both forms), effect windows (string times too; a flash's moment, not its length) and fades, and those of its detached audio",
+    JSON.stringify(sv.keyframes) === JSON.stringify({ opacity: [[0, 1], [4, 0.2]], scale: [{ t: 3.5, v: 1.5 }] })
+    && JSON.stringify(sv.effects) === JSON.stringify([{ type: "blur", start: 3.5, duration: 1, radius: 5 }, { type: "flash", at: 3 }, { type: "flash", start: 1, at: 0.5 }, { type: "grain" }])
     && sv.fade_in === 0.25 && sv.fade_out === 0.5 && JSON.stringify(sa.keyframes) === JSON.stringify({ volume: [[0, 1], [4, 0.5]] }) && sa.fade_in === 0.25 && sa.fade_out === 0.5 && near(sa.duration, 5), { sv, sa });
   const kp = await base([...content, { op: "update_clip", id: "whole", speed: 2, duration: 10 }]);
   const gv = at(await base([...content, { op: "update_clip", id: "whole", speed: 2, keyframes: { opacity: [[4, 0]] }, fade_out: 2 }]), "whole");
-  check("a speed edit that keeps the length scales nothing; keyframes and fades sent with the speed stay as sent while the rest scales",
-    at(kp, "whole").keyframes.opacity[1][0] === 8 && at(kp, "whole").effects[0].start === 7 && at(kp, "whole").fade_out === 1 && at(kp, "aud1").keyframes.volume[1][0] === 8 && at(kp, "aud1").fade_out === 1
-    && JSON.stringify(gv.keyframes) === JSON.stringify({ opacity: [[4, 0]] }) && gv.fade_out === 2 && gv.fade_in === 0.25 && gv.effects[0].start === 3.5, { kp: [at(kp, "whole"), at(kp, "aud1")], gv });
+  const own = { keyframes: { opacity: [[1, 0.5]] }, fade_out: 1 }, ruled = ["fz", "ue", "md"];
+  const gd = await base([
+    { op: "add_clip", track: "o1", asset: "av", id: "fz", at: 0, freeze: true, duration: 2, ...own },
+    { op: "add_clip", track: "o2", asset: "av", id: "ue", at: 0, until_end: true, ...own },
+    { op: "add_clip", track: "o3", asset: "av", id: "md", at: 0, match_duration: "next", ...own },
+    ...ruled.map((id) => ({ op: "update_clip", id, speed: 2 })),
+  ]);
+  check("a speed edit that keeps the length (given, freeze, until_end, match_duration) scales nothing; keyframes and fades sent with the speed stay as sent while the rest scales",
+    at(kp, "whole").keyframes.opacity[1][0] === 8 && at(kp, "whole").effects[0].start === "7s" && at(kp, "whole").fade_out === 1 && at(kp, "aud1").keyframes.volume[1][0] === 8 && at(kp, "aud1").fade_out === 1
+    && ruled.every((id) => at(gd, id).keyframes.opacity[0][0] === 1 && at(gd, id).fade_out === 1)
+    && JSON.stringify(gv.keyframes) === JSON.stringify({ opacity: [[4, 0]] }) && gv.fade_out === 2 && gv.fade_in === 0.25 && gv.effects[0].start === 3.5, { kp: [at(kp, "whole"), at(kp, "aud1")], gd: ruled.map((id) => at(gd, id)), gv });
+  // detached audio cut in three: aud1 0..2, aud2 2..6 (offset 2), aud3 6..10, which ends with the picture
+  const pieces3 = await base([{ op: "detach_audio", id: "whole" }, { op: "split_clip", id: "aud1", at: 2 }, { op: "split_clip", id: "aud2", at: 6 },
+    { op: "update_clip", id: "aud2", keyframes: { volume: [[0, 1], [3, 0.5]] }, fade_out: 2 }, { op: "update_clip", id: "aud3", fade_out: 1 },
+    { op: "update_clip", id: "whole", speed: 2, duration: 10 }]);
+  const [p2, p3] = ["aud2", "aud3"].map((id) => at(pieces3, id));
+  check("a picture that keeps its length at a new speed: a detached piece whose own length scales scales its keyframes and fades; the piece that ends with the picture keeps its own",
+    near(p2?.offset, 1) && near(p2?.duration, 2) && JSON.stringify(p2?.keyframes) === JSON.stringify({ volume: [[0, 1], [1.5, 0.5]] }) && p2?.fade_out === 1 && p3?.fade_out === 1, { p2, p3 });
   const del = async (name: string) => applyOps(null as any, await base([{ op: "add_clip", track: "o1", asset: "av", id: "a", at: 0, duration: 1 }, { op: "add_clip", track: "o1", asset: "av", id: "b", at: 2, duration: 1 }]),
     [{ op: name, id: "cut" }, { op: name, id: "a", ripple: true }]).catch((e) => [e, e]);
   const [rt, rr] = await del("remove_clip"), [dt, dr] = await del("ripple_delete");
