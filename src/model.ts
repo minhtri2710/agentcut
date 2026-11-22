@@ -4,6 +4,7 @@ import { ease, parseKfs, speedIntegral } from "./anim.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 import { own } from "./own.ts";
+import { timeValue } from "./time-parse.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -485,17 +486,9 @@ export function similarity(a: string, b: string) { // Ratcliff/Obershelp-like vi
 }
 
 // ------------------------------------------------------------------ parsing
-const TIME_RE = /^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/;
 export function parseTime(v: unknown, field = "time"): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    let n = NaN;
-    if (s.endsWith("ms")) n = parseFloat(s) / 1000;
-    else if (s.endsWith("s")) n = parseFloat(s);
-    else { const m = TIME_RE.exec(s); n = m ? (+(m[1] || 0)) * 3600 + +m[2] * 60 + +m[3] : Number(s); }
-    if (Number.isFinite(n)) return n;
-  }
+  const n = timeValue(v);
+  if (Number.isFinite(n)) return n;
   throw new EditError(`${field}: cannot parse time ${JSON.stringify(v)}`, "bad_time", "use seconds (2.5), '2.5s', '1500ms' or 'mm:ss.ms'");
 }
 

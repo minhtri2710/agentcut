@@ -1,5 +1,6 @@
 import { num } from "./time.ts";
 import type { Clip } from "./types.ts";
+import { kfPoint } from "../time-parse.ts";
 
 /** a keyframe as the page edits it: [time, value, easing into it] */
 export type Kf = [number, number, string | undefined];
@@ -9,7 +10,7 @@ export const near = (a: number, b: number): boolean => Math.abs(a - b) < 0.0005;
 /** the keyframes of one prop (arrays or {t, v|value, ease} objects) as sorted [t, v, ease] */
 export function pts(list: any[] | undefined): Kf[] {
   return (list || [])
-    .map((k): Kf => (Array.isArray(k) ? [num(k[0]), +k[1], k[2]] : [num(k.t || 0), +(k.v !== undefined ? k.v : k.value), k.ease]))
+    .map((k) => kfPoint(k, num))
     .sort((a, b) => a[0] - b[0]);
 }
 
