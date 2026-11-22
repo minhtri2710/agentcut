@@ -1228,7 +1228,7 @@ console.log("the face model: descriptor, job, gate, download");
           check(`downloadModel: ${what} -> model_download_failed, hint names the URL and the target path, no file left`,
             e?.code === "model_download_failed" && e.hint.includes(desc("x", path).url) && e.hint.includes(join(D, "models", "test_model_bad", "test_model_bad.onnx")) && left(D).length === 0, { code: e?.code, message: e?.message, hint: e?.hint, left: left(D) });
         }
-        // runs without AbortSignal.any, which Node before 20.3 lacks (package.json engines: >=20)
+        // the download does not depend on AbortSignal.any
         const any = AbortSignal.any;
         (AbortSignal as any).any = undefined;
         const ok = await caught(() => V.downloadModel(desc("test_model_ok", "/ok")));

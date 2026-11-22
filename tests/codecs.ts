@@ -800,8 +800,10 @@ console.log("decode and render failures");
     // nor does one written to a pipe or live (a webcam's mjpeg saved as it streams); a one-frame one is still a still
     const MJ = ["-c:v", "mjpeg", "-pix_fmt", "yuvj420p"], pipedPics = [(await piped("pipe-mjpeg.mkv", [...pic, ...MJ], "matroska")), (await piped("pipe-png.mkv", [...pic, "-c:v", "png"], "matroska")),
       (await piped("pipe.mjpeg", [...pic, ...MJ], "mjpeg")), (await piped("pipe-mjpeg-aac.mkv", [...pic, ...sine(2), ...MJ, "-c:a", "aac"], "matroska"))], pipedOne = (await piped("pipe-one.mkv", [...pic, "-frames:v", "1", ...MJ], "matroska"));
+    // FFmpeg before 8 starts an mkv's AAC at its priming packet (container_start -0.023 s, decoded as sound), so the length counts it; 8 and later skip it (container_start 0).
+    // The last AAC packet's padding (20 ms here) counts on either: a pipe has no place to write the true end before FFmpeg 9.
     check("an mjpeg and a png mkv, a raw mjpeg stream and an mjpeg mkv with sound written to a pipe record a video of their packets' length, and a one-frame one an image",
-      pipedPics.every((i) => i.kind === "video" && is(i.duration, 2)) && pipedOne.kind === "image", [...pipedPics, pipedOne].map((i) => [i.kind, i.duration]));
+      pipedPics.every((i) => i.kind === "video" && is(i.duration, 2 - i.container_start)) && pipedOne.kind === "image", [...pipedPics, pipedOne].map((i) => [i.kind, i.duration, i.container_start]));
     // a file that records no length, where ffprobe guesses one from the bitrate (4.09 s for this mjpeg mkv, 0.28 s short for this aac): its packets give the length
     const guessed = [(await piped("pipe-mjpeg-pcm.mkv", [...pic, ...sine(3), ...MJ, "-c:a", "pcm_s16le"], "matroska")), (await piped("pipe-vp9-pcm.mkv", [...pic, ...sine(2), ...VP9, "-c:a", "pcm_s16le"], "matroska"))];
     check("an mjpeg and a vp9 mkv with uncompressed sound written to a pipe record the lengths their packets hold, not a guess from the bitrate",

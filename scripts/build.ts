@@ -1,4 +1,4 @@
-// Build: (1) dist/*.js bundles for Node >= 20 (npm / npx), (2) optional single-file binary for this platform.
+// Build: (1) dist/*.js bundles for Node >= 22 (npm / npx), (2) optional single-file binary for this platform.
 import { $ } from "bun";
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 

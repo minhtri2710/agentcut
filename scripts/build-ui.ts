@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ANIMATABLE, EASINGS } from "../src/model.ts";
 
-export const PINNED_BUN = "1.4.4";
+export const PINNED_BUN = "1.4.5";
 const ui = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "ui");
 
 /** Script text to put between <script> and </script>: `</script` ends the element and `<!--` changes how the rest parses.

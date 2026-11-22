@@ -80,7 +80,7 @@ export async function downloadModel(m: ModelPin, signal?: AbortSignal, idleMs = 
   const file = modelFile(m.name), base = userCache();
   sweepModelParts(file);
   const fail = (why: string) => new EditError(`could not download ${m.name}: ${why}`, "model_download_failed", `nothing was written; fetch ${m.url} yourself and put it at ${file} (sha256 ${m.sha256}, ${m.bytes} bytes), or retry later`);
-  // one controller for the idle timer and the caller's signal (AbortSignal.any needs Node 20.3; engines allows 20.0)
+  // one controller for the idle timer and the caller's signal
   const ctl = new AbortController(), stop = () => ctl.abort(signal?.reason);
   let idle = false, timer: ReturnType<typeof setTimeout> | undefined, tmp: string | undefined, fd: number | undefined, fromCallback: { error: unknown } | undefined;
   const report = (done: number) => { try { onBytes?.(done); } catch (e) { fromCallback = { error: e }; throw e; } };
