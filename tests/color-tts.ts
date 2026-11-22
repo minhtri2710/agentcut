@@ -241,6 +241,18 @@ if [ -f "$d/unknown" ]; then printf 'Alpha Voice\\nBeta Voice\\n'; exit 3; fi
   const seen = (f: string) => readFileSync(join(fakeDir, f), "utf8");
   const script = () => seen("argv").split("\0")[2] ?? "";
   try {
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.PATH = fakeDir;
+      let listed = AN.ttsVoices();
+      check("sapi: without powershell, the system provider and voices are unavailable",
+        listed.providers.find((p) => p.name === "system")?.available === false && !listed.voices.some((v) => v.provider === "system"));
+      copyFileSync(fake, join(fakeDir, "powershell.exe"));
+      chmodSync(join(fakeDir, "powershell.exe"), 0o755);
+      listed = AN.ttsVoices();
+      check("sapi: with powershell, the system provider and default voice are available",
+        listed.providers.find((p) => p.name === "system")?.available === true && listed.voices.some((v) => v.provider === "system" && v.name === "default"));
+    } finally { Object.defineProperty(process, "platform", platform); process.env.PATH = pathWas; }
     const plain = await sapi();
     check("sapi: a normal run produces the output file", plain.err === null && existsSync(plain.out), plain.err && plain.err.message);
     check("sapi: the output path reaches powershell as the variable, not in the script text",
