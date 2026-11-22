@@ -317,7 +317,7 @@ export const VISUAL_FIELDS: F = {
 /** The playback speed range, for the constant `speed` and for every keyframes.speed value. */
 export const SPEED_MIN = 0.1, SPEED_MAX = 8;
 /** What a speed edit does to the length (ops.ts retime), for every speed field doc. */
-const SPEED_LENGTH = "update_clip speed scales the duration by old/new speed, so the clip plays the same source (a duration in the same edit wins; a freeze, a speed ramp, until_end and match_duration keep their length)";
+const SPEED_LENGTH = "update_clip speed scales the duration by old/new speed, so the clip plays the same source (a duration in the same edit wins; a freeze, a speed ramp, until_end and match_duration keep their length); detached audio at the same speed follows";
 /** Easings that leave [start, end] between two keyframes, so a ramp using one can pass the speed range. */
 const OVERSHOOT = ["back_out", "elastic_out"];
 /** Mixer sample rate in Hz: an integer ffmpeg takes at both ends (telephony 8 kHz .. pro audio 192 kHz); pitch shifts divide by round(rate * 2^(semitones/12)), so a tiny rate would make that zero. */
@@ -357,7 +357,7 @@ export const TEXT_FIELDS: F = {
   align: [T("string"), "left|center|right"],
   max_width: [T("number", "string"), "wrap width px or % (default 88%, captions 84%; narrower when a centred box would leave the safe area)"],
   line_height: [T("number"), "multiplier (1.15)"],
-  uppercase: [T("boolean"), "force upper case"],
+  uppercase: [T("boolean"), "force upper case in the burned-in text only; subtitle files and the embedded subtitle stream keep the source case"],
   letter_spacing: [T("number"), "extra px between characters"],
   italic: [T("boolean"), "italic style"],
   weight: ranged("weight", "a number or bold/black", "number", "string"),

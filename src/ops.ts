@@ -407,16 +407,19 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
 
-/** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length scales by s0 / s1, and so do its detached audio pieces that play at s0 (offset too, so a J/L-cut lead stays on the same moment). */
-function retime(tl: Timeline, c: Clip, s0: number) {
+/** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length (d0 before the edit) scales by s0 / s1, unless the edit gives one or a rule owns it (freeze, until_end, match_duration).
+ *  Its detached audio pieces at s0 take the new speed on every path and keep their source moments: offset and length scale too, and a piece that reaches the picture's end ends with it, plus its tail past the end scaled. A speed ramp has no single ratio: nothing changes. */
+function retime(tl: Timeline, c: Clip, s0: number, d0: number, scaleOwn: boolean) {
   const r = s0 / (Number(c.speed ?? 1) || 1);
-  if (r === 1 || c.freeze || c.keyframes?.speed || c.until_end || computedDuration(c)) return;
-  c.duration = round6(clipDur(c) * r);
+  if (r === 1 || c.keyframes?.speed) return;
+  if (scaleOwn && !c.freeze && !c.until_end && !computedDuration(c)) c.duration = round6(clipDur(c) * r);
+  const d1 = clipDur(c);
   for (const [, au] of linkedAudio(tl, c)) {
     if (Math.abs((Number(au.speed ?? 1) || 1) - s0) > 1e-6 || au.until_end || computedDuration(au)) continue;
+    const off = parseTime(au.offset ?? 0), ad = clipDur(au), tail = off + ad - d0;
     if (c.speed === undefined) delete au.speed; else au.speed = c.speed;
-    au.duration = round6(clipDur(au) * r);
-    au.offset = round6(parseTime(au.offset ?? 0) * r);
+    au.offset = round6(off * r);
+    au.duration = round6(tail > -1e-6 ? d1 + (tail - off) * r : ad * r);
   }
 }
 
@@ -438,10 +441,10 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     }
     if (typeof patch.start === "string") patch.start = parseAt(tl, patch.start);
     if ("duration" in patch && !("match_duration" in patch)) ownDuration(c);
-    const s0 = Number(c.speed ?? 1) || 1;
+    const s0 = Number(c.speed ?? 1) || 1, d0 = clipDur(c);
     deepMerge(c, patch);
     lengthOnce(c);
-    if ("speed" in patch && !("duration" in patch)) retime(tl, c, s0);
+    if ("speed" in patch) retime(tl, c, s0, d0, !("duration" in patch));
     if (patch.attach_to) refuseAttachedMagnetic(c, tr);
     if (c.attach_to && patch.start != null) { // an attached clip is placed by its offset, against the (new) target
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");

@@ -364,8 +364,8 @@ check("feedback note merged", n2.merged && n2.id === n1.id && n2.count === 2, n2
 for (const op of ["j_cut", "split_clip"]) cliLatest(["op", op, "id=x", "wobble=1"], { cwd: q, ok: false });
 cliLatest(["op", "add_effect", "type=grain", "intesity=1"], { cwd: q, ok: false });
 const fs = cli(["feedback", "summary"]);
-check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
-const allMisses = (await import("../src/feedback.ts")).summary({ limit: 50 }).naming_misses; // the CLI summary keeps the top 10; this row is about the logging
+const allMisses = (await import("../src/feedback.ts")).summary({ limit: 50 }).naming_misses; // the CLI summary keeps the top 10; these rows are about the logging
+check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => allMisses.some((m: any) => m.guess === g)), allMisses);
 check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "wobble"], ["split_clip argument", "wobble"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => allMisses.some((m: any) => m.kind === k && m.guess === g)), allMisses);
 check("render speed logged", fs.render?.renders >= 1, fs.render);
 check("a failed validate is not an error event: no error row for validate and no row without a code", !fs.errors.some((e: any) => e.cmds.includes("validate") || typeof e.code !== "string"), fs.errors);

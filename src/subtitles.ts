@@ -33,8 +33,7 @@ export function captionCues(tl: Timeline, ids?: string[]): Cue[] {
           const v = visibleSpan(Math.max(s + ps, s), Math.min(s + pe, e), w0, w1);
           if (!v) return;
           const [a, b] = v;
-          let text = pages[i].map((wi) => words[wi].text).join(" ");
-          if (c.uppercase) text = text.toUpperCase();
+          const text = pages[i].map((wi) => words[wi].text).join(" ");
           out.push({ start: base + a - w0, end: base + b - w0, text, clip: c.id });
         });
       }

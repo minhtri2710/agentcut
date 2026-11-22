@@ -636,7 +636,7 @@ for (const [set, name] of [[{ pan: 2 }, "pan out of range"], [{ pitch: 20 }, "pi
 check("rejects track eq typo", await rejects(() => apply([{ op: "update_track", id: "music", set: { eq: "lowcut" } }]), "validation_failed"));
 
 console.log("subtitles");
-await apply([{ op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }, { text: "world.", start: 0.5, end: 1 }, { text: "Second", start: 1.5, end: 2 }, { text: "page", start: 2, end: 2.6 }], preset: "clean", at: 0.5 }]);
+await apply([{ op: "add_captions", words: [{ text: "Hello", start: 0.1, end: 0.5 }, { text: "world.", start: 0.5, end: 1 }, { text: "Second", start: 1.5, end: 2 }, { text: "page", start: 2, end: 2.6 }], preset: "clean", uppercase: true, at: 0.5 }]); // upper case is burned in only: the cues keep the source case
 const srt = api.exportCaptions(P, { out: join(tmp, "s.srt") });
 const srtTxt = readFileSync(srt.output, "utf8");
 check("srt: 2 cues in timeline time (captions start at 0.5)", srt.cues === 2 && srtTxt.startsWith("1\n00:00:00,600 --> 00:00:02,000\nHello world.\n\n2\n00:00:02,000 --> 00:00:03,400\nSecond page"), srtTxt);
@@ -656,7 +656,7 @@ const r: any = await api.render(P, { out, subtitles: true, start: 1, workers: 1,
 const streams = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", out], { encoding: "utf8" }).stdout).streams;
 check("mp4 has a mov_text subtitle stream", streams.some((s: any) => s.codec_name === "mov_text"), streams.map((s: any) => s.codec_name));
 const dumped = spawnSync("ffmpeg", ["-v", "error", "-i", out, "-map", "0:s", "-f", "srt", "-"], { encoding: "utf8" }).stdout;
-check("embedded cues shifted to the rendered range (start=1)", r.subtitles?.cues === 2 && dumped.includes("00:00:00,000 --> 00:00:01,000") && dumped.includes("00:00:01,000 --> 00:00:02,400"), dumped);
+check("embedded cues shifted to the rendered range (start=1), in the source case", r.subtitles?.cues === 2 && dumped.includes("00:00:00,000 --> 00:00:01,000") && dumped.includes("00:00:01,000 --> 00:00:02,400") && dumped.includes("Hello world."), dumped);
 const mkv = join(tmp, "sub.mkv");
 await api.render(P, { out: mkv, subtitles: true, end: 2, workers: 1, sheet: false });
 check("mkv gets an srt stream", spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", mkv], { encoding: "utf8" }).stdout.includes("subrip"));
