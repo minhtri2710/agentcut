@@ -8,24 +8,18 @@ import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mk
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { EditError } from "../src/model.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-writes-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root (fonts/vision read it at load)
 const api = await import("./author-api.ts");
 // this suite's rows are about failed writes and the history files, not concurrency: a call reads the project's revision (info) and uses it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
 const redoLatest = async (project: string, steps = 1) => api.redo(project, steps, (await api.info(project)).revision);
 const FB = await import("../src/feedback.ts");
 const S = await import("../src/safe-write.ts");
 
-let failures = 0;
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const code = async (f: () => unknown) => { try { await f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
 
 const m = join(tmp, "media"); mkdirSync(m);
@@ -644,5 +638,5 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
-console.log(failures ? `\n${failures} check(s) failed` : "\nall write checks passed");
-process.exit(failures ? 1 : 0);
+console.log(failures() ? `\n${failures()} check(s) failed` : "\nall write checks passed");
+process.exit(failures() ? 1 : 0);

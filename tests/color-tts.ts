@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-colortts-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
@@ -12,21 +13,11 @@ for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY"
 const api = await import("./author-api.ts");
 // this suite's rows are about colour, speech and analyses, not concurrency: a write reads the project's revision (info) and applies at it.
 // The rows about a writer landing mid-batch pass theirs by hand (api.apply).
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean; signal?: AbortSignal } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { gradeChain, gradeIssues, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");
 const { filterChain } = await import("../src/media.ts");
 
-let failures = 0;
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 const throwsCode = (f: () => unknown, code: string) => { try { f(); return false; } catch (e: any) { return e.code === code || e.message; } };
 const rejectsCode = async (f: () => Promise<unknown>, code: string) => { try { await f(); return false; } catch (e: any) { return e.code === code || e.message; } };
 /** mean R,G,B of a still (ffmpeg scales to 1x1). */
@@ -974,5 +965,5 @@ fi
   check("an easing name that only the prototype chain holds eases linearly", ease("constructor", 0.3) === 0.3, ease("constructor", 0.3));
 }
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
-console.log(failures ? `\n${failures} check(s) failed` : "\nall color/tts checks passed");
-process.exit(failures ? 1 : 0);
+console.log(failures() ? `\n${failures()} check(s) failed` : "\nall color/tts checks passed");
+process.exit(failures() ? 1 : 0);

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-review-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
@@ -12,7 +13,6 @@ for (const k of ["AGENTCUT_TTS_PROVIDER", "AGENTCUT_TTS_URL", "AGENTCUT_TTS_KEY"
 const api = await import("./author-api.ts");
 // most rows here are about review, history files and error codes, not concurrency: a call reads the project's revision (info) and uses it.
 // The rows about revisions, and the bad_version rows that must reach the write itself, pass theirs by hand.
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const undoLatest = async (project: string, steps = 1) => api.undo(project, steps, (await api.info(project)).revision);
 const redoLatest = async (project: string, steps = 1) => api.redo(project, steps, (await api.info(project)).revision);
 const AN = await import("../src/analyze.ts");
@@ -20,12 +20,6 @@ const { gradeChain } = await import("../src/color.ts");
 const { kfValue } = await import("../src/anim.ts");
 const { startUi } = await import("../src/ui.ts");
 
-let failures = 0;
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a], { encoding: "utf8" }); if (r.status) throw new Error(r.stderr); };
 const code = async (f: () => unknown) => { try { await f(); return "ok"; } catch (e: any) { return e.code ?? e.message; } };
 const caught = async (f: () => unknown): Promise<any> => { try { await f(); return null; } catch (e) { return e; } };
 /** every entry under dir with its content (a symlink with its target) and every directory's mtime, dir itself included: names and
@@ -777,5 +771,5 @@ console.log("templates: placement is kept where it was safe, a preset's own plac
 }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
-console.log(failures ? `\n${failures} check(s) failed` : "\nall review checks passed");
-process.exit(failures ? 1 : 0);
+console.log(failures() ? `\n${failures()} check(s) failed` : "\nall review checks passed");
+process.exit(failures() ? 1 : 0);

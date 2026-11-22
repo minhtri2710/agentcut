@@ -5,25 +5,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VIDEO_FACTS as VF } from "./video-facts.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-compound-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about clips and rendering, not concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { audioSources, buildAudio } = await import("../src/audio.ts");
 const { speedIntegral } = await import("../src/anim.ts");
 
-let failures = 0;
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 const raw = (file: string, fmt: string[]) => spawnSync("ffmpeg", ["-v", "error", "-i", file, ...fmt, "-"], { maxBuffer: 1 << 28 }).stdout as Buffer;
 const meanDiff = (a: Buffer, b: Buffer) => { if (a.length !== b.length || !a.length) return Infinity; let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 async function rejects(f: () => Promise<unknown>, code: string) { try { await f(); return false; } catch (e: any) { return e.code === code; } }
@@ -460,6 +451,6 @@ console.log("retimed compound: the warning names only what plays now but is not 
   is("the range starts at the compound's in", warned(top(cmp("RC", [trk("n", [vid("a", { start: 0 })])], { in: 5 }))), []);
 }
 
-console.log(failures ? `\n${failures} FAILED` : "\nall compound checks passed");
+console.log(failures() ? `\n${failures()} FAILED` : "\nall compound checks passed");
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+process.exit(failures() ? 1 : 0);

@@ -8,29 +8,20 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync as lstat, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync as symlink, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-vision-"));
 process.env.AGENTCUT_HOME = join(tmp, "home");
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about vision requests and prepare, not concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const undoLatest = async (project: string) => api.undo(project, 1, (await api.info(project)).revision);
 const V = await import("../src/vision.ts");
 const M = await import("../src/model.ts");
 const A = await import("../src/anim.ts");
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
 const near = (a: unknown, b: number, eps = 1e-3) => typeof a === "number" && Math.abs(a - b) < eps;
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 /** RGB of the pixel (x, y) in an image file */
 function px(img: string, x: number, y: number): number[] {
   const r = spawnSync("ffmpeg", ["-v", "error", "-i", img, "-vf", `crop=1:1:${x}:${y}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
@@ -1527,6 +1518,6 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
   check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !(await clip(R, "vid1")).pending, pr);
 }
 
-console.log(`\n${failures ? `✗ ${failures} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`\n${failures() ? `✗ ${failures()} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+process.exit(failures() ? 1 : 0);

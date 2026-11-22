@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-frames-"));
 process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set before importing the api
@@ -12,16 +13,7 @@ process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set be
 const api = await import("./author-api.ts");
 const { FrameSource, TIE_BIAS } = await import("../src/media.ts");
 
-let failures = 0;
 const t0 = performance.now();
-function check(name: string, cond: unknown, info?: unknown) {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-}
-function ff(...args: string[]) {
-  const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`ffmpeg failed: ${r.stderr}`);
-}
 
 const W = 160, H = 120;
 const m = join(tmp, "media");
@@ -481,6 +473,6 @@ console.log("exports, validation and relinking");
   check("a video asset in a format outside the measured list needs the keyframe gap too", !noGap.valid && /key_gap/.test(JSON.stringify(noGap)), noGap);
 }
 
-console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
-if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
-process.exit(failures ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
+if (!process.argv.includes("--keep") && !failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { check, failures } from "./harness.ts";
 
 const root = resolve(import.meta.dir, "..");
 const bin = process.env.AGENTCUT_BIN;
@@ -17,8 +18,6 @@ const home = join(tmp, "home"); // default AGENTCUT_HOME of the launches (HOME i
 const dotenvHome = join(tmp, "dotenv-home"); // where the working dir's .env would send AGENTCUT_HOME
 const dotenvCache = join(tmp, "dotenv-cache"); // where the working dir's .env would send AGENTCUT_CACHE
 const marker = join(work, "preload-ran");
-let fails = 0;
-const check = (n: string, c: unknown, info?: unknown) => { console.log(`  ${c ? "✓" : "✗"} ${n}`, c || info === undefined ? "" : JSON.stringify(info)); if (!c) fails++; };
 
 // launcher env: HOME at spawn; no AGENTCUT_HOME or AGENTCUT_CACHE (a set variable would win over .env), so both default under HOME
 const env = (): Record<string, string> => {
@@ -211,6 +210,6 @@ else {
   registry.close();
 }
 
-console.log(`\n${fails ? `✗ ${fails} check(s) failed` : "OK - all checks passed"}  (${tmp})`);
-if (!fails) rmSync(tmp, { recursive: true, force: true });
-process.exit(fails ? 1 : 0);
+console.log(`\n${failures() ? `✗ ${failures()} check(s) failed` : "OK - all checks passed"}  (${tmp})`);
+if (!failures()) rmSync(tmp, { recursive: true, force: true });
+process.exit(failures() ? 1 : 0);

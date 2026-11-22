@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EXEC_DENY, SANDBOX_EXEC, accountHome, bundledUpdaterHelpers, chromeHint, containOrExit, launchChrome, refusedAtOnce, resolveChrome } from "./chrome.ts";
+import { applyLatest, check, failures, ff } from "./harness.ts";
 
 const CHROME = resolveChrome();
 if (!CHROME || !existsSync(CHROME)) {
@@ -17,11 +18,6 @@ if (!CHROME || !existsSync(CHROME)) {
   process.exit(1);
 }
 
-let failures = 0;
-const check = (name: string, cond: unknown, info?: unknown) => {
-  if (cond) console.log(`  ✓ ${name}`);
-  else { failures++; console.log(`  ✗ ${name}`, info !== undefined ? JSON.stringify(info) : ""); }
-};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-uib-"));
@@ -30,11 +26,9 @@ process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set be
 mkdirSync(join(tmp, "cache", "models", "u2netp"), { recursive: true }); writeFileSync(join(tmp, "cache", "models", "u2netp", "u2netp.onnx"), ""); // the default matte model is cached
 const api = await import("./author-api.ts");
 // the page's own writes carry the revision it shows; the fixtures the rows set up from outside are not about concurrency: a write reads the project's revision (info) and applies at it
-const applyLatest = async (project: string, ops: Parameters<typeof api.apply>[1], o: { label?: string; allowInvalid?: boolean; dryRun?: boolean } = {}) => api.apply(project, ops, { ...o, revision: (await api.info(project)).revision });
 const { startUi } = await import("../src/ui.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
-const ff = (...a: string[]) => { const r = spawnSync("ffmpeg", ["-v", "error", "-y", ...a]); if (r.status) throw new Error(String(r.stderr)); };
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "a.mp4"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=320x240", "-frames:v", "1", join(media, "p.jpg"));
 api.create(dir, { preset: "square" });
@@ -837,5 +831,5 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   await new Promise((ok) => ui.server.close(ok));
   if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
-console.log(failures ? `\n${failures} FAILED` : "\nall ui-browser checks passed");
-process.exit(failures ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILED` : "\nall ui-browser checks passed");
+process.exit(failures() ? 1 : 0);
