@@ -4,7 +4,7 @@
 (`agentcut …`) hoặc **MCP** (`agentcut-mcp`), dựng video bằng timeline JSON, *nhìn* được kết quả (preview frame, contact sheet,
 scopes, waveform) trước khi xuất file, và có thể giao lại cho người dựng bằng FCPXML / OpenTimelineIO.
 
-Viết bằng **TypeScript**, chạy bằng Bun hoặc Node ≥ 20. Đồ hoạ dùng **Skia** (`@napi-rs/canvas`), video dùng **FFmpeg**.
+Viết bằng **TypeScript**, chạy bằng Bun hoặc Node ≥ 22. Đồ hoạ dùng **Skia** (`@napi-rs/canvas`), video dùng **FFmpeg**.
 Chạy trên **macOS, Windows và Linux**. Phiên bản hiện tại: 0.3.0 (MIT).
 
 ```
@@ -35,7 +35,7 @@ Kiểm tra bằng `ffmpeg -version`. Nếu gói của bản phân phối quá c�
 
 Sau đó chọn **một** trong ba cách:
 
-**Cách 1: Node ≥ 20 (npm)**
+**Cách 1: Node ≥ 22 (npm)**
 ```bash
 git clone https://github.com/minhtri2710/agentcut && cd agentcut
 bun install && bun run build      # tạo dist/cli.js và dist/mcp.js
@@ -296,7 +296,7 @@ bun install
 bun run typecheck          # tsc cho src/ và src/ui (trang web)
 bun run test               # tất cả suite, lần lượt; suite lỗi không che các suite sau
 bun --no-install tests/smoke.ts   # một suite: tự tạo media, chạy qua mọi op, template và định dạng xuất
-bun run build              # dist/ cho Node ≥ 20 · bun run build -- --compile -> bin/agentcut
+bun run build              # dist/ cho Node ≥ 22 · bun run build -- --compile -> bin/agentcut
 bun run ui                 # build lại src/ui/page.gen.ts (bun run ui --check: báo lỗi nếu file đã commit bị cũ)
 bun run docs               # sinh lại AGENTS.md từ src/docs.ts
 ```
