@@ -202,8 +202,14 @@ export async function loudness(path: string, signal?: AbortSignal) {
 
 // ------------------------------------------------------------------ TTS
 type Voice = { name: string; provider: string; full_name?: string; lang: string; sample: string };
+function systemEngine(): { engine: "say" | "sapi" | "espeak"; exe: string | null } {
+  const mac = process.platform === "darwin", win = process.platform === "win32";
+  const bins = mac ? ["say"] : win ? ["powershell"] : ["espeak-ng", "espeak"];
+  return { engine: mac ? "say" : win ? "sapi" : "espeak", exe: bins.find(has) ?? null };
+}
 function systemVoices(): Voice[] {
-  if (process.platform === "darwin") {
+  const { engine, exe } = systemEngine();
+  if (engine === "say") {
     const r = spawnSync("say", ["-v", "?"], { encoding: "utf8" });
     const out: Voice[] = [], seen = new Set<string>();
     for (const line of (r.stdout || "").split("\n")) {
@@ -214,17 +220,17 @@ function systemVoices(): Voice[] {
     }
     return out;
   }
-  if (process.platform === "win32") return [{ name: "default", provider: "system", lang: "system", sample: "Windows SAPI (PowerShell System.Speech)" }];
-  if (has("espeak-ng") || has("espeak")) return [{ name: "default", provider: "system", lang: "en", sample: "espeak" }, { name: "vi", provider: "system", lang: "vi", sample: "espeak Vietnamese" }];
+  if (engine === "sapi") return exe ? [{ name: "default", provider: "system", lang: "system", sample: "Windows SAPI (PowerShell System.Speech)" }] : [];
+  if (exe) return [{ name: "default", provider: "system", lang: "en", sample: "espeak" }, { name: "vi", provider: "system", lang: "vi", sample: "espeak Vietnamese" }];
   return [];
 }
 
 /** Every TTS provider (available or not, with a setup hint) and the default one. A lookup only: no engine is started. */
 export function ttsProviders(extra = providerInfo()) {
-  const win = process.platform === "win32", mac = process.platform === "darwin", bins = mac ? ["say"] : win ? ["powershell"] : ["espeak-ng", "espeak"];
+  const { engine, exe } = systemEngine();
   return {
     default_provider: pickProvider().provider,
-    providers: [{ name: "system", available: bins.some(has), engine: mac ? "say" : win ? "sapi" : "espeak" }, ...extra.providers],
+    providers: [{ name: "system", available: exe !== null, engine }, ...extra.providers],
   };
 }
 
@@ -318,7 +324,7 @@ async function systemSpeech(text: string, tmp: string, voice?: string, rate?: nu
   } else {
     raw = join(tmp, "tts.wav");
     if (voice && !/^[A-Za-z0-9][A-Za-z0-9_+.-]*$/.test(voice)) throw new EditError(`invalid voice '${voice}'`, "bad_voice", "espeak voice names are letters, digits and _ + . - (for example en-us, vi)");
-    const exe = has("espeak-ng") ? "espeak-ng" : has("espeak") ? "espeak" : null;
+    const { exe } = systemEngine();
     if (!exe) throw new EditError("no TTS engine found", "missing_dependency", "install espeak-ng (apt install espeak-ng), or generate audio elsewhere and import it");
     r = await run(exe, ["-w", raw, ...(voice ? ["-v", voice] : []), ...(rate ? ["-s", String(rate)] : []), "-f", txt], { signal });
     if (r.status !== 0 && voice) { // diagnose only after a failure, so a good synthesis pays no extra call
