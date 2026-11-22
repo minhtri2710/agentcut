@@ -275,7 +275,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
   } else {
     if (a.at !== undefined) c.start = round6(parseAt(tl, a.at));
     else if (a.after) c.start = round6(clipEnd(findClip(tl, a.after)[2]));
-    else c.start = round6(c.until_end ? Math.max(0, ...clips.filter((x) => !x.until_end).map(clipEnd)) : trackEnd(tr)); // an until_end clip's end is the timeline end: another one starts with it
+    else c.start = round6(c.until_end ? Math.max(0, ...clips.filter((x) => !x.until_end).map(clipEnd)) : trackEnd(tr)); // an until_end clip's end is the timeline end: a new one starts at the end of the track's other clips
     clips.push(c);
     clips.sort((x, y) => clipStart(x) - clipStart(y));
   }

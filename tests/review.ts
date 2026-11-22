@@ -715,7 +715,7 @@ console.log("templates: the text of every template stays inside the safe area at
   const args: Record<string, object> = {
     slideshow: { media, title: "Our summer trip" },
     promo: { media, hook: "Meet the new Model X", points: ["Fast", "Simple"], cta: "Buy now", brand_color: "#FFD60A" },
-    beat_montage: { media, music: join(m, "beat.wav"), title: "SUMMER HIGHLIGHTS" },
+    beat_montage: { media, music: join(m, "beat.wav"), title: "BEST OF THE SUMMER" },
     quote: { text: "Stay hungry, stay foolish", author: "Steve" },
     listicle: { title: "Top picks", items: [{ text: "First pick", media: png }, { text: "Noise-cancelling wireless earbuds with a charging case", media: png }] },
   };
@@ -742,6 +742,17 @@ console.log("templates: the text of every template stays inside the safe area at
     ...[...Object.keys(CAPTION_PRESETS), undefined].map((preset, i) => ({ op: "add_captions", words, track: `subs${i}`, ...(preset ? { preset } : {}) }))]);
   const unsafe = ((await api.review(d, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
   check("captions at their default placement on 9:16: no caption preset is flagged text_unsafe", !unsafe.length, unsafe.map((f: any) => f.message));
+  const c9 = join(tmp, "centred-9x16"), short = "we go to the sea and we swim in it as the sun is up and we sit on the sand to eat";
+  api.create(c9, { preset: "reels" });
+  await applyLatest(c9, [{ op: "add_clip", track: "main", type: "color", color: "#334455", duration: 3 },
+    { op: "add_clip", track: "text", id: "mid", text: "A long centred line of text that fills the frame", position: "center", at: 0, duration: 3 },
+    { op: "add_clip", track: "text2", id: "wide", text: short, font_size: 60, shadow: { blur: 40, y: 0 }, max_width: "95%", at: 0, duration: 3 }]);
+  const flagged = async () => ((await api.review(c9, { black: false })) as any).findings.filter((f: any) => f.type === "text_unsafe");
+  const first = await flagged(), px = Number(/(\d+)px/.exec(first.find((f: any) => f.id === "wide")?.hint ?? "")?.[1]);
+  check("a full-line text at position center on 9:16 is narrowed like the default: no text_unsafe", !first.some((f: any) => f.id === "mid"), first);
+  await applyLatest(c9, [{ op: "update_clip", id: "wide", set: { max_width: px } }]);
+  const after = (await flagged()).filter((f: any) => f.id === "wide");
+  check(`a centred box that is only too wide: the max_width its hint gives (${px}) clears the finding`, px > 0 && !after.length, after);
 }
 
 console.log("templates: placement is kept where it was safe, a preset's own placement is kept, margin takes x and y");

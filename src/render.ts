@@ -11,7 +11,7 @@ import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
   TEXTY, type Track, type VideoFacts, VISUAL_TYPES,
 } from "./model.ts";
-import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, textMargin, TextStyle } from "./text.ts";
+import { captionPages, captionWords, type CWord, maxWidthPx, pageSpans, renderText, splitWords, textMargin, TextStyle, widestWord } from "./text.ts";
 
 setCanvas(Skia);
 
@@ -49,7 +49,7 @@ export class Layer {
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
-  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle;
+  private lottie?: LottieAnimation; private canvasBuf?: Canvas; private tinyBuf?: Canvas; private style?: TextStyle; private wrap?: number;
   private pan = false; private panBuf?: Buffer;
   private ramp?: any[]; private rampT = 0; private rampU = 0; private staticFr?: Frame; private child?: Renderer;
   constructor(public r: Renderer, public track: Track, public c: Clip) {
@@ -129,13 +129,26 @@ export class Layer {
     await this.media().readAt(this.srcOffset(tl));
   }
 
-  /** Wrap width in canvas px. With no max_width, a horizontally centred box (text + its margin) stays inside the title area and, at its default height, clear of the side UI zones. */
+  /** Project px a text box adds around its wrapped text (outline, padding, shadow or glow, pill) as review measures it, at reviewScale. */
+  ring(highlightBg?: string): number {
+    const { W0, H0 } = this.r, k = reviewScale(W0);
+    return (2 * textMargin(new TextStyle(this.c, k, Math.min(W0, H0)), highlightBg) + 2) / k;
+  }
+
+  /** Wrap width in canvas px, worked out once in project px so every render scale wraps the same words. With no max_width, a horizontally centred box stays
+   *  inside the title area and, unless anchored to the top or bottom or given a y, clear of the side UI zones; never narrower than the widest word. */
   private wrapWidth(d?: string, highlightBg?: string): number {
-    const c = this.c, { W0, H0, k } = this.r, mw = maxWidthPx(c, W0, k, d);
-    if (c.max_width !== undefined || c.x !== undefined || edgesOf(c.position).some((e) => e === "left" || e === "right")) return mw;
-    const z = safeZones(W0, H0), side = !c.position && c.y === undefined ? z.ui.filter(([, , , uw]) => uw < W0).map(([, ux]) => ux) : [];
-    const half = Math.min(z.title[0] + z.title[2], ...side) - W0 / 2;
-    return Math.min(mw, 2 * half * k - 2 * textMargin(this.textStyle(), highlightBg) - 2);
+    if (this.wrap === undefined) {
+      const c = this.c, { W0, H0, k } = this.r, edges = edgesOf(c.position);
+      this.wrap = maxWidthPx(c, W0, 1, d);
+      if (c.max_width === undefined && c.x === undefined && !edges.some((e) => e === "left" || e === "right")) {
+        const z = safeZones(W0, H0), side = c.y === undefined && !edges.some((e) => e === "top" || e === "bottom") ? z.ui.filter(([, , , uw]) => uw < W0).map(([, ux]) => ux) : [];
+        const half = Math.min(z.title[0] + z.title[2], ...side) - W0 / 2;
+        const text = this.type === "captions" ? this.words.map((w) => w.text).join(" ") : String(c.text ?? "");
+        this.wrap = Math.min(this.wrap, Math.max(2 * half - this.ring(highlightBg), widestWord(text, this.textStyle()) / k));
+      }
+    }
+    return this.wrap * this.r.k;
   }
 
   textStyle(): TextStyle {
@@ -323,6 +336,8 @@ export const frameSize = (st: Timeline["settings"], scale: number) => ({ W: even
 /** A sheet or strip tile: `tileW` wide, never wider than the timeline. */
 const tileScale = (tl: Timeline, tileW: number) => Math.min(1, tileW / tl.settings.width);
 export const tileSize = (tl: Timeline, tileW: number) => frameSize(tl.settings, tileScale(tl, tileW));
+/** The scale review lays text out at for its safe-area check: the smallest scale whose boxes must stay safe. */
+export const reviewScale = (W: number) => Math.min(1, 540 / W);
 
 export class Renderer {
   W0: number; H0: number; W: number; H: number; k: number; fps: number; duration: number;
