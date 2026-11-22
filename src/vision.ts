@@ -39,12 +39,13 @@ const PINNED_MODELS: Record<string, ModelPin> = { [FACE_MODEL.name]: FACE_MODEL,
 /** A face counts from this detector score up; below FACE_SURE a result warns that it may not be a face. Fixed, not tuned. */
 export const FACE_MIN = 0.6, FACE_SURE = 0.9;
 const mbOf = (bytes: number) => +(bytes / 1e6).toFixed(2);
+const modelOf = (d: Derived) => d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
 
 /** The models these jobs need that are not in the models dir yet: a matte model for each matte job, the face model for any subject job. */
 export function modelsToDownload(jobs: Derived[]) {
   const need = new Map<string, { model: string; approx_mb: number; path: string }>();
   for (const d of jobs) {
-    const model = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
+    const model = modelOf(d);
     if (model && !modelCached(model)) need.set(model, { model, approx_mb: d.kind === "matte" ? MATTE_MB[model] : mbOf(FACE_MODEL.bytes), path: modelFile(model) });
   }
   return [...need.values()];
@@ -247,7 +248,7 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
-        const name = d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
+        const name = modelOf(d);
         const model = name && modelCached(name) ? modelFile(name) : null; // named only when the file exists; the helper hashes it before it loads it
         const detail = `vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`;
         if (model && /does not match its pinned sha256/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the model file ${model} is not the pinned file (its sha256 differs): delete it and run with allow_download=true to fetch it again`));
