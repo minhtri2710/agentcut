@@ -204,8 +204,8 @@ export async function main(argv = process.argv.slice(2)) {
         progress }); break;
       case "audio": res = await api.audioCheck(P, { source: f.source ?? pos[0], spectrogram: f.spectrogram, start: f.start, end: f.end, width: num(f.width, "--width"), minSilence: num(f["min-silence"], "--min-silence"), out: f.output, signal }); break;
       case "motion": res = await api.motion(P, { start: f.start, end: f.end, frames: num(f.frames, "--frames"), pad: num(f.pad, "--pad"), out: f.output, tileWidth: num(f["tile-width"], "--tile-width") }); break;
-      case "export-timeline": case "handoff": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
-      case "render": case "export": {
+      case "export-timeline": case "handoff": case "export": res = await api.exportTimeline(P, { format: f.format, out: f.output }); break;
+      case "render": {
         if (f.format === "fcpxml" || f.format === "otio" || /\.(fcpxml|otio)$/i.test(f.output ?? "")) { res = await api.exportTimeline(P, { format: f.format, out: f.output }); break; }
         if (f.format === "srt" || f.format === "vtt") { res = api.exportCaptions(P, { format: f.format, out: f.output }); break; }
         res = await api.render(P, {

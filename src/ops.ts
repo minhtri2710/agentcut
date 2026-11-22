@@ -407,6 +407,19 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
     return { added: out, track_end: +trackEnd(findTrack(tl, tid)).toFixed(3) };
   });
 
+/** A new speed keeps the source a clip plays (add_clip's length is the source / speed): its own length scales by s0 / s1, and so do its detached audio pieces that play at s0 (offset too, so a J/L-cut lead stays on the same moment). */
+function retime(tl: Timeline, c: Clip, s0: number) {
+  const r = s0 / (Number(c.speed ?? 1) || 1);
+  if (r === 1 || c.freeze || c.keyframes?.speed || c.until_end || computedDuration(c)) return;
+  c.duration = round6(clipDur(c) * r);
+  for (const [, au] of linkedAudio(tl, c)) {
+    if (Math.abs((Number(au.speed ?? 1) || 1) - s0) > 1e-6 || au.until_end || computedDuration(au)) continue;
+    if (c.speed === undefined) delete au.speed; else au.speed = c.speed;
+    au.duration = round6(clipDur(au) * r);
+    au.offset = round6(parseTime(au.offset ?? 0) * r);
+  }
+}
+
 op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. Shorthand: pass fields directly. start on an attached clip sets its offset (start with offset is refused); a clip on a magnetic track cannot be attached (attached_magnetic).",
   { id: "clip id", set: "fields (dicts merge; keyframes replace)", "...": "clip fields (instead of set)" }, async (p, tl, a) => {
     const [tr, , c] = findClip(tl, a.id);
@@ -425,8 +438,10 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     }
     if (typeof patch.start === "string") patch.start = parseAt(tl, patch.start);
     if ("duration" in patch && !("match_duration" in patch)) ownDuration(c);
+    const s0 = Number(c.speed ?? 1) || 1;
     deepMerge(c, patch);
     lengthOnce(c);
+    if ("speed" in patch && !("duration" in patch)) retime(tl, c, s0);
     if (patch.attach_to) refuseAttachedMagnetic(c, tr);
     if (c.attach_to && patch.start != null) { // an attached clip is placed by its offset, against the (new) target
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
@@ -437,7 +452,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
     return { id: c.id, start: c.start, duration: c.duration };
   });
 
-op("remove_clip", "Remove a clip (and clips attached to it, and those attached to them; clips whose match_duration names it keep their last length as a plain number, listed in unlinked_durations). Magnetic tracks close the gap; ripple=true does it on other tracks too.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
+op("remove_clip", "Remove a clip (and clips attached to it, and those attached to them; clips whose match_duration names it keep their last length as a plain number, listed in unlinked_durations). Magnetic tracks close the gap; ripple=true does it on other tracks too. Alias: ripple_delete.", { id: "clip id", ripple: "bool", keep_attached: "detach instead of removing attached clips" }, (p, tl, a) => {
   const [tr, ci, c] = findClip(tl, a.id);
   tr.clips.splice(ci, 1);
   const attached: string[] = [], gone = new Set([c.id]), top = tl.tracks.flatMap((t) => t.clips);
@@ -917,21 +932,24 @@ registerAudioOps(helpers);
 registerVisionOps(helpers);
 
 // ---------------------------------------------------------------- runner
+/** Other names an op is called by: the op runs as its own name, with the same args and result. */
+const ALIASES: Record<string, string> = { ripple_delete: "remove_clip" };
+
 function* opSteps(p: Project, tl: Timeline, ops: Dict[]): Generator<Dict | Promise<Dict>, [Timeline, Dict[]], Dict> {
   const work = structuredClone(tl);
   const results: Dict[] = [];
   for (const [i, o] of ops.entries()) {
     if (!o || typeof o !== "object" || !o.op) throw new EditError(`ops[${i}] must be an object with an 'op' field`, "bad_op", undefined, `ops[${i}]`);
-    const def = own(OPS, o.op);
+    const name: string = own(ALIASES, o.op) ?? o.op, def = own(OPS, name);
     if (!def) { const s = suggest(o.op, Object.keys(OPS)); throw new EditError(`ops[${i}]: unknown op '${o.op}'`, "unknown_op", `${s ? `did you mean '${s}'? ` : ""}ops: ${Object.keys(OPS).join(", ")}`, `ops[${i}]`); }
     try {
       const { op: _n, ...args } = o;
       refuseProtoKeys(args);
-      if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(o.op), o.op);
-      results.push({ op: o.op, ...yield def.fn(p, work, args) });
+      if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(name), name);
+      results.push({ op: name, ...yield def.fn(p, work, args) });
     } catch (e: any) {
-      if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${o.op})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${o.op})`; throw e; }
-      if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${o.op}): missing or invalid argument`, "missing_arg", `${o.op} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
+      if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${name})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${name})`; throw e; }
+      if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${name}): missing or invalid argument`, "missing_arg", `${name} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
       throw e;
     }
   }

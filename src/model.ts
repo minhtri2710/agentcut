@@ -316,6 +316,8 @@ export const VISUAL_FIELDS: F = {
 };
 /** The playback speed range, for the constant `speed` and for every keyframes.speed value. */
 export const SPEED_MIN = 0.1, SPEED_MAX = 8;
+/** What a speed edit does to the length (ops.ts retime), for every speed field doc. */
+const SPEED_LENGTH = "update_clip speed scales the duration by old/new speed, so the clip plays the same source (a duration in the same edit wins; a freeze, a speed ramp, until_end and match_duration keep their length)";
 /** Easings that leave [start, end] between two keyframes, so a ramp using one can pass the speed range. */
 const OVERSHOOT = ["back_out", "elastic_out"];
 /** Mixer sample rate in Hz: an integer ffmpeg takes at both ends (telephony 8 kHz .. pro audio 192 kHz); pitch shifts divide by round(rate * 2^(semitones/12)), so a tiny rate would make that zero. */
@@ -323,7 +325,7 @@ const SAMPLE_RATE_MIN = 8000, SAMPLE_RATE_MAX = 192000;
 export const MEDIA_FIELDS: F = {
   asset: [T("string"), "asset id"], src: [T("string"), "file path (auto-imported)"],
   in: [T("number", "string"), "source in-point seconds"],
-  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1)`],
+  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1); ${SPEED_LENGTH}`],
   volume: ranged("volume", "linear gain"), muted: [T("boolean"), "drop audio"],
   fade_in: ranged("fade_in", "audio fade-in s"), fade_out: ranged("fade_out", "audio fade-out s"),
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
@@ -378,13 +380,13 @@ export const COLOR_FIELDS: F = {
 };
 export const LOTTIE_FIELDS: F = {
   asset: [T("string"), "lottie asset id"], src: [T("string"), "path to a Lottie .json"],
-  size: [T("array"), "[w, h] box"], speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX}`], loop: [T("boolean"), "loop (default true)"],
+  size: [T("array"), "[w, h] box"], speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX}; ${SPEED_LENGTH}`], loop: [T("boolean"), "loop (default true)"],
   in: [T("number", "string"), "start offset seconds"],
 };
 export const COMPOUND_FIELDS: F = {
   tracks: [T("array"), "nested tracks (same format as timeline tracks, shared assets; clip ids unique project-wide)"],
   in: [T("number", "string"), "seconds into the nested timeline (default 0)"],
-  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns)`],
+  speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} of the nested timeline (at a speed other than 1 nested audio is not mixed and nested captions are not exported as subtitles; validate warns); ${SPEED_LENGTH}`],
   volume: ranged("volume", "gain applied to all nested audio"), muted: [T("boolean"), "drop nested audio"],
 };
 

@@ -261,6 +261,8 @@ console.log("frame time and caption file format");
   check("captions to an unknown extension is bad_format and writes nothing; an explicit format names the content", code(["captions", "-o", "subs.txt"]) === "bad_format" && !existsSync(join(P, "subs.txt"))
     && cli(["captions", "-o", "subs.txt", "--format", "vtt"], C).format === "vtt" && readFileSync(join(P, "subs.txt"), "utf8").startsWith("WEBVTT"));
   check("an export to an unknown extension is refused and writes nothing", code(["export", "-o", "edit.txt"]) === "bad_format" && !existsSync(join(P, "edit.txt")));
+  const ev = cli(["export", "-o", "x.mp4"], { ok: false, cwd: P }).error;
+  check("export writes timeline formats only: a video output is bad_format with the interchange hint, and nothing is written", ev?.code === "bad_format" && /\.fcpxml/.test(ev.hint) && !existsSync(join(P, "x.mp4")), ev);
   // a render quality is one of the named levels, whatever the output (a still reads it too); nothing is written for a refused one
   for (const [what, args] of [["video", ["-o", "q.mp4", "--quality", "ultra"]], ["inherited name", ["-o", "q.mp4", "--quality", "constructor"]], ["still", ["-o", "q.png", "--quality", "ultra"]]] as const) {
     const e = cli(["render", ...args], { ok: false, cwd: P }).error;
@@ -363,7 +365,8 @@ for (const op of ["j_cut", "split_clip"]) cliLatest(["op", op, "id=x", "wobble=1
 cliLatest(["op", "add_effect", "type=grain", "intesity=1"], { cwd: q, ok: false });
 const fs = cli(["feedback", "summary"]);
 check("auto-logged guessed names", ["fade_inn", "updat_clip"].every((g) => fs.naming_misses.some((m: any) => m.guess === g)), fs.naming_misses);
-check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "wobble"], ["split_clip argument", "wobble"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => fs.naming_misses.some((m: any) => m.kind === k && m.guess === g)), fs.naming_misses);
+const allMisses = (await import("../src/feedback.ts")).summary({ limit: 50 }).naming_misses; // the CLI summary keeps the top 10; this row is about the logging
+check("an unknown argument is logged as a naming miss under its op", [["j_cut argument", "wobble"], ["split_clip argument", "wobble"], ["add_effect grain parameter", "intesity"]].every(([k, g]) => allMisses.some((m: any) => m.kind === k && m.guess === g)), allMisses);
 check("render speed logged", fs.render?.renders >= 1, fs.render);
 check("a failed validate is not an error event: no error row for validate and no row without a code", !fs.errors.some((e: any) => e.cmds.includes("validate") || typeof e.code !== "string"), fs.errors);
 {

@@ -71,7 +71,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"add_clip","track":"main","src":"/abs/clip.mp4","in":2,"duration":4,"transition":"crossfade"}
 {"op":"add_clip","track":"main","src":"/abs/wide.mp4","fit":"blur"}                      landscape in 9:16 with blurred background
 {"op":"add_clip","track":"main","src":"/abs/photo.jpg","duration":3,"motion":"ken_burns","transition":{"type":"zoom_blur","duration":0.4}}
-{"op":"add_clip","track":"text","text":"HOOK","at":0.3,"duration":2.5,"preset":"title_bold","position":"top","margin":"14%"}
+{"op":"add_clip","track":"text","text":"HOOK","at":0.3,"duration":2.5,"preset":"title_bold","position":"top","margin":"20%"}
 {"op":"add_clip","track":"text","text":"Sale 30%","attach_to":"main#2","offset":0.2,"match_duration":true,"preset":"subtitle_box","y":"62%"}
 {"op":"update_clip","id":"img2","match_duration":"voice#-1","end_offset":-0.3}                   img2 lasts as long as the last voice clip, plus 0.3 s
 {"op":"add_clip","track":"text","text":"🔥 HOT","at":1,"duration":2,"preset":"sticker","position":"top_right"}      emoji ok
@@ -114,7 +114,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    The beats that every and offset pick must each be 0 s or more and later than the one before, else bad_beats. Each retimed clip (not a kept_computed one) must span more than 0.05 s between its two cuts (the first clip from 0 s), else bad_beats; for close beats, a larger every skips them, and in a typed list you can leave one out.
    Every clip the list reaches is named in retimed or kept_computed; a clip of the track named in neither was not reached (the list ran out, or it is the last clip).
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
-{"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}
+{"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}   half as long, same source
 {"op":"set_keyframes","id":"vid3","prop":"speed","keyframes":[[0,1],[1,0.25,"ease_in_out"],[2,3]]}   speed ramp
 {"op":"set_keyframes","id":"img2","prop":"scale","keyframes":[[0,1],[3,1.2,"ease_in_out"]]}
 {"op":"add_effect","id":"vid1","type":"glitch","start":0,"duration":0.5}    {"op":"add_effect","type":"letterbox"}  (no id = whole video)

@@ -1031,7 +1031,7 @@ console.log("pieces of an attached clip keep their place and length");
   check("trim_clip trim_start on an attached clip: start moves by d, in-point by d, the end stays, still attached", near(at(n1, "ovl").start, 1) && near(at(n1, "ovl").in, 1.5) && near(at(n1, "ovl").duration, 1.5) && near(at(n1, "ovl").start + at(n1, "ovl").duration, 2.5) && near(at(n1, "ovl").offset, 1) && at(n1, "ovl").attach_to === "img1" && near(q1.start, 1), [at(n1, "ovl"), q1]);
   valid("trim_start on an attached clip", n1);
   const [n2] = (await run((await base()), [{ op: "update_clip", id: "ovl", speed: 2 }, { op: "trim_clip", id: "ovl", trim_start: 0.5 }]));
-  check("  with speed 2 the in-point moves by d*speed", near(at(n2, "ovl").in, 2) && near(at(n2, "ovl").start, 1) && near(at(n2, "ovl").start + at(n2, "ovl").duration, 2.5), at(n2, "ovl"));
+  check("  with speed 2 the in-point moves by d*speed", near(at(n2, "ovl").in, 2) && near(at(n2, "ovl").start, 1) && near(at(n2, "ovl").start + at(n2, "ovl").duration, 1.5), at(n2, "ovl"));
   // update_clip start
   const [u1, [s1]] = (await run((await base()), [{ op: "update_clip", id: "ovl", start: 1.5 }]));
   check("update_clip start on an attached clip moves it: offset updated, still attached", near(at(u1, "ovl").start, 1.5) && near(at(u1, "ovl").offset, 1.5) && at(u1, "ovl").attach_to === "img1" && near(s1.start, 1.5), [at(u1, "ovl"), s1]);
@@ -1988,6 +1988,46 @@ console.log("a video whose sound outlasts its picture");
     try { await raw.apply(R, ops, { revision: (await api.info(R)).revision, author: "test", signal: AbortSignal.abort(reason) }); } catch (e) { error = e; }
     check("pre-aborted apply, including an empty batch, preserves revision and history", error === reason && readFileSync(join(R, "project.json"), "utf8") === before);
   }
+}
+
+console.log("update_clip speed keeps the source a clip plays; ripple_delete is remove_clip");
+{
+  const at = (t: any, id: string) => (t.tracks ?? []).flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  const base = async (ops: any[] = []) => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.av = { path: "/none.mp4", kind: "video", duration: 10, has_audio: true, ...VF };
+    return (await applyOps(null as any, t, [
+      { op: "add_clip", track: "main", asset: "av", id: "whole" }, // 0..10, the whole source
+      { op: "add_clip", track: "main", asset: "av", id: "cut", in: 1, duration: 4.5 }, // source 1..5.5
+      { op: "add_clip", track: "main", asset: "av", id: "next", duration: 1 },
+      ...ops,
+    ]))[0];
+  };
+  const tried = (ops: any[]) => base(ops).catch((e) => e);
+  const slow = await base([{ op: "update_clip", id: "whole", speed: 0.5 }]), fast = await base([{ op: "update_clip", id: "whole", speed: 2 }]);
+  const held = validate(fast).filter((i: any) => /of source/.test(i.message));
+  check("speed 0.5 doubles a clip's length and moves the next clip on a magnetic track; speed 2 halves it, so no last frame is held",
+    near(at(slow, "whole").duration, 20) && near(at(slow, "cut").start, 20) && near(at(fast, "whole").duration, 5) && !held.length, { slow: at(slow, "whole"), held });
+  const lc = await tried([{ op: "update_clip", id: "cut", speed: 2 }, { op: "l_cut", id: "cut", seconds: 0.4 }]);
+  check("a trimmed clip keeps its source span at a new speed, so an l_cut then finds source after it", near(at(lc, "cut")?.duration, 2.25) && near(at(lc, "cut")?.in, 1) && near(at(lc, "aud1")?.duration, 2.65), lc);
+  const att = await tried([{ op: "detach_audio", id: "cut" }, { op: "update_clip", id: "cut", speed: 2 }, { op: "attach_audio", id: "cut" }]);
+  const jc = await tried([{ op: "j_cut", id: "cut", seconds: 0.5 }, { op: "update_clip", id: "cut", speed: 2 }]), ja = at(jc, "aud1");
+  check("detached audio takes the new speed with its length and offset scaled: attach_audio accepts it, and a J-cut's lead starts on the same source moment",
+    near(at(att, "cut")?.duration, 2.25) && !at(att, "aud1") && ja?.speed === 2 && near(ja.duration, 2.5) && near(ja.offset, -0.25) && near(ja.in - ja.offset * ja.speed, at(jc, "cut").in), { att, ja });
+  const g = await base([
+    { op: "add_clip", track: "o1", asset: "av", id: "fz", at: 0, freeze: true, duration: 2 },
+    { op: "add_clip", track: "o2", asset: "av", id: "ue", at: 0, until_end: true },
+    { op: "add_clip", track: "o3", asset: "av", id: "md", at: 0, match_duration: "next" },
+    { op: "update_clip", id: "whole", speed: 2, duration: 4 },
+    ...["fz", "ue", "md"].map((id) => ({ op: "update_clip", id, speed: 2 })),
+  ]);
+  check("a duration given with the speed wins; a freeze, until_end and match_duration keep their length",
+    near(at(g, "whole").duration, 4) && near(at(g, "fz").duration, 2) && near(at(g, "ue").duration, 9.5) && near(at(g, "md").duration, 1), ["whole", "fz", "ue", "md"].map((id) => at(g, id)));
+  const del = async (name: string) => applyOps(null as any, await base([{ op: "add_clip", track: "o1", asset: "av", id: "a", at: 0, duration: 1 }, { op: "add_clip", track: "o1", asset: "av", id: "b", at: 2, duration: 1 }]),
+    [{ op: name, id: "cut" }, { op: name, id: "a", ripple: true }]).catch((e) => [e, e]);
+  const [rt, rr] = await del("remove_clip"), [dt, dr] = await del("ripple_delete");
+  check("ripple_delete runs remove_clip: the same timeline and results, on a magnetic track and with ripple=true on another",
+    JSON.stringify(dt) === JSON.stringify(rt) && JSON.stringify(dr) === JSON.stringify(rr) && near(at(rt, "next").start, 10) && near(at(rt, "b").start, 1), dr);
 }
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : "OK - all checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s  (${tmp})`);
 if (!process.argv.includes("--keep") && !failures) rmSync(tmp, { recursive: true, force: true });
