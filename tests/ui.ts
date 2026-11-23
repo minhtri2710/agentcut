@@ -136,6 +136,24 @@ check("reused /api/frame bytes match fresh renderers across ascending, descendin
   await new Promise((ok) => captionsUi.server.close(ok));
   await api.closeFrameCache(captionsDir);
 }
+{
+  const alphaDir = join(tmp, "alpha-bg"), red = join(media, "red.png"), green = join(media, "green.png");
+  ff("-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", red);
+  ff("-f", "lavfi", "-i", "color=c=green:size=64x64", "-frames:v", "1", green);
+  const madeAlpha = api.create(alphaDir, { preset: "square" });
+  await api.apply(alphaDir, [
+    { op: "set_settings", background: "#00000080" },
+    { op: "add_clip", track: "main", src: red, duration: 1 },
+    { op: "add_clip", track: "main", src: green, duration: 1 },
+  ], { revision: madeAlpha.revision });
+  const first = await api.frameImage(alphaDir, 0.5, { reuse: true, scale: 0.25, format: "png" });
+  const reused = await api.frameImage(alphaDir, 1.5, { reuse: true, scale: 0.25, format: "png" });
+  const fresh = await api.frameImage(alphaDir, 1.5, { scale: 0.25, format: "png" });
+  check("a reused Renderer clears before painting a translucent background",
+    !first.data.equals(reused.data) && reused.data.equals(fresh.data),
+    { changed: !first.data.equals(reused.data), fresh: reused.data.equals(fresh.data) });
+  await api.closeFrameCache(alphaDir);
+}
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
