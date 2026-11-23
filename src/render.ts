@@ -346,7 +346,7 @@ export const reviewScale = (W: number) => Math.min(1, 540 / W);
 export class Renderer {
   W0: number; H0: number; W: number; H: number; k: number; fps: number; duration: number;
   layers: Layer[] = [];
-  canvas: Canvas; ctx: SKRSContext2D; bg: string; transparent: boolean;
+  canvas: Canvas; ctx: SKRSContext2D; bg: string; transparent: boolean; opaque: boolean;
   private layerCanvases = new Map<Layer, Canvas>();
   /** skipText: text and captions clips get no layer (the black-frame scan judges the picture under them). Layout is still resolved on the whole timeline.
    *  A skipped clip ends its track's run like a gap, so the clip after it has no transition partner: the scan shows that clip alone, with no blend. */
@@ -358,7 +358,9 @@ export class Renderer {
     this.k = this.W / this.W0;
     this.fps = Number(st.fps);
     this.bg = css(st.background ?? "#000000");
-    this.transparent = parseColor(st.background ?? "#000000")[3] === 0;
+    const alpha = parseColor(st.background ?? "#000000")[3];
+    this.transparent = alpha === 0;
+    this.opaque = alpha === 255;
     this.duration = totalDuration(tl);
     this.canvas = createCanvas(this.W, this.H);
     this.ctx = this.canvas.getContext("2d");
@@ -420,7 +422,8 @@ export class Renderer {
     const { ctx, W, H } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
-    if (this.transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); }
+    if (!this.opaque) ctx.clearRect(0, 0, W, H);
+    if (!this.transparent) { ctx.fillStyle = this.bg; ctx.fillRect(0, 0, W, H); }
     await this.warm(t); // decode visible media in parallel before compositing in order
     for (const L of this.layers) {
       if (!(L.start - 1e-9 <= t && t < L.end - 1e-9)) { if (t > L.end + 1) L.close(); this.layerCanvases.delete(L); continue; } // a finished layer keeps no full-size canvas

@@ -90,6 +90,84 @@ check("state has timeline + revision + history", st.j.ok && st.j.revision === r0
 const vid = st.j.timeline.tracks.find((t: any) => t.id === "main").clips[0];
 const fr = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame is a JPEG", fr.status === 200 && fr.type === "image/jpeg" && fr.body[0] === 0xff && fr.body[1] === 0xd8);
+const frameSequence = [0.1, 0.5, 1.2, 1.9, 0.3, 0.0, 1.0];
+const frameIdentity: { t: number; status: number; same: boolean; bytes: number; expected: number }[] = [];
+const freshFrames = new Map<number, Buffer>();
+for (const t of frameSequence) {
+  const cached = await raw(`/api/frame?t=${t}&scale=0.25`), fresh = await api.frameImage(dir, t, { scale: 0.25 });
+  freshFrames.set(t, fresh.data);
+  frameIdentity.push({ t, status: cached.status, same: cached.body.equals(fresh.data), bytes: cached.body.length, expected: fresh.data.length });
+}
+check("reused /api/frame bytes match fresh renderers across ascending, descending, and jump seeks", frameIdentity.every((x) => x.status === 200 && x.same), frameIdentity);
+{
+  const layersDir = join(tmp, "layers"), madeLayers = api.create(layersDir, { preset: "square" });
+  await api.apply(layersDir, Array.from({ length: 3 }, () => ({ op: "add_clip" as const, track: "main", src: join(media, "a.mp4"), duration: 2.5 })), { revision: madeLayers.revision });
+  const scrubUi = await startUi(layersDir, { port: 0 });
+  const last = await raw("/api/frame?t=6.5&scale=0.25", { port: scrubUi.port });
+  const first = await raw("/api/frame?t=0.5&scale=0.25", { port: scrubUi.port });
+  const layers = api.frameCacheVideoLayers(layersDir);
+  const farOpen = layers.filter((L) => L.open && (0.5 < L.start - 1 || 0.5 > L.end + 1));
+  check("a backward scrub closes cached video layers far from the playhead", last.status === 200 && first.status === 200 && layers.length === 3
+    && layers.some((L) => L.open && L.start <= 0.5 && 0.5 < L.end) && farOpen.length === 0, layers);
+  scrubUi.server.closeAllConnections?.();
+  await new Promise((ok) => scrubUi.server.close(ok));
+  await api.closeFrameCache(layersDir);
+}
+{
+  const captionsDir = join(tmp, "captions"), srtPath = join(tmp, "preview.srt");
+  const madeCaptions = api.create(captionsDir, { preset: "square" });
+  writeFileSync(srtPath, "1\n00:00:00,000 --> 00:00:02,000\nMANGO\n");
+  await api.apply(captionsDir, [
+    { op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 },
+    { op: "add_captions", srt: srtPath, preset: "clean" },
+  ], { revision: madeCaptions.revision });
+  const captionsUi = await startUi(captionsDir, { port: 0 });
+  const first = await raw("/api/frame?t=0.5&scale=0.25", { port: captionsUi.port });
+  const was = statSync(srtPath);
+  writeFileSync(srtPath, "1\n00:00:00,000 --> 00:00:02,000\nBERRY\n");
+  utimesSync(srtPath, was.atimeMs / 1000, (was.mtimeMs + 2000) / 1000);
+  const changed = await raw("/api/frame?t=0.5&scale=0.25", { port: captionsUi.port });
+  const fresh = await api.frameImage(captionsDir, 0.5, { scale: 0.25 });
+  check("an in-place SRT edit invalidates the frame cache without changing the project revision",
+    first.status === 200 && changed.status === 200 && first.headers["x-revision"] === changed.headers["x-revision"]
+    && changed.body.equals(fresh.data) && !changed.body.equals(first.body),
+    { first: first.headers["x-revision"], changed: changed.headers["x-revision"], fresh: changed.body.equals(fresh.data), differs: !changed.body.equals(first.body) });
+  captionsUi.server.closeAllConnections?.();
+  await new Promise((ok) => captionsUi.server.close(ok));
+  await api.closeFrameCache(captionsDir);
+}
+{
+  const alphaDir = join(tmp, "alpha-bg"), red = join(media, "red.png"), green = join(media, "green.png");
+  ff("-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", red);
+  ff("-f", "lavfi", "-i", "color=c=green:size=64x64", "-frames:v", "1", green);
+  const madeAlpha = api.create(alphaDir, { preset: "square" });
+  await api.apply(alphaDir, [
+    { op: "set_settings", background: "#00000080" },
+    { op: "add_clip", track: "main", src: red, duration: 1 },
+    { op: "add_clip", track: "main", src: green, duration: 1 },
+  ], { revision: madeAlpha.revision });
+  const first = await api.frameImage(alphaDir, 0.5, { reuse: true, scale: 0.25, format: "png" });
+  const reused = await api.frameImage(alphaDir, 1.5, { reuse: true, scale: 0.25, format: "png" });
+  const fresh = await api.frameImage(alphaDir, 1.5, { scale: 0.25, format: "png" });
+  check("a reused Renderer clears before painting a translucent background",
+    !first.data.equals(reused.data) && reused.data.equals(fresh.data),
+    { changed: !first.data.equals(reused.data), fresh: reused.data.equals(fresh.data) });
+  await api.closeFrameCache(alphaDir);
+}
+{
+  const unstatDir = join(tmp, "unstat"), madeUnstat = api.create(unstatDir, { preset: "square" });
+  await api.apply(unstatDir, [{
+    op: "add_clip", track: "text", text: `${unstatDir}/project.json/x`, at: 0, duration: 1,
+  }], { revision: madeUnstat.revision });
+  const unstatUi = await startUi(unstatDir, { port: 0 });
+  const cached = await raw("/api/frame?t=0.5&scale=0.25", { port: unstatUi.port });
+  const fresh = await api.frameImage(unstatDir, 0.5, { scale: 0.25 });
+  check("an unstatable absolute-looking text string does not break frame rendering",
+    cached.status === 200 && cached.body.equals(fresh.data), { status: cached.status, same: cached.body.equals(fresh.data) });
+  unstatUi.server.closeAllConnections?.();
+  await new Promise((ok) => unstatUi.server.close(ok));
+  await api.closeFrameCache(unstatDir);
+}
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
@@ -196,6 +274,23 @@ for (const path of ["/api/ops", "/api/redo"]) { // an op that does not exist, so
 }
 const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }], revision: (await api.info(dir)).revision } });
 check("invalid batch rejected with issues", bad.status === 422 && bad.j.error.code === "validation_failed" && bad.j.error.issues?.length, bad.j);
+{
+  const text = st.j.timeline.tracks.find((t: any) => t.id === "text").clips[0];
+  const before = freshFrames.get(0.5)!;
+  await applyLatest(dir, [{ op: "update_clip", id: text.id, set: { text: "Frame cache edit" } }]);
+  const changed = await raw("/api/frame?t=0.5&scale=0.25"), fresh = await api.frameImage(dir, 0.5, { scale: 0.25 });
+  const revision = (await api.info(dir)).revision;
+  check("a picture edit invalidates the cached frame and returns the new revision", changed.status === 200 && Number(changed.headers["x-revision"]) === revision
+    && fresh.revision === revision && changed.body.equals(fresh.data) && !changed.body.equals(before), { header: changed.headers["x-revision"], revision, same: changed.body.equals(fresh.data), changed: !changed.body.equals(before) });
+
+  const projectFile = join(dir, "project.json"), timeline = JSON.parse(readFileSync(projectFile, "utf8"));
+  const unchangedRevision = timeline.revision;
+  timeline.tracks.find((t: any) => t.id === "text").clips.find((c: any) => c.id === text.id).text = "Hand-edited frame";
+  writeFileSync(projectFile, JSON.stringify(timeline));
+  const hand = await raw("/api/frame?t=0.5&scale=0.25"), handFresh = await api.frameImage(dir, 0.5, { scale: 0.25 });
+  check("a hand edit without a revision bump invalidates the cached frame", hand.status === 200 && Number(hand.headers["x-revision"]) === unchangedRevision
+    && handFresh.revision === unchangedRevision && hand.body.equals(handFresh.data) && !hand.body.equals(changed.body), { header: hand.headers["x-revision"], revision: unchangedRevision, same: hand.body.equals(handFresh.data), changed: !hand.body.equals(changed.body) });
+}
 
 for (const [what, text, code] of [["{}", "{}", "bad_request"], ["[]", "[]", "bad_json"], ["an ops value that is not a list", '{"ops":"add_marker"}', "bad_request"]] as const) {
   const r = await jget("/api/ops", { method: "POST", text });
@@ -803,6 +898,8 @@ console.log("chrome containment");
 ctl.abort();
 ui.server.closeAllConnections?.();
 await new Promise((ok) => ui.server.close(ok));
+await api.closeFrameCache(dir);
+check("closing the UI server drops its frame Renderer cache", api.frameCacheSize(dir) === 0, api.frameCacheSize(dir));
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 console.log(failures() ? `\n${failures()} FAILED` : "\nall ui checks passed");
 process.exit(failures() ? 1 : 0);

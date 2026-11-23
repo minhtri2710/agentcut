@@ -1,4 +1,5 @@
 // High-level API shared by the CLI and the MCP server. Every function returns JSON-able objects.
+import { statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve as presolve } from "node:path";
 import * as AN from "./analyze.ts";
 import * as AFX from "./audiofx.ts";
@@ -18,10 +19,69 @@ import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkAuthor, findProject, Project, refuseSource, requireRevision, summarize } from "./project.ts";
+import type { Renderer } from "./render.ts";
 import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
 const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover|font)"/;
+type FrameCacheEntry = {
+  fp: string;
+  validFp: string;
+  r: Renderer;
+  queue: Promise<unknown>;
+  timer?: ReturnType<typeof setTimeout>;
+  root: string;
+  failed: boolean;
+};
+const frameCache = new Map<string, FrameCacheEntry>();
+const closingFrames = new Map<FrameCacheEntry, Promise<void>>();
+const frameCacheIdle = 30_000;
+
+function frameAssetStats(value: unknown) {
+  const paths = new Set<string>();
+  const walk = (x: unknown) => {
+    if (typeof x === "string") { if (isAbsolute(x)) paths.add(x); }
+    else if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === "object") Object.values(x).forEach(walk);
+  };
+  walk(value);
+  return [...paths].sort().map((path) => {
+    try {
+      const st = statSync(path, { throwIfNoEntry: false });
+      return `${path}|${st ? `${st.mtimeMs}|${st.size}` : "missing"}`;
+    } catch (e) {
+      return `${path}|error:${(e as NodeJS.ErrnoException).code ?? "?"}`;
+    }
+  }).join("\n");
+}
+
+function closeFrameEntry(entry: FrameCacheEntry) {
+  let closing = closingFrames.get(entry);
+  if (!closing) {
+    closing = entry.queue.then(() => entry.r.close());
+    closingFrames.set(entry, closing);
+    void closing.then(() => closingFrames.delete(entry), () => closingFrames.delete(entry));
+  }
+  return closing;
+}
+
+function retireFrameEntry(key: string, entry: FrameCacheEntry) {
+  if (frameCache.get(key) === entry) frameCache.delete(key);
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = undefined;
+  void closeFrameEntry(entry);
+}
+
+function frameCacheTouch(key: string, entry: FrameCacheEntry) {
+  frameCache.delete(key);
+  frameCache.set(key, entry);
+}
+
+function frameCacheIdleClose(key: string, entry: FrameCacheEntry) {
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => retireFrameEntry(key, entry), frameCacheIdle);
+  entry.timer.unref();
+}
 
 export const openProject = (p?: string) => new Project(findProject(p));
 /** The font checks of validate need Skia in two cases, and only then is it loaded (the edit path otherwise never draws): a text or captions clip holds a
@@ -186,14 +246,93 @@ function frameTime(tl: M.Timeline, t: number | string, name: string) {
 }
 
 /** One rendered frame as encoded bytes (no file written). */
-export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg" } = {}) {
+export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg"; reuse?: boolean } = {}) {
+  return frameImageImpl(project, t, o, 0);
+}
+
+async function frameImageImpl(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg"; reuse?: boolean }, retries: number) {
   const p = openProject(project);
   const tl = p.load();
+  if (o.reuse) {
+    let scale: number;
+    try { scale = scaleOf(o.scale, 0.5); }
+    catch { return frameImageImpl(project, t, { ...o, reuse: false }, retries); }
+    const rawAssetStats = frameAssetStats(p.absolutized(tl));
+    const validFp = `${JSON.stringify(tl)}\n${rawAssetStats}`;
+    const key = `${p.root}|${scale}`;
+    const candidate = frameCache.get(key);
+    if (!candidate || candidate.validFp !== validFp) {
+      p.requireValid(tl);
+      if (candidate) candidate.validFp = validFp;
+    }
+    const tt = frameTime(tl, t, "t");
+    const { Renderer, encodeStill } = await renderMod();
+    const dt = drawable(p, tl);
+    const fp = `${JSON.stringify(dt)}\n${frameAssetStats(dt)}`;
+    let entry = frameCache.get(key);
+    if (entry && entry.fp !== fp) {
+      retireFrameEntry(key, entry);
+      entry = undefined;
+    }
+    if (!entry) {
+      const r = new Renderer(dt, p.root, scale);
+      entry = { fp, validFp, r, queue: Promise.resolve(), root: p.root, failed: false };
+      if (frameCache.size >= 2) {
+        const oldest = frameCache.keys().next().value!;
+        retireFrameEntry(oldest, frameCache.get(oldest)!);
+      }
+      frameCache.set(key, entry);
+    } else {
+      entry.validFp = validFp;
+      frameCacheTouch(key, entry);
+    }
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    const work = entry.queue.then(async () => {
+      if (entry!.timer) clearTimeout(entry!.timer);
+      entry!.timer = undefined;
+      if (entry!.failed) {
+        if (retries > 0) throw new Error("cached frame Renderer failed before the queued request could render");
+        return (await frameImageImpl(project, t, o, retries + 1)).data;
+      }
+      try {
+        const data = encodeStill(await entry!.r.frame(tt, !!o.guides), o.format ?? "jpeg");
+        for (const L of entry!.r.layers) if (tt < L.start - 1 || tt > L.end + 1) L.close();
+        return data;
+      } catch (e) {
+        if (!entry!.failed) {
+          entry!.failed = true;
+          retireFrameEntry(key, entry!);
+        }
+        throw e;
+      }
+    });
+    entry.queue = work.then(() => undefined, () => undefined);
+    const data = await work;
+    if (frameCache.get(key) === entry) frameCacheIdleClose(key, entry);
+    return { t: tt, revision: tl.revision, data };
+  }
   p.requireValid(tl);
   const tt = frameTime(tl, t, "t");
   const { renderFrame } = await renderMod();
   return { t: tt, revision: tl.revision, data: await renderFrame(drawable(p, tl), p.root, tt, scaleOf(o.scale, 0.5), !!o.guides, o.format ?? "jpeg") };
 }
+
+export async function closeFrameCache(root?: string) {
+  const closing = [...closingFrames].filter(([entry]) => root === undefined || entry.root === root).map(([, promise]) => promise);
+  for (const [key, entry] of frameCache) {
+    if (root !== undefined && entry.root !== root) continue;
+    frameCache.delete(key);
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    closing.push(closeFrameEntry(entry));
+  }
+  await Promise.all(closing);
+}
+
+export const frameCacheSize = (root?: string) => [...frameCache.values()].filter((entry) => root === undefined || entry.root === root).length;
+export const frameCacheVideoLayers = (root?: string) => [...frameCache.values()].filter((entry) => root === undefined || entry.root === root)
+  .flatMap(({ r }) => r.layers.filter((L) => L.type === "video").map((L) => ({ start: L.start, end: L.end, open: !!L.src })));
 
 export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
   const tt = M.parseTime(t);
