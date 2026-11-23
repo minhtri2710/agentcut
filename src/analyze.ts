@@ -240,9 +240,7 @@ export function ttsVoices() {
   return { ...ttsProviders(extra), voices: [...systemVoices(), ...extra.voices] };
 }
 
-/** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
- *  Each sentence is synthesized separately (rate applies to each; up to 4 concurrent for openai/piper, system voices serially), converted to 48 kHz stereo and joined in order, so `sentences` carries
- *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
+/** Runs f(0..count-1) with at most n at once; results by index. After a failure no new task starts, the running ones settle, and the lowest-index error is thrown. */
 async function pool<T>(n: number, count: number, f: (i: number) => Promise<T>): Promise<T[]> {
   const results = new Array<T>(count), errors: { index: number; error: unknown }[] = [];
   let next = 0, stopped = false;
@@ -259,6 +257,9 @@ async function pool<T>(n: number, count: number, f: (i: number) => Promise<T>): 
   return results;
 }
 
+/** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
+ *  Each sentence is synthesized separately (rate applies to each; up to 4 concurrent for openai/piper, system voices serially), converted to 48 kHz stereo and joined in order, so `sentences` carries
+ *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
 export async function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string, signal?: AbortSignal) {
   if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "pass the text to speak, e.g. \"Hello\"");
   if (rate != null && !(typeof rate === "number" && Number.isFinite(rate) && rate > 0)) throw new EditError(`rate must be a number of words per minute above 0, got ${typeof rate === "string" ? JSON.stringify(rate) : String(rate)}`, "bad_value", "e.g. 175 (a number, not a string); leave it out for the voice's default");
