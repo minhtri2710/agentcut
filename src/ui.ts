@@ -85,7 +85,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     if (req.method === "GET" && path === "/api/frame") {
       const t = Number(url.searchParams.get("t") ?? 0), scale = Number(url.searchParams.get("scale") ?? 0.5);
       if (!Number.isFinite(t) || !Number.isFinite(scale)) throw new EditError("t and scale must be numbers", "bad_request");
-      const r = await api.frameImage(root, Math.max(0, t), { scale: Math.min(1, Math.max(0.1, scale)) });
+      const r = await api.frameImage(root, Math.max(0, t), { scale: Math.min(1, Math.max(0.1, scale)), reuse: true });
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store", "x-revision": String(r.revision) });
       return res.end(r.data);
     }
@@ -209,7 +209,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       catch (e: any) { broadcast("error", errJson(e)); }
     });
   });
-  server.on("close", () => unwatchFile(p.file));
+  server.on("close", () => { unwatchFile(p.file); void api.closeFrameCache(root); });
   const port = (server.address() as any).port;
   return { url: `http://127.0.0.1:${port}/`, port, project: root, revision: p.load().revision, server };
 }

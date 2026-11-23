@@ -90,6 +90,15 @@ check("state has timeline + revision + history", st.j.ok && st.j.revision === r0
 const vid = st.j.timeline.tracks.find((t: any) => t.id === "main").clips[0];
 const fr = await raw("/api/frame?t=0.5&scale=0.25");
 check("frame is a JPEG", fr.status === 200 && fr.type === "image/jpeg" && fr.body[0] === 0xff && fr.body[1] === 0xd8);
+const frameSequence = [0.1, 0.5, 1.2, 1.9, 0.3, 0.0, 1.0];
+const frameIdentity: { t: number; status: number; same: boolean; bytes: number; expected: number }[] = [];
+const freshFrames = new Map<number, Buffer>();
+for (const t of frameSequence) {
+  const cached = await raw(`/api/frame?t=${t}&scale=0.25`), fresh = await api.frameImage(dir, t, { scale: 0.25 });
+  freshFrames.set(t, fresh.data);
+  frameIdentity.push({ t, status: cached.status, same: cached.body.equals(fresh.data), bytes: cached.body.length, expected: fresh.data.length });
+}
+check("reused /api/frame bytes match fresh renderers across ascending, descending, and jump seeks", frameIdentity.every((x) => x.status === 200 && x.same), frameIdentity);
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
@@ -196,6 +205,23 @@ for (const path of ["/api/ops", "/api/redo"]) { // an op that does not exist, so
 }
 const bad = await jget("/api/ops", { method: "POST", body: { ops: [{ op: "update_clip", id: vid.id, set: { opacity: "lots" } }], revision: (await api.info(dir)).revision } });
 check("invalid batch rejected with issues", bad.status === 422 && bad.j.error.code === "validation_failed" && bad.j.error.issues?.length, bad.j);
+{
+  const text = st.j.timeline.tracks.find((t: any) => t.id === "text").clips[0];
+  const before = freshFrames.get(0.5)!;
+  await applyLatest(dir, [{ op: "update_clip", id: text.id, set: { text: "Frame cache edit" } }]);
+  const changed = await raw("/api/frame?t=0.5&scale=0.25"), fresh = await api.frameImage(dir, 0.5, { scale: 0.25 });
+  const revision = (await api.info(dir)).revision;
+  check("a picture edit invalidates the cached frame and returns the new revision", changed.status === 200 && Number(changed.headers["x-revision"]) === revision
+    && fresh.revision === revision && changed.body.equals(fresh.data) && !changed.body.equals(before), { header: changed.headers["x-revision"], revision, same: changed.body.equals(fresh.data), changed: !changed.body.equals(before) });
+
+  const projectFile = join(dir, "project.json"), timeline = JSON.parse(readFileSync(projectFile, "utf8"));
+  const unchangedRevision = timeline.revision;
+  timeline.tracks.find((t: any) => t.id === "text").clips.find((c: any) => c.id === text.id).text = "Hand-edited frame";
+  writeFileSync(projectFile, JSON.stringify(timeline));
+  const hand = await raw("/api/frame?t=0.5&scale=0.25"), handFresh = await api.frameImage(dir, 0.5, { scale: 0.25 });
+  check("a hand edit without a revision bump invalidates the cached frame", hand.status === 200 && Number(hand.headers["x-revision"]) === unchangedRevision
+    && handFresh.revision === unchangedRevision && hand.body.equals(handFresh.data) && !hand.body.equals(changed.body), { header: hand.headers["x-revision"], revision: unchangedRevision, same: hand.body.equals(handFresh.data), changed: !hand.body.equals(changed.body) });
+}
 
 for (const [what, text, code] of [["{}", "{}", "bad_request"], ["[]", "[]", "bad_json"], ["an ops value that is not a list", '{"ops":"add_marker"}', "bad_request"]] as const) {
   const r = await jget("/api/ops", { method: "POST", text });
@@ -803,6 +829,8 @@ console.log("chrome containment");
 ctl.abort();
 ui.server.closeAllConnections?.();
 await new Promise((ok) => ui.server.close(ok));
+await api.closeFrameCache(dir);
+check("closing the UI server drops its frame Renderer cache", api.frameCacheSize(dir) === 0, api.frameCacheSize(dir));
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 console.log(failures() ? `\n${failures()} FAILED` : "\nall ui checks passed");
 process.exit(failures() ? 1 : 0);
