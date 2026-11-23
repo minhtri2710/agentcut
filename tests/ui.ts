@@ -113,6 +113,29 @@ check("reused /api/frame bytes match fresh renderers across ascending, descendin
   await new Promise((ok) => scrubUi.server.close(ok));
   await api.closeFrameCache(layersDir);
 }
+{
+  const captionsDir = join(tmp, "captions"), srtPath = join(tmp, "preview.srt");
+  const madeCaptions = api.create(captionsDir, { preset: "square" });
+  writeFileSync(srtPath, "1\n00:00:00,000 --> 00:00:02,000\nMANGO\n");
+  await api.apply(captionsDir, [
+    { op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 },
+    { op: "add_captions", srt: srtPath, preset: "clean" },
+  ], { revision: madeCaptions.revision });
+  const captionsUi = await startUi(captionsDir, { port: 0 });
+  const first = await raw("/api/frame?t=0.5&scale=0.25", { port: captionsUi.port });
+  const was = statSync(srtPath);
+  writeFileSync(srtPath, "1\n00:00:00,000 --> 00:00:02,000\nBERRY\n");
+  utimesSync(srtPath, was.atimeMs / 1000, (was.mtimeMs + 2000) / 1000);
+  const changed = await raw("/api/frame?t=0.5&scale=0.25", { port: captionsUi.port });
+  const fresh = await api.frameImage(captionsDir, 0.5, { scale: 0.25 });
+  check("an in-place SRT edit invalidates the frame cache without changing the project revision",
+    first.status === 200 && changed.status === 200 && first.headers["x-revision"] === changed.headers["x-revision"]
+    && changed.body.equals(fresh.data) && !changed.body.equals(first.body),
+    { first: first.headers["x-revision"], changed: changed.headers["x-revision"], fresh: changed.body.equals(fresh.data), differs: !changed.body.equals(first.body) });
+  captionsUi.server.closeAllConnections?.();
+  await new Promise((ok) => captionsUi.server.close(ok));
+  await api.closeFrameCache(captionsDir);
+}
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));

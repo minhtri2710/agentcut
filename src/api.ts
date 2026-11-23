@@ -37,12 +37,17 @@ const frameCache = new Map<string, FrameCacheEntry>();
 const closingFrames = new Map<FrameCacheEntry, Promise<void>>();
 const frameCacheIdle = 30_000;
 
-function frameAssetStats(root: string, assets: M.Timeline["assets"]) {
-  return Object.values(assets ?? {}).flatMap((a) => {
-    if (!a?.path) return [];
-    const path = isAbsolute(a.path) ? a.path : presolve(root, a.path);
+function frameAssetStats(value: unknown) {
+  const paths = new Set<string>();
+  const walk = (x: unknown) => {
+    if (typeof x === "string") { if (isAbsolute(x)) paths.add(x); }
+    else if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === "object") Object.values(x).forEach(walk);
+  };
+  walk(value);
+  return [...paths].sort().map((path) => {
     const st = statSync(path, { throwIfNoEntry: false });
-    return [`${path}|${st ? `${st.mtimeMs}|${st.size}` : "missing"}`];
+    return `${path}|${st ? `${st.mtimeMs}|${st.size}` : "missing"}`;
   }).join("\n");
 }
 
@@ -248,7 +253,7 @@ async function frameImageImpl(project: string | undefined, t: number | string, o
     let scale: number;
     try { scale = scaleOf(o.scale, 0.5); }
     catch { return frameImageImpl(project, t, { ...o, reuse: false }, retries); }
-    const rawAssetStats = frameAssetStats(p.root, tl.assets);
+    const rawAssetStats = frameAssetStats(p.absolutized(tl));
     const validFp = `${JSON.stringify(tl)}\n${rawAssetStats}`;
     const key = `${p.root}|${scale}`;
     const candidate = frameCache.get(key);
@@ -259,7 +264,7 @@ async function frameImageImpl(project: string | undefined, t: number | string, o
     const tt = frameTime(tl, t, "t");
     const { Renderer, encodeStill } = await renderMod();
     const dt = drawable(p, tl);
-    const fp = `${JSON.stringify(dt)}\n${frameAssetStats(p.root, dt.assets)}`;
+    const fp = `${JSON.stringify(dt)}\n${frameAssetStats(dt)}`;
     let entry = frameCache.get(key);
     if (entry && entry.fp !== fp) {
       retireFrameEntry(key, entry);
