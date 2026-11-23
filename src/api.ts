@@ -31,7 +31,6 @@ type FrameCacheEntry = {
   timer?: ReturnType<typeof setTimeout>;
   root: string;
   failed: boolean;
-  failure?: unknown;
 };
 const frameCache = new Map<string, FrameCacheEntry>();
 const closingFrames = new Map<FrameCacheEntry, Promise<void>>();
@@ -238,15 +237,20 @@ function frameTime(tl: M.Timeline, t: number | string, name: string) {
 
 /** One rendered frame as encoded bytes (no file written). */
 export async function frameImage(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg"; reuse?: boolean } = {}) {
+  return frameImageImpl(project, t, o, 0);
+}
+
+async function frameImageImpl(project: string | undefined, t: number | string, o: { scale?: number; guides?: boolean; format?: "png" | "jpeg"; reuse?: boolean }, retries: number) {
   const p = openProject(project);
   const tl = p.load();
   if (o.reuse) {
+    let scale: number;
+    try { scale = scaleOf(o.scale, 0.5); }
+    catch { return frameImageImpl(project, t, { ...o, reuse: false }, retries); }
     const rawAssetStats = frameAssetStats(p.root, tl.assets);
     const validFp = `${JSON.stringify(tl)}\n${rawAssetStats}`;
-    const scaleHint = o.scale ?? 0.5;
-    const cacheableScale = Number.isFinite(scaleHint) && scaleHint > 0 && scaleHint <= MAX_SCALE;
-    const key = `${p.root}|${scaleHint}`;
-    let candidate = cacheableScale ? frameCache.get(key) : undefined;
+    const key = `${p.root}|${scale}`;
+    const candidate = frameCache.get(key);
     if (!candidate || candidate.validFp !== validFp) {
       p.requireValid(tl);
       if (candidate) candidate.validFp = validFp;
@@ -254,7 +258,6 @@ export async function frameImage(project: string | undefined, t: number | string
     const tt = frameTime(tl, t, "t");
     const { Renderer, encodeStill } = await renderMod();
     const dt = drawable(p, tl);
-    const scale = scaleOf(o.scale, 0.5);
     const fp = `${JSON.stringify(dt)}\n${frameAssetStats(p.root, dt.assets)}`;
     let entry = frameCache.get(key);
     if (entry && entry.fp !== fp) {
@@ -278,13 +281,15 @@ export async function frameImage(project: string | undefined, t: number | string
     const work = entry.queue.then(async () => {
       if (entry!.timer) clearTimeout(entry!.timer);
       entry!.timer = undefined;
-      if (entry!.failed) throw entry!.failure;
+      if (entry!.failed) {
+        if (retries > 0) throw new Error("cached frame Renderer failed before the queued request could render");
+        return (await frameImageImpl(project, t, o, retries + 1)).data;
+      }
       try {
         return encodeStill(await entry!.r.frame(tt, !!o.guides), o.format ?? "jpeg");
       } catch (e) {
         if (!entry!.failed) {
           entry!.failed = true;
-          entry!.failure = e;
           retireFrameEntry(key, entry!);
         }
         throw e;
