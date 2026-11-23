@@ -46,8 +46,12 @@ function frameAssetStats(value: unknown) {
   };
   walk(value);
   return [...paths].sort().map((path) => {
-    const st = statSync(path, { throwIfNoEntry: false });
-    return `${path}|${st ? `${st.mtimeMs}|${st.size}` : "missing"}`;
+    try {
+      const st = statSync(path, { throwIfNoEntry: false });
+      return `${path}|${st ? `${st.mtimeMs}|${st.size}` : "missing"}`;
+    } catch (e) {
+      return `${path}|error:${(e as NodeJS.ErrnoException).code ?? "?"}`;
+    }
   }).join("\n");
 }
 

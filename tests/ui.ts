@@ -154,6 +154,20 @@ check("reused /api/frame bytes match fresh renderers across ascending, descendin
     { changed: !first.data.equals(reused.data), fresh: reused.data.equals(fresh.data) });
   await api.closeFrameCache(alphaDir);
 }
+{
+  const unstatDir = join(tmp, "unstat"), madeUnstat = api.create(unstatDir, { preset: "square" });
+  await api.apply(unstatDir, [{
+    op: "add_clip", track: "text", text: `${unstatDir}/project.json/x`, at: 0, duration: 1,
+  }], { revision: madeUnstat.revision });
+  const unstatUi = await startUi(unstatDir, { port: 0 });
+  const cached = await raw("/api/frame?t=0.5&scale=0.25", { port: unstatUi.port });
+  const fresh = await api.frameImage(unstatDir, 0.5, { scale: 0.25 });
+  check("an unstatable absolute-looking text string does not break frame rendering",
+    cached.status === 200 && cached.body.equals(fresh.data), { status: cached.status, same: cached.body.equals(fresh.data) });
+  unstatUi.server.closeAllConnections?.();
+  await new Promise((ok) => unstatUi.server.close(ok));
+  await api.closeFrameCache(unstatDir);
+}
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
