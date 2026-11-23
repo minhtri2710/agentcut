@@ -314,8 +314,6 @@ AGENTCUT_BIN=$PWD/dist/cli.js bun tests/smoke.ts    # test bản build cho Node
 AGENTCUT_BIN=$PWD/bin/agentcut bun tests/smoke.ts   # test file binary
 ```
 
-Bản Python đầu tiên vẫn được giữ trong `legacy/python/` để tham khảo; không sửa và không dùng.
-
 ## Giấy phép
 
 MIT.

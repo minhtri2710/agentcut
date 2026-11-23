@@ -1,7 +1,6 @@
 # AgentCut repo (TypeScript)
 
 Agent-first video editor. Read [AGENTS.md](AGENTS.md) to *use* it; this file is for *developing* it.
-`legacy/python/` is the first prototype - do not edit or use it.
 
 - Setup: `bun install`. Run from source: `scripts/ac …` (CLI), the `.mcp.json` command (MCP; copy its flags to launch it by hand): they pass `--no-install --no-env-file --config=scripts/bunfig.empty.toml`, so a bunfig.toml and .env in the working dir are not read and nothing is auto-installed (tests/launchers.ts).
 - Check: `npx tsc --noEmit -p .` and `npx tsc --noEmit -p src/ui` (the page: DOM lib, no node types; `bun run typecheck` runs both), then `bun run test` (smoke, mcp, edit-ops, compound, codecs, frames, export, ui, audio, color-tts, verify, writes, vision, review, jobs, ui-browser, realmedia, launchers; they need a per-user TMPDIR, since the vision helper refuses a cache under a shared temp dir); ui-browser needs macOS and /usr/bin/sandbox-exec and fails without them. Export roundtrip

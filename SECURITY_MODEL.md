@@ -3,7 +3,7 @@
 Threat model used to judge security-scan findings. Facts marked *(user)* were confirmed by the maintainer; unmarked facts are inferred from the code. Keep it current when trust boundaries, roles or deployment change.
 
 ## Overview and trust boundaries
-Agent-first video editor (TypeScript, Bun/Node, Skia, FFmpeg). Driven by a CLI (`src/cli.ts`) and an MCP server over **stdio** (`src/mcp.ts`), both on top of `src/api.ts`. Optional local web UI (`agentcut ui`, `src/ui.ts`) listening on `127.0.0.1:4810` with Host allowlist (127.0.0.1/localhost), Origin==Host + JSON content type on POST, `..`/NUL rejection, and `/files/` limited to `renders/` and `previews/` with realpath check. `legacy/python/` is an unused prototype, out of scope *(user)*.
+Agent-first video editor (TypeScript, Bun/Node, Skia, FFmpeg). Driven by a CLI (`src/cli.ts`) and an MCP server over **stdio** (`src/mcp.ts`), both on top of `src/api.ts`. Optional local web UI (`agentcut ui`, `src/ui.ts`) listening on `127.0.0.1:4810` with Host allowlist (127.0.0.1/localhost), Origin==Host + JSON content type on POST, `..`/NUL rejection, and `/files/` limited to `renders/` and `previews/` with realpath check.
 
 Boundaries: AI agent / user → CLI/MCP (same OS user); browser on the same machine → UI server; project.json and imported media files → parsers (FFmpeg, Skia, Lottie JSON, SRT); app → external processes (`ffmpeg`, `say`/SAPI/espeak, `uv run` Python vision helper with model downloads gated by `allow_download`); app → HTTP TTS endpoint (`AGENTCUT_TTS_URL`/`AGENTCUT_TTS_KEY`).
 
@@ -27,7 +27,6 @@ User's local files (anything the OS user can read/write), the TTS API key, local
 *(user)* Runs locally for one user; the MCP/CLI caller is trusted with the user's own permissions.
 
 ## Out of scope / accepted risk
-- *(user)* `legacy/python/` prototype.
 - *(user)* Attackers who supply crafted projects or media (see above).
 
 ## Open questions
