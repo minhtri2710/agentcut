@@ -71,8 +71,8 @@ export function gradeIssues(g: Grade): [string, string][] {
   return out;
 }
 
-const f3 = (x: number) => +x.toFixed(4);
-const pts = (p: Pts) => `'${p.map(([x, y]) => `${f3(x)}/${f3(y)}`).join(" ")}'`;
+const f4 = (x: number) => +x.toFixed(4);
+const pts = (p: Pts) => `'${p.map(([x, y]) => `${f4(x)}/${f4(y)}`).join(" ")}'`;
 const nz = (v: Rgb | undefined) => !!v && v.some((x) => x !== 0);
 
 /** Grade -> FFmpeg filters, in grading order: exposure, white balance, lift/gamma/gain, curves, contrast/saturation, hsl, vibrance. */
@@ -80,14 +80,14 @@ export function gradeChain(color: Grade | undefined): string[] {
   if (!color || typeof color !== "object") return [];
   const g: Grade = { ...(own(LOOKS, color.look) ?? {}), ...color };
   const out: string[] = [];
-  if (g.exposure) out.push(`exposure=exposure=${f3(g.exposure)}`);
+  if (g.exposure) out.push(`exposure=exposure=${f4(g.exposure)}`);
   // ponytail: temperature is a fixed Kelvin mapping (+1 ~ 3500 K, -1 ~ 12000 K) via colortemperature with lightness kept
   if (g.temperature) out.push(`colortemperature=temperature=${Math.round(6500 * 2 ** (-0.9 * g.temperature))}:pl=1`);
   const t = Number(g.tint ?? 0) * 0.15, lift: Rgb = g.lift ?? [0, 0, 0], gain: Rgb = g.gain ?? [0, 0, 0];
   const gam: Rgb = [(g.gamma?.[0] ?? 0) + t, (g.gamma?.[1] ?? 0) - t, (g.gamma?.[2] ?? 0) + t];
   if (nz(lift) || nz(gam) || nz(gain)) {
     // tint is added on top of gamma, so the sum can leave colorbalance's -1..1 (ffmpeg refuses the filter)
-    const kv = (p: string, v: Rgb) => ["r", "g", "b"].map((c, i) => (v[i] ? `${c}${p}=${f3(Math.max(-1, Math.min(1, v[i])))}` : "")).filter(Boolean);
+    const kv = (p: string, v: Rgb) => ["r", "g", "b"].map((c, i) => (v[i] ? `${c}${p}=${f4(Math.max(-1, Math.min(1, v[i])))}` : "")).filter(Boolean);
     out.push("colorbalance=" + [...kv("s", lift), ...kv("m", gam), ...kv("h", gain)].join(":"));
   }
   if (g.curves) {
@@ -96,14 +96,14 @@ export function gradeChain(color: Grade | undefined): string[] {
     if (parts.length) out.push("curves=" + parts.join(":"));
   }
   const eq = [["contrast", g.contrast], ["saturation", g.saturation]].filter(([, v]) => v !== undefined && v !== 1);
-  if (eq.length) out.push("eq=" + eq.map(([k, v]) => `${k}=${f3(v)}`).join(":"));
+  if (eq.length) out.push("eq=" + eq.map(([k, v]) => `${k}=${f4(v)}`).join(":"));
   for (const [range, adj] of Object.entries<any>(g.hsl ?? {})) {
     const p = [`colors=${own(HSL_RANGES, range)}`];
-    if (adj.hue) p.push(`hue=${f3(adj.hue)}`);
-    if (adj.saturation) p.push(`saturation=${f3(adj.saturation)}`);
-    if (adj.lightness) p.push(`intensity=${f3(adj.lightness)}`);
+    if (adj.hue) p.push(`hue=${f4(adj.hue)}`);
+    if (adj.saturation) p.push(`saturation=${f4(adj.saturation)}`);
+    if (adj.lightness) p.push(`intensity=${f4(adj.lightness)}`);
     if (p.length > 1) out.push("huesaturation=" + p.join(":"));
   }
-  if (g.vibrance) out.push(`vibrance=intensity=${f3(g.vibrance)}`);
+  if (g.vibrance) out.push(`vibrance=intensity=${f4(g.vibrance)}`);
   return out;
 }
