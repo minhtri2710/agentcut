@@ -1,5 +1,6 @@
 // Audio mix: one FFmpeg filter graph (trim, tempo, reverse, processing, fades, automation, ducking) + 2-pass loudness.
-import { unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { parseKfs, speedIntegral, speedSampler } from "./anim.ts";
 import * as FX from "./audiofx.ts";
 import { inp } from "./ffinput.ts";
@@ -8,6 +9,29 @@ import { run } from "./proc.ts";
 import { type Clip, EditError, hasSound, isRetimed, parseTime, resolve, soundPeriod, type Timeline, totalDuration, type Track, visibleSpan } from "./model.ts";
 
 const { atempo } = FX;
+export const measureCache = new Map<string, number | null>();
+function rememberMeasure(key: string, value: number | null) {
+  if (!measureCache.has(key) && measureCache.size >= 1024) measureCache.delete(measureCache.keys().next().value!);
+  measureCache.set(key, value);
+}
+async function measuredFloor(path: string, start: number, len: number, signal?: AbortSignal) {
+  let st;
+  try { st = statSync(path); } catch { return FX.noiseFloor(path, start, len, signal); }
+  const key = JSON.stringify(["floor", path, st.size, st.mtimeMs, start, len]);
+  if (measureCache.has(key)) return measureCache.get(key)!;
+  const value = await FX.noiseFloor(path, start, len, signal);
+  rememberMeasure(key, value);
+  return value;
+}
+async function measuredLoudness(path: string, input: string[], af: string, signal?: AbortSignal) {
+  let st;
+  try { st = statSync(path); } catch { return FX.loudness(input, af, signal); }
+  const key = JSON.stringify(["loud", path, st.size, st.mtimeMs, input, af]);
+  if (measureCache.has(key)) return measureCache.get(key)!;
+  const value = await FX.loudness(input, af, signal);
+  rememberMeasure(key, value);
+  return value;
+}
 // The graph travels in one argv element (ffmpeg < 7 has no file form). What the OS caps, per platform: linux one argument (MAX_ARG_STRLEN 128 KiB, so the filter alone against 120000);
 // win32 the whole command line (32767 chars, so the joined argv against 30000); the others (darwin, the BSDs) all args plus the environment (ARG_MAX 1 MiB, so the joined argv against 900000, leaving ~148 KB for the environment).
 const ARGV_LIMITS: Record<string, { of: "filter" | "command"; max: number }> = { linux: { of: "filter", max: 120000 }, win32: { of: "command", max: 30000 }, other: { of: "command", max: 900000 } };
@@ -140,12 +164,11 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
   };
   const bus = (track: Track) => [...FX.eqFilters(track.eq), ...FX.compressorFilter(track.compressor), ...FX.panFilter(track.pan)];
   const buses = new Map<Track, string[]>(); // tracks with bus processing -> their clip labels
-  for (const [i, s] of srcs.entries()) {
+  const buildClip = async (s: typeof srcs[number], i: number): Promise<{ input: string[]; lines: string[]; onBus: boolean; track: Track }> => {
     const c = s.clip, tr = s.track;
     const fx = (k: (typeof FX.PER_CLIP_KEYS)[number]) => c[k] ?? tr[k];
     const period = c.loop ? soundPeriod(tl, c) : null; // the picture's length for a video and its detached audio; null: the container loops in the demuxer
     const input = [...(c.loop && period === null ? ["-stream_loop", "-1"] : []), ...inp(s.path)];
-    args.push(...input);
     const speed = Number(c.speed ?? 1) || 1, cin = parseTime(c.in ?? 0), dur = parseTime(c.duration), start = parseTime(c.start ?? 0);
     // a ramped clip follows keyframes.speed alone (as render.ts does; `speed` is not read); the runs rebuild its time map before the chain below
     // reversed, the segment is duration*speed long whatever the ramp consumes: render.ts reads that segment backwards
@@ -159,13 +182,13 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples
     const dn = FX.denoiseStrength(fx("denoise"));
     if (dn) {
-      const floor = await FX.noiseFloor(s.path, cin, span, signal);
+      const floor = await measuredFloor(s.path, cin, span, signal);
       if (floor !== null) ch.push(...FX.denoiseFilters(dn, floor, sr));
     }
     ch.push(...FX.eqFilters(c.eq), ...FX.compressorFilter(c.compressor), ...FX.panFilter(c.pan));
     const target = FX.normalizeTarget(fx("normalize"));
     if (target !== null) {
-      const lufs = await FX.loudness(input, ch.join(","), signal);
+      const lufs = await measuredLoudness(s.path, input, ch.join(","), signal);
       if (lufs !== null) ch.push(`volume=${(target - lufs).toFixed(2)}dB`);
     }
     ch.push(`volume=${s.volume.toFixed(4)}`);
@@ -176,19 +199,35 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     ch.push(`adelay=${Math.round(start * sr)}S:all=1`, "asetpts=N/SR/TB");
     const onBus = bus(tr).length > 0;
     if (!onBus) ch.push(...duck(tr, start, start + dur));
-    if (!runs) graph.push(`[${i}:a]${ch.join(",")}[a${i}]`);
+    const lines: string[] = [];
+    if (!runs) lines.push(`[${i}:a]${ch.join(",")}[a${i}]`);
     else { // one varispeed run per label: the source span at the run's average rate, cut or padded to its exact sample count so the seams never accumulate
       // the stream goes to `sr` first (asetrate relabels samples, so it needs the project rate), is trimmed to the span once, and asegment hands each frame to exactly one run
       const N = runs.length, cuts: number[] = [];
       runs.slice(1).forEach((r) => cuts.push(Math.max((cuts[cuts.length - 1] ?? 0) + 1, Math.round(r.u0 * sr))));
-      graph.push(`[${i}:a]aresample=${sr},${base.join(",")}${N > 1 ? `,asegment=samples=${cuts.join("|")}${runs.map((_, k) => `[r${i}_${k}]`).join("")}` : `[r${i}_0]`}`);
+      lines.push(`[${i}:a]aresample=${sr},${base.join(",")}${N > 1 ? `,asegment=samples=${cuts.join("|")}${runs.map((_, k) => `[r${i}_${k}]`).join("")}` : `[r${i}_0]`}`);
       runs.forEach((r, k) => {
         const rate = Math.round(sr * (r.u1 - r.u0) / r.len);
-        graph.push(`[r${i}_${k}]asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
+        lines.push(`[r${i}_${k}]asetpts=PTS-STARTPTS,asetrate=${rate},aresample=${sr},${STEREO},apad=whole_len=${r.n},atrim=end_sample=${r.n}[q${i}_${k}]`);
       });
-      graph.push(`${runs.map((_, k) => `[q${i}_${k}]`).join("")}concat=n=${N}:v=0:a=1[m${i}]`, `[m${i}]${ch.slice(head.length).join(",")}[a${i}]`);
+      lines.push(`${runs.map((_, k) => `[q${i}_${k}]`).join("")}concat=n=${N}:v=0:a=1[m${i}]`, `[m${i}]${ch.slice(head.length).join(",")}[a${i}]`);
     }
-    if (onBus) buses.set(tr, [...(buses.get(tr) ?? []), `[a${i}]`]);
+    return { input, lines, onBus, track: tr };
+  };
+  const clips: Awaited<ReturnType<typeof buildClip>>[] = new Array(srcs.length);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= srcs.length) return;
+      clips[i] = await buildClip(srcs[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(srcs.length, Math.max(1, availableParallelism())) }, worker));
+  for (const [i, clip] of clips.entries()) {
+    args.push(...clip.input);
+    graph.push(...clip.lines);
+    if (clip.onBus) buses.set(clip.track, [...(buses.get(clip.track) ?? []), `[a${i}]`]);
     else labels.push(`[a${i}]`);
   }
   [...buses].forEach(([tr, ls], k) => {
