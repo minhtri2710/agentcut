@@ -55,6 +55,12 @@ function vignette(w: number, h: number, intensity: number): Canvas {
   return v;
 }
 
+const maskAlphas = new Map<string, Canvas>();
+const ownedMasks = new WeakMap<Canvas, { key: string; canvas: Canvas }>();
+function maskKey(w: number, h: number, m: Dict, k: number) {
+  return `${w}x${h}|${k}|${JSON.stringify(m)}`;
+}
+
 let scanTile: Canvas | null = null;
 function scanlines(): Canvas {
   if (scanTile) return scanTile;
@@ -235,11 +241,12 @@ function shapePath(ctx: SKRSContext2D, shape: string, x: number, y: number, w: n
 }
 export { shapePath };
 
-export function applyMask(src: Canvas, mask: Dict | string, k: number, slot = 8): Canvas {
-  const m = typeof mask === "string" ? { shape: mask } : mask;
-  const w = src.width, h = src.height;
-  const out = scratch(w, h, slot);
-  const c = out.getContext("2d");
+function maskAlpha(w: number, h: number, m: Dict, k: number): Canvas {
+  const key = maskKey(w, h, m, k);
+  let alpha = maskAlphas.get(key);
+  if (alpha) return alpha;
+  alpha = createCanvas(w, h);
+  const c = alpha.getContext("2d");
   const feather = Number(m.feather ?? 0) * k;
   const mw = Number(m.width ?? 1) * w, mh = Number(m.height ?? 1) * h;
   const mx = Number(m.x ?? 0.5) * w - mw / 2, my = Number(m.y ?? 0.5) * h - mh / 2;
@@ -263,6 +270,30 @@ export function applyMask(src: Canvas, mask: Dict | string, k: number, slot = 8)
     c.fill();
     c.filter = "none";
   }
+  if (maskAlphas.size > 8) maskAlphas.clear();
+  maskAlphas.set(key, alpha);
+  return alpha;
+}
+
+export function applyMask(src: Canvas, mask: Dict | string, k: number, slot = 8, own = false): Canvas {
+  const m = typeof mask === "string" ? { shape: mask } : mask;
+  const w = src.width, h = src.height;
+  const key = maskKey(w, h, m, k);
+  if (own) {
+    const cached = ownedMasks.get(src);
+    if (cached?.key === key) return cached.canvas;
+    const out = createCanvas(w, h);
+    const c = out.getContext("2d");
+    c.drawImage(maskAlpha(w, h, m, k), 0, 0);
+    c.globalCompositeOperation = m.invert ? "source-out" : "source-in";
+    c.drawImage(src, 0, 0);
+    c.globalCompositeOperation = "source-over";
+    ownedMasks.set(src, { key, canvas: out });
+    return out;
+  }
+  const out = scratch(w, h, slot);
+  const c = out.getContext("2d");
+  c.drawImage(maskAlpha(w, h, m, k), 0, 0);
   c.globalCompositeOperation = m.invert ? "source-out" : "source-in";
   c.drawImage(src, 0, 0);
   c.globalCompositeOperation = "source-over";

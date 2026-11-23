@@ -467,8 +467,8 @@ export class Renderer {
       }
       const mutable = !fr.static && (!!fr.buf || L.type === "video"); // per-frame canvases may be modified in place
       if (fx.length) { const r = applyEffects(img, fx, tl, this.fps, this.k * L.q, 2, mutable); img = r.canvas; opacity *= r.opacity; }
-      if (c.mask) img = applyMask(img, c.mask, this.k * L.q, 20);
-      const stable = !fx.length && !c.mask && (!!fr.static || ["text", "captions", "shape", "color"].includes(L.type)); // canvas content fixed -> cacheable
+      if (c.mask) img = applyMask(img, c.mask, this.k * L.q, 20, !fx.length && !!fr.static);
+      const stable = !fx.length && (c.mask ? !!fr.static : (!!fr.static || ["text", "captions", "shape", "color"].includes(L.type))); // canvas content fixed -> cacheable
       this.draw(img, c, cx, cy, sx, sy, rot, opacity, blend, blur, m.masks, L.q, fr.under, L.opaque && !c.mask, stable);
       if (overlay) this.overlay(overlay);
     }
