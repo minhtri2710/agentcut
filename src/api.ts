@@ -19,6 +19,7 @@ import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
 import { CAPTION_PRESETS, TEMPLATES, TEXT_PRESETS } from "./presets.ts";
 import { checkAuthor, findProject, Project, refuseSource, requireRevision, summarize } from "./project.ts";
+import type { Renderer } from "./render.ts";
 import { writeFile } from "./safe-write.ts";
 
 const renderMod = async () => { await loadCanvas(); return import("./render.ts"); };
@@ -26,7 +27,7 @@ const TEXTY = /"(text|words|srt|preset|apply_template|add_captions|add_voiceover
 type FrameCacheEntry = {
   fp: string;
   validFp: string;
-  r: { frame(t: number, guides?: boolean): Promise<any>; close(): void };
+  r: Renderer;
   queue: Promise<unknown>;
   timer?: ReturnType<typeof setTimeout>;
   root: string;
@@ -286,7 +287,9 @@ async function frameImageImpl(project: string | undefined, t: number | string, o
         return (await frameImageImpl(project, t, o, retries + 1)).data;
       }
       try {
-        return encodeStill(await entry!.r.frame(tt, !!o.guides), o.format ?? "jpeg");
+        const data = encodeStill(await entry!.r.frame(tt, !!o.guides), o.format ?? "jpeg");
+        for (const L of entry!.r.layers) if (tt < L.start - 1 || tt > L.end + 1) L.close();
+        return data;
       } catch (e) {
         if (!entry!.failed) {
           entry!.failed = true;
@@ -319,6 +322,8 @@ export async function closeFrameCache(root?: string) {
 }
 
 export const frameCacheSize = (root?: string) => [...frameCache.values()].filter((entry) => root === undefined || entry.root === root).length;
+export const frameCacheVideoLayers = (root?: string) => [...frameCache.values()].filter((entry) => root === undefined || entry.root === root)
+  .flatMap(({ r }) => r.layers.filter((L) => L.type === "video").map((L) => ({ start: L.start, end: L.end, open: !!L.src })));
 
 export async function frame(project: string | undefined, t: number | string, o: { out?: string; scale?: number; guides?: boolean } = {}) {
   const tt = M.parseTime(t);

@@ -99,6 +99,20 @@ for (const t of frameSequence) {
   frameIdentity.push({ t, status: cached.status, same: cached.body.equals(fresh.data), bytes: cached.body.length, expected: fresh.data.length });
 }
 check("reused /api/frame bytes match fresh renderers across ascending, descending, and jump seeks", frameIdentity.every((x) => x.status === 200 && x.same), frameIdentity);
+{
+  const layersDir = join(tmp, "layers"), madeLayers = api.create(layersDir, { preset: "square" });
+  await api.apply(layersDir, Array.from({ length: 3 }, () => ({ op: "add_clip" as const, track: "main", src: join(media, "a.mp4"), duration: 2.5 })), { revision: madeLayers.revision });
+  const scrubUi = await startUi(layersDir, { port: 0 });
+  const last = await raw("/api/frame?t=6.5&scale=0.25", { port: scrubUi.port });
+  const first = await raw("/api/frame?t=0.5&scale=0.25", { port: scrubUi.port });
+  const layers = api.frameCacheVideoLayers(layersDir);
+  const farOpen = layers.filter((L) => L.open && (0.5 < L.start - 1 || 0.5 > L.end + 1));
+  check("a backward scrub closes cached video layers far from the playhead", last.status === 200 && first.status === 200 && layers.length === 3
+    && layers.some((L) => L.open && L.start <= 0.5 && 0.5 < L.end) && farOpen.length === 0, layers);
+  scrubUi.server.closeAllConnections?.();
+  await new Promise((ok) => scrubUi.server.close(ok));
+  await api.closeFrameCache(layersDir);
+}
 const late = await raw(`/api/frame?t=${st.j.duration}&scale=0.25`);
 check("a frame time at the duration is refused as bad_value", late.status >= 400 && late.status < 500 && late.type === "application/json" && JSON.parse(late.body.toString()).error.code === "bad_value", late.status);
 check("every response carries nosniff and a framing restriction", [page, st0, fr].every((r) => r.headers["x-content-type-options"] === "nosniff" && r.headers["x-frame-options"] === "DENY" && String(r.headers["content-security-policy"]).includes("frame-ancestors 'none'")), [page, st0, fr].map((r) => r.headers));
