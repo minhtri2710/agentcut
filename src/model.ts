@@ -836,7 +836,7 @@ function groupIssues(g: any, path: string): { path: string; message: string; hin
   return out;
 }
 
-function checkName(v: unknown, opts: string[], path: string, issues: Issue[], what: string) {
+function checkName(v: unknown, opts: readonly string[], path: string, issues: Issue[], what: string) {
   const name = v && typeof v === "object" ? (v as Dict).type : v;
   // an object without a usable type would reach the renderer as a type it cannot draw
   if (v && typeof v === "object" && (typeof name !== "string" || !name)) { issues.push({ level: "error", path: `${path}.type`, message: `${what} needs a 'type'`, hint: `options: ${opts.join(", ")}` }); return; }
@@ -1027,7 +1027,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         if (now && !sameCut(c.timed_for.cut, now)) issues.push({ level: "warning", path: `${p}.timed_for`, message: `these captions were timed for '${c.timed_for.asset}' as it played relative to them, and the captions clip moved or the clips that play it changed: the words no longer match the sound`, hint: `move ${c.id} back, or remove it and run add_captions transcribe='${c.timed_for.asset}' again (hand-corrected words are lost)` });
       }
       for (const [key, opts, what] of [["enter", ENTER_EXIT, "animation"], ["exit", ENTER_EXIT, "animation"], ["transition", TRANSITIONS, "transition"], ["motion", MOTIONS, "motion"]] as const)
-        if (key in c) checkName(c[key], opts as unknown as string[], `${p}.${key}`, issues, what);
+        if (key in c) checkName(c[key], opts, `${p}.${key}`, issues, what);
       if (c.transition && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });
       for (const [key, opts] of [["fit", FITS], ["blend", BLENDS], ["position", POSITIONS], ["style", CAPTION_STYLES], ["shape", SHAPES]] as const)
         if (key in c && c[key] != null && !(opts as readonly string[]).includes(c[key])) {
