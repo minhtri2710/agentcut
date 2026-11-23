@@ -1,6 +1,6 @@
 import { api } from "./api.ts";
 import { fail, show } from "./messages.ts";
-import { $, st } from "./state.ts";
+import { $, el, st } from "./state.ts";
 import { prepareText } from "./text.ts";
 import type { ApiError, Job } from "./types.ts";
 import { requestFrame } from "./viewer.ts";
@@ -31,7 +31,7 @@ function askDownload(err: ApiError) {
   consentErr = err;
   const d = $<HTMLDialogElement>("consent"), l = $("clist");
   l.innerHTML = "";
-  err.models!.forEach((m) => { const li = document.createElement("li"); li.textContent = m.model + " (~" + m.approx_mb + " MB)"; l.appendChild(li); });
+  err.models!.forEach((m) => { l.appendChild(el("li", { textContent: m.model + " (~" + m.approx_mb + " MB)" })); });
   d.returnValue = ""; d.showModal(); $("cgo").focus();
 }
 
@@ -60,19 +60,15 @@ function onJob(j: Job) {
       st.renderJob = null; render.disabled = false;
       const o = $("out"), r = j.result!;
       o.innerHTML = "";
-      const a = document.createElement("a"); a.href = j.url!; a.target = "_blank"; a.textContent = "output: " + r.output.split("/").pop(); o.appendChild(a);
-      const info = document.createElement("div"); info.className = "mut";
-      info.textContent = r.duration + " s, " + r.width + "x" + r.height + (r.loudness ? ", " + r.loudness.integrated_lufs + " LUFS" : "") + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "");
-      o.appendChild(info);
+      o.appendChild(el("a", { href: j.url!, target: "_blank", textContent: "output: " + r.output.split("/").pop() }));
+      o.appendChild(el("div", { className: "mut", textContent: r.duration + " s, " + r.width + "x" + r.height + (r.loudness ? ", " + r.loudness.integrated_lufs + " LUFS" : "") + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "") }));
       if (j.sheet_url) sheetImg(j.sheet_url);
     }
   }
 }
 
 function sheetImg(url: string) {
-  const i = document.createElement("img");
-  i.src = url; i.title = "open full size"; i.onclick = () => { window.open(url); };
-  $("out").appendChild(i);
+  $("out").appendChild(el("img", { src: url, title: "open full size", onclick: () => { window.open(url); } }));
 }
 
 export function initJobs() {
