@@ -1,7 +1,7 @@
 // Colour grading (color field -> FFmpeg), scopes, and TTS provider selection / HTTP request building (local server, no network).
 // Run: bun tests/color-tts.ts [--keep]          (needs ffmpeg + curl on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyLatest, check, failures, ff } from "./harness.ts";
@@ -16,7 +16,7 @@ const api = await import("./author-api.ts");
 const { gradeChain, gradeIssues, LOOKS } = await import("../src/color.ts");
 const T = await import("../src/tts.ts");
 const AN = await import("../src/analyze.ts");
-const { filterChain } = await import("../src/media.ts");
+const { filterChain, probe } = await import("../src/media.ts");
 
 const throwsCode = (f: () => unknown, code: string) => { try { f(); return false; } catch (e: any) { return e.code === code || e.message; } };
 const rejectsCode = async (f: () => Promise<unknown>, code: string) => { try { await f(); return false; } catch (e: any) { return e.code === code || e.message; } };
@@ -270,14 +270,30 @@ check("openai without config is a missing_dependency", await rejectsCode(() => A
 console.log("tts over http (local server)");
 // the fake /v1/audio/speech server runs in its own process.
 ff("-f", "lavfi", "-i", "sine=frequency=500:duration=0.7", "-ar", "24000", join(tmp, "reply.wav"));
+const convertedWav = join(tmp, "duration-48k-stereo.wav");
+ff("-f", "lavfi", "-i", "sine=frequency=500:duration=0.713", "-ar", "48000", "-ac", "2", convertedWav);
+const wavFd = openSync(convertedWav, "r");
+let headerDuration: number;
+try {
+  const { bytes, channels, bits, rate } = AN.wavData(wavFd, convertedWav);
+  headerDuration = +((Math.floor(bytes / ((channels * bits) / 8)) / rate).toFixed(6));
+} finally { closeSync(wavFd); }
+const probedDuration = (await probe(convertedWav)).duration;
+check("48 kHz stereo WAV header duration matches ffprobe", headerDuration === probedDuration, { headerDuration, probe: probedDuration });
 const KEY = "sk-test-SECRET-123";
 const serverJs = join(tmp, "server.mjs");
 writeFileSync(serverJs, `import http from "node:http"; import fs from "node:fs";
 const [log, wav] = process.argv.slice(2);
+let active = 0, peak = 0;
 http.createServer((req, res) => { let b = ""; req.on("data", (d) => b += d); req.on("end", () => {
-  fs.appendFileSync(log, JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, type: req.headers["content-type"], body: JSON.parse(b || "null") }) + "\\n");
-  if (req.headers.authorization !== "Bearer ${KEY}") { res.writeHead(401); return res.end('{"error":"bad key"}'); }
-  res.writeHead(200, { "content-type": "audio/wav" }); res.end(fs.readFileSync(wav)); }); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`);
+  active++; peak = Math.max(peak, active);
+  fs.appendFileSync(log, JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, type: req.headers["content-type"], body: JSON.parse(b || "null"), peak }) + "\\n");
+  setTimeout(() => {
+    if (req.headers.authorization !== "Bearer ${KEY}") { res.writeHead(401); res.end('{"error":"bad key"}'); }
+    else { res.writeHead(200, { "content-type": "audio/wav" }); res.end(fs.readFileSync(wav)); }
+    active--;
+  }, 500);
+}); }).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`);
 const reqLog = join(tmp, "req.log");
 const srv = spawn(process.execPath, [serverJs, reqLog, join(tmp, "reply.wav")], { stdio: ["ignore", "pipe", "inherit"] });
 const port = await new Promise<number>((res) => srv.stdout!.once("data", (d) => res(Number(String(d).trim()))));
@@ -316,12 +332,14 @@ try {
     check("media/ as a link: add_voiceover -> unsafe_path, the target is unchanged", e.code === "unsafe_path" && snap() === was, { code: e.code, now: snap() });
   }
 
-  { // one request per sentence, in order; a one-sentence script is one request
+  { // one request per sentence (arrival order varies); results stay ordered, and one-sentence scripts make one request
     const reqs = () => readFileSync(reqLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const n0 = reqs().length;
     const rs = await AN.tts("Một. Hai? Ba!", join(tmp, "vo3.wav"), "openai:shimmer");
     const got = reqs().slice(n0);
-    check("http: three sentences make three requests, in order", JSON.stringify(got.map((q: any) => q.body.input)) === JSON.stringify(["Một.", "Hai?", "Ba!"]), got.map((q: any) => q.body.input));
+    check("http: three sentences make three requests", JSON.stringify(got.map((q: any) => q.body.input).sort()) === JSON.stringify(["Một.", "Hai?", "Ba!"].sort()), got.map((q: any) => q.body.input));
+    check("http: sentence results stay in input order", JSON.stringify((rs as any).sentences.map((s: any) => s.text)) === JSON.stringify(["Một.", "Hai?", "Ba!"]), (rs as any).sentences);
+    check("http: sentence requests overlap", Math.max(...got.map((q: any) => q.peak)) > 1, got.map((q: any) => q.peak));
     const ss = (rs as any).sentences ?? [];
     check("http: sentences are contiguous, start at 0 and end at the file duration",
       ss.length === 3 && ss[0].start === 0 && ss.every((s: any, i: number) => i === 0 || s.start === ss[i - 1].end) && Math.abs(ss[2].end - rs.duration) < 1 / 30 && ss.every((s: any) => Math.abs(s.end - s.start - 0.7) < 0.05), { ss, d: rs.duration });
@@ -352,7 +370,9 @@ try {
   { // per-sentence synthesis: a fake piper that records each call and speaks 0.5 s per word without any pause (a sentence with a comma has a clause pause and a silent tail)
     const binS = join(tmp, "bin-sentences"); mkdirSync(binS);
     writeFileSync(join(binS, "piper"), `#!/bin/sh
+until mkdir "${tmp}/ps.lock" 2>/dev/null; do sleep 0.01; done
 n=$(cat "${tmp}/ps.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${tmp}/ps.n"
+rmdir "${tmp}/ps.lock"
 cat > "${tmp}/ps.in.$n"
 printf '%s' "$ORT_DISABLE_TELEMETRY" > "${tmp}/ps.ort.$n"
 [ "$(cat "${tmp}/ps.fail" 2>/dev/null)" = "$n" ] && { echo "boom" >&2; exit 1; }
@@ -375,7 +395,7 @@ fi
       writeFileSync(join(tmp, "ps.n"), "0");
       const text = "Một hai ba. Bốn năm? Sáu bảy tám chín!";
       const r: any = await AN.tts(text, join(tmp, "ps.wav"));
-      check("piper: three sentences make three invocations, one sentence on each stdin", calls() === 3 && [input(1), input(2), input(3)].join("|") === "Một hai ba.|Bốn năm?|Sáu bảy tám chín!", { calls: calls() });
+      check("piper: three sentences make three invocations, one sentence on each stdin", calls() === 3 && JSON.stringify([input(1), input(2), input(3)].sort()) === JSON.stringify(["Một hai ba.", "Bốn năm?", "Sáu bảy tám chín!"].sort()), { calls: calls(), inputs: [input(1), input(2), input(3)] });
       const ss = r.sentences ?? [];
       check("piper: sentences are contiguous, follow each part's length and sum to the file duration (1 frame)",
         ss.length === 3 && ss[0].start === 0 && ss.every((s: any, i: number) => i === 0 || s.start === ss[i - 1].end) && Math.abs(ss[2].end - r.duration) < 1 / 30
@@ -425,7 +445,7 @@ fi
       const wasMedia = media(), wasTl = (await tlJson());
       writeFileSync(join(tmp, "ps.n"), "0"); writeFileSync(join(tmp, "ps.fail"), "2");
       const e: any = await applyLatest(F, [{ op: "add_voiceover", text, voice: "piper", captions: "clean" }]).catch((x) => x);
-      check("a failing second part fails the op with tts_failed, writes no output and leaves the timeline unchanged", e.code === "tts_failed" && calls() === 2 && media() === wasMedia && (await tlJson()) === wasTl, { code: e.code, calls: calls(), media: media(), msg: e.message });
+      check("a failing second part fails the op with tts_failed, writes no output and leaves the timeline unchanged", e.code === "tts_failed" && calls() === 3 && media() === wasMedia && (await tlJson()) === wasTl, { code: e.code, calls: calls(), media: media(), msg: e.message });
       writeFileSync(join(tmp, "ps.n"), "0");
       const direct = join(tmp, "ps-fail.wav");
       writeFileSync(join(tmp, "ps.fail"), "3");

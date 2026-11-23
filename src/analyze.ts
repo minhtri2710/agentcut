@@ -240,8 +240,25 @@ export function ttsVoices() {
   return { ...ttsProviders(extra), voices: [...systemVoices(), ...extra.voices] };
 }
 
+/** Runs f(0..count-1) with at most n at once; results by index. After a failure no new task starts, the running ones settle, and the lowest-index error is thrown. */
+async function pool<T>(n: number, count: number, f: (i: number) => Promise<T>): Promise<T[]> {
+  const results = new Array<T>(count), errors: { index: number; error: unknown }[] = [];
+  let next = 0, stopped = false;
+  const worker = async () => {
+    while (!stopped) {
+      const index = next++;
+      if (index >= count) return;
+      try { results[index] = await f(index); }
+      catch (error) { errors.push({ index, error }); stopped = true; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, count) }, worker));
+  if (errors.length) throw errors.sort((a, b) => a.index - b.index)[0].error;
+  return results;
+}
+
 /** One TTS entry point. voice "piper[:model.onnx]" / "openai:<voice>" / "system:<name>" picks the provider, else AGENTCUT_TTS_PROVIDER (default system).
- *  Each sentence is synthesized on its own (rate applies to each), converted to 48 kHz stereo and joined in order, so `sentences` carries
+ *  Each sentence is synthesized separately (rate applies to each; up to 4 concurrent for openai/piper, system voices serially), converted to 48 kHz stereo and joined in order, so `sentences` carries
  *  the real [start, end] of each one in the output. `base`: the project folder when outPath is inside it. */
 export async function tts(text: string | undefined, outPath: string, voice?: string, rate?: number | null, base?: string, signal?: AbortSignal) {
   if (typeof text !== "string" || !text.trim()) throw new EditError("tts needs the text to speak", "missing_input", "pass the text to speak, e.g. \"Hello\"");
@@ -252,17 +269,27 @@ export async function tts(text: string | undefined, outPath: string, voice?: str
   const tmp = mkdtempSync(join(tmpdir(), "agentcut-tts-"));
   const sentences: { text: string; start: number; end: number }[] = [];
   try {
-    const wavs: string[] = [];
-    for (const [i, s] of splitSentences(text).entries()) {
+    const parts = splitSentences(text);
+    const wavs = await pool(provider === "system" ? 1 : 4, parts.length, async (i) => {
+      const s = parts[i];
       const dir = join(tmp, `s${i}`);
       mkdirSync(dir);
       const raw = provider === "piper" ? await piperSpeech(s, dir, v, rate ?? undefined, undefined, signal) : provider === "openai" ? await httpSpeech(s, dir, v, rate ?? undefined, undefined, signal) : await systemSpeech(s, dir, v, rate ?? undefined, signal);
       const wav = join(tmp, `p${i}.wav`);
       const c = await run("ffmpeg", ["-v", "error", "-y", ...inp(raw), "-ar", "48000", "-ac", "2", wav], { signal });
       if (c.status !== 0) throw new EditError(`tts convert failed: ${c.stderr.slice(0, 300)}`, "tts_failed");
+      return wav;
+    });
+    for (const [i, wav] of wavs.entries()) {
+      const fd = openSync(wav, "r");
+      let duration: number;
+      try {
+        const { bytes, channels, bits, rate } = wavData(fd, wav);
+        const frame = (channels * bits) / 8;
+        duration = +((Math.floor(bytes / frame) / rate).toFixed(6));
+      } finally { closeSync(fd); }
       const start = sentences.length ? sentences[sentences.length - 1].end : 0;
-      sentences.push({ text: s, start, end: start + (await probe(wav)).duration });
-      wavs.push(wav);
+      sentences.push({ text: parts[i], start, end: start + duration });
     }
     const list = join(tmp, "parts.txt");
     createFile(list, wavs.map((w) => `file '${w.replace(/'/g, "'\\''")}'\n`).join(""));
