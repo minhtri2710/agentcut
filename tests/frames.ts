@@ -1,10 +1,12 @@
 // Which source frame a timeline slot shows: the same one wherever the clip's stream started, with or without an audio track, in any container.
 // Every source frame carries its own number in the picture (16 blocks of 10 px), so FrameSource is compared with the choice rule built from the file's own timestamps.
 // Run: bun tests/frames.ts [--keep]          (needs ffmpeg and ffprobe on PATH)
+import { type Canvas, createCanvas } from "@napi-rs/canvas";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { applyMask, scratch, shapePath } from "../src/effects.ts";
 import { check, failures, ff } from "./harness.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "agentcut-frames-"));
@@ -16,6 +18,67 @@ const { FrameSource, TIE_BIAS } = await import("../src/media.ts");
 const t0 = performance.now();
 
 const W = 160, H = 120;
+function referenceMask(src: Canvas, mask: Record<string, any>, k: number): Canvas {
+  const m = mask;
+  const w = src.width, h = src.height;
+  const out = createCanvas(w, h);
+  const c = out.getContext("2d");
+  const feather = Number(m.feather ?? 0) * k;
+  const mw = Number(m.width ?? 1) * w, mh = Number(m.height ?? 1) * h;
+  const mx = Number(m.x ?? 0.5) * w - mw / 2, my = Number(m.y ?? 0.5) * h - mh / 2;
+  if (m.shape === "linear" || m.shape === "mirror") {
+    const ang = (Number(m.angle ?? 0) * Math.PI) / 180;
+    c.translate(Number(m.x ?? 0.5) * w, Number(m.y ?? 0.5) * h); c.rotate(ang);
+    const big = Math.hypot(w, h);
+    const f = Math.max(1, feather);
+    const g = m.shape === "linear" ? c.createLinearGradient(0, -f / 2, 0, f / 2) : c.createLinearGradient(0, -mh / 2 - f / 2, 0, mh / 2 + f / 2);
+    if (m.shape === "linear") { g.addColorStop(0, "#000"); g.addColorStop(1, "rgba(0,0,0,0)"); }
+    else { const e = f / (mh + f); g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(e, "#000"); g.addColorStop(1 - e, "#000"); g.addColorStop(1, "rgba(0,0,0,0)"); }
+    c.fillStyle = g;
+    if (m.shape === "linear") c.fillRect(-big, -big, big * 2, big + f / 2);
+    else c.fillRect(-big, -mh / 2 - f / 2, big * 2, mh + f);
+    c.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    if (feather > 0) c.filter = `blur(${feather / 2}px)`;
+    c.fillStyle = "#000";
+    shapePath(c, m.shape ?? "rect", mx, my, mw, mh, Number(m.radius ?? 0) * k);
+    c.fill();
+    c.filter = "none";
+  }
+  c.globalCompositeOperation = m.invert ? "source-out" : "source-in";
+  c.drawImage(src, 0, 0);
+  c.globalCompositeOperation = "source-over";
+  return out;
+}
+{
+  const src = createCanvas(W, H);
+  const ctx = src.getContext("2d");
+  for (let y = 0; y < H; y += 8) for (let x = 0; x < W; x += 8) {
+    ctx.fillStyle = `rgba(${(x * 13) % 256},${(y * 17) % 256},${(x + y) % 256},${0.3 + ((x + y) % 7) / 10})`;
+    ctx.fillRect(x, y, 8, 8);
+  }
+  const masks = [
+    { shape: "circle", feather: 6 },
+    { shape: "rect", radius: 20, feather: 0, invert: true },
+    { shape: "linear", angle: 30, feather: 40 },
+    { shape: "mirror", height: 0.3, feather: 10 },
+  ];
+  const pixels = (canvas: Canvas) => canvas.getContext("2d").getImageData(0, 0, W, H).data;
+  const same = (a: Uint8ClampedArray, b: Uint8ClampedArray) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const checks = masks.map((mask) => {
+    const expected = pixels(referenceMask(src, mask, 1.25));
+    const first = applyMask(src, mask, 1.25, 19);
+    const firstPixels = pixels(first);
+    const secondPixels = pixels(applyMask(src, mask, 1.25, 19));
+    const owned = applyMask(src, mask, 1.25, 19, true);
+    const ownedPixels = pixels(owned);
+    const ownedAgain = applyMask(src, mask, 1.25, 19, true);
+    const separate = owned !== scratch(W, H, 19);
+    return same(firstPixels, expected) && same(secondPixels, expected) && same(ownedPixels, expected)
+      && separate && ownedAgain === owned;
+  });
+  check("mask alpha cache and owned outputs preserve old pixels for all mask types", checks.every(Boolean), checks);
+}
 const m = join(tmp, "media");
 mkdirSync(m);
 console.log("media ->", tmp);
