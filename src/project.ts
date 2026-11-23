@@ -211,6 +211,7 @@ export class Project {
 
   /** Files an op wrote into media/ while a batch was applied (imports, synthesized speech). A batch that is not saved discards them. */
   private staged: string[] = [];
+  private readonly historyCache = new Map<string, { key: string; meta: HistoryEntry }>();
   stage(file: string) { this.staged.push(file); return file; }
   /** Remove the staged files again; only a regular file directly in media/ is ever removed. keep: the batch was saved. */
   discardStaged(keep = false) {
@@ -390,10 +391,37 @@ export class Project {
   redo(steps = 1, base?: number, author?: string) { return this.step("redo", "undo", steps, base, author); }
   /** The last 20 entries of each stack. An entry that cannot be read is a named error whose hint speaks of project.json only as far as this call's own read of it: any failure of that read is "unfit". */
   history() {
-    let beside: Beside = "sound";
-    try { revisionOf(parse(readFileSync(this.file, "utf8"))); } catch { beside = "unfit"; }
-    const list = (n: string) => this.entries(n).slice(-20).map((p): HistoryEntry => { const { label, author, movedBy } = Project.readEntry(p, n, beside); return { label, author, ...(movedBy === undefined ? {} : { movedBy }) }; });
-    return { undo: list("undo"), redo: list("redo") };
+    const listed = new Set<string>();
+    let beside: Beside | undefined;
+    const list = (n: string) => this.entries(n).slice(-20).map((p): HistoryEntry => {
+      listed.add(p);
+      let key: string | undefined;
+      try {
+        const st = lstatSync(p, { bigint: true });
+        key = `${st.ino}|${st.size}|${st.mtimeNs}`;
+      } catch { /* readEntry supplies the error if the entry vanished or cannot be inspected */ }
+      const cached = key === undefined ? undefined : this.historyCache.get(p);
+      let meta = cached && cached.key === key ? cached.meta : undefined;
+      if (!meta) {
+        let entry: ReturnType<typeof Project.readEntry>;
+        try { entry = Project.readEntry(p, n, "sound"); }
+        catch {
+          if (beside === undefined) {
+            try { revisionOf(parse(readFileSync(this.file, "utf8"))); beside = "sound"; }
+            catch { beside = "unfit"; }
+          }
+          entry = Project.readEntry(p, n, beside);
+        }
+        const { label, author, movedBy } = entry;
+        meta = { label, author, ...(movedBy === undefined ? {} : { movedBy }) };
+        if (key !== undefined) this.historyCache.set(p, { key, meta });
+      }
+      const { label, author, movedBy } = meta;
+      return { label, author, ...(movedBy === undefined ? {} : { movedBy }) };
+    });
+    const undo = list("undo"), redo = list("redo");
+    for (const p of this.historyCache.keys()) if (!listed.has(p)) this.historyCache.delete(p);
+    return { undo, redo };
   }
 
   // ---------------------------------------------------------------- paths

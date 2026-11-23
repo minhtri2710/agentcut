@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -28,6 +28,7 @@ const { JOBS_KEPT } = await import("../src/jobs.ts");
 const dir = join(tmp, "proj"), media = join(tmp, "media");
 mkdirSync(media);
 ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "a.mp4"));
+ff("-f", "lavfi", "-i", "color=c=green:size=640x360:rate=30:duration=3", "-pix_fmt", "yuv420p", join(media, "b.mp4"));
 ff("-f", "lavfi", "-i", "mandelbrot=size=320x240", "-frames:v", "1", join(media, "p.jpg"));
 // the fixtures a row sets up from outside are not about concurrency: they read the project's revision (info) and apply at it. The rows about revisions, conflicts and the page pass theirs by hand.
 const made = api.create(dir, { preset: "square" });
@@ -153,6 +154,27 @@ check("video thumbnail", th.status === 200 && th.body[0] === 0xff && th.body[1] 
 }
 const md = await raw(`/media/${vid.asset}`);
 check("project asset served", md.status === 200 && md.type === "video/mp4" && md.body.length > 1000);
+{
+  const relinkProject = join(tmp, "relink-project");
+  const created = api.create(relinkProject, { preset: "square" });
+  await api.apply(relinkProject, [{ op: "add_clip", track: "main", src: join(media, "a.mp4"), duration: 2 }],
+    { revision: created.revision });
+  const relinkUi = await startUi(relinkProject, { port: 0 });
+  const state = await jget("/api/state", { port: relinkUi.port });
+  const id = state.j.timeline.tracks.find((t: any) => t.id === "main").clips[0].asset;
+  const first = await raw(`/media/${id}`, { port: relinkUi.port });
+  const relinked = join(relinkProject, "media", "relinked.mp4");
+  copyFileSync(join(media, "b.mp4"), relinked);
+  const changed = await jget("/api/ops", { method: "POST", port: relinkUi.port, body: {
+    ops: [{ op: "relink_asset", id, path: relinked }], revision: state.j.revision,
+  } });
+  const second = await raw(`/media/${id}`, { port: relinkUi.port });
+  check("media lookup follows relink_asset after a cached lookup", first.status === 200 && changed.status === 200
+    && second.status === 200 && second.body.equals(readFileSync(relinked)) && !second.body.equals(first.body),
+  { first: first.status, changed: changed.status, second: second.status, bytes: [first.body.length, second.body.length] });
+  relinkUi.server.closeAllConnections?.();
+  await new Promise((ok) => relinkUi.server.close(ok));
+}
 
 // SSE: read the event stream and wait for a given revision
 const events: any[] = [];
@@ -584,10 +606,11 @@ console.log("event stream over an unreadable history entry");
   api.create(d, { preset: "reels" });
   await applyLatest(d, [{ op: "add_marker", t: 1 }]);
   await applyLatest(d, [{ op: "add_marker", t: 2 }]);
+  const us = await startUi(d, { port: 0 });
+  await jget("/api/state", { port: us.port });
   const undoDir = join(d, ".agentcut", "history", "undo"), entry = join(undoDir, readdirSync(undoDir).sort().pop()!), name = basename(entry);
   const noRev = JSON.parse(readFileSync(entry, "utf8")); delete noRev.revision;
   writeFileSync(entry, JSON.stringify(noRev));
-  const us = await startUi(d, { port: 0 });
   /** GET /api/events: the head, the events seen, and whether the server ended the stream (the first `state` event also stops the read, as a page would have what it needs) */
   const stream = (port: number) => new Promise<{ status?: number; type: string; events: { event: string; data: any }[]; ended: boolean }>((ok) => {
     const out = { status: undefined as number | undefined, type: "", events: [] as { event: string; data: any }[], ended: false };
@@ -614,6 +637,27 @@ console.log("event stream over an unreadable history entry");
   check("over a project.json with no valid revision the stream carries that file's own error and ends", s3.events.length === 1 && s3.events[0].event === "error" && s3.events[0].data.code === "bad_revision" && s3.ended, s3);
   us.server.closeAllConnections?.();
   await new Promise((ok) => us.server.close(ok));
+}
+
+{
+  const d = join(tmp, "history-name-reuse");
+  const created = api.create(d, { preset: "reels" });
+  const first = await applyLatest(d, [{ op: "add_marker", t: 1 }], { label: "first edit" });
+  const second = await applyLatest(d, [{ op: "add_marker", t: 2 }], { label: "second edit" });
+  const undoDir = join(d, ".agentcut", "history", "undo");
+  const reusedName = readdirSync(undoDir).sort().at(-1);
+  const historyUi = await startUi(d, { port: 0 });
+  await jget("/api/state", { port: historyUi.port });
+  const undone = await jget("/api/undo", { method: "POST", body: { revision: second.revision }, port: historyUi.port });
+  const replacement = await applyLatest(d, [{ op: "add_marker", t: 3 }], { label: "replacement edit" });
+  const latest = await jget("/api/state", { port: historyUi.port });
+  const currentName = readdirSync(undoDir).sort().at(-1);
+  check("history cache follows a new entry reusing an undone filename and clears redo",
+    reusedName === currentName && replacement.revision === undone.j.revision + 1
+      && latest.j.history.undo.at(-1)?.label === "replacement edit" && latest.j.history.redo.length === 0,
+  { reusedName, currentName, history: latest.j.history, revisions: [created.revision, first.revision, second.revision, undone.j.revision, replacement.revision] });
+  historyUi.server.closeAllConnections?.();
+  await new Promise((ok) => historyUi.server.close(ok));
 }
 
 // a listen that fails leaves nothing running: the child must end by itself (a live project.json watcher would keep it alive)

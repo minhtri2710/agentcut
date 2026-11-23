@@ -33,8 +33,10 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const running = new Map<string, { ctl: AbortController; settled: Promise<unknown> }>(); // job id -> its abort and its end, while it runs
   const thumbs = new Map<string, Promise<Buffer>>();
   const cacheDir = join(root, "previews", "ui");
+  let assetsKey: string | undefined;
+  let assets: Record<string, Asset> | undefined;
 
-  const state = async (): Promise<Dict> => ({ ...(await api.info(root, "json")), history: api.history(root) });
+  const state = async (): Promise<Dict> => ({ ...(await api.info(root, "json")), history: p.history() });
   const send = (res: ServerResponse, event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const broadcast = (event: string, data: unknown) => { for (const c of clients) send(c, event, data); };
   const fileUrl = (abs: string) => "/files/" + relative(root, abs).split(sep).map(encodeURIComponent).join("/");
@@ -181,7 +183,14 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   }
 
   function asset(id: string): Asset & { abs: string } {
-    const a = p.load().assets[id];
+    const st = statSync(p.file, { bigint: true });
+    const key = `${st.ino}|${st.size}|${st.mtimeNs}`;
+    if (key !== assetsKey) {
+      const loaded = p.load();
+      assets = loaded.assets;
+      assetsKey = key;
+    }
+    const a = assets![id];
     if (!a?.path) throw new EditError(`no asset '${id}' in this project`, "not_found");
     return { ...a, abs: p.abs(a.path) };
   }
