@@ -12,7 +12,7 @@ process.env.AGENTCUT_HOME = join(tmp, "home"); // isolated feedback store - set 
 process.env.AGENTCUT_CACHE = join(tmp, "cache"); // isolated cache root - set before importing the API
 const api = await import("./author-api.ts");
 // this suite's rows are about audio, not concurrency: a write reads the project's revision (info) and applies at it
-const { buildAudio, kfExpr } = await import("../src/audio.ts");
+const { buildAudio, kfExpr, measureCache } = await import("../src/audio.ts");
 const { hasCodec } = await import("../src/media.ts");
 const { run } = await import("../src/proc.ts");
 const { noiseFloor, denoiseFilters, eqFilters, compressorFilter } = await import("../src/audiofx.ts");
@@ -262,6 +262,30 @@ const target = await mix("final", -14);
 check(`final mix at -14 LUFS (${lufs(target).toFixed(2)})`, Math.abs(lufs(target) + 14) < 0.7);
 const again = await mix("final2", -14);
 check("deterministic: two mixes are byte-identical", readFileSync(target).equals(readFileSync(again)));
+
+console.log("per-clip measurement cache");
+{
+  const sources = ["measure-1.wav", "measure-2.wav", "measure-3.wav"].map((name, i) => {
+    const path = join(m, name);
+    ff("-f", "lavfi", "-i", `anoisesrc=color=pink:amplitude=0.02:seed=${i + 1}:duration=4`, "-f", "lavfi", "-i", `sine=f=${440 + i * 110}:duration=4`,
+      "-filter_complex", "[0][1]amix=inputs=2:normalize=0", "-ac", "2", "-ar", "48000", path);
+    return path;
+  });
+  const MP = join(tmp, "measure-cache-project");
+  api.create(MP, { width: 320, height: 240, fps: 24 });
+  await applyLatest(MP, sources.map((src, i) => ({ op: "add_clip", track: "voice", src, at: i * 4, duration: 4, denoise: true, normalize: true })));
+  const p = api.openProject(MP), tl = p.absolutized(p.load());
+  tl.settings.loudness = null;
+  const first = join(tmp, "measure-cache-first.wav"), second = join(tmp, "measure-cache-second.wav");
+  measureCache.clear();
+  await buildAudio(tl, first);
+  check("first build caches floor and loudness for all 3 clips (6 entries)", measureCache.size === 6, measureCache.size);
+  await buildAudio(tl, second);
+  check("second build adds no measurements and is byte-identical", measureCache.size === 6 && readFileSync(first).equals(readFileSync(second)), measureCache.size);
+  ff("-f", "lavfi", "-i", "anoisesrc=color=brown:amplitude=0.04:seed=9:duration=6", "-ac", "2", "-ar", "48000", sources[0]);
+  await buildAudio(tl, join(tmp, "measure-cache-replaced.wav"));
+  check("rewriting one source adds exactly its floor and loudness measurements", measureCache.size === 8, measureCache.size);
+}
 
 console.log("a speed-ramped video clip plays its sound, time-mapped by the curve its picture follows");
 {

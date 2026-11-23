@@ -1,5 +1,5 @@
 // Audio processing fields (clip + track): denoise, eq, compressor, pan, pitch, normalize.
-// Validation and FFmpeg filter strings are pure; noiseFloor/loudness run FFmpeg once per processed clip.
+// Validation and FFmpeg filter strings are pure; noiseFloor/loudness run FFmpeg once per processed clip (audio.ts caches them).
 // No model.ts import: model.ts imports this file for its field table and validation.
 import { own } from "./own.ts";
 import { inp } from "./ffinput.ts";
