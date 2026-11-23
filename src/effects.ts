@@ -56,7 +56,9 @@ function vignette(w: number, h: number, intensity: number): Canvas {
 }
 
 const maskAlphas = new Map<string, Canvas>();
+let maskAlphaBytes = 0;
 const ownedMasks = new WeakMap<Canvas, { key: string; canvas: Canvas }>();
+const MASK_ALPHA_BUDGET = 64 * 1024 * 1024;
 function maskKey(w: number, h: number, m: Dict, k: number) {
   return `${w}x${h}|${k}|${JSON.stringify(m)}`;
 }
@@ -244,7 +246,11 @@ export { shapePath };
 function maskAlpha(w: number, h: number, m: Dict, k: number): Canvas {
   const key = maskKey(w, h, m, k);
   let alpha = maskAlphas.get(key);
-  if (alpha) return alpha;
+  if (alpha) {
+    maskAlphas.delete(key);
+    maskAlphas.set(key, alpha);
+    return alpha;
+  }
   alpha = createCanvas(w, h);
   const c = alpha.getContext("2d");
   const feather = Number(m.feather ?? 0) * k;
@@ -270,8 +276,14 @@ function maskAlpha(w: number, h: number, m: Dict, k: number): Canvas {
     c.fill();
     c.filter = "none";
   }
-  if (maskAlphas.size > 8) maskAlphas.clear();
   maskAlphas.set(key, alpha);
+  maskAlphaBytes += w * h * 4;
+  while ((maskAlphaBytes > MASK_ALPHA_BUDGET || maskAlphas.size > 8) && maskAlphas.size > 1) {
+    const oldest = maskAlphas.keys().next().value!;
+    const evicted = maskAlphas.get(oldest)!;
+    maskAlphas.delete(oldest);
+    maskAlphaBytes -= evicted.width * evicted.height * 4;
+  }
   return alpha;
 }
 
