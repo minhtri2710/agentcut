@@ -49,9 +49,6 @@
 - [ ] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
   Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
-- [ ] ui-media - UI: media pool blocked-by: ui-shell (kind: ship) (since 2026-11-24)
-  Slice. Left-panel Media tab: project assets with thumbnail, duration, kind; search; import by path or file drop into media/; drag onto the timeline adds a clip (add_clip with at/track).
-  Acceptance: import and drag land as ops with the revision rule; ui-browser checks for drop and drag.
 - [ ] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (since 2026-11-24)
   Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
   Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
@@ -75,6 +72,10 @@
   Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
   Leaves out: API-key LLM providers (rejected by the human).
 ## Done
+- [x] ui-media - UI: media pool blocked-by: ui-shell (kind: ship) (done 2026-11-24)
+  Slice. Left-panel Media tab: project assets with thumbnail, duration, kind; search; import by path or file drop into media/; drag onto the timeline adds a clip (add_clip with at/track).
+  Acceptance: import and drag land as ops with the revision rule; ui-browser checks for drop and drag.
+  d54e573: media tab, /api/upload into media/, drop to lane. ui, ui-browser (5 new rows), jobs (sweep rows), writes, launchers pass.
 - [x] ui-shell - UI: Preact shell, dark theme, 4-zone layout, EN/VI switch (kind: ship) (done 2026-11-24)
   Slice. Port the page to Preact with today's features intact (viewer, timeline drag/trim, inspector JSON, keyframes, compounds, prepare consent, render, undo/redo), in a dark 4-zone layout (left panel tabs, preview, inspector, timeline) with an English/Vietnamese string table and a switch (stored per browser).
   Acceptance: every ui and ui-browser check passes unchanged in meaning; bun run ui --check passes; no string literal in components outside the table.
