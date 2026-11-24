@@ -29,12 +29,6 @@
   Criteria: single binary (bun build --compile) and npm dist (Node >= 22), install size, macOS/Linux/Windows, speed per frame, first-run network needs, the CSRT tracker (no ONNX form; OpenCV TrackerNano/TrackerVit use ONNX models), determinism of cached results, one implementation path (no dual runtime).
   Output: a decision with measurements, plus the migration slices if it changes.
 
-- [ ] vlab-speech - transcribe: keep words inside speech (kind: ship) (since 2026-11-24)
-  Slice. Transcription keeps only words inside detected speech: words whisper times into a gap are dropped or clamped into the nearest speech region, and the silence threshold follows the measured noise floor instead of fixed -35 dB.
-  Measure first at base: a generated clip with long silences and a music lead-in, count invented/misplaced words; ship only if the count drops and real words are kept.
-  Acceptance: the measured fixture improves; existing transcribe tests pass; AGENTS.md text about words timed into silence updated.
-  Leaves out: neural VAD (Silero) unless the runtime decision adds it.
-
 - [ ] vlab-rnnoise - denoise: RNNoise option after A/B (kind: ship) (since 2026-11-24)
   Slice. denoise can use FFmpeg arnndn with a pinned RNNoise model (GregorR/rnnoise-models sh.rnnn, 297646 bytes, sha256 70bb6685...dec0, public-domain dedication), downloaded only with consent like matte models; output aligned to the source (arnndn delays 480 samples at 48 kHz, drops a partial last frame: pad + atrim, measured).
   A/B first against the current two-stage afftdn on speech + noise fixtures; if it does not win, close the ticket with the numbers and ship nothing.
