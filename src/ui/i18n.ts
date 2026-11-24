@@ -27,6 +27,8 @@ const EN = {
   output: "output: {0}", openFull: "open full size",
   clipLabel: "{0}, {1}, starts at {2} s", keyframeAt: "keyframe {0}s: {1}", transition: "transition {0}",
   language: "Language", clipJson: "clip JSON",
+  media: "Media", search: "Search", importPath: "/path/to/file.mp4", importBtn: "Import",
+  dropHint: "Drop files here to copy them into media/; drag an item onto a track to add it.", uploading: "Uploading {0}…", noAssets: "No media yet.",
 };
 export type Key = keyof typeof EN;
 
@@ -56,6 +58,8 @@ const VI: Record<Key, string> = {
   output: "kết quả: {0}", openFull: "mở cỡ đầy đủ",
   clipLabel: "{0}, {1}, bắt đầu ở {2} s", keyframeAt: "keyframe {0}s: {1}", transition: "chuyển cảnh {0}",
   language: "Ngôn ngữ", clipJson: "JSON của clip",
+  media: "Media", search: "Tìm", importPath: "/đường/dẫn/tệp.mp4", importBtn: "Nhập",
+  dropHint: "Thả tệp vào đây để chép vào media/; kéo một mục lên track để thêm.", uploading: "Đang tải lên {0}…", noAssets: "Chưa có media.",
 };
 
 export type Lang = "en" | "vi";

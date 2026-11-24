@@ -925,12 +925,12 @@ console.log("sweep of a dead process's leftovers");
   const dead = deadPid(), me = process.pid, outside = join(tmp, "sweep-outside");
   mkdirSync(cacheD, { recursive: true }); mkdirSync(tmpD, { recursive: true }); mkdirSync(join(outside, "d"), { recursive: true });
   writeFileSync(join(outside, "d", "sentinel"), "x");
-  const gone = [join(cacheD, `matte-aaa.part-${dead}-1.mov`), join(cacheD, `subject-bbb.part-${dead}-abcdef.json`), join(tmpD, `render-${dead}-abc123`)];
-  const kept = [join(cacheD, `matte-aaa.part-${me}-1.mov`), join(cacheD, `matte-aaa.part-99999999999-1.mov`), join(tmpD, `render-${me}-abc123`), join(tmpD, `render-99999999999-abc123`),
+  const gone = [join(cacheD, `matte-aaa.part-${dead}-1.mov`), join(cacheD, `subject-bbb.part-${dead}-abcdef.json`), join(tmpD, `render-${dead}-abc123`), join(tmpD, `upload-${dead}-abc123`)];
+  const kept = [join(tmpD, `upload-${me}-abc123`), join(cacheD, `matte-aaa.part-${me}-1.mov`), join(cacheD, `matte-aaa.part-99999999999-1.mov`), join(tmpD, `render-${me}-abc123`), join(tmpD, `render-99999999999-abc123`),
     join(tmpD, `render-${dead}-abc123.txt`), join(tmpD, `render-${dead}-abc12`), join(tmpD, "other"), join(P6, `stray.part-${dead}-1.mov`),
     join(cacheD, "sub", `deep.part-${dead}-1.mov`), // the cache dir is flat: only its direct children are swept
     join(P6, "previews", `p.part-${dead}-1.bin`), join(P6, "renders", `r.part-${dead}-1.mp4`), join(P6, "media", `media.part-${dead}-1.mp4`)];
-  const plant = (fs: string[]) => { for (const f of fs) { mkdirSync(join(f, ".."), { recursive: true }); if (/render-\d+-abc123$|other$|abc12$/.test(f)) { mkdirSync(f, { recursive: true }); writeFileSync(join(f, "seg000.mkv"), "x".repeat(2000)); } else writeFileSync(f, "x"); } };
+  const plant = (fs: string[]) => { for (const f of fs) { mkdirSync(join(f, ".."), { recursive: true }); if (/(render|upload)-\d+-abc123$|other$|abc12$/.test(f)) { mkdirSync(f, { recursive: true }); writeFileSync(join(f, "seg000.mkv"), "x".repeat(2000)); } else writeFileSync(f, "x"); } };
   const info0: any = api.cache.info(P6);
   plant([join(tmpD, `render-${me}-abc123`), join(tmpD, "other")]);
   const info1: any = api.cache.info(P6);
@@ -938,9 +938,9 @@ console.log("sweep of a dead process's leftovers");
   plant([...gone, ...kept]);
   symlinkSync(join(outside, "d"), join(tmpD, `render-${dead}-lnk123`)); // a symlink with a dead pid in its name: never followed, never removed
   const pruned: any = api.cache.prune(P6);
-  check("cache prune reports what the sweep removed (the 2 .part files and the render dir's file), apart from what it removed itself", pruned.swept?.files === 3 && typeof pruned.swept.mb === "number", pruned.swept);
-  check("cache prune sweeps the dead pid's render dir like render and prepare do, and keeps a live pid's, impossible pids, near-miss names and symlinks",
-    !existsSync(gone[2]) && kept.filter((f) => f.startsWith(tmpD)).every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), { gone: existsSync(gone[2]), kept: kept.filter((f) => f.startsWith(tmpD) && !existsSync(f)) });
+  check("cache prune reports what the sweep removed (the 2 .part files and the render and upload dirs' files), apart from what it removed itself", pruned.swept?.files === 4 && typeof pruned.swept.mb === "number", pruned.swept);
+  check("cache prune sweeps the dead pid's render and upload dirs like render and prepare do, and keeps a live pid's, impossible pids, near-miss names and symlinks",
+    !existsSync(gone[2]) && !existsSync(gone[3]) && kept.filter((f) => f.startsWith(tmpD)).every((f) => existsSync(f)) && existsSync(join(tmpD, `render-${dead}-lnk123`)) && existsSync(join(outside, "d", "sentinel")), { gone: existsSync(gone[2]), kept: kept.filter((f) => f.startsWith(tmpD) && !existsSync(f)) });
   plant([...gone, ...kept]); // the prune above also took the unreferenced cache and preview files among them
   for (const [what, run] of [["prepare", () => api.prepare(P6)], ["render", () => api.render(P6, { out: join(tmp, "sweep-out.mp4"), quality: "draft", sheet: false, workers: 1, end: 0.5 })]] as const) {
     if (what === "render") plant(gone); // plant again for the second entry point
@@ -953,9 +953,9 @@ console.log("sweep of a dead process's leftovers");
   if (process.getuid?.() === 0) console.log("  - skipped: running as root, chmod cannot make a directory read-only");
   else {
     plant(gone);
-    chmodSync(gone[2], 0o555); chmodSync(cacheD, 0o555); // the stale render dir cannot lose its file, the cache dir cannot lose its .part files
+    chmodSync(gone[2], 0o555); chmodSync(gone[3], 0o555); chmodSync(cacheD, 0o555); // the stale render and upload dirs cannot lose their files, the cache dir cannot lose its .part files
     const r1: any = await api.prepare(P6).catch((e) => e), r2: any = await api.render(P6, { out: join(tmp, "sweep-out2.mp4"), quality: "draft", sheet: false, workers: 1, end: 0.5 }).catch((e) => e);
-    chmodSync(gone[2], 0o755); chmodSync(cacheD, 0o755);
+    chmodSync(gone[2], 0o755); chmodSync(gone[3], 0o755); chmodSync(cacheD, 0o755);
     check("R5: entries that cannot be removed do not fail prepare or render, and stay for the next sweep", r1.ready === true && r2.frames > 0 && gone.every(existsSync), { r1: r1?.message ?? r1.ready, r2: r2?.message ?? r2.frames, left: gone.filter(existsSync) });
     await api.prepare(P6);
     check("R5: the next sweep removes them", gone.every((f) => !existsSync(f)));

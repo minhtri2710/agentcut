@@ -370,6 +370,31 @@ const split = await new Promise<string>((ok) => {
 });
 check("POST body keeps multi-byte text whole across chunks", split.includes("nope_ệ") && !split.includes("\uFFFD"), split.slice(0, 300));
 
+// a file dropped on the page: its bytes go to media/ under its own name, never over another file, and only as octet-stream
+const upload = (name: string, body: Buffer, o: { type?: string; origin?: string } = {}) => new Promise<{ status: number; j: any }>((ok, fail) => {
+  const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/upload?name=" + encodeURIComponent(name), method: "POST",
+    headers: { host: `127.0.0.1:${ui.port}`, "content-type": o.type ?? "application/octet-stream", ...(o.origin ? { origin: o.origin } : {}) } }, (res) => {
+    const ch: Buffer[] = []; res.on("data", (c) => ch.push(c)); res.on("end", () => ok({ status: res.statusCode!, j: JSON.parse(Buffer.concat(ch).toString()) }));
+  });
+  rq.on("error", fail);
+  rq.end(body);
+});
+const jpg = readFileSync(join(media, "p.jpg"));
+const up1 = await upload("drop.jpg", jpg), up2 = await upload("drop.jpg", jpg);
+check("an upload lands in media/ under its name, a second one with the same name beside it (never over it)", up1.j.ok && up1.j.path === join(dir, "media", "drop.jpg") && up2.j.path === join(dir, "media", "drop-1.jpg")
+  && readFileSync(up1.j.path).equals(jpg) && readFileSync(up2.j.path).equals(jpg), [up1, up2]);
+const scratchLeft = () => (existsSync(join(dir, ".agentcut", "tmp")) ? readdirSync(join(dir, ".agentcut", "tmp")).filter((f) => f.startsWith("upload-")) : []);
+const badUps = await Promise.all([upload("../x.jpg", jpg), upload(".hidden.jpg", jpg), upload("notes.txt", Buffer.from("x")), upload("drop.jpg", jpg, { type: "application/json" }), upload("x.jpg", jpg, { origin: "http://evil.example" })]);
+check("an upload whose name is a path or hidden is bad_value, a non-media file bad_type, JSON 415, another origin 403; nothing is written",
+  JSON.stringify(badUps.map((r) => [r.status, r.j.error?.code])) === '[[422,"bad_value"],[422,"bad_value"],[422,"bad_type"],[415,"bad_request"],[403,"forbidden"]]'
+  && ["x.jpg", ".hidden.jpg", "notes.txt", "drop-2.jpg"].every((f) => !existsSync(join(dir, "media", f))) && !existsSync(join(tmp, "x.jpg")) && scratchLeft().length === 0, badUps.map((r) => [r.status, r.j.error]));
+const opsOctet = await new Promise<number>((ok) => {
+  const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ui.port}`, "content-type": "application/octet-stream" } }, (res) => { res.resume(); ok(res.statusCode!); });
+  rq.end("{}");
+});
+check("  and /api/ops still takes JSON only", opsOctet === 415, opsOctet);
+for (const f of ["drop.jpg", "drop-1.jpg"]) rmSync(join(dir, "media", f));
+
 // ---------------------------------------------------------------- render job
 console.log("render");
 const job = (await jget("/api/render", { method: "POST", body: { play: true, start: 0, end: 1 } })).j;
@@ -807,7 +832,7 @@ console.log("page modules");
   const { num } = await import("../src/ui/time.ts");
   const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
   const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
-  const { dragEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { dragEdit, dropEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
   const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
   const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -866,6 +891,9 @@ console.log("page modules");
     JSON.stringify(dragEdit("move", att, from, all, "free", 0.25, 0, 1)) === '{"ops":[{"op":"move_clip","id":"t","track":"free"},{"op":"update_clip","id":"t","set":{"offset":0.75}}],"label":"move t"}'
     && JSON.stringify(dragEdit("move", att, from, all, "v", -0.25, 0, 1).ops) === '[{"op":"update_clip","id":"t","set":{"offset":0.25}}]');
 
+  check("dropEdit: an asset dropped on a free lane starts at the drop time (never below 0); on a magnetic lane it goes before the first clip whose middle is later",
+    JSON.stringify(dropEdit(loose, "a1", 2.34567)) === '{"op":"add_clip","track":"free","asset":"a1","at":2.346}' && dropEdit(loose, "a1", -1).at === 0
+    && dropEdit(mag, "a1", 0.9).index === 0 && dropEdit(mag, "a1", 1.1).index === 1 && dropEdit(mag, "a1", 9).index === 2);
   const kc = clip("k", { duration: 3, keyframes: { opacity: [[0, 1], [1, 0.5]], scale: [[0.5, 1]] } });
   check("kfMoveBatch: moves the points at the dragged time on every prop that has one, clamped to the clip",
     JSON.stringify(kfMoveBatch(kc, 1, 0.5)) === '[{"op":"set_keyframes","id":"k","prop":"opacity","keyframes":[[0,1],[1.5,0.5]]}]'

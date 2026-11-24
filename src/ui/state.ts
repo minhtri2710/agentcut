@@ -31,6 +31,9 @@ export const st = {
   consent: null as ApiError | null, // the model download the dialog asks about
   drag: null as { id: string; mode: DragMode; dx: number } | null, // a clip being dragged, dx in px
   kfDrag: null as { id: string; kt: number; dx: number } | null, // a keyframe tick being dragged
+  tab: "media", // the left panel's tab
+  mediaQuery: "",
+  uploading: null as string | null, // the dropped file being sent to media/
 };
 
 let redraw = () => {};

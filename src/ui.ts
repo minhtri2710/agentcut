@@ -2,15 +2,17 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import * as api from "./api.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
-import { seekArgs } from "./media.ts";
+import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
 import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
+import { ensureDir } from "./safe-write.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
 const MIME: Record<string, string> = {
@@ -21,6 +23,8 @@ const MIME: Record<string, string> = {
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
+/** what a file dropped on the page may be: the media import_media takes */
+const UPLOAD_EXT = new Set([...IMAGE_EXT, ...AUDIO_EXT, ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".gif", ".json"]);
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
   if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
@@ -62,8 +66,11 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     if (path.split("/").includes("..") || path.includes("\0")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
     if (req.method === "POST") {
       if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
-      if (!String(req.headers["content-type"]).startsWith("application/json")) return json(res, 415, { ok: false, error: { code: "bad_request", message: "POST bodies must be application/json" } });
+      // an upload is the file's bytes; every other POST is JSON. Neither type can be sent cross-site without a preflight, which this server never answers.
+      const want = path === "/api/upload" ? "application/octet-stream" : "application/json";
+      if (!String(req.headers["content-type"]).startsWith(want)) return json(res, 415, { ok: false, error: { code: "bad_request", message: `POST ${path === "/api/upload" ? "/api/upload takes the file as" : "bodies must be"} ${want}` } });
     }
+    if (req.method === "POST" && path === "/api/upload") return json(res, 200, { ok: true, path: await upload(req, url.searchParams.get("name")) });
 
     if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE); }
     if (req.method === "GET" && path === "/api/state") return json(res, 200, { ok: true, ...(await state()) });
@@ -180,6 +187,23 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
       .finally(() => { delete job.download; preparing = null; running.delete(job.id); endJob(jobs, job.id, job); broadcast("job", job); }) });
     return job;
+  }
+
+  /** a file dropped on the page, into <project>/media/ under its own name (name-1, name-2... when taken; never overwrites). Returns its path for import_media. */
+  async function upload(req: IncomingMessage, name: string | null): Promise<string> {
+    if (!name || name !== basename(name) || name.startsWith(".") || name.length > 200) throw new EditError("upload name must be a plain file name", "bad_value", "e.g. ?name=clip.mp4");
+    const ext = extname(name).toLowerCase();
+    if (!UPLOAD_EXT.has(ext)) throw new EditError(`${name}: not a media file import_media takes`, "bad_type", `accepted: ${[...UPLOAD_EXT].join(" ")}`);
+    // written in a scratch dir that cache.ts sweepStale removes after a crash, then linked into media/: a half-written file is never there
+    const scratch = mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `upload-${process.pid}-`)), part = join(scratch, "part");
+    try {
+      await pipeline(req, createWriteStream(part, { flags: "wx" }));
+      const dir = ensureDir(root, join(root, "media")), stem = name.slice(0, -ext.length);
+      for (let i = 0; ; i++) {
+        const dest = join(dir, i ? `${stem}-${i}${ext}` : name);
+        try { linkSync(part, dest); return dest; } catch (e: any) { if (e.code !== "EEXIST") throw e; }
+      }
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
 
   function asset(id: string): Asset & { abs: string } {

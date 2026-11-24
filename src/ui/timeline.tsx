@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { ops } from "./api.ts";
 import { drag, kfDrag } from "./drag.ts";
+import { dropEdit } from "./edits.ts";
 import { t } from "./i18n.ts";
 import { select } from "./inspector.tsx";
 import { kfTimes, near, pts } from "./keyframes.ts";
+import { ASSET_DRAG } from "./media.tsx";
 import { $, changed, LABEL, LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
@@ -55,6 +58,16 @@ function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   if (V().nested) { select(c.id); return; }
   drag(ev, tr, c, (target.dataset.edge as "l" | "r" | undefined) || "move");
 }
+
+/** an asset from the media pool dropped on a lane: one add_clip there (the shown tracks only: an opened compound is read-only) */
+function laneDrop(e: DragEvent, tr: Track) {
+  const id = e.dataTransfer?.getData(ASSET_DRAG);
+  if (!id || V().nested) return;
+  e.preventDefault();
+  const at = (e.clientX - (e.currentTarget as HTMLElement).querySelector(".lclips")!.getBoundingClientRect().left) / st.pps;
+  ops([dropEdit(tr, id, at)], "add " + id + " to " + tr.id);
+}
+const laneOver = (e: DragEvent) => { if (!V().nested && e.dataTransfer && Array.prototype.includes.call(e.dataTransfer.types, ASSET_DRAG)) e.preventDefault(); };
 
 function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
   const v = V(), pps = st.pps, d = st.drag && st.drag.id === c.id ? st.drag : null, kd = st.kfDrag && st.kfDrag.id === c.id && !v.nested ? st.kfDrag : null;
@@ -110,7 +123,7 @@ function Lanes({ W }: { W: number }) {
     </div>,
     <div id="lanes">
       {rows.map((tr) => (
-        <div key={tr.id} class="lane" data-track={tr.id}>
+        <div key={tr.id} class="lane" data-track={tr.id} onDragOver={laneOver} onDrop={(e) => laneDrop(e, tr)}>
           <div class="lname"><b>{tr.id}</b><br /><span class="mut">{[tr.kind || "video", tr.magnetic ? "magnetic" : "", tr.muted ? "muted" : "", tr.hidden ? "hidden" : ""].filter(Boolean).join(" ")}</span></div>
           <div class="lclips">{tr.clips.map((c, i) => <ClipBox key={c.id} tr={tr} c={c} i={i} />)}</div>
         </div>

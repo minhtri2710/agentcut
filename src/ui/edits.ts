@@ -26,6 +26,12 @@ export function dragEdit(mode: DragMode, c: Clip, tr: Track, tracks: Track[], de
   return { ops: [op], label: "move_clip " + c.id };
 }
 
+/** An asset dropped on a lane at time `at`: one add_clip. A magnetic track takes it at the index the drop point falls in (before every clip whose middle is later), any other track at that time. */
+export function dropEdit(tr: Track, asset: string, at: number): Op {
+  if (!tr.magnetic) return { op: "add_clip", track: tr.id, asset, at: +Math.max(0, at).toFixed(3) };
+  return { op: "add_clip", track: tr.id, asset, index: tr.clips.filter((o) => start(o) + dur(o) / 2 < at).length };
+}
+
 /** dragging a keyframe tick by `delta` seconds moves every prop's point at time kt: one set_keyframes per prop that has one there */
 export function kfMoveBatch(c: Clip, kt: number, delta: number): Op[] {
   const nt = +Math.max(0, Math.min(dur(c), kt + delta)).toFixed(3), batch: Op[] = [];

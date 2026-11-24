@@ -695,6 +695,40 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await new Promise((ok) => empty.server.close(ok));
     }
   }
+  // The media pool: the project's assets, an import by path, a file dropped from the desktop (uploaded into media/, then imported), an asset dragged onto a lane
+  console.log("media pool");
+  {
+    const names = () => js(`[].map.call(document.querySelectorAll("#mlist .asset"), function (n) { return n.dataset.asset; }).sort().join()`);
+    check("the Media tab lists every asset of the project", await until("assets", `${atRev(load().revision)} && document.querySelectorAll("#mlist .asset").length === ${Object.keys(load().assets).length}`)
+      && await names() === Object.keys(load().assets).sort().join(), await names());
+    const jpgId = Object.entries(load().assets).find(([, a]: any) => a.path.endsWith(".jpg"))![0];
+    await js(`(function(){var s=$("msearch"); s.value=".JPG"; s.dispatchEvent(new Event("input"));})()`);
+    check("  the search box keeps the assets whose id or file name has the text (any case)", await until("filtered", `document.querySelectorAll("#mlist .asset").length >= 1`) && (await names()).split(",").every((id: string) => (load().assets[id].path as string).toLowerCase().includes(".jpg")) && (await names()).includes(jpgId), await names());
+    await js(`(function(){var s=$("msearch"); s.value=""; s.dispatchEvent(new Event("input"));})()`);
+    const png = join(media, "imported.png");
+    ff("-f", "lavfi", "-i", "color=c=orange:size=64x64", "-frames:v", "1", png);
+    await js(`(function(){var i=document.querySelector("#mimport input"); i.value=${JSON.stringify(png)}; document.querySelector("#mimport button").click();})()`);
+    check("Import with a path -> import_media of that file", await untilFile((tl) => Object.values(tl.assets).some((a: any) => a.path.endsWith("imported.png"))), Object.values(load().assets).map((a: any) => a.path));
+    await until("import seen", atRev(load().revision));
+    const before = Object.keys(load().assets).length;
+    await js(`(async function(){
+      var b = await fetch("/media/" + encodeURIComponent(${JSON.stringify(jpgId)})).then(function (r) { return r.blob(); }), dt = new DataTransfer();
+      dt.items.add(new File([b], "dropped.jpg", { type: "image/jpeg" }));
+      var m = $("media"); m.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true })); m.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    })()`);
+    check("a file dropped on the Media tab is copied into the project's media/ and imported", await untilFile((tl) => Object.keys(tl.assets).length === before + 1 && Object.values(tl.assets).some((a: any) => /media[\\/]dropped\.jpg$/.test(a.path)))
+      && existsSync(join(dir, "media", "dropped.jpg")), { paths: Object.values(load().assets).map((a: any) => a.path), msg: await js(`$("msg").textContent`) });
+    await until("dropped listed", `${atRev(load().revision)} && document.querySelectorAll("#mlist .asset").length === ${before + 1}`);
+    await js(`(function(){
+      var item = [].filter.call(document.querySelectorAll("#mlist .asset"), function (n) { return n.dataset.asset === ${JSON.stringify(jpgId)}; })[0], dt = new DataTransfer();
+      item.dispatchEvent(new DragEvent("dragstart", { dataTransfer: dt, bubbles: true }));
+      var lane = [].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "overlay"; })[0], r = lane.querySelector(".lclips").getBoundingClientRect(), x = r.left + 1.5 * ${zoomPps};
+      lane.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+      lane.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+    })()`);
+    const onOverlay = (tl: any) => tl.tracks.find((t: any) => t.id === "overlay").clips.find((c: any) => c.asset === jpgId);
+    check("an asset dragged onto a lane is added to that track at the drop time", await untilFile((tl) => !!onOverlay(tl) && Math.abs(Number(onOverlay(tl).start) - 1.5) < 0.02), load().tracks.find((t: any) => t.id === "overlay").clips);
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

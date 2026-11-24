@@ -5,6 +5,7 @@ import { hist } from "./history.ts";
 import { getLang, setLang, t, type Lang } from "./i18n.ts";
 import { select, Side } from "./inspector.tsx";
 import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
+import { Media } from "./media.tsx";
 import { initKeyboard } from "./keyboard.ts";
 import { clearStateless, fail } from "./messages.ts";
 import { $, changed, findClip, onChange, refreshView, st } from "./state.ts";
@@ -66,13 +67,28 @@ function Consent() {
   );
 }
 
+/** the left panel: one tab per tool (the media pool so far) */
+const TABS = [{ id: "media", label: () => t("media"), body: Media }];
+
+function Left() {
+  const tab = TABS.find((x) => x.id === st.tab) || TABS[0];
+  return (
+    <div id="left">
+      <div class="tabs" role="tablist">
+        {TABS.map((x) => <button key={x.id} role="tab" aria-selected={x === tab} class={x === tab ? "on" : ""} onClick={() => { st.tab = x.id; changed(); }}>{x.label()}</button>)}
+      </div>
+      <tab.body />
+    </div>
+  );
+}
+
 function App() {
   const [, redraw] = useState(0);
   useLayoutEffect(() => onChange(() => redraw((n) => n + 1)), []);
   return (
     <>
       <Header />
-      <div id="main"><Viewer /><Side /></div>
+      <div id="main"><Left /><Viewer /><Side /></div>
       <Consent />
       <Timeline />
     </>

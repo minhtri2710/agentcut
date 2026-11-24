@@ -86,10 +86,10 @@ function contained(e: Pick<Entry, "root" | "path">) {
 }
 
 const PART_FILE = /\.part-(\d+)-/;                // safe-write.ts tmpSibling: <name>.part-<pid>-<rand><ext>
-const RENDER_TMP = /^render-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp: render-<pid>-<mkdtemp suffix>
+const SCRATCH_TMP = /^(?:render|upload)-(\d+)-[A-Za-z0-9]{6}$/; // encode.ts renderTmp and ui.ts upload: <kind>-<pid>-<mkdtemp suffix>
 
 /** Remove what a dead process left behind (SIGKILL, crash, power loss; catchable stops clean up after themselves), run at the
- *  start of prepare, of render and of cache prune. Deletes only (a) `.part-<pid>-` files in the project cache dir and (b) `render-<pid>-xxxxxx`
+ *  start of prepare, of render and of cache prune. Deletes only (a) `.part-<pid>-` files in the project cache dir and (b) `render-<pid>-xxxxxx` and `upload-<pid>-xxxxxx`
  *  directories in <project>/.agentcut/tmp, only when `alive(pid)` is false (ESRCH only). Every target is a direct child of a
  *  directory that realpath-resolves to where it claims to be under the project (symlinked areas are skipped, never followed),
  *  is re-checked with `contained` right before the delete, and is never a symlink. A pid that was reused by an unrelated live
@@ -116,7 +116,7 @@ export function sweepStale(p: Project) {
   }
   const tmp = join(p.root, ".agentcut", "tmp"), tmpRoot = plain(tmp);
   if (tmpRoot) for (const d of list(tmp)) {
-    const m = RENDER_TMP.exec(d.name);
+    const m = SCRATCH_TMP.exec(d.name);
     if (d.isDirectory() && m && !alive(Number(m[1]))) rm({ root: tmpRoot, path: join(tmp, d.name) }, true);
   }
   return sum(swept);
