@@ -11,10 +11,11 @@
   - Model downloads keep the consent rule (allow_download, pinned sha256 + size).
 
   ## Decisions so far
-  - (none)
+  - UI stack: Preact (vlab-uistack).
+  - UI scope: base + media/library + inspector/export + transcript/review/history + dashboard, EN/VI switch (vlab-uiscope).
+  - Chat panel: local agent CLI over agentcut MCP, no API keys (vlab-chat).
 
   ## Not yet specified
-  - UI build slices: graduate once "UI stack", "UI feature scope" and "Chat panel backend" are decided.
   - Desktop packaging (Electron-like app) of the UI: unclear whether wanted.
 
   ## Out of scope
@@ -27,23 +28,6 @@
   Options: keep the uv/Python helper (vision-py.ts) | onnxruntime-node native addon (VidLab) | onnxruntime-web wasm in Node.
   Criteria: single binary (bun build --compile) and npm dist (Node >= 22), install size, macOS/Linux/Windows, speed per frame, first-run network needs, the CSRT tracker (no ONNX form; OpenCV TrackerNano/TrackerVit use ONNX models), determinism of cached results, one implementation path (no dual runtime).
   Output: a decision with measurements, plus the migration slices if it changes.
-
-- [ ] vlab-uistack - UI stack for the full editor (kind: scout) (since 2026-11-24)
-  Research. Question: what does the full editor UI build on? Today src/ui is vanilla TS bundled into one string (page.gen.ts, bun run ui) served by src/ui.ts. A media pool, library, track headers, waveforms, form inspector and chat panel is ~10x that.
-  Options: stay vanilla TS + small own component helpers | adopt a framework (Preact/React/Solid) as a dependency. Criteria: bundle stays one served string, ui-browser test lane keeps working, page typecheck (src/ui tsconfig), no Bun-only APIs, reviewable size.
-
-- [ ] vlab-uiscope - UI feature scope (parity table) (kind: scout) (since 2026-11-24)
-  Research then human approval. Question: which reference-UI features make the agentcut UI, in what order?
-  Input: OpenChatCut screenshots (assets/readme-pic) and src/components: media pool (thumbnails, folders, search), library (effects/transitions/looks/text presets with previews, drag to timeline), transcript panel, timeline (thumbnails, waveforms, track headers eye/mute/lock, snapping, markers), properties form inspector, export dialog, safe-area overlay, dark theme, chat panel.
-  Output: a parity table (have / build / skip, with why) approved by the human, which becomes the UI slices.
-
-- [ ] vlab-chat - Chat panel backend (human decision) blocked-by: vlab-uiscope (kind: scout) (since 2026-11-24)
-  Grilling (human). Question: what powers the UI's agent chat panel?
-  Options seen in OpenChatCut: direct LLM APIs with user keys (AI SDK, many providers) | drive a local agent CLI (Claude Code / Codex / Copilot) as a subprocess against agentcut's own MCP server. Also: which tools the chat agent may call, approval of its edits (OpenChatCut: draft session + human approval), and where keys live.
-- [ ] vlab-face - review: text covering a face (kind: ship) (since 2026-11-24)
-  Slice. review reports text and captions that cover a face: for each text/captions clip window, intersect its drawn box with the face boxes of the picture below (analyze_subject results already cached in the project; a clip with no cached analysis is not analysed by review and is listed as unchecked).
-  Acceptance: a title over a cached face is a finding with time range, text id and clip id; a title beside the face is not; no vision compute runs inside review; GUIDE/AGENTS.md updated.
-  Leaves out: auto-moving the text (a later op), saliency-only subjects.
 
 - [ ] vlab-renderqa - render: QA of the written file (kind: ship) (since 2026-11-24)
   Slice. Every video render result carries a QA of the written file: probe the output and compare duration, size, fps, audio stream presence with the timeline; scan for frozen stretches (freezedetect) and black (blackdetect) in the output; findings in result.qa with times.
@@ -71,4 +55,55 @@
 - [ ] vlab-separate - audio: voice/music separation blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
+- [ ] ui-shell - UI: Preact shell, dark theme, 4-zone layout, EN/VI switch (kind: ship) (since 2026-11-24)
+  Slice. Port the page to Preact with today's features intact (viewer, timeline drag/trim, inspector JSON, keyframes, compounds, prepare consent, render, undo/redo), in a dark 4-zone layout (left panel tabs, preview, inspector, timeline) with an English/Vietnamese string table and a switch (stored per browser).
+  Acceptance: every ui and ui-browser check passes unchanged in meaning; bun run ui --check passes; no string literal in components outside the table.
+  Leaves out: new panels (their own slices).
+
+- [ ] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
+  Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
+- [ ] ui-media - UI: media pool blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Left-panel Media tab: project assets with thumbnail, duration, kind; search; import by path or file drop into media/; drag onto the timeline adds a clip (add_clip with at/track).
+  Acceptance: import and drag land as ops with the revision rule; ui-browser checks for drop and drag.
+- [ ] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (since 2026-11-24)
+  Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
+  Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
+- [ ] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
+  Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
+- [ ] ui-export - UI: export dialog with QA blocked-by: ui-shell blocked-by: vlab-renderqa (kind: ship) (since 2026-11-24)
+  Slice. Export dialog: format/codec/quality/range/subtitles, progress, and the result's qa, loudness and contact sheet.
+  Acceptance: renders through the existing job API; qa issues listed with seek links.
+- [ ] ui-review - UI: review and history panels blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Review panel runs review and lists findings (text_over_face included) with seek and select; history panel lists undo entries with authors, undo/redo to a point.
+  Acceptance: clicking a finding seeks and selects its clip; ui-browser checks.
+- [ ] ui-transcript - UI: transcript panel with text-based cuts blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Transcript tab shows the words of a clip's media (transcribe, cached), click seeks; selecting words and deleting them cuts that stretch (split + remove on the clip), one batch.
+  Acceptance: deleting words removes exactly their media span from the timeline; undo restores it.
+- [ ] ui-dashboard - UI: project dashboard blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. agentcut ui on a folder that is not a project lists the projects under it with thumbnails and dates; create, open, duplicate.
+  Acceptance: opening switches the page to the editor of that project; creating runs create_project.
+- [ ] ui-chat - UI: agent chat panel (local CLI) blocked-by: ui-shell (kind: ship) (since 2026-11-24)
+  Slice. Chat panel drives a locally installed agent CLI (claude or codex, found on PATH) in non-interactive mode with agentcut's MCP server configured for the open project, streams its messages and tool calls, can stop it. The page re-reads the project after each write.
+  Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
+  Leaves out: API-key LLM providers (rejected by the human).
 ## Done
+- [x] vlab-face - review: text covering a face (kind: ship) (done 2026-11-24)
+  Slice. review reports text and captions that cover a face: for each text/captions clip window, intersect its drawn box with the face boxes of the picture below (analyze_subject results already cached in the project; a clip with no cached analysis is not analysed by review and is listed as unchecked).
+  Acceptance: a title over a cached face is a finding with time range, text id and clip id; a title beside the face is not; no vision compute runs inside review; GUIDE/AGENTS.md updated.
+  Leaves out: auto-moving the text (a later op), saliency-only subjects.
+  review reports text_over_face from cached subject analyses (overlap >= 25% of the smaller box); clips without one are listed in checked.faces.unchecked; tests/vision.ts covers hit, miss, unchecked
+- [x] vlab-chat - Chat panel backend (human decision) blocked-by: vlab-uiscope (kind: scout) (done 2026-11-24)
+  Grilling (human). Question: what powers the UI's agent chat panel?
+  Options seen in OpenChatCut: direct LLM APIs with user keys (AI SDK, many providers) | drive a local agent CLI (Claude Code / Codex / Copilot) as a subprocess against agentcut's own MCP server. Also: which tools the chat agent may call, approval of its edits (OpenChatCut: draft session + human approval), and where keys live.
+  Human chose 2026-11-24: drive a locally installed agent CLI (Claude Code / Codex) connected to agentcut's MCP server; no LLM keys or SDK in agentcut; edits keep the revision rule.
+- [x] vlab-uiscope - UI feature scope (parity table) (kind: scout) (done 2026-11-24)
+  Research then human approval. Question: which reference-UI features make the agentcut UI, in what order?
+  Input: OpenChatCut screenshots (assets/readme-pic) and src/components: media pool (thumbnails, folders, search), library (effects/transitions/looks/text presets with previews, drag to timeline), transcript panel, timeline (thumbnails, waveforms, track headers eye/mute/lock, snapping, markers), properties form inspector, export dialog, safe-area overlay, dark theme, chat panel.
+  Output: a parity table (have / build / skip, with why) approved by the human, which becomes the UI slices.
+  Human approved 2026-11-24: base (dark theme, 4-zone layout, timeline thumbnails/waveforms/track headers) + media pool and library with rendered previews + form inspector and export dialog + transcript and review panels with history + project dashboard. UI strings switchable English/Vietnamese. Skipped: extension center, AI generation, publishing, stock search, motion-graphics code gen.
+- [x] vlab-uistack - UI stack for the full editor (kind: scout) (done 2026-11-24)
+  Research. Question: what does the full editor UI build on? Today src/ui is vanilla TS bundled into one string (page.gen.ts, bun run ui) served by src/ui.ts. A media pool, library, track headers, waveforms, form inspector and chat panel is ~10x that.
+  Options: stay vanilla TS + small own component helpers | adopt a framework (Preact/React/Solid) as a dependency. Criteria: bundle stays one served string, ui-browser test lane keeps working, page typecheck (src/ui tsconfig), no Bun-only APIs, reviewable size.
+  Decision: Preact (MIT, ~4 KB, no deps) for the page; JSX compiled by bun build into the same one-string page.gen.ts; src/ui tsconfig gets jsx settings. Why: a media pool, library, form inspector, transcript and chat panel are ~10x today's page; vanilla DOM code at that size is harder to keep correct. Rejected: React (40 KB, heavier for one served string), staying vanilla.

@@ -42,7 +42,9 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    CHECK what stills can't show (CLI: agentcut review | audio | motion):
    review        editorial lint with times: text outside the safe area / under 9:16 app UI, text too short to read,
                  shots too short/long, cuts off the beat (beats='music' or a list), validation warnings,
-                 black frames (judged on the picture below text and captions: footage that is black under them is reported, a title card on black too, with text_ids)
+                 black frames (judged on the picture below text and captions: footage that is black under them is reported, a title card on black too, with text_ids),
+                 text or captions covering a face in the picture below (text_over_face; read only from a subject analysis already cached by
+                 analyze_subject, auto_reframe or track_to: checked.faces.unchecked lists the clips without one, or with a moved/animated layout)
    audio_check   image of every track's waveform + the rendered mix (+ spectrogram) with clip boundaries and markers;
                  findings: clipping/overs, true peak, long silences, audio cut off without fade, music not ducked under voice
    motion_strip  10 consecutive frames per transition (or start/end for any animation) to judge motion

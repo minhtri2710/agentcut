@@ -1518,6 +1518,25 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
   check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !(await clip(R, "vid1")).pending, pr);
 }
 
+// review: text over a face, read from the cached subject analysis only (the fake detector puts a 0.2 x 0.3 face at the source centre)
+console.log("review text_over_face");
+{
+  const F = join(tmp, "reel-faces");
+  api.create(F, { preset: "reels" });
+  const ids = (await apply(F, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 },
+    { op: "add_clip", track: "text", text: "OVER", at: 0.5, duration: 2, y: "50%" }, { op: "add_clip", track: "text", text: "TOP", at: 0.5, duration: 2, y: "15%" }])).map((r: any) => r.id);
+  const [, over, top] = ids, c0 = nCalls("subject");
+  const before: any = await api.review(F, { black: false });
+  check("review without a cached analysis: no finding, the clip is listed unchecked and no analysis runs",
+    !before.findings.some((f: any) => f.type === "text_over_face") && before.checked.faces.clips === 0 && before.checked.faces.unchecked?.[0]?.id === "vid1" && nCalls("subject") === c0, before.checked);
+  process.env.FAKE_SUBJECT = "faces";
+  try { await api.analyze.subject(join(m, "rb.mp4"), 6, false, F); } finally { delete process.env.FAKE_SUBJECT; }
+  const rv: any = await api.review(F, { black: false }), hits = rv.findings.filter((f: any) => f.type === "text_over_face");
+  check("review reports the text over the face with its time range, and not the text above it",
+    hits.length === 1 && hits[0].id === over && hits[0].t >= 0.5 && hits[0].end <= 2.5 && hits[0].end > hits[0].t && /vid1/.test(hits[0].message) && !!hits[0].hint
+      && !hits.some((f: any) => f.id === top) && rv.checked.faces.clips === 1 && !rv.checked.faces.unchecked && nCalls("subject") === c0 + 1, { hits, checked: rv.checked });
+}
+
 console.log(`\n${failures() ? `✗ ${failures()} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 process.exit(failures() ? 1 : 0);

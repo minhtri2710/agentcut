@@ -64,6 +64,37 @@ function canvasToSrc(tl: Timeline, c: Clip, L: ReturnType<typeof layout>, t: num
   return [(X - ox) / (x1 - ox), (Y - oy) / (y1 - oy)];
 }
 
+export type FaceBox = [number, number, number, number];
+/** The largest face (canvas px [x, y, w, h]) of a picture clip at timeline time T, read from a subject analysis that is already cached
+ *  (auto_reframe's, track_to's or analyze_subject's of the whole file); never computes. `step` is the analysis sample spacing in seconds.
+ *  `unchecked` says why there is nothing to read: no cached analysis, or a layout the vision ops cannot map. Paths must be absolute. */
+export function cachedFaces(root: string, tl: Timeline, c: Clip): { at: (T: number) => FaceBox | null; step: number } | { unchecked: string } {
+  let d: V.Derived | undefined, a: VAsset;
+  try {
+    a = asset(tl, c);
+    plainTarget(c);
+    // the jobs auto_reframe (6/s) and track_to without box (10/s) run on the clip's range, and analyze_subject's of the whole file
+    d = (a.kind === "image" ? [subjectJob(null, tl, c, 0, root)] : [subjectJob(null, tl, c, 6, root), subjectJob(null, tl, c, 10, root),
+      V.subjectJob(a.path, { start: 0, duration: a.duration, fps: 6, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root })]).find(V.isReady);
+  } catch (e) { if (e instanceof EditError) return { unchecked: e.message }; throw e; }
+  if (!d) return { unchecked: `no cached subject analysis of ${c.id} (run analyze_subject or auto_reframe)` };
+  const L = layout(tl, c), s0 = clipStart(c), { in0, speed } = srcRange(c), fps = Number(d.job.fps) || 0;
+  const samples = V.subjectSamples(d).map((s) => ({ T: s0 + (s.t - in0) / speed, s }));
+  const box = (T: number, s: V.Sample): FaceBox => {
+    const [x0, y0] = srcToCanvas(tl, c, L, T - s0, s.x! - s.w! / 2, s.y! - s.h! / 2), [x1, y1] = srcToCanvas(tl, c, L, T - s0, s.x! + s.w! / 2, s.y! + s.h! / 2);
+    return [x0, y0, x1 - x0, y1 - y0];
+  };
+  const step = fps ? 1 / fps : 0.5;
+  return {
+    step,
+    at: (T) => {
+      // a still has one sample for all of the clip; a video the nearest sample, at most one sample step away
+      const q = a.kind === "image" ? samples[0] : samples.reduce((b, x) => (Math.abs(x.T - T) < Math.abs(b.T - T) ? x : b), samples[0]);
+      return q && q.s.kind === "face" && (a.kind === "image" || Math.abs(q.T - T) <= step) ? box(T, q.s) : null;
+    },
+  };
+}
+
 const root = (p: Project | null) => p?.root;
 const absPath = (p: Project | null, path: string) => (p ? p.abs(path) : path);
 const num = (v: unknown, d: number, name: string, lo = 0) => {
@@ -86,10 +117,10 @@ function preOf(a: VAsset) { // how far before its in-point a read of this video 
   return preRoll(a as Dict as VideoFacts, a.fps);
 }
 /** Subject analysis job for a clip's source range. */
-function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
+function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number, dir = root(p)) {
   const a = asset(tl, c), { in0, len } = srcRange(c);
-  return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
-    : { start: in0, duration: len, fps, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root: root(p) });
+  return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: dir }
+    : { start: in0, duration: len, fps, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root: dir });
 }
 /** Cached subject samples as [clip-local t, source fraction x, y | undefined]. `within` = [from, to] clip-local seconds keeps only the samples
  *  in that span; the counts and the summary describe exactly the samples kept. */
