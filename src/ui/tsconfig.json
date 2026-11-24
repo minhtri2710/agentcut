@@ -8,7 +8,9 @@
     "strict": true,
     "skipLibCheck": true,
     "types": [],
-    "lib": ["ES2023", "DOM"]
+    "lib": ["ES2023", "DOM"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
   },
   "include": ["."],
   "exclude": ["page.gen.ts"]

@@ -183,6 +183,13 @@ try {
   check("lanes follow the tracks (top track drawn first)", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
     JSON.stringify(load().tracks.map((t: any) => t.id).reverse()));
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
+  const lang = (l: string) => js(`(function(){var s=$("lang"); s.value=${JSON.stringify(l)}; s.dispatchEvent(new Event("change"));})()`);
+  await lang("vi");
+  check("the language switch shows the page in Vietnamese", await until("vi", `$("play").textContent === "Phát" && $("selinfo").textContent === "Chọn một clip trên timeline." && document.documentElement.lang === "vi"`), await js(`[$("play").textContent, $("selinfo").textContent]`));
+  await js(`location.reload()`);
+  check("  the choice outlives a reload", await until("vi reloaded", `${atRev(load().revision)} && $("play").textContent === "Phát" && $("lang").value === "vi"`), await js(`[$("play").textContent, $("lang").value]`));
+  await lang("en");
+  check("  and switching back shows English again", await until("en", `$("play").textContent === "Play" && $("rev").textContent.indexOf("rev ") === 0`), await js(`$("play").textContent`));
 
   console.log("inspector");
   await click(`[data-id="txt1"]`);
@@ -507,9 +514,9 @@ try {
   await SPACE();
   check("Space on a keyboard-focused clip selects it, as Enter does", await until("space selection", selected(order[0])), await js(`[$("selinfo").textContent, document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
-  await js(`window.oldClip = document.activeElement; $("scroll").scrollLeft = 0`);
+  await js(`$("scroll").scrollLeft = 0`);
   await applyLatest(dir, [{ op: "add_marker", t: 0.7 }]);
-  check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `${atRev(load().revision)} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
+  check("the focus stays on that clip, by id, after an apply redraws the timeline", await until("rebuilt", `${atRev(load().revision)} && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
   check("  and it is still keyboard focus: Right walks on to the next clip", await js(`document.activeElement.dataset.id`) === order[2], await js(`document.activeElement.dataset.id`));
   const tt = await nowT();

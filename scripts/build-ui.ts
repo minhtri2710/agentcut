@@ -30,7 +30,7 @@ export async function buildPage(): Promise<string> {
   const from = process.cwd();
   process.chdir(join(ui, "..", ".."));
   const res = await Bun.build({
-    entrypoints: [join(ui, "main.ts")], target: "browser", format: "iife", minify: false, sourcemap: "none",
+    entrypoints: [join(ui, "main.tsx")], target: "browser", format: "iife", minify: false, sourcemap: "none",
     define: { ENUM: JSON.stringify({ animatable: ANIMATABLE, easings: EASINGS }) },
   }).finally(() => process.chdir(from));
   if (!res.success) throw new Error(res.logs.map(String).join("\n"));
