@@ -52,9 +52,6 @@
 - [ ] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
   Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
-- [ ] ui-export - UI: export dialog with QA blocked-by: ui-shell blocked-by: vlab-renderqa (kind: ship) (since 2026-11-24)
-  Slice. Export dialog: format/codec/quality/range/subtitles, progress, and the result's qa, loudness and contact sheet.
-  Acceptance: renders through the existing job API; qa issues listed with seek links.
 - [ ] ui-review - UI: review and history panels blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Review panel runs review and lists findings (text_over_face included) with seek and select; history panel lists undo entries with authors, undo/redo to a point.
   Acceptance: clicking a finding seeks and selects its clip; ui-browser checks.
@@ -71,6 +68,10 @@
 - [ ] track-lock - Track lock that ops respect (kind: ship) (since 2026-11-24)
   Split out of ui-timeline. A track lock only the page honours would be a fake lock: agents edit the same project. Slice: a 'locked' track field (model.ts TRACK_FIELDS); every op that changes a clip on a locked track (or moves one onto it) refuses with code 'locked' naming the track and update_track locked=false as the fix; update_track/remove_track stay allowed. The page shows a lock toggle in the track header and greys locked lanes. Acceptance: edit-ops rows for refusal per op family; ui-browser row for the toggle; GUIDE + AGENTS.md.
 ## Done
+- [x] ui-export - UI: export dialog with QA blocked-by: ui-shell blocked-by: vlab-renderqa (kind: ship) (done 2026-11-25)
+  Slice. Export dialog: format/codec/quality/range/subtitles, progress, and the result's qa, loudness and contact sheet.
+  Acceptance: renders through the existing job API; qa issues listed with seek links.
+  e0118b8: export dialog + qa list with seek. ui + ui-browser pass.
 - [x] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (done 2026-11-24)
   Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
   Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
