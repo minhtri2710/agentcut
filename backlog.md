@@ -52,9 +52,6 @@
 - [ ] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
   Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
-- [ ] ui-review - UI: review and history panels blocked-by: ui-shell (kind: ship) (since 2026-11-24)
-  Slice. Review panel runs review and lists findings (text_over_face included) with seek and select; history panel lists undo entries with authors, undo/redo to a point.
-  Acceptance: clicking a finding seeks and selects its clip; ui-browser checks.
 - [ ] ui-transcript - UI: transcript panel with text-based cuts blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Transcript tab shows the words of a clip's media (transcribe, cached), click seeks; selecting words and deleting them cuts that stretch (split + remove on the clip), one batch.
   Acceptance: deleting words removes exactly their media span from the timeline; undo restores it.
@@ -68,6 +65,10 @@
 - [ ] track-lock - Track lock that ops respect (kind: ship) (since 2026-11-24)
   Split out of ui-timeline. A track lock only the page honours would be a fake lock: agents edit the same project. Slice: a 'locked' track field (model.ts TRACK_FIELDS); every op that changes a clip on a locked track (or moves one onto it) refuses with code 'locked' naming the track and update_track locked=false as the fix; update_track/remove_track stay allowed. The page shows a lock toggle in the track header and greys locked lanes. Acceptance: edit-ops rows for refusal per op family; ui-browser row for the toggle; GUIDE + AGENTS.md.
 ## Done
+- [x] ui-review - UI: review and history panels blocked-by: ui-shell (kind: ship) (done 2026-11-25)
+  Slice. Review panel runs review and lists findings (text_over_face included) with seek and select; history panel lists undo entries with authors, undo/redo to a point.
+  Acceptance: clicking a finding seeks and selects its clip; ui-browser checks.
+  2e80f77: review + history tabs, steps on undo/redo. ui + ui-browser pass.
 - [x] ui-export - UI: export dialog with QA blocked-by: ui-shell blocked-by: vlab-renderqa (kind: ship) (done 2026-11-25)
   Slice. Export dialog: format/codec/quality/range/subtitles, progress, and the result's qa, loudness and contact sheet.
   Acceptance: renders through the existing job API; qa issues listed with seek links.
@@ -108,7 +109,3 @@
   Input: OpenChatCut screenshots (assets/readme-pic) and src/components: media pool (thumbnails, folders, search), library (effects/transitions/looks/text presets with previews, drag to timeline), transcript panel, timeline (thumbnails, waveforms, track headers eye/mute/lock, snapping, markers), properties form inspector, export dialog, safe-area overlay, dark theme, chat panel.
   Output: a parity table (have / build / skip, with why) approved by the human, which becomes the UI slices.
   Human approved 2026-11-24: base (dark theme, 4-zone layout, timeline thumbnails/waveforms/track headers) + media pool and library with rendered previews + form inspector and export dialog + transcript and review panels with history + project dashboard. UI strings switchable English/Vietnamese. Skipped: extension center, AI generation, publishing, stock search, motion-graphics code gen.
-- [x] vlab-uistack - UI stack for the full editor (kind: scout) (done 2026-11-24)
-  Research. Question: what does the full editor UI build on? Today src/ui is vanilla TS bundled into one string (page.gen.ts, bun run ui) served by src/ui.ts. A media pool, library, track headers, waveforms, form inspector and chat panel is ~10x that.
-  Options: stay vanilla TS + small own component helpers | adopt a framework (Preact/React/Solid) as a dependency. Criteria: bundle stays one served string, ui-browser test lane keeps working, page typecheck (src/ui tsconfig), no Bun-only APIs, reviewable size.
-  Decision: Preact (MIT, ~4 KB, no deps) for the page; JSX compiled by bun build into the same one-string page.gen.ts; src/ui tsconfig gets jsx settings. Why: a media pool, library, form inspector, transcript and chat panel are ~10x today's page; vanilla DOM code at that size is harder to keep correct. Rejected: React (40 KB, heavier for one served string), staying vanilla.
