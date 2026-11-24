@@ -784,6 +784,31 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("  and the redo list brings both back", await untilFile((tl) => ["p1", "p2"].every((l) => (tl.markers ?? []).some((m: any) => m.label === l))), load().markers);
     await click("#tab-media");
   }
+  // The dashboard (`agentcut ui` on a folder of projects): cards for the projects; a click opens that project's editor in the same tab
+  console.log("dashboard");
+  {
+    const { startDashboard } = await import("../src/ui.ts");
+    const home = join(tmp, "projects");
+    api.create(join(home, "one"), { preset: "square" });
+    api.create(join(home, "two"), { preset: "reels" });
+    const db = await startDashboard(home, { port: 0 });
+    const { targetId: other } = await cdp("Target.createTarget", { url: "about:blank" });
+    const sid = (await cdp("Target.attachToTarget", { targetId: other, flatten: true })).sessionId;
+    const on = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sid)).result?.value;
+    const onUntil = async (expr: string, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await on(expr).catch(() => false)) return true; await sleep(80); } return false; };
+    try {
+      await cdp("Runtime.enable", {}, sid);
+      await cdp("Page.navigate", { url: db.url }, sid);
+      check("the dashboard page shows a card per project", await onUntil(`[].map.call(document.querySelectorAll(".pcard"), function (c) { return c.dataset.project; }).sort().join() === "one,two"`), await on(`document.body.textContent.slice(0, 200)`));
+      await on(`[].filter.call(document.querySelectorAll(".pcard"), function (c) { return c.dataset.project === "two"; })[0].querySelector(".popen").click()`);
+      check("  clicking a card goes to that project's editor", await onUntil(`location.port !== "${db.port}" && !!document.getElementById("rev") && document.getElementById("rev").textContent.indexOf("rev 0") === 0 && document.getElementById("name").textContent === "two"`, 15_000),
+        await on(`[location.href, document.getElementById("rev") && document.getElementById("rev").textContent, document.getElementById("name") && document.getElementById("name").textContent]`));
+    } finally {
+      await cdp("Target.closeTarget", { targetId: other }).catch(() => {});
+      db.server.closeAllConnections?.();
+      await new Promise((ok) => db.server.close(ok));
+    }
+  }
   console.log("form inspector");
   {
     await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict

@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -882,6 +882,44 @@ hold.close();
   check(`${N} clients that leave mid-stream: their file descriptors are released`, after - base < N / 2, { base, after });
   check("  and the server keeps serving", again.status === 200 && again.j.ok === true, again.status);
   rmSync(join(dir, "renders", "big.bin"));
+}
+
+// ---------------------------------------------------------------- dashboard: `agentcut ui` on a folder of projects
+console.log("dashboard");
+{
+  const { startDashboard } = await import("../src/ui.ts");
+  const home = join(tmp, "projects");
+  mkdirSync(home);
+  api.create(join(home, "alpha"), { preset: "square" });
+  ff("-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", join(home, "alpha", "media", "red.png"));
+  await applyLatest(join(home, "alpha"), [{ op: "add_clip", track: "main", src: join(home, "alpha", "media", "red.png"), duration: 2 }]);
+  mkdirSync(join(home, "not-a-project"));
+  const db = await startDashboard(home, { port: 0 }), at = { port: db.port };
+  try {
+    const list = await jget("/api/projects", at);
+    check("the dashboard lists the project folders in it (not other folders), with size, length and revision", list.j.ok && JSON.stringify(list.j.projects.map((p: any) => [p.name, p.width, p.duration, p.revision])) === '[["alpha",1080,2,1]]', list.j);
+    const page = await raw("/", at);
+    check("  its page is the editor's page marked as the dashboard", page.status === 200 && page.body.toString().includes('<div id="app" data-dashboard>'));
+    const th = await raw("/api/projects/alpha/thumb", at);
+    check("  a project's picture is a JPEG frame of it", th.status === 200 && th.type === "image/jpeg" && th.body[0] === 0xff, th.status);
+    const made = await jget("/api/create", { ...at, method: "POST", body: { name: "beta", preset: "reels" } });
+    check("create makes a project with that preset", made.j.ok && api.openProject(join(home, "beta")).load().settings.height === 1920, made.j);
+    const codes = await Promise.all([{ name: "beta" }, { name: "../x" }, { name: ".hid" }, { name: 3 }].map(async (b) => (await jget("/api/create", { ...at, method: "POST", body: b })).j.error?.code));
+    check("  an existing name is exists; a path, a dot name or no text is bad_value", JSON.stringify(codes) === '["exists","bad_value","bad_value","bad_value"]', codes);
+    const dup = await jget("/api/duplicate", { ...at, method: "POST", body: { name: "alpha", as: "alpha2" } });
+    const copy = api.openProject(join(home, "alpha2")).load();
+    check("duplicate copies the timeline (renamed) and its media into a new project", dup.j.ok && copy.name === "alpha2" && copy.tracks[0].clips.length === 1 && existsSync(join(home, "alpha2", "media", "red.png")) && Object.values(copy.assets).every((a: any) => a.path === join("media", "red.png"))
+      && (await api.info(join(home, "alpha2"), "json")).errors === 0, copy);
+    const o1 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } }), o2 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } });
+    const ed = o1.j.ok && await jget("/api/state", { port: Number(new URL(o1.j.url).port) });
+    check("open starts that project's editor once and answers its URL", o1.j.ok && o2.j.url === o1.j.url && ed && ed.j.project === realpathSync(join(home, "alpha")), { o1: o1.j, state: ed && Object.keys(ed.j) });
+    const gone = await jget("/api/open", { ...at, method: "POST", body: { name: "nope" } }), host = await raw("/api/projects", { ...at, host: "evil.test" });
+    check("  a name with no project is not_found; another host is refused", gone.j.error?.code === "not_found" && host.status === 403, [gone.j, host.status]);
+  } finally {
+    db.server.closeAllConnections?.();
+    await new Promise((ok) => db.server.close(ok));
+  }
+  check("a folder that does not exist is not_found", await startDashboard(join(tmp, "nowhere")).then(() => "started", (e) => e.code) === "not_found");
 }
 
 // ---------------------------------------------------------------- page modules (src/ui): the ones with no DOM, checked under bun

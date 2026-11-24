@@ -3,7 +3,7 @@
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
+import { cpSync, createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -14,7 +14,7 @@ import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
 import { libraryStill } from "./library.ts";
 import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
-import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
+import { type Asset, EditError, PRESETS, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
 import { ensureDir, writeFile } from "./safe-write.ts";
 import { PAGE } from "./ui/page.gen.ts";
@@ -52,31 +52,12 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const broadcast = (event: string, data: unknown) => { for (const c of clients) send(c, event, data); };
   const fileUrl = (abs: string) => "/files/" + relative(root, abs).split(sep).map(encodeURIComponent).join("/");
 
-  const server = createServer(async (req, res) => {
-    res.setHeader("x-content-type-options", "nosniff");
-    res.setHeader("x-frame-options", "DENY");
-    res.setHeader("content-security-policy", "frame-ancestors 'none'");
-    try { await route(req, res); }
-    catch (e: any) {
-      const status = e instanceof EditError ? (STATUS[e.code] ?? 422) : 500;
-      if (!res.headersSent) json(res, status, { ok: false, error: errJson(e) }); else res.end();
-    }
-  });
+  const server = serve(route);
 
   async function route(req: IncomingMessage, res: ServerResponse) {
-    let url: URL, path: string;
-    try { url = new URL(req.url ?? "/", "http://x"); path = decodeURIComponent(url.pathname); }
-    catch { throw new EditError("the request target is not a valid URL path", "bad_request"); }
-    // DNS-rebinding / cross-site guards: only our own host, same-origin JSON writes
-    const port = (server.address() as any).port;
-    if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
-    if (path.split("/").includes("..") || path.includes("\0")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
-    if (req.method === "POST") {
-      if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
-      // an upload is the file's bytes; every other POST is JSON. Neither type can be sent cross-site without a preflight, which this server never answers.
-      const want = path === "/api/upload" ? "application/octet-stream" : "application/json";
-      if (!String(req.headers["content-type"]).startsWith(want)) return json(res, 415, { ok: false, error: { code: "bad_request", message: `POST ${path === "/api/upload" ? "/api/upload takes the file as" : "bodies must be"} ${want}` } });
-    }
+    const g = guard(req, res, server);
+    if (!g) return;
+    const { url, path } = g;
     if (req.method === "POST" && path === "/api/upload") return json(res, 200, { ok: true, path: await upload(req, url.searchParams.get("name")) });
 
     if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE); }
@@ -266,10 +247,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     throw new EditError("only files in renders/ and previews/ are served", "forbidden");
   }
 
-  await new Promise<void>((ok, fail) => {
-    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${o.port ?? 4810} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
-    server.listen(o.port ?? 4810, "127.0.0.1", ok);
-  });
+  await listen(server, o.port);
   // live sync: stat-poll survives the atomic rename used by Project.save (fs.watch on the file does not). Started only once the port is held, so a failed listen leaves nothing running.
   let lastRev = -1;
   // one push at a time, in the order the changes were seen: state() waits for Skia on the first text project, and two quick saves must not end with the older state sent last
@@ -283,6 +261,102 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   server.on("close", () => { unwatchFile(p.file); void api.closeFrameCache(root); });
   const port = (server.address() as any).port;
   return { url: `http://127.0.0.1:${port}/`, port, project: root, revision: p.load().revision, server };
+}
+
+/** The checks every request passes first (DNS-rebinding / cross-site guards: only our own host, same-origin writes, no path traversal); the URL and its path, or
+ *  undefined once it has answered. An upload is the file's bytes; every other POST is JSON. Neither type can be sent cross-site without a preflight, which these servers never answer. */
+function guard(req: IncomingMessage, res: ServerResponse, server: ReturnType<typeof createServer>): { url: URL; path: string } | undefined {
+  let url: URL, path: string;
+  try { url = new URL(req.url ?? "/", "http://x"); path = decodeURIComponent(url.pathname); }
+  catch { throw new EditError("the request target is not a valid URL path", "bad_request"); }
+  const port = (server.address() as any).port;
+  if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
+  if (path.split("/").includes("..") || path.includes("\0")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
+  if (req.method === "POST") {
+    if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
+    const want = path === "/api/upload" ? "application/octet-stream" : "application/json";
+    if (!String(req.headers["content-type"]).startsWith(want)) return void json(res, 415, { ok: false, error: { code: "bad_request", message: `POST ${path === "/api/upload" ? "/api/upload takes the file as" : "bodies must be"} ${want}` } });
+  }
+  return { url, path };
+}
+
+/** A server's answers: an EditError as its status (STATUS, else 422) with the error JSON; anything else 500. */
+function serve(route: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>) {
+  return createServer(async (req, res) => {
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("content-security-policy", "frame-ancestors 'none'");
+    try { await route(req, res); }
+    catch (e: any) {
+      const status = e instanceof EditError ? (STATUS[e.code] ?? 422) : 500;
+      if (!res.headersSent) json(res, status, { ok: false, error: errJson(e) }); else res.end();
+    }
+  });
+}
+
+/** `agentcut ui` on a folder that holds no project: the projects in its subfolders, each with a picture, to open, duplicate or create. Opening one starts its editor
+ *  (startUi, on a free port, once per project) and the page goes there. */
+export async function startDashboard(dir: string, o: { port?: number } = {}) {
+  if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) throw new EditError(`${dir} is not a folder`, "not_found", "pass a project folder, or a folder of projects");
+  const root = realpathSync(dir);
+  const editors = new Map<string, Promise<Awaited<ReturnType<typeof startUi>>>>();
+  /** a project folder of this dashboard by its name: one path segment, an existing project unless `fresh` (then free) */
+  const folder = (name: unknown, fresh = false) => {
+    if (typeof name !== "string" || !/^[^/\\\0]+$/.test(name) || name.startsWith(".")) throw new EditError(`'${String(name)}' is not a project folder name`, "bad_value", "one folder name, not starting with a dot");
+    const d = join(root, name), has = existsSync(join(d, "project.json"));
+    if (fresh ? existsSync(d) : !has) throw new EditError(fresh ? `${name} already exists` : `no project ${name}`, fresh ? "exists" : "not_found");
+    return d;
+  };
+  const projects = () => readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".") && existsSync(join(root, e.name, "project.json"))).map((e) => {
+    const file = join(root, e.name, "project.json"), modified = statSync(file).mtimeMs;
+    try {
+      const tl = JSON.parse(readFileSync(file, "utf8"));
+      return { name: e.name, modified, revision: tl.revision, width: tl.settings.width, height: tl.settings.height, duration: +totalDuration(resolveTimeline(tl)).toFixed(2) };
+    } catch (err: any) { return { name: e.name, modified, error: String(err?.message ?? err) }; }
+  }).sort((a, b) => b.modified - a.modified);
+  const server = serve(async (req, res) => {
+    const g = guard(req, res, server);
+    if (!g) return;
+    const { path } = g;
+    if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE.replace('<div id="app">', '<div id="app" data-dashboard>')); }
+    if (req.method === "GET" && path === "/api/projects") return json(res, 200, { ok: true, dir: root, presets: Object.keys(PRESETS), projects: projects() });
+    const thumb = /^\/api\/projects\/([^/]+)\/thumb$/.exec(path);
+    if (req.method === "GET" && thumb) {
+      const d = folder(thumb[1]), tl = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+      const r = await api.frameImage(d, +(totalDuration(resolveTimeline(tl)) * 0.25).toFixed(3), { scale: 240 / Math.max(tl.settings.width, tl.settings.height), reuse: true });
+      res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
+      return res.end(r.data);
+    }
+    if (req.method !== "POST") return json(res, 404, { ok: false, error: { code: "not_found", message: "no such route" } });
+    const body = await readJson(req);
+    if (path === "/api/create") { const d = folder(body.name, true); api.create(d, { preset: body.preset }); return json(res, 200, { ok: true, name: body.name }); }
+    if (path === "/api/duplicate") {
+      const from = folder(body.name), to = folder(body.as, true);
+      api.create(to, { empty: true }); // the folders and history of a project; then its timeline, media and fonts
+      for (const sub of ["media", "fonts"]) if (existsSync(join(from, sub))) cpSync(join(from, sub), join(to, sub), { recursive: true });
+      writeFile(join(to, "project.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(from, "project.json"), "utf8")), name: body.as }, null, 2), to);
+      return json(res, 200, { ok: true, name: body.as });
+    }
+    if (path === "/api/open") {
+      const d = folder(body.name);
+      if (!editors.has(d)) editors.set(d, startUi(d, { port: 0 }).catch((e) => { editors.delete(d); throw e; }));
+      return json(res, 200, { ok: true, url: (await editors.get(d)!).url });
+    }
+    return json(res, 404, { ok: false, error: { code: "not_found", message: "no such route" } });
+  });
+  await listen(server, o.port);
+  server.on("close", () => { for (const e of editors.values()) e.then((u) => { u.server.closeAllConnections?.(); u.server.close(); }, () => {}); });
+  const port = (server.address() as any).port;
+  return { url: `http://127.0.0.1:${port}/`, port, dashboard: root, projects: projects().length, server };
+}
+
+/** listen on 127.0.0.1 only; a port in use is port_in_use */
+function listen(server: ReturnType<typeof createServer>, port = 4810) {
+  return new Promise<void>((ok, fail) => {
+    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${port} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
+    server.listen(port, "127.0.0.1", ok);
+  });
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {

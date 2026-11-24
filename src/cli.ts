@@ -35,7 +35,7 @@ Analyze:     probe F · beats F [--markers] [--full] (--full: every beat, else t
              (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download;
              cached in the project when one is found, so auto_reframe on a clip covering the same range at the same fps reuses it)
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
-Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits)
+Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits; a folder with no project: a dashboard of the projects in it)
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
 Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|idea title="..." [details=... suggestion=... area=... severity=...]
              feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
@@ -218,8 +218,10 @@ export async function main(argv = process.argv.slice(2)) {
       case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, based(true), who()); break; // its revision is checked under the project lock: a project.json that cannot be read needs none
       case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, based(true), who()); break;
       case "ui": {
-        const { startUi } = await import("./ui.ts");
-        const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port, "--port") });
+        const { startDashboard, startUi } = await import("./ui.ts");
+        const port = num(f.port, "--port"), dir = pos[0] ?? P;
+        // a folder with no project (in it or above it) gets the dashboard of the projects inside it
+        const { server: _, ...r } = await startUi(dir, { port }).catch((e) => { if (e?.code === "no_project") return startDashboard(dir ?? process.env.AGENTCUT_PROJECT ?? process.cwd(), { port }); throw e; });
         process.stdout.write(JSON.stringify({ ok: true, ...r }) + "\n"); // server keeps running; Ctrl-C to stop
         return;
       }

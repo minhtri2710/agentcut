@@ -85,3 +85,12 @@ progress{width:100%}
 .frow{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px;align-items:center;font-size:12px}.frow span:first-child{color:#aab;overflow:hidden;text-overflow:ellipsis}
 .frow input[type=text],.frow select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:3px;padding:2px 5px;font:12px ui-monospace,monospace;min-width:0}
 .frow input[type=checkbox]{justify-self:start}
+#dash{grid-row:1/-1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px}
+#dash header{display:flex;gap:12px;align-items:center}#dash header .mut{flex:1}
+#dcreate{display:flex;gap:6px}#dcreate input{min-width:220px}
+#plist{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.pcard{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.popen{display:flex;flex-direction:column;gap:3px;text-align:left;background:transparent;border:0;padding:0;color:var(--text);font:inherit;min-width:0}
+.popen img{width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:4px}
+.pdup{display:flex;gap:4px}.pdup input{flex:1;min-width:0}
+#dash input{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}
