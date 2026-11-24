@@ -46,9 +46,6 @@
 - [ ] vlab-separate - audio: voice/music separation blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
-- [ ] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (since 2026-11-24)
-  Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
-  Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
 - [ ] ui-transcript - UI: transcript panel with text-based cuts blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Transcript tab shows the words of a clip's media (transcribe, cached), click seeks; selecting words and deleting them cuts that stretch (split + remove on the clip), one batch.
   Acceptance: deleting words removes exactly their media span from the timeline; undo restores it.
@@ -62,6 +59,10 @@
 - [ ] track-lock - Track lock that ops respect (kind: ship) (since 2026-11-24)
   Split out of ui-timeline. A track lock only the page honours would be a fake lock: agents edit the same project. Slice: a 'locked' track field (model.ts TRACK_FIELDS); every op that changes a clip on a locked track (or moves one onto it) refuses with code 'locked' naming the track and update_track locked=false as the fix; update_track/remove_track stay allowed. The page shows a lock toggle in the track header and greys locked lanes. Acceptance: edit-ops rows for refusal per op family; ui-browser row for the toggle; GUIDE + AGENTS.md.
 ## Done
+- [x] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (done 2026-11-25)
+  Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
+  Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
+  5316b1a: looks, effects, transitions, text and caption presets with stills cached in previews/ui/library per version; click or drag = one op; text style on a free lane = new title; ui + ui-browser pass. Templates left out: they need the user's media.
 - [x] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (done 2026-11-25)
   Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
   Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
