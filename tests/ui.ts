@@ -394,6 +394,13 @@ const opsOctet = await new Promise<number>((ok) => {
 });
 check("  and /api/ops still takes JSON only", opsOctet === 415, opsOctet);
 for (const f of ["drop.jpg", "drop-1.jpg"]) rmSync(join(dir, "media", f));
+// a clip's waveform: 50 peaks per second of the asset's sound; a file with no sound is an error, not an empty wave
+ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", join(media, "tone.wav"));
+const toneId = (await applyLatest(dir, [{ op: "import_media", path: join(media, "tone.wav") }])).results[0].asset;
+const pk = await jget("/api/peaks/" + toneId), mute = await jget("/api/peaks/" + vid.asset);
+check("/api/peaks: 50 peaks per second of the sound, a steady tone steady inside, 0..255", pk.j.ok && pk.j.rate === 50 && Math.abs(pk.j.peaks.length - 100) <= 1
+  && pk.j.peaks.slice(2, -2).every((v: number) => v === pk.j.peaks[50] && v > 20 && v <= 255), { rate: pk.j.rate, n: pk.j.peaks?.length, some: pk.j.peaks?.slice(0, 5) });
+check("  and a video with no sound answers decode_failed", mute.status === 422 && mute.j.error?.code === "decode_failed", mute);
 
 // ---------------------------------------------------------------- render job
 console.log("render");

@@ -20,6 +20,13 @@ async function decodeMono(path: string, sr: number, signal?: AbortSignal): Promi
   return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 4)));
 }
 
+/** The loudest sample per 1/rate s of a file's sound (mono mix), 0..255: the waveform the page draws on a clip. */
+export async function peaks(path: string, rate = 50, signal?: AbortSignal): Promise<number[]> {
+  const sr = 4000, y = await decodeMono(path, sr, signal), out = new Array<number>(Math.ceil((y.length * rate) / sr)).fill(0);
+  for (let i = 0; i < y.length; i++) { const k = Math.floor((i * rate) / sr), v = Math.abs(y[i]); if (v > out[k]) out[k] = v; }
+  return out.map((v) => Math.min(255, Math.round(v * 255)));
+}
+
 /** Where the samples of a 16-bit PCM WAV (what our ffmpeg calls write) open on fd lie: the data chunk's offset and byte length (bounded by the file), rate, channels, bits. */
 export function wavData(fd: number, path: string) {
   const size = fstatSync(fd).size, h = Buffer.alloc(24);

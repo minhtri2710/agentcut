@@ -28,6 +28,7 @@ const EN = {
   clipLabel: "{0}, {1}, starts at {2} s", keyframeAt: "keyframe {0}s: {1}", transition: "transition {0}",
   language: "Language", clipJson: "clip JSON",
   media: "Media", search: "Search", importPath: "/path/to/file.mp4", importBtn: "Import",
+  hide: "hide", mute: "mute", hideTrack: "hide track {0} (not drawn)", showTrack: "show track {0}", muteTrack: "mute track {0}", unmuteTrack: "unmute track {0}",
   dropHint: "Drop files here to copy them into media/; drag an item onto a track to add it.", uploading: "Uploading {0}…", noAssets: "No media yet.",
 };
 export type Key = keyof typeof EN;
@@ -59,6 +60,7 @@ const VI: Record<Key, string> = {
   clipLabel: "{0}, {1}, bắt đầu ở {2} s", keyframeAt: "keyframe {0}s: {1}", transition: "chuyển cảnh {0}",
   language: "Ngôn ngữ", clipJson: "JSON của clip",
   media: "Media", search: "Tìm", importPath: "/đường/dẫn/tệp.mp4", importBtn: "Nhập",
+  hide: "ẩn", mute: "tắt", hideTrack: "ẩn track {0} (không vẽ)", showTrack: "hiện track {0}", muteTrack: "tắt tiếng track {0}", unmuteTrack: "bật tiếng track {0}",
   dropHint: "Thả tệp vào đây để chép vào media/; kéo một mục lên track để thêm.", uploading: "Đang tải lên {0}…", noAssets: "Chưa có media.",
 };
 

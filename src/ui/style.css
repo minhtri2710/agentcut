@@ -37,7 +37,7 @@ textarea{width:100%;background:#0f1115;color:#cfe;border:1px solid #333;border-r
 progress{width:100%}
 #tl{min-width:0;height:290px;border-top:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
 #tbar{display:flex;gap:8px;align-items:center;padding:4px 8px;font-size:12px}
-#scroll{flex:1;overflow:auto;position:relative}
+#scroll{flex:1;overflow:auto;position:relative;scroll-padding:20px 0 0 90px}
 #inner{position:relative}
 #ruler{height:20px;position:sticky;top:0;background:#23262e;z-index:3;border-bottom:1px solid #333;cursor:pointer;margin-left:90px}
 .tick{position:absolute;top:0;height:100%;border-left:1px solid #555;font-size:10px;padding-left:2px;color:#999}
@@ -45,6 +45,9 @@ progress{width:100%}
 .lane{position:relative;height:44px;border-bottom:1px solid #2a2d35;display:flex}
 .lname{width:90px;flex:none;position:sticky;left:0;z-index:2;background:#23262e;padding:4px;font-size:11px;color:#aab;overflow:hidden;border-right:1px solid #333}
 .lclips{position:relative;flex:1}
+.tbtns{display:flex;gap:3px;margin-top:3px}.tbtns button{font-size:10px;padding:0 4px;line-height:14px}.tbtns button.on{background:#7a5b1d;border-color:#b8862f;color:#fff}
+.clip .clabel{position:relative}.clip .wave{position:absolute;left:0;top:0;pointer-events:none}.wave path{stroke:rgba(255,255,255,.55);stroke-width:1}
+.clip .fx{position:absolute;right:8px;top:2px;font-size:9px;background:rgba(0,0,0,.55);border-radius:3px;padding:0 3px}
 .clip{position:absolute;top:3px;height:38px;border-radius:4px;overflow:hidden;font-size:11px;padding:2px 6px;color:#fff;cursor:grab;
   background-repeat:repeat-x;background-size:auto 100%;border:1px solid rgba(255,255,255,.25);text-shadow:0 1px 2px #000;white-space:nowrap}
 .clip.sel{outline:2px solid #fff;z-index:1}.clip.off{opacity:.45}

@@ -6,6 +6,7 @@ import { createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync,
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
@@ -22,6 +23,7 @@ const MIME: Record<string, string> = {
   ".fcpxml": "application/xml", ".otio": "application/json",
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const PEAK_RATE = 50;
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
 /** what a file dropped on the page may be: the media import_media takes */
 const UPLOAD_EXT = new Set([...IMAGE_EXT, ...AUDIO_EXT, ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".gif", ".json"]);
@@ -36,6 +38,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   let preparing: Dict | null = null; // the running prepare job: a second request joins it
   const running = new Map<string, { ctl: AbortController; settled: Promise<unknown> }>(); // job id -> its abort and its end, while it runs
   const thumbs = new Map<string, Promise<Buffer>>();
+  const waves = new Map<string, Promise<number[]>>();
   const cacheDir = join(root, "previews", "ui");
   let assetsKey: string | undefined;
   let assets: Record<string, Asset> | undefined;
@@ -107,6 +110,11 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const jpg = await thumbs.get(key); // a failure here is an error response, not an empty cached 200
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-cache" });
       return res.end(jpg);
+    }
+    if (req.method === "GET" && path.startsWith("/api/peaks/")) { // a clip's waveform: PEAK_RATE peaks per second of the asset's sound, computed once per file version
+      const a = asset(path.slice("/api/peaks/".length)), st = statSync(a.abs, { throwIfNoEntry: false }), key = `${a.abs}|${st?.mtimeMs}|${st?.size}`;
+      if (!waves.has(key)) { if (waves.size > 100) waves.clear(); waves.set(key, peaks(a.abs, PEAK_RATE).catch((e) => { waves.delete(key); throw e; })); }
+      return json(res, 200, { ok: true, rate: PEAK_RATE, peaks: await waves.get(key) });
     }
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);
     if (req.method === "GET" && path.startsWith("/files/")) return sendFile(req, res, servedFile(path.slice("/files/".length)));

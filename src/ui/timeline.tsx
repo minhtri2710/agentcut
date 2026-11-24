@@ -69,6 +69,42 @@ function laneDrop(e: DragEvent, tr: Track) {
 }
 const laneOver = (e: DragEvent) => { if (!V().nested && e.dataTransfer && Array.prototype.includes.call(e.dataTransfer.types, ASSET_DRAG)) e.preventDefault(); };
 
+/** waveform peaks per asset (and file path: a relinked asset is another sound), fetched once per page */
+const waves = new Map<string, { rate: number; peaks: number[] } | "loading" | "failed">();
+function peaksOf(id: string, path: string) {
+  const key = id + "|" + path, w = waves.get(key);
+  if (w === undefined) {
+    waves.set(key, "loading");
+    fetch("/api/peaks/" + encodeURIComponent(id)).then((r) => r.json()).then((j) => { waves.set(key, j.ok ? { rate: j.rate, peaks: j.peaks } : "failed"); changed(); }, () => { waves.set(key, "failed"); });
+  }
+  return w && w !== "loading" && w !== "failed" ? w : null;
+}
+
+/** an audio clip's sound as bars, one per 2 px: the loudest peak of the source stretch each bar covers ([in, in + duration * speed]) */
+function Wave({ c, path, width }: { c: Clip; path: string; width: number }) {
+  const w = peaksOf(c.asset, path);
+  if (!w) return null;
+  const sp = Number(c.speed || 1) || 1, in0 = num(c.in || 0), span = dur(c) * sp, bars = Math.max(1, Math.floor(width / 2));
+  let d = "";
+  for (let b = 0; b < bars; b++) {
+    let m = 0;
+    for (let k = Math.floor((in0 + (span * b) / bars) * w.rate), end = Math.min(w.peaks.length, Math.ceil((in0 + (span * (b + 1)) / bars) * w.rate)); k < end; k++) m = Math.max(m, w.peaks[k]);
+    const h = Math.max(0.5, (m / 255) * 15);
+    d += "M" + (b * 2 + 1) + " " + (19 - h).toFixed(1) + "V" + (19 + h).toFixed(1);
+  }
+  return <svg class="wave" width={width} height="38"><path d={d} /></svg>;
+}
+
+const TILE = 68; // px: one thumbnail of the strip (16:9 at the clip's height)
+/** a video clip's thumbnail strip: one frame per tile, at the source time the tile's middle plays (rounded to 0.5 s, so zooming reuses frames).
+ *  A clip whose source does not run forward at one speed (freeze, reverse, loop, speed ramp) shows its in-point frame. */
+function thumbs(c: Clip, id: string, kind: string, width: number, k: number, pps: number): { image: string; position: string } {
+  const url = (t: number) => "url(/api/thumb/" + encodeURIComponent(id) + "?t=" + t.toFixed(2) + ")", in0 = num(c.in || 0);
+  if (kind === "image" || c.freeze || c.reverse || c.loop || (c.keyframes && c.keyframes.speed)) return { image: url(in0), position: "" };
+  const sp = Number(c.speed || 1) || 1, n = Math.min(24, Math.max(1, Math.ceil(width / TILE))), xs = Array.from({ length: n }, (_, i) => i * TILE);
+  return { image: xs.map((x) => url(Math.round((in0 + ((x + TILE / 2) / (k * pps)) * sp) * 2) / 2)).join(","), position: xs.map((x) => x + "px 0").join(",") };
+}
+
 function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
   const v = V(), pps = st.pps, d = st.drag && st.drag.id === c.id ? st.drag : null, kd = st.kfDrag && st.kfDrag.id === c.id && !v.nested ? st.kfDrag : null;
   const x0 = v.off + v.k * start(c), w = v.k * dur(c);
@@ -77,15 +113,17 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
   else if (d && d.mode === "r") width = Math.max(4, w * pps + d.dx);
   const off = c.enabled === false || x0 + w <= v.lo + 1e-6 || x0 >= v.hi - 1e-6; // disabled, or outside the opened compound's window
   const a = c.asset && S().timeline.assets[c.asset];
-  const thumb = a && (a.kind === "video" || a.kind === "image") ? "url(/api/thumb/" + encodeURIComponent(c.asset) + "?t=" + num(c.in || 0).toFixed(2) + ")" : "";
+  const strip = a && (a.kind === "video" || a.kind === "image") && c.type !== "audio" ? thumbs(c, c.asset, a.kind, width, v.k, pps) : null;
   const label = c.text || c.name || (a ? (a.path || "").split("/").pop() : c.type);
   const trn = c.transition && i > 0 ? c.transition : null;
   return (
     <div class={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
       aria-label={t("clipLabel", c.id, c.type, start(c).toFixed(2))} title={c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s"}
-      style={{ left: left + "px", width: width + "px", backgroundColor: COL[c.type] || "#555", backgroundImage: thumb, transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
+      style={{ left: left + "px", width: width + "px", backgroundColor: COL[c.type] || "#555", backgroundImage: strip ? strip.image : "", backgroundPosition: strip ? strip.position : "", backgroundRepeat: strip && strip.position ? "no-repeat" : "", transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
       onMouseDown={(ev) => clipDown(ev, tr, c)}>
-      {c.id + " · " + String(label).slice(0, 60)}
+      {c.type === "audio" && a && <Wave c={c} path={a.path || ""} width={width} />}
+      <span class="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
+      {c.effects && c.effects.length ? <span class="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
       {trn && <div class="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
       {!v.nested && <div class="h l" data-edge="l" />}
       {!v.nested && <div class="h r" data-edge="r" />}
@@ -110,6 +148,11 @@ function Crumbs() {
   );
 }
 
+/** a track header's hide or mute toggle: one update_track (the shown tracks are the timeline's: an opened compound's are read-only) */
+function toggleTrack(tr: Track, field: "hidden" | "muted") {
+  ops([{ op: "update_track", id: tr.id, set: { [field]: !tr[field] } }], (tr[field] ? "un" : "") + (field === "hidden" ? "hide " : "mute ") + tr.id);
+}
+
 function Lanes({ W }: { W: number }) {
   const tl = S().timeline, v = V(), pps = st.pps;
   const rows = v.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
@@ -124,7 +167,15 @@ function Lanes({ W }: { W: number }) {
     <div id="lanes">
       {rows.map((tr) => (
         <div key={tr.id} class="lane" data-track={tr.id} onDragOver={laneOver} onDrop={(e) => laneDrop(e, tr)}>
-          <div class="lname"><b>{tr.id}</b><br /><span class="mut">{[tr.kind || "video", tr.magnetic ? "magnetic" : "", tr.muted ? "muted" : "", tr.hidden ? "hidden" : ""].filter(Boolean).join(" ")}</span></div>
+          <div class="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
+            <b>{tr.id}</b>
+            <div class="tbtns">
+              {tr.kind !== "audio" && <button class={tr.hidden ? "on" : ""} aria-pressed={!!tr.hidden} disabled={v.nested} title={t(tr.hidden ? "showTrack" : "hideTrack", tr.id)}
+                data-toggle="hidden" onClick={() => toggleTrack(tr, "hidden")}>{t("hide")}</button>}
+              <button class={tr.muted ? "on" : ""} aria-pressed={!!tr.muted} disabled={v.nested} title={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)}
+                data-toggle="muted" onClick={() => toggleTrack(tr, "muted")}>{t("mute")}</button>
+            </div>
+          </div>
           <div class="lclips">{tr.clips.map((c, i) => <ClipBox key={c.id} tr={tr} c={c} i={i} />)}</div>
         </div>
       ))}

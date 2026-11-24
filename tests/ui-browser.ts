@@ -97,9 +97,9 @@ const untilFile = async (fn: (tl: any) => unknown, ms = 8000) => {
   while (Date.now() - t0 < ms) { if (fn(load())) return true; await sleep(80); }
   return false;
 };
-/** real mouse input at the centre of the element (or of a point inside it) */
+/** real mouse input at the centre of the element (or of a point inside it), scrolled into view first as a person would (focusable lane headers let Tab scroll the timeline) */
 const click = async (sel: string, o: { dx?: number; shift?: boolean; count?: number } = {}) => {
-  const b = await js(`(function(){var r=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  const b = await js(`(function(){var n=document.querySelector(${JSON.stringify(sel)}); n.scrollIntoView({block:"nearest"}); var r=n.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   const x = b.x + (o.dx ?? 0), modifiers = o.shift ? 8 : 0;
   for (let n = 1; n <= (o.count ?? 1); n++) {
     await page("Input.dispatchMouseEvent", { type: "mousePressed", x, y: b.y, button: "left", clickCount: n, modifiers });
@@ -182,6 +182,8 @@ try {
     await js(`document.querySelectorAll("#lanes .clip").length`).catch(() => null));
   check("lanes follow the tracks (top track drawn first)", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
     JSON.stringify(load().tracks.map((t: any) => t.id).reverse()));
+  const stripTimes = await js(`(${node("vid1")}.style.backgroundImage.match(/\\?t=[0-9.]+/g) || []).join()`);
+  check("a video clip shows a thumbnail strip: one frame per tile, at the source time each tile plays", stripTimes === "?t=0.50,?t=1.50,?t=2.00", stripTimes);
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
   const lang = (l: string) => js(`(function(){var s=$("lang"); s.value=${JSON.stringify(l)}; s.dispatchEvent(new Event("change"));})()`);
   await lang("vi");
@@ -728,6 +730,26 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     })()`);
     const onOverlay = (tl: any) => tl.tracks.find((t: any) => t.id === "overlay").clips.find((c: any) => c.asset === jpgId);
     check("an asset dragged onto a lane is added to that track at the drop time", await untilFile((tl) => !!onOverlay(tl) && Math.abs(Number(onOverlay(tl).start) - 1.5) < 0.02), load().tracks.find((t: any) => t.id === "overlay").clips);
+  }
+  console.log("track headers and waveforms");
+  {
+    const tone = join(media, "tone.wav");
+    ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", tone);
+    await applyLatest(dir, [{ op: "add_clip", track: "music", src: tone, duration: 2, id: "tone1" }]);
+    check("an audio clip shows its waveform: one bar per 2 px of the clip", await until("wave", `(function(){var n=${node("tone1")}, p=n && n.querySelector(".wave path"); return !!p && (p.getAttribute("d").match(/M/g) || []).length === Math.floor(parseFloat(n.style.width) / 2);})()`),
+      await js(`(function(){var n=${node("tone1")}; return n && [n.style.width, n.querySelector(".wave path") && n.querySelector(".wave path").getAttribute("d").slice(0, 80)];})()`));
+    const toggle = (track: string, f: string) => js(`[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === ${JSON.stringify(track)}; })[0].querySelector('[data-toggle="${f}"]').click()`);
+    const trackOf = (tl: any, id: string) => tl.tracks.find((t: any) => t.id === id);
+    await until("tone seen", atRev(load().revision));
+    await toggle("overlay", "hidden");
+    check("the eye toggle in a track header hides the track (update_track)", await untilFile((tl) => trackOf(tl, "overlay").hidden === true), trackOf(load(), "overlay"));
+    await until("hidden seen", `${atRev(load().revision)} && [].some.call(document.querySelectorAll('[data-toggle="hidden"][aria-pressed="true"]'), function (b) { return b.closest(".lane").dataset.track === "overlay"; })`);
+    await toggle("overlay", "hidden");
+    check("  and shows it again", await untilFile((tl) => trackOf(tl, "overlay").hidden === false), trackOf(load(), "overlay"));
+    await until("shown seen", atRev(load().revision));
+    await toggle("music", "muted");
+    check("the mute toggle mutes the track; an audio track has no eye toggle", await untilFile((tl) => trackOf(tl, "music").muted === true)
+      && await js(`![].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "music"; })[0].querySelector('[data-toggle="hidden"]')`), trackOf(load(), "music"));
   }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
