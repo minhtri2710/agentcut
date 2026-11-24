@@ -49,9 +49,6 @@
 - [ ] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (since 2026-11-24)
   Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
   Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
-- [ ] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (since 2026-11-24)
-  Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
-  Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
 - [ ] ui-transcript - UI: transcript panel with text-based cuts blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Transcript tab shows the words of a clip's media (transcribe, cached), click seeks; selecting words and deleting them cuts that stretch (split + remove on the clip), one batch.
   Acceptance: deleting words removes exactly their media span from the timeline; undo restores it.
@@ -65,6 +62,10 @@
 - [ ] track-lock - Track lock that ops respect (kind: ship) (since 2026-11-24)
   Split out of ui-timeline. A track lock only the page honours would be a fake lock: agents edit the same project. Slice: a 'locked' track field (model.ts TRACK_FIELDS); every op that changes a clip on a locked track (or moves one onto it) refuses with code 'locked' naming the track and update_track locked=false as the fix; update_track/remove_track stay allowed. The page shows a lock toggle in the track header and greys locked lanes. Acceptance: edit-ops rows for refusal per op family; ui-browser row for the toggle; GUIDE + AGENTS.md.
 ## Done
+- [x] ui-inspector - UI: form inspector blocked-by: ui-shell (kind: ship) (done 2026-11-25)
+  Slice. Inspector form generated from the model field tables per clip type (with ranges and enums), colour grade and audio fx controls, the JSON tab kept.
+  Acceptance: a form edit is the same op the JSON edit would be; invalid values show the validation message; ui-browser checks.
+  2be163b: form + JSON tabs; out-of-range shows validation message; ui + ui-browser pass.
 - [x] ui-review - UI: review and history panels blocked-by: ui-shell (kind: ship) (done 2026-11-25)
   Slice. Review panel runs review and lists findings (text_over_face included) with seek and select; history panel lists undo entries with authors, undo/redo to a point.
   Acceptance: clicking a finding seeks and selects its clip; ui-browser checks.
@@ -104,8 +105,3 @@
   Grilling (human). Question: what powers the UI's agent chat panel?
   Options seen in OpenChatCut: direct LLM APIs with user keys (AI SDK, many providers) | drive a local agent CLI (Claude Code / Codex / Copilot) as a subprocess against agentcut's own MCP server. Also: which tools the chat agent may call, approval of its edits (OpenChatCut: draft session + human approval), and where keys live.
   Human chose 2026-11-24: drive a locally installed agent CLI (Claude Code / Codex) connected to agentcut's MCP server; no LLM keys or SDK in agentcut; edits keep the revision rule.
-- [x] vlab-uiscope - UI feature scope (parity table) (kind: scout) (done 2026-11-24)
-  Research then human approval. Question: which reference-UI features make the agentcut UI, in what order?
-  Input: OpenChatCut screenshots (assets/readme-pic) and src/components: media pool (thumbnails, folders, search), library (effects/transitions/looks/text presets with previews, drag to timeline), transcript panel, timeline (thumbnails, waveforms, track headers eye/mute/lock, snapping, markers), properties form inspector, export dialog, safe-area overlay, dark theme, chat panel.
-  Output: a parity table (have / build / skip, with why) approved by the human, which becomes the UI slices.
-  Human approved 2026-11-24: base (dark theme, 4-zone layout, timeline thumbnails/waveforms/track headers) + media pool and library with rendered previews + form inspector and export dialog + transcript and review panels with history + project dashboard. UI strings switchable English/Vietnamese. Skipped: extension center, AI generation, publishing, stock search, motion-graphics code gen.
