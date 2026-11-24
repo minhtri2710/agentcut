@@ -153,9 +153,9 @@ function Crumbs() {
   );
 }
 
-/** a track header's hide or mute toggle: one update_track (the shown tracks are the timeline's: an opened compound's are read-only) */
-function toggleTrack(tr: Track, field: "hidden" | "muted") {
-  ops([{ op: "update_track", id: tr.id, set: { [field]: !tr[field] } }], (tr[field] ? "un" : "") + (field === "hidden" ? "hide " : "mute ") + tr.id);
+/** a track header's hide, mute or lock toggle: one update_track (the shown tracks are the timeline's: an opened compound's are read-only) */
+function toggleTrack(tr: Track, field: "hidden" | "muted" | "locked") {
+  ops([{ op: "update_track", id: tr.id, set: { [field]: !tr[field] } }], (tr[field] ? "un" : "") + { hidden: "hide ", muted: "mute ", locked: "lock " }[field] + tr.id);
 }
 
 function Lanes({ W }: { W: number }) {
@@ -171,7 +171,7 @@ function Lanes({ W }: { W: number }) {
     </div>,
     <div id="lanes">
       {rows.map((tr) => (
-        <div key={tr.id} class="lane" data-track={tr.id} onDragOver={laneOver} onDrop={(e) => laneDrop(e, tr)}>
+        <div key={tr.id} class={"lane" + (tr.locked ? " locked" : "")} data-track={tr.id} onDragOver={laneOver} onDrop={(e) => laneDrop(e, tr)}>
           <div class="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
             <b>{tr.id}</b>
             <div class="tbtns">
@@ -179,6 +179,8 @@ function Lanes({ W }: { W: number }) {
                 data-toggle="hidden" onClick={() => toggleTrack(tr, "hidden")}>{t("hide")}</button>}
               <button class={tr.muted ? "on" : ""} aria-pressed={!!tr.muted} disabled={v.nested} title={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)}
                 data-toggle="muted" onClick={() => toggleTrack(tr, "muted")}>{t("mute")}</button>
+              <button class={tr.locked ? "on" : ""} aria-pressed={!!tr.locked} disabled={v.nested} title={t(tr.locked ? "unlockTrack" : "lockTrack", tr.id)}
+                data-toggle="locked" onClick={() => toggleTrack(tr, "locked")}>{t("lock")}</button>
             </div>
           </div>
           <div class="lclips">{tr.clips.map((c, i) => <ClipBox key={c.id} tr={tr} c={c} i={i} />)}</div>

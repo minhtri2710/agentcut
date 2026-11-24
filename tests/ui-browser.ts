@@ -750,6 +750,19 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await toggle("music", "muted");
     check("the mute toggle mutes the track; an audio track has no eye toggle", await untilFile((tl) => trackOf(tl, "music").muted === true)
       && await js(`![].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "music"; })[0].querySelector('[data-toggle="hidden"]')`), trackOf(load(), "music"));
+    await until("muted seen", atRev(load().revision));
+    await toggle("overlay", "locked");
+    check("the lock toggle locks the track and the lane shows it", await untilFile((tl) => trackOf(tl, "overlay").locked === true)
+      && await until("locked lane", `[].some.call(document.querySelectorAll(".lane.locked"), function (l) { return l.dataset.track === "overlay"; })`), trackOf(load(), "overlay"));
+    await until("lock seen", atRev(load().revision));
+    const ovId = trackOf(load(), "overlay").clips[0].id, beforeLock = readFileSync(join(dir, "project.json"), "utf8");
+    await clickClip(ovId);
+    await js(`$("msg").className = ""; $("delc").click()`);
+    check("  deleting a clip of the locked track is refused by name and changes nothing", await until("locked msg", `$("msg").className === "err" && $("msg").textContent.indexOf("locked") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === beforeLock, await js(`$("msg").textContent`));
+    await toggle("overlay", "locked");
+    check("  and the toggle unlocks it", await untilFile((tl) => trackOf(tl, "overlay").locked === false), trackOf(load(), "overlay"));
+    await until("unlock seen", atRev(load().revision));
   }
   console.log("export dialog");
   {

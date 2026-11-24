@@ -423,6 +423,7 @@ export const TRACK_FIELDS: F = {
   role: [T("string"), "dialogue|voice|music|sfx|titles|other (ducking/mixing)"],
   duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -20)"],
   volume: ranged("volume", "track gain"), muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
+  locked: [T("boolean"), "no op may change, add or remove its clips (code locked) until update_track sets it false; computed starts and lengths still follow other edits"],
   clips: [T("array"), "clips (later ones draw on top within the track)"],
   ...Object.fromEntries(Object.entries(AUDIO_FX_FIELDS).map(([k, [t, d]]) => [k, [t, `${d} (${(PER_CLIP_KEYS as readonly string[]).includes(k) ? "applied to each clip without its own" : "applied to the track mix"})`]])),
 };

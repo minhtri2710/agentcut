@@ -3,7 +3,7 @@
 export type Dict = Record<string, any>;
 export type Op = Dict;
 export type Clip = { id: string; type: string; [field: string]: any };
-export type Track = { id: string; kind?: string; magnetic?: boolean; muted?: boolean; hidden?: boolean; clips: Clip[] };
+export type Track = { id: string; kind?: string; magnetic?: boolean; muted?: boolean; hidden?: boolean; locked?: boolean; clips: Clip[] };
 export type Asset = { kind: string; path?: string; duration?: number };
 export type Timeline = {
   name?: string;

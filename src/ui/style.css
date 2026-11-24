@@ -56,7 +56,7 @@ progress{width:100%}
 .lane{position:relative;height:44px;border-bottom:1px solid #2a2d35;display:flex}
 .lname{width:90px;flex:none;position:sticky;left:0;z-index:2;background:#23262e;padding:4px;font-size:11px;color:#aab;overflow:hidden;border-right:1px solid #333}
 .lclips{position:relative;flex:1}
-.tbtns{display:flex;gap:3px;margin-top:3px}.tbtns button{font-size:10px;padding:0 4px;line-height:14px}.tbtns button.on{background:#7a5b1d;border-color:#b8862f;color:#fff}
+.tbtns{display:flex;gap:1px;margin-top:3px}.tbtns button{font-size:10px;padding:0 2px;line-height:14px}.tbtns button.on{background:#7a5b1d;border-color:#b8862f;color:#fff}
 .clip .clabel{position:relative}.clip .wave{position:absolute;left:0;top:0;pointer-events:none}.wave path{stroke:rgba(255,255,255,.55);stroke-width:1}
 .clip .fx{position:absolute;right:8px;top:2px;font-size:9px;background:rgba(0,0,0,.55);border-radius:3px;padding:0 3px}
 .clip{position:absolute;top:3px;height:38px;border-radius:4px;overflow:hidden;font-size:11px;padding:2px 6px;color:#fff;cursor:grab;
@@ -100,3 +100,4 @@ progress{width:100%}
 .cbot{background:var(--panel2);border-radius:8px;padding:4px 8px;white-space:pre-wrap;overflow-wrap:anywhere}
 .ctool{font:11px ui-monospace,monospace;color:var(--mut);overflow-wrap:anywhere}.cerr{color:#ff7b7b}
 #cform2 textarea{width:100%;box-sizing:border-box;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;font:inherit;resize:vertical}
+.lane.locked .lclips{background:repeating-linear-gradient(135deg,transparent 0 8px,#ffffff08 8px 16px)}.lane.locked .clip{opacity:.6;cursor:not-allowed}
