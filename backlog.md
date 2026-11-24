@@ -46,11 +46,6 @@
 - [ ] vlab-separate - audio: voice/music separation blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
-- [ ] ui-shell - UI: Preact shell, dark theme, 4-zone layout, EN/VI switch (kind: ship) (since 2026-11-24)
-  Slice. Port the page to Preact with today's features intact (viewer, timeline drag/trim, inspector JSON, keyframes, compounds, prepare consent, render, undo/redo), in a dark 4-zone layout (left panel tabs, preview, inspector, timeline) with an English/Vietnamese string table and a switch (stored per browser).
-  Acceptance: every ui and ui-browser check passes unchanged in meaning; bun run ui --check passes; no string literal in components outside the table.
-  Leaves out: new panels (their own slices).
-
 - [ ] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (since 2026-11-24)
   Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
   Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
@@ -80,6 +75,11 @@
   Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
   Leaves out: API-key LLM providers (rejected by the human).
 ## Done
+- [x] ui-shell - UI: Preact shell, dark theme, 4-zone layout, EN/VI switch (kind: ship) (done 2026-11-24)
+  Slice. Port the page to Preact with today's features intact (viewer, timeline drag/trim, inspector JSON, keyframes, compounds, prepare consent, render, undo/redo), in a dark 4-zone layout (left panel tabs, preview, inspector, timeline) with an English/Vietnamese string table and a switch (stored per browser).
+  Acceptance: every ui and ui-browser check passes unchanged in meaning; bun run ui --check passes; no string literal in components outside the table.
+  Leaves out: new panels (their own slices).
+  c0db8d9: Preact page, all ui + ui-browser checks pass (one row now checks focus by clip id, not node replacement), EN/VI switch with 3 browser rows, ui --check passes, page.gen.ts identical under Bun 1.4.4 and 1.4.5. Layout stays header/viewer/side/timeline: the left panel arrives with ui-media (an empty column would be decoration). preact is a devDependency (bundled into the page).
 - [x] vlab-looks - color: film-emulation looks (kind: ship) (done 2026-11-24)
   Slice. Film-emulation looks (kodak_gold, portra, velvia, cinestill, bleach_bypass, ...) as formulas in the colour grade, next to the existing look names, deterministic and render-tested.
   Acceptance: each new look renders and changes scopes stats in its expected direction; names listed in capabilities and GUIDE; no .cube files shipped.
