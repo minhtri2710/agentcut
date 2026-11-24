@@ -62,6 +62,13 @@ else if (job.cmd === "subject") // subject walks 0.1 -> 0.9 with jitter, one out
     : { t, x: i === 6 ? 0.02 : 0.1 + (0.8 * i) / (n - 1) + (i % 2 ? 0.02 : -0.02), y: 0.5, kind: "saliency", score: 0.5 }) };
 else if (job.cmd === "track") // box centre moves linearly from x 0.25 to 0.75 over the range, y fixed 0.5
   out = { samples: ts.map((t, i) => ({ t, x: 0.25 + (0.5 * i) / (n - 1), y: 0.5, w: job.box[2], h: job.box[3], ok: i !== 2 })) };
+else if (job.cmd === "separate") { // stems: voice is silence, music is the source, so a mix shows which stem it read
+  for (const [out, gain] of [[job.out, 0], [job.out_music, 1]]) {
+    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", job.path, "-map", "0:a:0", "-af", "aresample=44100,volume=" + gain, "-ac", "2", "-c:a", "flac", "-f", "flac", out], { encoding: "utf8" });
+    if (r.status) { process.stderr.write(r.stderr); process.exit(1); }
+  }
+  out = { samples: 1 };
+}
 else { // matte: source with its LEFT half transparent
   const vf = "scale=" + job.w + ":" + job.h + ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,W/2),0,255)'";
   const enc = job.kind === "image" ? ["-frames:v", "1", "-f", "image2", "-c:v", "png"] : ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov"];
@@ -77,7 +84,7 @@ process.env.AGENTCUT_UV = fake;
 const modelFile = (name: string) => join(process.env.AGENTCUT_CACHE!, "models", name, `${name}.onnx`);
 const seedModel = (name: string) => { mkdirSync(join(process.env.AGENTCUT_CACHE!, "models", name), { recursive: true }); writeFileSync(modelFile(name), ""); };
 const FACE = "face_detection_yunet_2023mar";
-for (const name of ["u2netp", "u2net", FACE]) seedModel(name); // the models the suite's mattes and subject analyses use are cached
+for (const name of ["u2netp", "u2net", FACE, ...V.STEM_MODELS.map((x) => x.name)]) seedModel(name); // the models the suite's mattes and subject analyses use are cached
 /** the face model in another user cache dir (an empty file: the fake uv never reads it) */
 const seedFaceIn = (cache: string) => { mkdirSync(join(cache, "models", FACE), { recursive: true }); writeFileSync(join(cache, "models", FACE, `${FACE}.onnx`), ""); };
 const nCalls =(cmd?: string) => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((l) => l && (!cmd || l === cmd)).length : 0);
@@ -424,6 +431,57 @@ for (const ext of ["fcpxml", "otio"]) {
 await api.prepare(EP);
 const eDone: any = await api.exportTimeline(EP, { out: join(tmp, "prepared.fcpxml") });
 check("export-pending: nothing pending after prepare", !JSON.stringify(eDone.skipped).includes("pending"), eDone.skipped);
+
+// ---------------------------------------------------------------- separate_audio
+console.log("separate_audio");
+{
+  ff("-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30:d=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(m, "av.mp4"));
+  const S = join(tmp, "stems");
+  api.create(S, { preset: "reels" });
+  await apply(S, [{ op: "add_clip", track: "music", src: join(m, "tone.wav"), duration: 2 }, { op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }]);
+  const peak = async (out: string) => { const r: any = await api.render(S, { out: join(tmp, out) }); return { r, max: Math.max(...pcmAbs(r.output)) }; };
+  const pcmAbs = (f: string) => { const b = spawnSync("ffmpeg", ["-v", "error", "-i", f, "-f", "f32le", "-"]).stdout; return [...new Float32Array(b.buffer, b.byteOffset, b.length / 4)].map(Math.abs); };
+  const sp = (await apply(S, [{ op: "separate_audio", id: "aud1", stem: "voice" }]))[0];
+  check("separate_audio sets the field and records nothing else (pending, no helper run)", sp.pending === true && (await clip(S, "aud1")).stem === "voice" && nCalls("separate") === 0, sp);
+  const np: any = await api.render(S, { out: join(tmp, "stem0.wav") }).catch((e) => e);
+  check("audio-only render before prepare -> not_prepared naming the stems, no file", np.code === "not_prepared" && np.details?.stems?.[0] === "aud1" && !existsSync(join(tmp, "stem0.wav")), np);
+  const ac: any = await api.audioCheck(S).catch((e) => e);
+  check("audio_check before prepare -> not_prepared", ac.code === "not_prepared" && ac.details?.stems?.[0] === "aud1", ac);
+  const ps: any = api.prepareStatus(S);
+  check("prepare status lists the stems job", ps.ready === false && ps.missing[0]?.kind === "stems" && ps.models_to_download.length === 0, ps);
+  const keep = process.env.AGENTCUT_CACHE;
+  process.env.AGENTCUT_CACHE = join(tmp, "no-models");
+  try {
+    const nm: any = api.prepareStatus(S), gate: any = await api.prepare(S).catch((e) => e);
+    check("with no models cached: status lists both stem models (39 MB each) and prepare refuses with model_not_cached, running nothing",
+      nm.models_to_download.map((x: any) => `${x.model}:${x.approx_mb}`).join() === "spleeter_2stems_vocals:39.32,spleeter_2stems_accompaniment:39.32" && gate.code === "model_not_cached" && nCalls("separate") === 0, { nm, gate: gate.code });
+  } finally { process.env.AGENTCUT_CACHE = keep; }
+  const pr: any = await api.prepare(S);
+  const files = readdirSync(join(S, ".agentcut", "cache")).filter((f) => f.startsWith("stems-")).sort();
+  check("prepare writes both stems into the project cache in one helper run", pr.computed[0]?.kind === "stems" && nCalls("separate") === 1 && files.length === 2 && files[0].endsWith(".music.flac") && files[1].endsWith(".voice.flac"), { pr, files });
+  const v = await peak("stem-voice.wav");
+  check("the mix plays the voice stem (the fake's voice is silence)", v.r.audio_only === true && v.max < 1e-4, v.max);
+  await apply(S, [{ op: "separate_audio", id: "aud1", stem: "music" }]);
+  const mu = await peak("stem-music.wav");
+  check("stem music plays the music stem, from the same cached run", mu.max > 0.1 && nCalls("separate") === 1, mu.max);
+  api.cache.prune(S);
+  check("cache prune keeps both stems of a clip that uses one", readdirSync(join(S, ".agentcut", "cache")).filter((f) => f.startsWith("stems-")).length === 2);
+  await fails(S, [{ op: "separate_audio", id: "aud1", stem: "vocals" }], "bad_value", "separate_audio: an unknown stem -> bad_value");
+  await fails(S, [{ op: "separate_audio", id: "vid1", stem: "voice" }], "no_audio", "separate_audio on a video with no sound -> no_audio");
+  await fails(S, [{ op: "update_clip", id: "aud1", set: { stem: "vocals" } }], "validation_failed", "update_clip stem: an unknown stem is a validation error");
+  const off = (await apply(S, [{ op: "separate_audio", id: "aud1", off: true }]))[0];
+  check("off=true removes the field", off.stem === false && (await clip(S, "aud1")).stem === undefined, off);
+  // a video's stem moves with its sound: detach_audio carries it to the audio clip, separate_audio on the video then sets the audio clip, attach_audio brings it back
+  await apply(S, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }, { op: "update_clip", id: "vid2", set: { stem: "voice" } }, { op: "detach_audio", id: "vid2" }]);
+  const det = (await api.info(S, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "audio" && c.attach_to === "vid2");
+  check("detach_audio moves stem to the audio clip", det?.stem === "voice" && (await clip(S, "vid2")).stem === undefined, det);
+  const via = (await apply(S, [{ op: "separate_audio", id: "vid2", stem: "music" }]))[0];
+  check("separate_audio on a video with detached audio sets its audio clip", via.ids?.[0] === det.id && (await clip(S, det.id)).stem === "music" && (await clip(S, "vid2")).stem === undefined, via);
+  await apply(S, [{ op: "attach_audio", id: "vid2" }]);
+  check("attach_audio brings stem back to the video", (await clip(S, "vid2")).stem === "music");
+  const ex: any = await api.exportTimeline(S, { out: join(tmp, "stems.fcpxml") });
+  check("interchange export reports the stem as skipped", JSON.stringify(ex.skipped).includes("voice/music separation"), ex.skipped);
+}
 
 // ---------------------------------------------------------------- helper location
 // A recording uv: logs where the helper script lives (and its hash), the spawn's cwd and argv, then hands over to the fake above.
@@ -1401,7 +1459,12 @@ check("core edits still work without uv", (await apply(B, [{ op: "update_clip", 
 
 // ---------------------------------------------------------------- real helper (opt-in: downloads opencv/rembg via uv)
 // Each row is named here so a run without AGENTCUT_TEST_VISION=1 can list what it skips. The rows share the projects built in `setup`.
-const real = { R: "", Q: "", K: "", I: "", mainCache: "" };
+const real = { R: "", Q: "", K: "", I: "", S: "", mainCache: "" };
+let speech = false;
+/** mono samples (the mean of the channels) of an audio file, at its own rate */
+const pcm = (f: string) => { const r = spawnSync("ffmpeg", ["-v", "error", "-i", f, "-af", "pan=mono|c0=0.5*c0+0.5*c1", "-f", "f32le", "-"], { maxBuffer: 1 << 28 }); return [...new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.length / 4)]; };
+const rms = (x: number[]) => Math.sqrt(x.reduce((s, v) => s + v * v, 0) / Math.max(1, x.length));
+const db = (x: number) => 20 * Math.log10(x + 1e-12);
 const realRows: [string, () => Promise<[unknown, unknown]>][] = [
   // the YuNet branch: the helper loads the face model from <cache>/models/<name>/<name>.onnx (the layout the downloader writes and src/vision.ts documents),
   // and the picture holds no face, so every sample falls back to saliency
@@ -1428,6 +1491,22 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
     const pix = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", file], { encoding: "utf8" }).stdout.trim();
     const again = await V.compute(V.matteJob(join(m, "still.png"), { kind: "image", srcW: 640, srcH: 360, root: real.I }));
     return [file.endsWith(".png") && pix === "rgba" && again.cached === true, { file, pix }];
+  }],
+  // the acceptance of separate_audio: the two stems, mixed, give back the plain clip's mix; with `say` (macOS) the voice stem also holds the speech
+  ["real: separate_audio stems mixed together match the source's mix (residual under -50 dB); the voice stem holds the speech", async () => {
+    const S = real.S, { attachStems } = await import("../src/ops-vision.ts"), { buildAudio } = await import("../src/audio.ts");
+    await apply(S, [{ op: "add_clip", track: "music", src: join(m, "sep.wav"), at: 0, duration: 6 }, { op: "add_clip", track: "music", src: join(m, "sep.wav"), at: 0, duration: 6 },
+      { op: "separate_audio", id: "aud1", stem: "voice" }, { op: "separate_audio", id: "aud2", stem: "music" }]);
+    const pr: any = await api.prepare(S, { allowDownload: true }), p = api.openProject(S);
+    const both: any = attachStems(p.absolutized(p.load()), S), plain: any = structuredClone(both);
+    both.settings.loudness = plain.settings.loudness = null;
+    plain.tracks.find((t: any) => t.id === "music").clips.splice(1, 1);
+    for (const k of ["stem", "_stem"]) delete plain.tracks.find((t: any) => t.id === "music").clips[0][k];
+    const a = pcm(await buildAudio(both, join(tmp, "stems-sum.wav"))), b = pcm(await buildAudio(plain, join(tmp, "stems-plain.wav")));
+    const resid = db(rms(a.map((x, i) => x - b[i]))) - db(rms(b));
+    const voice = pcm(both.tracks.find((t: any) => t.id === "music").clips[0]._stem), sr = 44100;
+    const share = speech ? db(rms(voice.slice(3 * sr, 6 * sr))) - db(rms(voice.slice(0, 3 * sr))) : null; // voice stem: speech part over music-only part
+    return [pr.computed[0]?.kind === "stems" && a.length === b.length && resid < -50 && (share === null || share > 20), { resid, share, speech, computed: pr.computed }];
   }],
 ];
 // a picture of one real face is not made offline: name one to also assert the face branch finds it
@@ -1459,6 +1538,14 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
     }
     real.I = join(tmp, "real-image");
     api.create(real.I, { preset: "youtube" });
+    real.S = join(tmp, "real-stems");
+    api.create(real.S, { preset: "reels" });
+    // 6 s at 44.1 kHz: a chord bed with pink noise, and from 3 s speech when macOS `say` is there
+    ff("-f", "lavfi", "-i", "sine=f=220:d=6", "-f", "lavfi", "-i", "sine=f=330:d=6", "-f", "lavfi", "-i", "anoisesrc=d=6:c=pink:a=0.03",
+      "-filter_complex", "[0][1][2]amix=inputs=3:normalize=0,volume=0.3", "-ac", "2", "-ar", "44100", join(m, "bed.wav"));
+    speech = spawnSync("say", ["-o", join(m, "speech.aiff"), "This is the voice part of the test."]).status === 0;
+    if (speech) ff("-i", join(m, "bed.wav"), "-i", join(m, "speech.aiff"), "-filter_complex", "[1]aresample=44100,adelay=3000:all=1[s];[0][s]amix=inputs=2:normalize=0:duration=first", "-ac", "2", "-ar", "44100", join(m, "sep.wav"));
+    else cpSync(join(m, "bed.wav"), join(m, "sep.wav"));
     // a helper failure is a ✗ row, so the suite still reports and removes its tmp dir
     for (const [name, f] of realRows) {
       try { const [ok, info] = await f(); check(name, ok, info); } catch (e: any) { check(name, false, { code: e.code, message: e.message }); }

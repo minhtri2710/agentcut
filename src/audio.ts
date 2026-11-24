@@ -107,7 +107,7 @@ export function audioSources(tl: Timeline) {
   for (const { track, clip: c, gain } of flatClips(tl.tracks)) {
     if (!hasSound(c, tl.assets)) continue;
     const a = tl.assets[c.asset], vol = Number(c.volume ?? 1) * gain;
-    if (vol > 0) out.push({ track, clip: c, path: a.path, volume: vol });
+    if (vol > 0) out.push({ track, clip: c, path: c._stem ?? a.path, volume: vol }); // _stem: the separated stem (ops-vision attachPrepared/attachStems)
   }
   return out;
 }

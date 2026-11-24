@@ -1,15 +1,15 @@
 // Project cache management: .agentcut/cache (vision analyses and mattes, the black-frame scan's darkness memos) and
 // previews/ (frames, sheets, strips, UI play drafts). "Referenced" = still needed by the current timeline (mattes of
-// remove_background clips, analyses of pending vision requests); everything else can be rebuilt and is pruned first.
+// remove_background clips, stems of separate_audio clips, analyses of pending vision requests); everything else can be rebuilt and is pruned first.
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
-import { EditError, type Timeline } from "./model.ts";
+import { EditError, STEMS, type Timeline } from "./model.ts";
 import { missingFor } from "./prepare.ts";
-import { collectAnalyses, mattesFor } from "./ops-vision.ts";
+import { collectAnalyses, mattesFor, stemsFor } from "./ops-vision.ts";
 import { alive, type Project } from "./project.ts";
 import { writeFile } from "./safe-write.ts";
-import { cacheDir } from "./vision.ts";
+import { cacheDir, stemFile } from "./vision.ts";
 
 const MB = 1 << 20;
 export const PREVIEWS_MAX_MB = () => Number(process.env.AGENTCUT_PREVIEWS_MAX_MB ?? 200);
@@ -45,7 +45,8 @@ function entries(p: Project, area?: "cache" | "previews"): Entry[] {
   let ref = new Set<string>(); // previews are never referenced: skip the timeline walk for the automatic preview cap
   if (area !== "previews") {
     const tl = p.load();
-    ref = new Set([...mattesFor(p.absolutized(tl), p.root).map((m) => m.job.file), ...pendingFiles(p, tl)]);
+    const at = p.absolutized(tl);
+    ref = new Set([...mattesFor(at, p.root).map((m) => m.job.file), ...stemsFor(at, p.root).flatMap((m) => STEMS.map((s) => stemFile(m.job, s))), ...pendingFiles(p, tl)]);
   }
   const out: Entry[] = [];
   for (const [a, dir] of [["cache", cacheDir(p.root)], ["previews", join(p.root, "previews")]] as const) {

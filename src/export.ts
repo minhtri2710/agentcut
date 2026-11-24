@@ -68,7 +68,7 @@ const DROPPED: Record<string, string> = {
   effects: "effects", filters: "filters", color: "colour grade", keyframes: "keyframes", mask: "mask", motion: "motion", enter: "enter animation",
   exit: "exit animation", border: "border", shadow: "shadow", radius: "rounded corners", reverse: "reverse", freeze: "freeze",
   loop: "loop", remove_background: "background removal", gradient: "gradient", glow: "glow", background: "text background",
-  denoise: "denoise", eq: "audio eq", compressor: "compressor", pan: "pan", pitch: "pitch", normalize: "normalize",
+  stem: "voice/music separation", denoise: "denoise", eq: "audio eq", compressor: "compressor", pan: "pan", pitch: "pitch", normalize: "normalize",
 };
 
 function buildPlan(tl: Timeline, fmt: InterchangeFormat): Plan {

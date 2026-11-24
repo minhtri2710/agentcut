@@ -1,9 +1,9 @@
 // AI vision ops: auto_reframe (subject-following focus keyframes), remove_background (cached alpha matte),
-// track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python), and
-// never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
-// sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
+// track_to (an overlay/text follows a tracked box or the subject), and separate_audio (cached voice/music stems). The heavy lifting runs in vision.ts (uv + Python), and
+// never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background and
+// separate_audio just set their field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
 import { coverOffset, fitBox, preRoll } from "./media.ts";
-import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, missingFacts, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, hasSound, linkedAudio, MATTE_MODELS, MATTE_SIZES, missingFacts, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
@@ -217,6 +217,21 @@ export function registerVisionOps(h: OpHelpers) {
       return V.isReady(m) ? { id: c.id, remove_background: c.remove_background, matte: m.file } : { remove_background: c.remove_background, ...pendingResult(c.id) };
     });
 
+  h.op("separate_audio", "Play only the voice or only the music of a clip's sound (sets field stem; fast): AI source separation (Spleeter 2 stems) computed by prepare into the project cache (.agentcut/cache, keyed by file hash; both stems at once, 44.1 kHz) and mixed in place of the source sound; the two stems add up to the original. Preview, render and audio_check fail with code not_prepared until it exists. Needs uv (downloads onnxruntime on first use); the two models (39 MB each) are downloaded only by prepare with allow_download=true. For both parts: duplicate_clip the audio clip (or detach_audio the video first), then stem voice on one and music on the other, and lower or duck the music. A video with detached audio sets it on its audio clips. off=true removes it.",
+    { id: "video/audio clip", stem: "voice|music", off: "true to turn it off" },
+    (p, tl, a) => {
+      const c = get(tl, a.id);
+      if (c.type !== "video" && c.type !== "audio") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or audio clip`, "bad_type", "pass the id of a video/audio clip with sound");
+      const targets = c.type === "video" && linkedAudio(tl, c).length ? linkedAudio(tl, c).map(([, x]) => x) : [c];
+      if (a.off) { for (const x of targets) delete x.stem; return { ids: targets.map((x) => x.id), stem: false }; }
+      if (a.stem !== "voice" && a.stem !== "music") throw new EditError(`stem must be voice or music, got ${JSON.stringify(a.stem)}`, "bad_value", "stem=voice keeps the speech, stem=music the rest");
+      const at = tl.assets[c.asset];
+      if (!at?.has_audio && at?.kind !== "audio") throw new EditError(`'${c.id}' (asset '${c.asset}') has no audio stream`, "no_audio", "pick a clip whose source has sound");
+      for (const x of targets) x.stem = a.stem;
+      const d = V.stemsJob(absPath(p, at.path), { duration: at.duration, root: p?.root });
+      return V.isReady(d) ? { ids: targets.map((x) => x.id), stem: a.stem, file: V.stemFile(d, a.stem) } : { ids: targets.map((x) => x.id), stem: a.stem, ...pendingResult(c.id) };
+    });
+
   h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (a YuNet face with a confidence score, else the most salient region) and the result carries subject/warnings as auto_reframe does; that needs the face model, downloaded only by prepare with allow_download=true. Needs uv (downloads opencv on first use). Cached; when not cached yet the request is recorded (pending=true) and prepare tracks and writes the keyframes.",
     { id: "follower clip (text/shape/image/video overlay)", target: "video clip with the object", box: "[x, y, w, h] canvas px or % (top-left + size) at 'at'", at: "timeline seconds where box is drawn (default: follower start)", shift: "[dx, dy] px added to the object centre", tracker: "csrt|kcf", fps: "tracking samples/s (15)", smooth: "sigma seconds (0.15)" },
     (p, tl, a) => {
@@ -281,6 +296,30 @@ export function mattesFor(tl: Timeline, root: string) {
     .map((c) => ({ clip: c, job: matteFor(root, tl, c, tl.assets[c.asset].path) }));
 }
 
+/** Stem jobs of every enabled clip with a stem whose sound is heard (compounds included) of an absolutized timeline. */
+export function stemsFor(tl: Timeline, root: string) {
+  return [...allClips(tl.tracks)].filter((c) => c.stem && c.enabled !== false && hasSound(c, tl.assets))
+    .map((c) => ({ clip: c, job: V.stemsJob(tl.assets[c.asset].path, { duration: tl.assets[c.asset].duration, root }) }));
+}
+
+/** Sound prep on an absolutized copy: point every clip with a stem at its stem file (`_stem`, never saved; any other `_stem` is dropped). Returns the ids still missing one. */
+function linkStems(tl: Timeline, root: string) {
+  for (const c of allClips(tl.tracks)) delete c._stem; // this is the only source of `_stem`
+  return stemsFor(tl, root).filter(({ clip, job }) => {
+    if (!V.isReady(job)) return true;
+    clip._stem = V.stemFile(job, clip.stem);
+    return false;
+  }).map(({ clip }) => clip.id);
+}
+const stemsMissing = (ids: string[]) => ids.map((id) => `separate_audio ${id} (stems missing)`);
+
+/** For outputs that mix sound only (audio renders, audio_check): stems linked, not_prepared while one is missing; mattes and vision requests are not needed. */
+export function attachStems(tl: Timeline, root: string) {
+  const stems = linkStems(tl, root);
+  if (stems.length) throw new EditError(`not prepared: ${stemsMissing(stems).join(", ")}`, "not_prepared", PREPARE_HINT, undefined, { mattes: [], stems, pending: [] });
+  return tl;
+}
+
 /** Render prep on an absolutized copy: point every remove_background clip at its matte (`_matte`, never saved; any other `_matte` is dropped). Fails fast
  *  with not_prepared while a matte is missing or a vision request is pending, instead of computing inside a preview. */
 export function attachPrepared(tl: Timeline, root: string) {
@@ -290,9 +329,10 @@ export function attachPrepared(tl: Timeline, root: string) {
     clip._matte = { path: job.file, w: job.w, h: job.h };
     return false;
   }).map(({ clip }) => clip.id);
+  const stems = linkStems(tl, root);
   const pending = [...allClips(tl.tracks)].flatMap((c) => Object.keys(c.pending ?? {}).map((op) => `${op} ${c.id}`));
-  if (mattes.length || pending.length)
-    throw new EditError(`not prepared: ${[...mattes.map((id) => `remove_background ${id} (matte missing)`), ...pending.map((x) => `${x} (pending)`)].join(", ")}`,
-      "not_prepared", PREPARE_HINT, undefined, { mattes, pending });
+  if (mattes.length || stems.length || pending.length)
+    throw new EditError(`not prepared: ${[...mattes.map((id) => `remove_background ${id} (matte missing)`), ...stemsMissing(stems), ...pending.map((x) => `${x} (pending)`)].join(", ")}`,
+      "not_prepared", PREPARE_HINT, undefined, { mattes, stems, pending });
   return tl;
 }

@@ -17,6 +17,7 @@ import { VISION_PY } from "./vision-py.ts";
 // pinned so cached results and mattes stay reproducible; opencv 4.12 ships the YuNet face detector (cv2.FaceDetectorYN), whose model is a separate download (FACE_MODEL)
 const CV = ["opencv-contrib-python-headless==4.12.0.88", "numpy==2.2.6"];
 const REMBG = ["rembg[cpu]==2.0.86", "onnxruntime==1.31.1", "numpy==2.5.4", "pillow==13.0.0"];
+const ORT = ["onnxruntime==1.31.1", "numpy==2.5.4"];
 // follows the pins above: numpy 2.2.6 (CV) has no cp314 wheel and numpy 2.5.4 (REMBG) needs Python >= 3.12
 const PYTHON = ">=3.12,<3.14";
 
@@ -34,24 +35,26 @@ export const FACE_MODEL = {
   sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
   bytes: 232589,
 };
-/** Models that AgentCut fetches and verifies itself, by name: the face model and every matte model (MATTE_PINS). */
-const PINNED_MODELS: Record<string, ModelPin> = { [FACE_MODEL.name]: FACE_MODEL, ...MATTE_PINS };
+/** Deezer's Spleeter 2-stems (MIT), as sherpa-onnx exported it: one model per stem, magnitude spectrogram in, that stem's magnitude out. */
+const spleeter = (stem: string, sha256: string, bytes: number): ModelPin => ({ name: `spleeter_2stems_${stem}`, url: `https://huggingface.co/csukuangfj/sherpa-onnx-spleeter-2stems/resolve/7001ba316a615cacddb3f9ef3ec416661a277e26/${stem}.onnx`, sha256, bytes });
+export const STEM_MODELS = [spleeter("vocals", "bdc16ab6bf6117ddd4842c19e80e40e2be188fc555295064d424616b0224ac97", 39318336), spleeter("accompaniment", "671ace17acd3720674a2bc14de32ac6292453dec20d9eb0ba4255d4ad8e3d8c0", 39318343)];
+/** Models that AgentCut fetches and verifies itself, by name: the face model, every matte model (MATTE_PINS) and the stem models. */
+const PINNED_MODELS: Record<string, ModelPin> = { [FACE_MODEL.name]: FACE_MODEL, ...MATTE_PINS, ...Object.fromEntries(STEM_MODELS.map((m) => [m.name, m])) };
 /** A face counts from this detector score up; below FACE_SURE a result warns that it may not be a face. Fixed, not tuned. */
 export const FACE_MIN = 0.6, FACE_SURE = 0.9;
 const mbOf = (bytes: number) => +(bytes / 1e6).toFixed(2);
-const modelOf = (d: Derived) => d.kind === "matte" ? String(d.job.model) : d.kind === "subject" ? FACE_MODEL.name : null;
+const modelsOf = (d: Derived) => d.kind === "matte" ? [String(d.job.model)] : d.kind === "subject" ? [FACE_MODEL.name] : d.kind === "stems" ? STEM_MODELS.map((m) => m.name) : [];
 
-/** The models these jobs need that are not in the models dir yet: a matte model for each matte job, the face model for any subject job. */
+/** The models these jobs need that are not in the models dir yet: a matte model for each matte job, the face model for any subject job, both stem models for a stems job. */
 export function modelsToDownload(jobs: Derived[]) {
   const need = new Map<string, { model: string; approx_mb: number; path: string }>();
-  for (const d of jobs) {
-    const model = modelOf(d);
-    if (model && !modelCached(model)) need.set(model, { model, approx_mb: d.kind === "matte" ? MATTE_MB[model] : mbOf(FACE_MODEL.bytes), path: modelFile(model) });
-  }
+  for (const d of jobs)
+    for (const model of modelsOf(d))
+      if (!modelCached(model)) need.set(model, { model, approx_mb: d.kind === "matte" ? MATTE_MB[model] : mbOf(PINNED_MODELS[model].bytes), path: modelFile(model) });
   return [...need.values()];
 }
 /** The error for models that are missing while downloads are not allowed; `models` carries the list (model, approx_mb, path) for callers that ask for consent. */
-export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new EditError(`a vision model is not downloaded: ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)})`).join(", ")}`, "model_not_cached",
+export const modelNotCached = (need: ReturnType<typeof modelsToDownload>) => new EditError(`a model is not downloaded: ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)})`).join(", ")}`, "model_not_cached",
   `nothing was downloaded or run; models are fetched only on request: run with allow_download=true (CLI: prepare --allow-download, subject --allow-download; MCP: allow_download=true on prepare or analyze_subject) to download ${need.map((n) => `${n.model} (${sizeText(n.approx_mb)}) to ${n.path}`).join("; ")}, or put the file there`, undefined, { models: need });
 
 /** No bytes for this long ends a download: a 176 MB model may take as long as it needs while data keeps arriving. */
@@ -140,8 +143,10 @@ export const cacheKey = (path: string, params: unknown) =>
 
 /** A derived asset (analysis JSON or alpha matte) in the cache: `file` exists once it was computed. Ops only look it up;
  *  `compute` (run by prepare, never inside apply_ops) produces it. `frames` estimates the helper's work for progress. */
-export interface Derived { kind: "subject" | "track" | "matte"; file: string; job: Record<string, unknown>; pkgs: string[]; root?: string; frames: number; w?: number; h?: number }
-export const isReady = (d: Derived) => existsSync(d.file);
+export interface Derived { kind: "subject" | "track" | "matte" | "stems"; file: string; job: Record<string, unknown>; pkgs: string[]; root?: string; frames: number; w?: number; h?: number }
+/** A stems job writes two files: `file` holds the voice and is committed last, beside it the music (stemFile). */
+export const stemFile = (d: Derived, stem: string) => d.file.replace(/\.voice\.flac$/, `.${stem}.flac`);
+export const isReady = (d: Derived) => existsSync(d.file) && (d.kind !== "stems" || existsSync(stemFile(d, "music")));
 export const readResult = (d: Derived): { samples: Sample[] } => JSON.parse(readFileSync(d.file, "utf8"));
 
 /** `<user cache>/helper-runs`, where every run dir lives. Resolved to a canonical absolute path, then checked before anything is written:
@@ -186,7 +191,7 @@ export function checkHelper(script: string) {
 }
 
 const PROGRESS = /^AGENTCUT_PROGRESS (\d+)$/;
-const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : "subject analysis");
+const label = (cmd: unknown) => (cmd === "matte" ? "remove_background" : cmd === "track" ? "track_to" : cmd === "separate" ? "separate_audio" : "subject analysis");
 
 /** The uv to run: AGENTCUT_UV or `uv` on PATH. A path is made absolute here, because the cwd changes before the spawn. */
 const uvCommand = () => { const u = process.env.AGENTCUT_UV || "uv"; return /[\\/]/.test(u) ? resolve(u) : u; };
@@ -197,7 +202,7 @@ const uvMissing = (cmds: unknown[]) => {
   const all = (f: (c: unknown) => string) => [...new Set(cmds.map(f))].join(" and ");
   return new EditError(`${all(label)} ${new Set(cmds.map(label)).size > 1 ? "need" : "needs"} uv (runs the Python vision helper)`, "missing_dependency",
     "install uv (`brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh | sh`) or set AGENTCUT_UV=/path/to/uv; the first run downloads " +
-    all((c) => (c === "matte" ? "rembg + onnxruntime" : "opencv (~40 MB)")));
+    all((c) => (c === "matte" ? "rembg + onnxruntime" : c === "separate" ? "onnxruntime" : "opencv (~40 MB)")));
 };
 /** Jobs that must run need uv: checked before the model gate and any download, so a missing uv is reported first and nothing is fetched. */
 export function requireUv(ds: Derived[]) { if (!uvFound()) throw uvMissing(ds.map((d) => d.job.cmd)); }
@@ -206,7 +211,7 @@ export function requireUv(ds: Derived[]) { if (!uvFound()) throw uvMissing(ds.ma
 export function visionEngine() {
   return {
     available: uvFound(),
-    features: ["analyze_subject (runs uv when called)", ...["auto_reframe", "track_to", "remove_background"].map((o) => `${o} (records a request; prepare computes it with uv)`)],
+    features: ["analyze_subject (runs uv when called)", ...["auto_reframe", "track_to", "remove_background", "separate_audio"].map((o) => `${o} (records a request; prepare computes it with uv)`)],
     matte_models: "see matte_models",
     face_model: { name: FACE_MODEL.name, approx_mb: mbOf(FACE_MODEL.bytes), cached: modelCached(FACE_MODEL.name) },
     models_note: "no model is downloaded without allow_download",
@@ -218,7 +223,7 @@ export function visionEngine() {
  *  --no-config; with every ancestor of the dir owned by this user or root and closed to others, no other folder chooses uv's settings. */
 async function runHelper(root: string, d: Derived, out: string, allowDownload: boolean, onFrames?: (n: number) => void, signal?: AbortSignal): Promise<any> {
   const uv = uvCommand();
-  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.job;
+  const job: Record<string, unknown> = d.kind === "matte" ? { ...d.job, out } : d.kind === "stems" ? { ...d.job, out, out_music: `${out}.music` } : d.job;
   const dir = mkdtempSync(join(root, `vision-${process.pid}-`));
   try {
     const script = join(dir, "helper.py");
@@ -248,10 +253,11 @@ function spawnHelper(uv: string, dir: string, script: string, d: Derived, job: R
     ch.on("close", (code) => {
       if (signal?.aborted) return rej(signal.reason);
       if (code !== 0) {
-        const name = modelOf(d);
-        const model = name && modelCached(name) ? modelFile(name) : null; // named only when the file exists; the helper hashes it before it loads it
+        const named = modelsOf(d).filter(modelCached).map(modelFile);
+        const model = named.length ? named.join(" or ") : null; // named only when the file exists; the helper hashes it before it loads it
         const detail = `vision helper failed (${job.cmd}): ${(err + partial).trim().split("\n").slice(-4).join(" | ").slice(0, 500)}`;
-        if (model && /does not match its pinned sha256/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the model file ${model} is not the pinned file (its sha256 differs): delete it and run with allow_download=true to fetch it again`));
+        const bad = /does not match its pinned sha256: (.+)/.exec(err + partial)?.[1]?.trim();
+        if (model && bad) return rej(new EditError(detail, "vision_failed", `the model file ${bad} is not the pinned file (its sha256 differs): delete it and run with allow_download=true to fetch it again`));
         if (/No interpreter found/.test(err + partial)) return rej(new EditError(detail, "vision_failed", `the vision helper needs a Python ${PYTHON}; install one with \`uv python install 3.12\` (or put one on PATH), or run with allow_download=true so uv may fetch one, and retry`));
         return rej(new EditError(detail, "vision_failed",
           "the first run needs network access for uv to download packages; check the media file decodes (probe_media)"
@@ -282,13 +288,18 @@ export async function compute(d: Derived, onFrames?: (n: number) => void, signal
   if (d.kind === "matte") ensureDir(userCache(), join(userCache(), "models"));
   try {
     const r = await runHelper(root, d, tmp, allowDownload, onFrames, signal);
-    if (d.kind === "matte") {
+    if (d.kind === "stems") {
+      if (!(r?.samples >= 1)) throw new EditError(`separate_audio decoded no sound from ${d.job.path}`, "vision_failed", "check the media file has an audio stream (probe_media); nothing was cached");
+      commit(`${tmp}.music`, stemFile(d, "music"));
+      commit(tmp, d.file); // last: the voice file is what marks the pair ready
+    }
+    else if (d.kind === "matte") {
       // never cache a matte that holds no frames (the cache is trusted by existence alone)
       if (!(r?.frames >= 1)) throw new EditError(`vision helper wrote a matte with no frames (${d.job.path})`, "vision_failed", "check the media file decodes (probe_media); nothing was cached");
       commit(tmp, d.file);
     }
     else writeFile(d.file, JSON.stringify(r), baseOf(d));
-  } finally { rmSync(tmp, { force: true }); }
+  } finally { rmSync(tmp, { force: true }); rmSync(`${tmp}.music`, { force: true }); }
   return { cached: false };
 }
 
@@ -375,6 +386,15 @@ export function matteJob(path: string, o: { kind: string; fps?: number | null; d
   const d = derived("matte", o.kind === "image" ? ".png" : ".mov", path, params, REMBG, o.root, fps ? (o.duration ?? 1) * fps : 1, { w, h });
   d.job.model_file = modelFile(model);
   d.job.model_sha256 = MATTE_PINS[model].sha256; // the helper hashes the file it loads
+  return d;
+}
+
+/** Voice and music stems of a file's first audio stream, at 44.1 kHz stereo (Spleeter's rate), from 0 s on the clock the mix trims it by; they add up to that sound. */
+export function stemsJob(path: string, o: { duration?: number; root?: string }) {
+  const params = { cmd: "separate", models: STEM_MODELS.map((m) => m.sha256.slice(0, 12)) };
+  const d = derived("stems", ".voice.flac", path, params, ORT, o.root, Math.ceil(((o.duration ?? 1) * 44100) / 1024 / 512));
+  d.job.model_files = STEM_MODELS.map((m) => modelFile(m.name));
+  d.job.model_sha256 = STEM_MODELS.map((m) => m.sha256); // the helper hashes the files it loads
   return d;
 }
 

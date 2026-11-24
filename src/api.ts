@@ -13,7 +13,7 @@ import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
-import { attachPrepared } from "./ops-vision.ts";
+import { attachPrepared, attachStems } from "./ops-vision.ts";
 import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
@@ -392,7 +392,7 @@ export async function audioCheck(project: string | undefined, o: { source?: stri
   if (p && tl) p.requireValid(tl);
   await loadCanvas();
   const { inspectAudio } = await import("./inspect-audio.ts");
-  const res = await inspectAudio(p && tl ? p.absolutized(tl) : null, {
+  const res = await inspectAudio(p && tl ? attachStems(p.absolutized(tl), p.root) : null, {
     source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence, signal: o.signal,
     start: o.start !== undefined ? M.parseTime(o.start) : undefined, end: o.end !== undefined ? M.parseTime(o.end) : undefined });
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p ? join(p.root, `previews/audio-${Date.now()}.png`) : presolve(`${o.source}.audio.png`);
@@ -531,8 +531,8 @@ export async function render(project: string | undefined, o: {
     }
     const { contactSheet } = await renderMod();
     const { renderVideo, AUDIO_FORMATS } = await import("./encode.ts");
-    // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
-    const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
+    // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, only the stems of separate_audio clips
+    const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? attachStems(p.absolutized(tl), p.root) : drawable(p, tl), p.root, out, {
       start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
       hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
     });

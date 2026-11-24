@@ -165,7 +165,46 @@ def matte(j):
     if n == 0: raise SystemExit("no frames decoded from the source")
     return {"out": j["out"], "frames": n}
 
+def separate(j):
+    # Spleeter 2 stems: STFT 4096 / hop 1024 (Hann), the models take the magnitude of the lowest 1024 bins in blocks of 512 frames and give
+    # each stem's magnitude; the voice mask is the ratio of the squares (above 1024 bins: the mask's mean in that frame). Music = source - voice,
+    # so the stems add up to the decoded sound. shortcut: the whole decoded sound is held in memory (~2 x 21 MB per minute), stream it if hour-long sources matter
+    import numpy as np, onnxruntime as ort
+    for f, sha in zip(j["model_files"], j.get("model_sha256") or [None] * 2): _verify(f, sha)
+    SR, N, HOP, T, B = 44100, 4096, 1024, 512, 1024
+    errf = tempfile.TemporaryFile()
+    p = _spawn(["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", j["path"], "-map", "0:a:0", "-vn", "-sn",
+                "-af", "aresample=%d:first_pts=0" % SR, "-ac", "2", "-f", "f32le", "-"], stdout=subprocess.PIPE, stderr=errf)
+    raw = p.stdout.read(); p.stdout.close(); p.wait(); errf.seek(0)
+    if p.returncode != 0: raise SystemExit("ffmpeg exited %s: %s" % (p.returncode, errf.read().decode("utf8", "replace").strip()[:400]))
+    x = np.frombuffer(raw, np.float32).reshape(-1, 2).T.copy(); del raw
+    L = x.shape[1]
+    if L == 0: return {"samples": 0}
+    xp = np.pad(x, ((0, 0), (N, N + HOP)))
+    w = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N) / N)).astype(np.float32)
+    F = (xp.shape[1] - N) // HOP + 1
+    so = ort.SessionOptions()
+    sv, sa = (ort.InferenceSession(f, so, providers=["CPUExecutionProvider"]) for f in j["model_files"])
+    voice = np.zeros_like(xp)
+    for k, b0 in enumerate(range(0, F, T)):
+        n = min(T, F - b0)
+        S = np.fft.rfft(xp[:, (b0 + np.arange(n))[:, None] * HOP + np.arange(N)[None, :]] * w, axis=-1)
+        mag = np.zeros((2, 1, T, B), np.float32); mag[:, 0, :n] = np.abs(S[:, :, :B])
+        v = sv.run(None, {"x": mag})[0][:, 0, :n]; a = sa.run(None, {"x": mag})[0][:, 0, :n]
+        m = (v * v + 5e-11) / (v * v + a * a + 1e-10)
+        m = np.concatenate([m, np.repeat(m.mean(-1, keepdims=True), S.shape[-1] - B, -1)], -1)
+        y = np.fft.irfft(S * m, n=N, axis=-1) * w
+        for i in range(n): voice[:, (b0 + i) * HOP:(b0 + i) * HOP + N] += y[:, i]
+        sys.stderr.write("AGENTCUT_PROGRESS %d\n" % (k + 1)); sys.stderr.flush()
+    voice = voice[:, N:N + L] / 1.5  # the Hann^2 overlap at a quarter hop sums to 1.5
+    for arr, out in ((voice, j["out"]), (x - voice, j["out_music"])):
+        e = _spawn(["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", "pipe:0", "-c:a", "flac", "-sample_fmt", "s32",
+                    "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "flac", out], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        e.stdin.write(np.ascontiguousarray(arr.T).astype(np.float32).tobytes()); e.stdin.close(); e.wait()
+        if e.returncode != 0: raise SystemExit("ffmpeg could not write a stem (exit %s)" % e.returncode)
+    return {"samples": L, "sample_rate": SR}
+
 job = json.loads(sys.argv[1])
-res = {"subject": subject, "track": track, "matte": matte}[job["cmd"]](job)
+res = {"subject": subject, "track": track, "matte": matte, "separate": separate}[job["cmd"]](job)
 sys.stdout.write(json.dumps(res))
 `;

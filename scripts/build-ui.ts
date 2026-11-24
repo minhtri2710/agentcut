@@ -16,7 +16,7 @@ const SECTIONS: [string, Record<string, [string[], string]>][] = [["clip", M.COM
 const FORM = {
   fields: Object.fromEntries(SECTIONS),
   types: Object.fromEntries(M.CLIP_TYPES.map((t) => { const has = M.fieldsFor(t), seen = new Set<string>(); return [t, SECTIONS.map(([n, f]) => [n, Object.keys(f).filter((k) => k in has && !seen.has(k) && seen.add(k))]).filter(([, ks]) => ks.length)]; })),
-  enums: { position: M.POSITIONS, blend: M.BLENDS, fit: M.FITS, align: ["left", "center", "right"], style: M.CAPTION_STYLES, shape: M.SHAPES, enter: M.ENTER_EXIT, exit: M.ENTER_EXIT,
+  enums: { position: M.POSITIONS, blend: M.BLENDS, fit: M.FITS, stem: M.STEMS, align: ["left", "center", "right"], style: M.CAPTION_STYLES, shape: M.SHAPES, enter: M.ENTER_EXIT, exit: M.ENTER_EXIT,
     transition: M.TRANSITIONS, motion: M.MOTIONS, eq: Object.keys(EQ_PRESETS), compressor: Object.keys(COMPRESSORS), look: Object.keys(LOOKS) },
   grade: Object.entries(GRADE_FIELDS).filter(([, [t]]) => t.length === 1 && (t[0] === "number" || t[0] === "string")).map(([k, [, doc]]) => [k, doc]),
 };

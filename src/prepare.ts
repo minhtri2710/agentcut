@@ -1,9 +1,9 @@
-// `prepare`: compute the derived assets the timeline needs (remove_background mattes, auto_reframe / track_to analyses)
+// `prepare`: compute the derived assets the timeline needs (remove_background mattes, separate_audio stems, auto_reframe / track_to analyses)
 // outside apply_ops, then re-apply the pending vision requests so their keyframes land. Preview/render fail fast with
 // not_prepared until this ran (ops-vision attachPrepared). Results are cached per file hash + params (vision.ts).
 import { type Clip, allClips, type Dict, EditError, type Timeline } from "./model.ts";
 import { applyOps, applyPendingOps } from "./ops.ts";
-import { collectMissing, mattesFor } from "./ops-vision.ts";
+import { collectMissing, mattesFor, stemsFor } from "./ops-vision.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
 
@@ -25,7 +25,7 @@ export function missingFor(p: Project, tl: Timeline) {
       throw e;
     }
   });
-  const mattes = mattesFor(p.absolutized(tl), p.root).map((m) => m.job).filter((d) => !V.isReady(d));
+  const at = p.absolutized(tl), mattes = [...mattesFor(at, p.root), ...stemsFor(at, p.root)].map((m) => m.job).filter((d) => !V.isReady(d));
   const seen = new Set<string>();
   return { ops, jobs: [...mattes, ...analyses].filter((d) => !seen.has(d.file) && seen.add(d.file)) };
 }

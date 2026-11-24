@@ -47,6 +47,7 @@ export const MOTIONS = ["ken_burns", "ken_burns_out", "pan_left", "pan_right", "
   "shake", "zoom_slow", "sway"];
 export const EASINGS = ["linear", "ease_in", "ease_out", "ease_in_out", "back_out", "bounce_out", "elastic_out", "hold"];
 export const FITS = ["cover", "contain", "fill", "none", "blur"];
+export const STEMS = ["voice", "music"];
 export const BLENDS = ["normal", "multiply", "screen", "add", "overlay", "darken", "lighten", "color_dodge", "soft_light", "difference"];
 export const POSITIONS = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
 export const CAPTION_STYLES = ["karaoke", "word", "reveal", "line"];
@@ -329,6 +330,7 @@ export const MEDIA_FIELDS: F = {
   speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1); ${SPEED_LENGTH}`],
   volume: ranged("volume", "linear gain"), muted: [T("boolean"), "drop audio"],
   fade_in: ranged("fade_in", "audio fade-in s"), fade_out: ranged("fade_out", "audio fade-out s"),
+  stem: [T("string"), `${STEMS.join("|")}: play only that part of the sound, separated by AI (Spleeter 2 stems, cached; needs uv; prepare computes it, the two models, 39 MB each, are downloaded only with allow_download; see op separate_audio)`],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
   focus: [T("array"), "[fx, fy] the source point (0..1 of the picture after crop) that cover keeps at the centre of the view, clamped at the picture edges; [0.5, 0.5] = centre (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
@@ -406,7 +408,7 @@ export function fieldsFor(t: string): F {
     for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze", "remove_background"]) delete f[k];
     f.keyframes = [T("object"), "{volume: [[t, gain]]}"];
   }
-  if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];
+  if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "stem", "loop", "reverse", "freeze"]) delete f[k];
   if (t === "text" || t === "captions") Object.assign(f, TEXT_FIELDS);
   if (t === "captions") Object.assign(f, CAPTION_FIELDS);
   if (t === "shape") Object.assign(f, SHAPE_FIELDS);
@@ -1054,6 +1056,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         checkFields(c.remove_background, { model: [T("string"), MATTE_MODELS.join("|")] }, `${p}.remove_background`, issues, "remove_background");
         checkName(c.remove_background.model, MATTE_MODELS, `${p}.remove_background.model`, issues, "matte model");
       }
+      if (c.type === "video" || c.type === "audio") checkName(c.stem, STEMS, `${p}.stem`, issues, "stem");
       if ((c.type === "video" || c.type === "image") && c.color && typeof c.color === "object") {
         checkFields(c.color, GRADE_FIELDS, `${p}.color`, issues, "color grade");
         if ("look" in c.color) checkName(c.color.look, Object.keys(LOOKS), `${p}.color.look`, issues, "look");
@@ -1167,7 +1170,7 @@ export function schemaDoc() {
     clip_types: Object.fromEntries(CLIP_TYPES.map((t) => [t, f(Object.fromEntries(Object.entries(fieldsFor(t)).filter(([k]) => !(k in COMMON_FIELDS))))])),
     common_clip_fields: f(COMMON_FIELDS),
     units: { time: "seconds (2.5, '2.5s', '1500ms', '00:02.5')", length: "px or '10%' of canvas", color: "#RRGGBB / #RRGGBBAA / rgba() / basic names" },
-    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, color_grade: f(GRADE_FIELDS), looks: Object.keys(LOOKS), presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
+    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, stem: STEMS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, color_grade: f(GRADE_FIELDS), looks: Object.keys(LOOKS), presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
   };
 }
 

@@ -150,6 +150,9 @@ low_pass, low_shelf, high_shelf, de_ess] · compressor "voice"|"music"|"gentle" 
 (settings.loudness, -14) after all of this.
 {"op":"enhance_voice","track":"voice"}             denoise + high-pass + voice EQ + de-ess + compressor + normalize for every clip on the track
 {"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip, or every piece of it)
+{"op":"separate_audio","id":"vid1","stem":"voice"}   only the speech of a clip's sound (stem music: the rest); AI separation (Spleeter 2 stems) computed by prepare,
+  cached, like remove_background (models 2 x 39 MB, allow_download); the stems add up to the source. Both parts: duplicate_clip the audio clip (detach_audio a video first),
+  stem voice on one and music on the other, then lower or duck the music. A video with detached audio sets it on its audio clips; detach/attach move stem with the sound.
 {"op":"update_track","id":"music","set":{"eq":"low_cut","compressor":"music","pan":-0.2}}   track = bus: eq/compressor/pan process the
   track mix once; denoise/normalize/pitch on a track apply to each of its clips that does not set its own.
 Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) writes the captions clips in timeline time;
@@ -178,7 +181,7 @@ These ops are instant: they record the request (clip.pending; result pending=tru
   prepare (CLI: agentcut prepare --author NAME, or agentcut prepare --status; MCP: prepare -> job_id, poll render_status for progress, cancel_job to stop it): it computes the mattes /
   tracks (seconds per clip; cached by file hash + params) and writes the keyframes. While a model downloads, the running job (MCP, UI) and the
   CLI's stderr progress lines (not with --quiet) carry download {model, bytes, total_bytes}; the field is gone once the job settles. Until then preview/video render fail fast with
-  code not_prepared (details list what is missing; audio-only renders skip it) - they never compute. A repeated op on cached analysis applies at once.
+  code not_prepared (details list what is missing; audio-only renders and audio_check need only separate_audio's stems) - they never compute. A repeated op on cached analysis applies at once.
 Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: cache) covers .agentcut/cache + previews/;
   prune deletes unreferenced files first (max_mb also referenced ones: prepare rebuilds them). previews/ is capped
   automatically at AGENTCUT_PREVIEWS_MAX_MB (200; 0 = off), oldest first. info also counts .agentcut/tmp (render scratch, listed as tmp and not in total);

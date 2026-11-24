@@ -15,7 +15,7 @@ const allClips = (tl: Timeline) => tl.tracks.flatMap((t) => t.clips);
 /** What detach_audio copies and attach_audio checks: the audio clip keeps the video's value, and edits that change one apart from the other put the sound out of sync. */
 const SYNC_KEYS = ["in", "speed", "reverse", "loop", "enabled"] as const;
 /** What detach_audio moves onto the audio clip (the video keeps its own volume and fades) and attach_audio moves back. */
-const MOVE_KEYS = ["volume", "fade_in", "fade_out", ...AUDIO_FX_KEYS] as const;
+const MOVE_KEYS = ["volume", "fade_in", "fade_out", "stem", ...AUDIO_FX_KEYS] as const;
 
 /** source seconds available (Infinity when looping / unknown / speed-ramped) */
 function srcLen(tl: Timeline, c: Clip): number {
@@ -150,7 +150,7 @@ export function registerEditOps(h: OpHelpers) {
     const aud: Clip = { id: newId(tl, h.PREFIX.audio), type: "audio", name: `audio of ${v.id}`, asset: v.asset, duration: round6(clipDur(v)), attach_to: v.id, offset: 0 };
     for (const k of [...SYNC_KEYS, ...MOVE_KEYS]) if (v[k] !== undefined) {
       aud[k] = structuredClone(v[k]);
-      if ((AUDIO_FX_KEYS as readonly string[]).includes(k)) delete v[k]; // the sound now lives on aud; the muted video keeps no audio fields
+      if (k === "stem" || (AUDIO_FX_KEYS as readonly string[]).includes(k)) delete v[k]; // the sound now lives on aud; the muted video keeps no audio fields
     }
     if (v.keyframes?.volume) aud.keyframes = { volume: structuredClone(v.keyframes.volume) };
     if (v.group) aud.group = structuredClone(v.group); // the sound belongs to the same expanded compound
@@ -178,7 +178,7 @@ export function registerEditOps(h: OpHelpers) {
       return { id: v.id, audio: aud.id, track: tl.tracks.find((t) => t.clips.includes(aud))!.id, start: aud.start, duration: aud.duration };
     });
 
-  h.op("attach_audio", "Inverse of detach_audio: put a video's detached sound back on the video and remove the audio clip. Its processing (eq, compressor, pan, denoise, pitch, normalize), volume, fades and volume keyframes move back to the video, which is unmuted (muted, if the audio clip was). " +
+  h.op("attach_audio", "Inverse of detach_audio: put a video's detached sound back on the video and remove the audio clip. Its processing (eq, compressor, pan, denoise, pitch, normalize, stem), volume, fades and volume keyframes move back to the video, which is unmuted (muted, if the audio clip was). " +
     "Refused (out_of_sync, naming the field) when the audio no longer lines up with the picture: offset other than 0, or in/duration/speed/reverse/loop/enabled/group different from the video's (a J/L-cut or slip); refused (audio_state) when the audio's track is muted or at volume 0, the video is a freeze frame, or the audio has its own length rule (until_end, match_duration naming a clip). Clips attached to the audio clip are attached to the video. A speed ramp needs this first.",
     { id: "video clip id or ref, or its detached audio clip" }, (p, tl, a) => {
       const [, , c] = get(tl, a);
