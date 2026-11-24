@@ -751,6 +751,15 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("the mute toggle mutes the track; an audio track has no eye toggle", await untilFile((tl) => trackOf(tl, "music").muted === true)
       && await js(`![].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "music"; })[0].querySelector('[data-toggle="hidden"]')`), trackOf(load(), "music"));
   }
+  console.log("export dialog");
+  {
+    await click("#exportb");
+    check("Export… opens the dialog", await until("export open", `$("export").open`));
+    await js(`(function(){var f=document.querySelector("#export form").elements; f.format.value=".webm"; f.quality.value="draft"; f.end.value="1";})()`);
+    await click("#ego");
+    check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
+      && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

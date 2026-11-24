@@ -24,6 +24,7 @@ const MIME: Record<string, string> = {
 };
 const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const PEAK_RATE = 50;
+const EXPORT_FORMATS = [".mp4", ".mov", ".webm", ".mkv", ".gif", ".wav", ".mp3", ".m4a", ".flac", ".png", ".webp"];
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
 /** what a file dropped on the page may be: the media import_media takes */
 const UPLOAD_EXT = new Set([...IMAGE_EXT, ...AUDIO_EXT, ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".gif", ".json"]);
@@ -164,20 +165,25 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       start = first / fps; end = last / fps;
       out = join(cacheDir, `play-r${tl.revision}-f${first}-${last}.mp4`);
     }
+    if (!body.play && body.format !== undefined) { // the export dialog names a format; the file goes in renders/ under the project's name, never a path from the page
+      if (!EXPORT_FORMATS.includes(body.format)) throw new EditError(`unknown export format ${JSON.stringify(body.format)}`, "bad_value", `one of ${EXPORT_FORMATS.join(" ")}`);
+      out = p.defaultOutput(body.format, body.draft ? "draft" : "");
+    }
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
-    if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
-    const live = out ? playing.get(out) : undefined;
+    if (body.play && existsSync(out!)) { const now = new Date(); utimesSync(out!, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
+    const live = body.play ? playing.get(out!) : undefined;
     if (live && !running.get(live.id)?.ctl.signal.aborted) return live; // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
     jobs.set(id, job); // every call that can throw is above; from here to the promise chain nothing throws, so a job in `jobs` always reaches its end
-    if (out) playing.set(out, job);
+    if (body.play) playing.set(out!, job);
     let last = 0;
     const ctl = new AbortController();
     running.set(id, { ctl, settled: api.render(root, {
       out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined, signal: ctl.signal,
+      ...(body.play ? {} : { codec: body.codec, quality: body.quality, subtitles: body.subtitles === true }),
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
-      .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
+      .catch((e) => { if (!body.play && out) p.releaseOutput(out); Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); }) // an export that wrote nothing gives back the name it reserved
       .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); endJob(jobs, id, job); }) });
     return job;
   }

@@ -2,7 +2,7 @@ import { api } from "./api.ts";
 import { t } from "./i18n.ts";
 import { fail, show } from "./messages.ts";
 import { $, changed, st } from "./state.ts";
-import type { Job } from "./types.ts";
+import type { Dict, Job } from "./types.ts";
 import { requestFrame } from "./viewer.tsx";
 
 /** newest SSE event per job id: a job can settle before its POST response resolves, and the POST body is only the snapshot at start */
@@ -24,9 +24,10 @@ export function startPrepare(allowDownload: boolean) {
   api("/api/prepare", allowDownload ? { allow_download: true } : {}).then((j) => { st.prepJob = j.id; settle(j as Job); }, (e) => { st.prep = null; changed(); fail(e); });
 }
 
-export function startRender() {
+/** a render into renders/: the header's quick Render (draft or not, .mp4), or the export dialog's choice (format, codec, quality, range, subtitles) */
+export function startRender(opts: Dict = { draft: $<HTMLInputElement>("draft").checked }) {
   st.rendering = true; st.out = { progress: 0 }; changed();
-  api("/api/render", { draft: $<HTMLInputElement>("draft").checked }).then((j) => { st.renderJob = j.id; settle(j as Job); }, (e) => { st.rendering = false; st.out = null; changed(); fail(e); });
+  api("/api/render", opts).then((j) => { st.renderJob = j.id; settle(j as Job); }, (e) => { st.rendering = false; st.out = null; changed(); fail(e); });
 }
 
 export function startSheet() {
@@ -56,12 +57,8 @@ function onJob(j: Job) {
     if (j.status === "running") st.out = { progress: j.progress };
     else if (j.status === "failed" || j.status === "cancelled") { st.renderJob = null; st.rendering = false; st.out = null; fail(j.error!); }
     else {
-      const r = j.result!;
       st.renderJob = null; st.rendering = false;
-      st.out = {
-        link: { url: j.url!, name: r.output.split("/").pop(), info: r.duration + " s, " + r.width + "x" + r.height + (r.loudness ? ", " + r.loudness.integrated_lufs + " LUFS" : "") + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "") },
-        sheet: j.sheet_url,
-      };
+      st.out = { result: j.result!, url: j.url!, sheet: j.sheet_url };
     }
     changed();
   }

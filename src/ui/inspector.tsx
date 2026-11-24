@@ -5,6 +5,7 @@ import { kfAt, kfBase, near, packKf, pts, type Kf } from "./keyframes.ts";
 import { fail, show } from "./messages.ts";
 import { $, changed, findClip, S, st, trackOf, V } from "./state.ts";
 import { dur, start } from "./time.ts";
+import { Out } from "./export.tsx";
 import { openPath } from "./timeline.tsx";
 import type { Clip } from "./types.ts";
 
@@ -92,17 +93,6 @@ function Keyframes({ c, ro }: { c: Clip | null; ro: boolean }) {
           )),
         ];
       })}
-    </div>
-  );
-}
-
-function Out() {
-  const o = st.out;
-  return (
-    <div id="out">
-      {o && o.progress !== undefined && <progress id="prog" max={1} value={o.progress} />}
-      {o && o.link && [<a href={o.link.url} target="_blank">{t("output", o.link.name)}</a>, <div class="mut">{o.link.info}</div>]}
-      {o && o.sheet && <img src={o.sheet} title={t("openFull")} onClick={() => { window.open(o.sheet); }} />}
     </div>
   );
 }

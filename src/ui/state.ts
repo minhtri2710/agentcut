@@ -1,11 +1,11 @@
 import type { DragMode } from "./edits.ts";
-import type { ApiError, Clip, Job, State, Track } from "./types.ts";
+import type { ApiError, Clip, Dict, Job, State, Track } from "./types.ts";
 import { findIn, viewOf, type View } from "./view.ts";
 
 export const LABEL = 90, LANE = 44; // px: the lane label column, one lane's height
 
-/** what the box under the batch shows: a render's progress, its result, a contact sheet */
-export type Out = { progress?: number; link?: { url: string; name: string; info: string }; sheet?: string };
+/** what the box under the batch shows: a render's progress, its result (with the file's URL), a contact sheet */
+export type Out = { progress?: number; result?: Dict; url?: string; sheet?: string };
 
 /** The page's state, in one place: what the server last sent (S) and what only this page knows. Components read it; a change calls changed(). */
 export const st = {
@@ -26,6 +26,7 @@ export const st = {
   play: null as { pct: number | null } | null, // a play draft being made (pct null: not started yet)
   playing: false, // the play draft is shown in <video>
   rendering: false,
+  exporting: false, // the export dialog is open
   sheeting: false,
   out: null as Out | null,
   consent: null as ApiError | null, // the model download the dialog asks about

@@ -425,6 +425,14 @@ check("SSE reported the job", await waitJob(job.id));
   const empty = await play(0, 0.001), invalid = await play(-1, 1);
   check("play refuses empty normalized ranges and invalid starts before making jobs", empty.error?.code === "empty" && invalid.error?.code === "bad_value", { empty, invalid });
 }
+{ // the export dialog: a format from the list, the file named by the server in renders/, the result with its QA
+  const bad = await jget("/api/render", { method: "POST", body: { format: ".txt" } }), path = await jget("/api/render", { method: "POST", body: { format: "../x.mp4" } });
+  check("an export format outside the list is bad_value, before any job", bad.status === 422 && bad.j.error?.code === "bad_value" && path.j.error?.code === "bad_value", [bad.j, path.j]);
+  let ex = (await jget("/api/render", { method: "POST", body: { format: ".webm", quality: "draft", start: 0, end: 0.5 } })).j;
+  for (let i = 0; i < 600 && ex.status === "running"; i++) { await Bun.sleep(100); ex = (await jget(`/api/jobs/${ex.id}`)).j; }
+  check("an export writes the chosen format into renders/ and its result carries the QA of the written file", ex.status === "done" && /^\/files\/renders\/[^/]+\.webm$/.test(ex.url) && ex.result.qa?.ok === true
+    && (await raw(ex.url)).type === "video/webm", { status: ex.status, url: ex.url, qa: ex.result?.qa, error: ex.error });
+}
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
 console.log("prepare");

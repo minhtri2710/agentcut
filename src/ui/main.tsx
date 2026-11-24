@@ -5,6 +5,7 @@ import { hist } from "./history.ts";
 import { getLang, setLang, t, type Lang } from "./i18n.ts";
 import { select, Side } from "./inspector.tsx";
 import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
+import { ExportDialog, openExport } from "./export.tsx";
 import { Media } from "./media.tsx";
 import { initKeyboard } from "./keyboard.ts";
 import { clearStateless, fail } from "./messages.ts";
@@ -40,6 +41,7 @@ function Header() {
       </select>
       <label class="mut"><input type="checkbox" id="draft" defaultChecked /> {t("draft")}</label>
       <button id="render" class="primary" disabled={st.rendering} onClick={startRender}>{t("render")}</button>
+      <button id="exportb" disabled={st.rendering} onClick={openExport}>{t("exportBtn")}</button>
       <button id="sheet" disabled={st.sheeting} onClick={startSheet}>{t("sheet")}</button>
     </header>
   );
@@ -90,6 +92,7 @@ function App() {
       <Header />
       <div id="main"><Left /><Viewer /><Side /></div>
       <Consent />
+      <ExportDialog />
       <Timeline />
     </>
   );

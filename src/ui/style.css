@@ -62,3 +62,6 @@ progress{width:100%}
 #kfbox input{width:64px;background:#0f1115;color:#cfe;border:1px solid #333;border-radius:3px;font:12px ui-monospace,monospace;padding:2px 4px}
 #kfbox select{background:#0f1115;color:#cfe;border:1px solid #333;border-radius:3px;font:inherit}#kfbox b{min-width:64px}
 .clip.pick{outline:2px dashed #fc3}
+.eform{display:grid;gap:8px;min-width:300px}.eform label{display:grid;gap:2px}.eform label.row{display:flex;gap:6px;align-items:center}
+.eform input,.eform select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}
+#qa{margin:4px 0;padding-left:18px;color:#fc9}#qa button{font-size:11px;padding:0 5px}.qaok{color:#9d9;margin:4px 0}
