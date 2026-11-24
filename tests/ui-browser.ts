@@ -809,6 +809,25 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await new Promise((ok) => db.server.close(ok));
     }
   }
+  // The chat panel (a stand-in claude): a message shows as sent, then the agent's text and its tool calls as they stream in
+  console.log("chat panel");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "chat-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\necho '{"type":"system","subtype":"init","session_id":"s1"}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","name":"mcp__agentcut__project_info","input":{}}]}}'\n`
+      + `sleep 0.3\necho '{"type":"user","message":{"content":[{"type":"tool_result","content":"rev 1"}]}}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"It is at rev 1."}]}}'\necho '{"type":"result","subtype":"success","session_id":"s1","result":"ok"}'\n`, { mode: 0o755 });
+    const PATH = process.env.PATH;
+    process.env.PATH = `${bin}:${PATH}`;
+    try {
+      await click("#tab-chat");
+      await until("chat panel", `!!document.querySelector("#cform2 textarea")`);
+      await js(`(function(){var f=$("cform2"); f.elements.msg.value="what revision?"; f.requestSubmit();})()`);
+      const log = `[].map.call($("clog").children, function (n) { return n.className + ":" + n.textContent; }).join("|")`;
+      check("a chat message shows as sent, then the agent's text, tool call and result, and the end; Send is back", await until("chat done", `${log}.indexOf("Done.") >= 0 && !$("csend").disabled`, 10_000)
+        && /^cuser:what revision\?\|cbot:Looking\.\|ctool:→ project_info \{\}\|ctool:← rev 1\|cbot:It is at rev 1\.\|mut:Done\.$/.test(await js(log)), await js(log));
+    } finally { process.env.PATH = PATH; }
+    await click("#tab-media");
+  }
   console.log("form inspector");
   {
     await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict

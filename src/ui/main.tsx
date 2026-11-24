@@ -5,6 +5,7 @@ import { hist } from "./history.ts";
 import { getLang, setLang, t, type Lang } from "./i18n.ts";
 import { select, Side } from "./inspector.tsx";
 import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
+import { Chat, onChatEvent } from "./chat.tsx";
 import { Dashboard } from "./dashboard.tsx";
 import { ExportDialog, openExport } from "./export.tsx";
 import { Library } from "./library.tsx";
@@ -78,6 +79,7 @@ const TABS = [
   { id: "media", label: () => t("media"), body: Media },
   { id: "library", label: () => t("library"), body: Library },
   { id: "transcript", label: () => t("transcript"), body: Transcript },
+  { id: "chat", label: () => t("chat"), body: Chat },
   { id: "review", label: () => t("review"), body: Review },
   { id: "history", label: () => t("history"), body: History },
 ];
@@ -119,5 +121,6 @@ function startEditor() {
   const events = new EventSource("/api/events");
   events.addEventListener("state", (e) => { setState(JSON.parse((e as MessageEvent).data)); });
   events.addEventListener("job", (e) => { onJobEvent(JSON.parse((e as MessageEvent).data)); });
+  events.addEventListener("chat", (e) => { onChatEvent(JSON.parse((e as MessageEvent).data)); });
   events.addEventListener("error", (e) => { const d = (e as MessageEvent).data; if (d) fail(JSON.parse(d), true); }); // the stream's error means the server could not build the state
 }

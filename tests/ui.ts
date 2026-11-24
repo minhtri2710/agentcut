@@ -884,6 +884,53 @@ hold.close();
   rmSync(join(dir, "renders", "big.bin"));
 }
 
+// ---------------------------------------------------------------- chat: the agent CLI (a stand-in claude here) on one message, its events to every page
+console.log("chat");
+{
+  const { chatArgs, chatEvents } = await import("../src/chat.ts");
+  const a = chatArgs("/p/root", "hi", "s0"), mcp = JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.agentcut;
+  check("chatArgs: streamed JSON, no built-in tools, only the agentcut MCP server for the project, its tools allowed, the session resumed",
+    a[0] === "-p" && a[1] === "hi" && a[a.indexOf("--output-format") + 1] === "stream-json" && a[a.indexOf("--tools") + 1] === "" && a.includes("--strict-mcp-config")
+    && a[a.indexOf("--allowedTools") + 1] === "mcp__agentcut" && a[a.indexOf("--permission-mode") + 1] === "dontAsk" && a[a.indexOf("--resume") + 1] === "s0"
+    && mcp.env.AGENTCUT_PROJECT === "/p/root" && existsSync(mcp.args[mcp.args.length - 1]) && mcp.args[mcp.args.length - 1].endsWith("mcp.ts"), a);
+  const ev = (o: unknown) => JSON.stringify(chatEvents(JSON.stringify(o)));
+  check("chatEvents: the session, text and tool calls (server prefix dropped), tool results, the end; anything else is no event",
+    ev({ type: "system", subtype: "init", session_id: "s1" }) === '[{"kind":"session","session":"s1"}]'
+    && ev({ type: "assistant", message: { content: [{ type: "text", text: "ok" }, { type: "tool_use", name: "mcp__agentcut__apply_ops", input: { revision: 0 } }] } }) === '[{"kind":"text","text":"ok"},{"kind":"tool","name":"apply_ops","input":{"revision":0}}]'
+    && ev({ type: "user", message: { content: [{ type: "tool_result", is_error: true, content: [{ type: "text", text: "conflict" }] }] } }) === '[{"kind":"tool_result","ok":false,"text":"conflict"}]'
+    && ev({ type: "result", subtype: "success", session_id: "s1", result: "done" }) === '[{"kind":"done","session":"s1"}]' && ev({ type: "rate_limit" }) === "[]" && JSON.stringify(chatEvents("not json")) === "[]");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "chat-bin"), argsFile = join(tmp, "chat.args"), slow = join(tmp, "chat.slow");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\npwd -P > "${argsFile}.cwd"\n[ -f "${slow}" ] && exec sleep 30\n`
+      + `echo '{"type":"system","subtype":"init","session_id":"s1"}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","name":"mcp__agentcut__project_info","input":{}}]}}'\n`
+      + `echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"rev 3"}]}}'\necho '{"type":"result","subtype":"success","session_id":"s1","result":"Hello"}'\n`, { mode: 0o755 });
+    const PATH = process.env.PATH;
+    process.env.PATH = `${bin}:${PATH}`;
+    try {
+      const idle = async () => { for (let i = 0; i < 100; i++) { if (!(await jget("/api/chat")).j.busy) return true; await Bun.sleep(50); } return false; };
+      const first = await jget("/api/chat", { method: "POST", body: { message: "hi there" } });
+      const got = (k: string) => waitEvent((e) => e.event === "chat" && e.data.kind === k);
+      check("POST /api/chat runs the agent: the message, its text, tool call, tool result and end reach every page as chat events", first.j.ok && await got("user") && await got("text") && await got("tool") && await got("tool_result") && await got("done")
+        && events.some((e) => e.event === "chat" && e.data.kind === "tool" && e.data.name === "project_info"), events.filter((e) => e.event === "chat").map((e) => e.data));
+      check("  in the project folder, with the message, and the next message resumes its session", await idle() && (await jget("/api/chat")).j.session === "s1"
+        && readFileSync(argsFile, "utf8").split("\n")[1] === "hi there" && readFileSync(argsFile + ".cwd", "utf8").trim() === realpathSync(dir) && (await jget("/api/chat", { method: "POST", body: { message: "more" } })).j.ok && await idle()
+        && readFileSync(argsFile, "utf8").includes("--resume\ns1\n"), readFileSync(argsFile, "utf8"));
+      writeFileSync(slow, "");
+      const run = await jget("/api/chat", { method: "POST", body: { message: "slow" } }), again = await jget("/api/chat", { method: "POST", body: { message: "x" } });
+      check("  one run at a time: a second message while it answers is busy (409)", run.j.ok && again.status === 409 && again.j.error.code === "busy", again);
+      const t0 = Date.now(), stop = await jget("/api/chat/stop", { method: "POST", body: {} });
+      check("  stop ends the run at once and says so", stop.j.stopping === true && await idle() && Date.now() - t0 < 3000 && await waitEvent((e) => e.event === "chat" && e.data.kind === "done" && e.data.stopped === true));
+      rmSync(slow);
+      const reset = await jget("/api/chat/reset", { method: "POST", body: {} }), empty = await jget("/api/chat", { method: "POST", body: { message: "  " } });
+      check("  New chat forgets the session; an empty message is bad_request", reset.j.ok && (await jget("/api/chat")).j.session === null && empty.status === 400, empty.j);
+      process.env.PATH = "/usr/bin:/bin";
+      const none = await jget("/api/chat"), refused = await jget("/api/chat", { method: "POST", body: { message: "hi" } });
+      check("with no claude on PATH the panel is told how to install it, and a message is missing_dependency", none.j.available === false && /install Claude Code/.test(none.j.hint) && refused.j.error?.code === "missing_dependency", [none.j, refused.j]);
+    } finally { process.env.PATH = PATH; }
+  }
+}
+
 // ---------------------------------------------------------------- dashboard: `agentcut ui` on a folder of projects
 console.log("dashboard");
 {

@@ -11,6 +11,7 @@ import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
 import { capPreviews } from "./cache.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
+import { chatEngine, runChat } from "./chat.ts";
 import { endJob } from "./jobs.ts";
 import { libraryStill } from "./library.ts";
 import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
@@ -25,7 +26,7 @@ const MIME: Record<string, string> = {
   ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
   ".fcpxml": "application/xml", ".otio": "application/json",
 };
-const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const STATUS: Record<string, number> = { conflict: 409, busy: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
 const PEAK_RATE = 50;
 const EXPORT_FORMATS = [".mp4", ".mov", ".webm", ".mkv", ".gif", ".wav", ".mp3", ".m4a", ".flac", ".png", ".webp"];
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
@@ -44,6 +45,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const thumbs = new Map<string, Promise<Buffer>>();
   const waves = new Map<string, Promise<number[]>>();
   const cacheDir = join(root, "previews", "ui");
+  const chat: { ctl?: AbortController; session?: string } = {}; // the chat panel's agent run (one at a time) and the conversation it continues
   let assetsKey: string | undefined;
   let assets: Record<string, Asset> | undefined;
 
@@ -106,6 +108,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (rest.length) throw new EditError(`no library item ${path}`, "not_found");
       return sendFile(req, res, await libraryStill(p, kind, name));
     }
+    if (req.method === "GET" && path === "/api/chat") return json(res, 200, { ok: true, ...chatEngine(), busy: !!chat.ctl, session: chat.session ?? null });
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);
     if (req.method === "GET" && path.startsWith("/files/")) return sendFile(req, res, servedFile(path.slice("/files/".length)));
     if (req.method === "GET" && path.startsWith("/api/jobs/")) {
@@ -122,6 +125,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, body.steps ?? 1, rev, UI_AUTHOR) }); // steps: the history panel undoes back to an entry
       if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, body.steps ?? 1, rev, UI_AUTHOR) });
+      if (path === "/api/chat") return json(res, 200, { ok: true, ...startChat(body.message) });
+      if (path === "/api/chat/stop") { chat.ctl?.abort(); return json(res, 200, { ok: true, stopping: !!chat.ctl }); }
+      if (path === "/api/chat/reset") { if (chat.ctl) throw new EditError("the agent is still answering", "busy", "stop it first"); chat.session = undefined; return json(res, 200, { ok: true }); }
       if (path === "/api/transcript") return json(res, 200, { ok: true, ...(await transcript(body.asset, body.language, gone.signal)) });
       if (path === "/api/review") return json(res, 200, { ok: true, revision: p.load().revision, ...(await api.review(root, { signal: gone.signal })) });
       if (path === "/api/sheet") {
@@ -225,6 +231,21 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     return out;
   }
 
+  /** one message to the chat agent: its events go to every page as "chat"; the conversation goes on from the session it reports */
+  function startChat(message: unknown) {
+    if (typeof message !== "string" || !message.trim() || message.length > 20_000) throw new EditError("a chat message is text of 1 to 20000 characters", "bad_request");
+    if (chat.ctl) throw new EditError("the agent is still answering", "busy", "wait for it, or stop it");
+    const ctl = new AbortController();
+    const run = runChat(root, message, chat.session, (e) => {
+      if ((e.kind === "session" || e.kind === "done") && e.session) chat.session = e.session;
+      broadcast("chat", e);
+    }, ctl.signal); // throws missing_dependency before anything starts
+    chat.ctl = ctl;
+    broadcast("chat", { kind: "user", text: message });
+    run.finally(() => { chat.ctl = undefined; });
+    return { started: true };
+  }
+
   function asset(id: string): Asset & { abs: string } {
     const st = statSync(p.file, { bigint: true });
     const key = `${st.ino}|${st.size}|${st.mtimeNs}`;
@@ -258,7 +279,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       catch (e: any) { broadcast("error", errJson(e)); }
     });
   });
-  server.on("close", () => { unwatchFile(p.file); void api.closeFrameCache(root); });
+  server.on("close", () => { unwatchFile(p.file); chat.ctl?.abort(); void api.closeFrameCache(root); });
   const port = (server.address() as any).port;
   return { url: `http://127.0.0.1:${port}/`, port, project: root, revision: p.load().revision, server };
 }

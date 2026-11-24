@@ -94,3 +94,9 @@ progress{width:100%}
 .popen img{width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:4px}
 .pdup{display:flex;gap:4px}.pdup input{flex:1;min-width:0}
 #dash input{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}
+#chat{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1}
+#clog{flex:1;overflow:auto;display:flex;flex-direction:column;gap:5px;min-height:0}
+.cuser{align-self:flex-end;background:var(--accent);color:#fff;border-radius:8px;padding:4px 8px;max-width:90%;white-space:pre-wrap}
+.cbot{background:var(--panel2);border-radius:8px;padding:4px 8px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ctool{font:11px ui-monospace,monospace;color:var(--mut);overflow-wrap:anywhere}.cerr{color:#ff7b7b}
+#cform2 textarea{width:100%;box-sizing:border-box;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;font:inherit;resize:vertical}
