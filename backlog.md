@@ -46,9 +46,6 @@
 - [ ] vlab-separate - audio: voice/music separation blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
-- [ ] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (since 2026-11-24)
-  Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
-  Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
 - [ ] ui-library - UI: library with previews blocked-by: ui-shell blocked-by: ui-media (kind: ship) (since 2026-11-24)
   Slice. Left-panel Library tab: transitions, effects, looks, text presets, caption presets, templates, each with a preview agentcut renders (cached) from a reference frame; drag onto a clip or the timeline applies it.
   Acceptance: previews are deterministic and cached; applying is one op batch; ui-browser checks.
@@ -71,7 +68,13 @@
   Slice. Chat panel drives a locally installed agent CLI (claude or codex, found on PATH) in non-interactive mode with agentcut's MCP server configured for the open project, streams its messages and tool calls, can stop it. The page re-reads the project after each write.
   Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
   Leaves out: API-key LLM providers (rejected by the human).
+- [ ] track-lock - Track lock that ops respect (kind: ship) (since 2026-11-24)
+  Split out of ui-timeline. A track lock only the page honours would be a fake lock: agents edit the same project. Slice: a 'locked' track field (model.ts TRACK_FIELDS); every op that changes a clip on a locked track (or moves one onto it) refuses with code 'locked' naming the track and update_track locked=false as the fix; update_track/remove_track stay allowed. The page shows a lock toggle in the track header and greys locked lanes. Acceptance: edit-ops rows for refusal per op family; ui-browser row for the toggle; GUIDE + AGENTS.md.
 ## Done
+- [x] ui-timeline - UI: timeline thumbnails, waveforms, track headers blocked-by: ui-shell (kind: ship) (done 2026-11-24)
+  Slice. Video/image clips show a thumbnail strip, audio clips a waveform (server endpoints computing cached thumbnails and peaks), each track a header with hide/mute/lock (track fields in model.ts if missing), badges for transitions/effects, markers on the ruler.
+  Acceptance: header toggles write ops with the revision rule; thumbnails and peaks are cached and capped like previews; ui-browser checks cover toggles.
+  4b1fc76: strips, waveforms (/api/peaks), fx badge, hide/mute toggles; lock split out to track-lock (needs ops-level refusal). ui + ui-browser pass.
 - [x] ui-media - UI: media pool blocked-by: ui-shell (kind: ship) (done 2026-11-24)
   Slice. Left-panel Media tab: project assets with thumbnail, duration, kind; search; import by path or file drop into media/; drag onto the timeline adds a clip (add_clip with at/track).
   Acceptance: import and drag land as ops with the revision rule; ui-browser checks for drop and drag.
