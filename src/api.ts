@@ -546,6 +546,14 @@ export async function render(project: string | undefined, o: {
       catch (e) { throw e instanceof M.EditError && e.code === "aborted" ? new M.EditError(e.message, "aborted", `the output was written without its subtitle stream: ${out}`) : e; }
       res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
     }
+    if (!out.endsWith(".gif")) { // a gif is resampled to 15 fps and 540 px on purpose: nothing to compare
+      const rt = M.resolve(M.clone(tl)), moving = rt.tracks.filter((t) => !t.hidden).flatMap((t) => t.clips)
+        .filter((c) => c.type === "video" && c.enabled !== false && !c.freeze).map((c) => ({ id: c.id, start: M.clipStart(c), end: M.clipEnd(c) }));
+      try {
+        o.signal?.throwIfAborted();
+        res.qa = await AN.outputQa(out, { duration: res.duration, width: res.width, height: res.height, fps: res.fps, has_audio: res.has_audio }, moving, start, o.signal);
+      } catch (e) { if (!o.signal?.aborted) throw e; res.qa_error = "skipped: cancelled after the output was written"; }
+    }
     FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
       encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
       effects: tl.tracks.some((t) => t.clips.some((c) => c.effects?.length || c.mask || c.fit === "blur")) });

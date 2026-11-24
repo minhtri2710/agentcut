@@ -241,7 +241,14 @@ console.log("timeline without an audible clip: no audio track");
   for (const workers of [1, 2]) {
     const rs: any = await timed(`silent .mp4, ${workers} worker(s)`, () => api.render(SP, { out: so(`mute${workers}.mp4`), workers }));
     check(`silent .mp4, ${workers} worker(s): no audio stream, has_audio false, warned, no loudness`, kinds(so(`mute${workers}.mp4`)) === "video" && mute(rs), { k: kinds(so(`mute${workers}.mp4`)), rs });
+    check(`silent .mp4, ${workers} worker(s): the QA of the written file finds nothing`, rs.qa?.ok === true && rs.qa.issues.length === 0, rs.qa);
   }
+  const { outputQa } = await import("../src/analyze.ts");
+  const want = { duration: 2, width: W, height: H, fps: 24, has_audio: false };
+  const qa = async (w: Partial<typeof want>) => (await outputQa(so("mute1.mp4"), { ...want, ...w }, [], 0)).issues.map((i: any) => i.type).join();
+  check("output QA names each stream that differs from what was asked: sound, size, frame rate, length",
+    await qa({ has_audio: true }) === "missing_audio" && await qa({ width: W + 2 }) === "size_mismatch" && await qa({ fps: 30 }) === "fps_mismatch" && await qa({ duration: 3 }) === "duration_mismatch",
+    [await qa({ has_audio: true }), await qa({ width: W + 2 }), await qa({ fps: 30 }), await qa({ duration: 3 })]);
   // an output in previews/ and its sheet are capped together: neither evicts the other, the older sheets go
   process.env.AGENTCUT_PREVIEWS_MAX_MB = "0.001";
   try {
@@ -254,7 +261,17 @@ console.log("timeline without an audible clip: no audio track");
     const rs: any = await api.render(SP, { out: so(f), workers: 2, end: 1, sheet: false });
     check(`silent ${f}, joined segments: no audio stream, has_audio false`, kinds(so(f)) === "video" && rs.has_audio === false, { k: kinds(so(f)), rs });
   }
+  // a video clip whose footage holds still (a solid colour) is reported with its id; a still image is not footage and is never reported
+  ff("-f", "lavfi", "-i", "color=c=0x3366aa:size=320x240:rate=24:duration=2", "-pix_fmt", "yuv420p", join(m, "flat.mp4"));
+  const FZ = join(tmp, "frozen");
+  api.create(FZ, { width: W, height: H, fps: 24 });
+  await applyLatest(FZ, [{ op: "add_clip", track: "main", src: join(m, "mute.mp4"), duration: 1 }, { op: "add_clip", track: "main", src: join(m, "flat.mp4"), duration: 2 }]);
+  const fz: any = await api.render(FZ, { out: join(FZ, "renders", "f.mp4"), workers: 1, sheet: false });
+  const froze = fz.qa?.issues?.filter((i: any) => i.type === "frozen_picture") ?? [];
+  check("output QA: footage that holds still while a video clip plays is frozen_picture with the clip id and its times",
+    froze.length === 1 && froze[0].ids.join() === "vid2" && froze[0].t >= 0.9 && froze[0].t <= 1.1 && froze[0].end >= 2.9 && fz.qa.ok === false, fz.qa);
   const gf: any = await api.render(SP, { out: so("mute.gif"), end: 1 });
+  check("gif: no output QA (resampled on purpose)", gf.qa === undefined, gf.qa);
   check("gif: has_audio false, no no-audible-clips warning", gf.has_audio === false && !gf.warnings?.some((w: string) => /audible/.test(w)), gf);
   check("gif: the result names the gif encoder that wrote it", gf.encoder === "gif", gf.encoder);
   const hw: any = await api.render(SP, { out: so("mute-hw.mp4"), fast: true, workers: 1, end: 1, sheet: false });

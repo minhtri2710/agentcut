@@ -200,6 +200,31 @@ export async function loudness(path: string, signal?: AbortSignal) {
   return { source: path, integrated_lufs: grab("I"), range_lu: grab("LRA"), true_peak_dbfs: grab("Peak") };
 }
 
+export interface QaIssue { type: string; message: string; t?: number; end?: number; ids?: string[] }
+/** Seconds a picture must hold still to count as frozen. */
+const FREEZE_MIN = 1;
+
+/** QA of a written video render against what was asked: the streams (picture, size, frame rate, length, sound) and pictures that hold still while a
+ *  video clip plays (`moving`: timeline spans of the video clips that play footage; times are the output's plus `offset`, the range start).
+ *  One probe and one low-resolution decode of the picture. */
+export async function outputQa(path: string, want: { duration: number; width: number; height: number; fps: number; has_audio: boolean }, moving: { id: string; start: number; end: number }[], offset: number, signal?: AbortSignal) {
+  const info = await probe(path), issues: QaIssue[] = [];
+  if (!info.width) return { ok: false, issues: [{ type: "missing_video", message: `${path} has no picture stream` }] };
+  if (info.width !== want.width || info.height !== want.height) issues.push({ type: "size_mismatch", message: `the file is ${info.width}x${info.height}, the render asked for ${want.width}x${want.height}` });
+  if (Math.abs(Number(info.fps) - want.fps) > 0.01) issues.push({ type: "fps_mismatch", message: `the file plays at ${info.fps} fps, the render asked for ${want.fps}` });
+  const len = Number(info.video_duration ?? info.duration ?? 0);
+  if (Math.abs(len - want.duration) > Math.max(2 / want.fps, 0.05)) issues.push({ type: "duration_mismatch", message: `the picture lasts ${len.toFixed(3)} s, the render asked for ${want.duration.toFixed(3)} s` });
+  if (info.has_audio !== want.has_audio) issues.push({ type: want.has_audio ? "missing_audio" : "unexpected_audio", message: want.has_audio ? "the timeline has audible clips but the file has no sound" : "the file has sound but the timeline has no audible clip" });
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), ...VIDEO_MAP, "-an", "-sn", "-vf", `scale=160:-2,freezedetect=n=-60dB:d=${FREEZE_MIN}`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  if (r.status !== 0) issues.push({ type: "decode_failed", message: `the file's picture does not decode to its end: ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 300)}` });
+  const starts = [...r.stderr.matchAll(/freeze_start: ([\d.]+)/g)].map((m) => +m[1] + offset), ends = [...r.stderr.matchAll(/freeze_end: ([\d.]+)/g)].map((m) => +m[1] + offset);
+  starts.forEach((s, i) => {
+    const e = ends[i] ?? offset + len, ids = moving.filter((c) => c.start < e - 1e-6 && c.end > s + 1e-6).map((c) => c.id);
+    if (ids.length) issues.push({ type: "frozen_picture", t: +s.toFixed(3), end: +e.toFixed(3), ids, message: `the picture holds still ${s.toFixed(2)}-${e.toFixed(2)} s while ${ids.join(", ")} ${ids.length > 1 ? "play" : "plays"}: still footage, or frames the decode repeated` });
+  });
+  return { ok: !issues.length, issues };
+}
+
 // ------------------------------------------------------------------ TTS
 type Voice = { name: string; provider: string; full_name?: string; lang: string; sample: string };
 function systemEngine(): { engine: "say" | "sapi" | "espeak"; exe: string | null } {
