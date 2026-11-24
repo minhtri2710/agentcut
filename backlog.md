@@ -26,6 +26,7 @@
 - [ ] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (since 2026-11-24)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
+  653e930: built (model rvm_mobilenetv3, recurrent states carried across frames, capabilities lists the GPL-3.0 licence); cached and byte-identical on recompute (real row). Not verified: the flicker comparison, since no footage of a person is available here. Run AGENTCUT_TEST_VISION=1 AGENTCUT_TEST_VISION_PERSON=<clip of a person standing still> bun tests/vision.ts to measure it (downloads u2net_human_seg, 176 MB).
 - [x] vlab-separate - audio: voice/music separation (kind: ship) (done 2026-11-25)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
