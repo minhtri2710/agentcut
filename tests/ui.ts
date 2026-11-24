@@ -861,7 +861,7 @@ console.log("page modules");
   const { num } = await import("../src/ui/time.ts");
   const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
   const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
-  const { dragEdit, dropEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { dragEdit, dropEdit, fieldValue, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
   const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
   const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -923,6 +923,10 @@ console.log("page modules");
   check("dropEdit: an asset dropped on a free lane starts at the drop time (never below 0); on a magnetic lane it goes before the first clip whose middle is later",
     JSON.stringify(dropEdit(loose, "a1", 2.34567)) === '{"op":"add_clip","track":"free","asset":"a1","at":2.346}' && dropEdit(loose, "a1", -1).at === 0
     && dropEdit(mag, "a1", 0.9).index === 0 && dropEdit(mag, "a1", 1.1).index === 1 && dropEdit(mag, "a1", 9).index === 2);
+  const thrown = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e.code; } };
+  check("fieldValue: empty removes the field, numbers and booleans where the field takes them, text where it takes strings, else bad_value",
+    fieldValue(["number"], " ") === null && fieldValue(["number", "string"], "2.5") === 2.5 && fieldValue(["number", "string"], "50%") === "50%" && fieldValue(["boolean", "number"], "true") === true
+    && fieldValue(["string"], "12") === "12" && thrown(() => fieldValue(["number"], "abc")) === "bad_value" && thrown(() => fieldValue(["boolean"], "yes")) === "bad_value");
   const kc = clip("k", { duration: 3, keyframes: { opacity: [[0, 1], [1, 0.5]], scale: [[0.5, 1]] } });
   check("kfMoveBatch: moves the points at the dragged time on every prop that has one, clamped to the clip",
     JSON.stringify(kfMoveBatch(kc, 1, 0.5)) === '[{"op":"set_keyframes","id":"k","prop":"opacity","keyframes":[[0,1],[1.5,0.5]]}]'

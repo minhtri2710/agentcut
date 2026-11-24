@@ -69,3 +69,8 @@ progress{width:100%}
 .panel ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 #findings li{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:4px 6px;cursor:pointer;font-size:12px}#findings li:hover{border-color:var(--accent)}
 #history li{font-size:12px}#history li button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+#side .tabs{padding:0}#cform{display:flex;flex-direction:column;gap:6px}
+#cform fieldset{border:1px solid var(--line);border-radius:5px;padding:4px 6px;margin:0;display:grid;gap:3px}#cform legend{color:var(--mut);font-size:11px;padding:0 4px}
+.frow{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px;align-items:center;font-size:12px}.frow span:first-child{color:#aab;overflow:hidden;text-overflow:ellipsis}
+.frow input[type=text],.frow select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:3px;padding:2px 5px;font:12px ui-monospace,monospace;min-width:0}
+.frow input[type=checkbox]{justify-self:start}

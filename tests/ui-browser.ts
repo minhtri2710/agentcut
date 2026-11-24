@@ -784,6 +784,31 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("  and the redo list brings both back", await untilFile((tl) => ["p1", "p2"].every((l) => (tl.markers ?? []).some((m: any) => m.label === l))), load().markers);
     await click("#tab-media");
   }
+  console.log("form inspector");
+  {
+    await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict
+    const setF = (id: string, v: string) => js(`(function(){var i=$(${JSON.stringify(id)}); i.value=${JSON.stringify(v)}; i.dispatchEvent(new Event("change", { bubbles: true }));})()`);
+    await clickClip("blink");
+    check("selecting a clip shows its fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
+    await setF("f-text", "Blinked");
+    check("a text field edit is update_clip of that field", await untilFile((tl) => clipOf(tl, "blink")?.text === "Blinked"), { clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
+    await until("text seen", `${atRev(load().revision)} && $("f-text").value === "Blinked"`);
+    const before = readFileSync(join(dir, "project.json"), "utf8");
+    await js(`$("msg").className = ""`);
+    await setF("f-opacity", "2");
+    check("an out-of-range value shows the validation message and changes nothing", await until("range error", `$("msg").className === "err" && $("msg").textContent.indexOf("opacity") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
+    await js(`$("f-uppercase").click()`);
+    check("a checkbox sets the boolean field", await untilFile((tl) => clipOf(tl, "blink")?.uppercase === true), clipOf(load(), "blink"));
+    await until("upper seen", atRev(load().revision));
+    await clickClip("rb1");
+    check("another clip's form shows its own values, not what was typed into the last one", await until("video form", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("f-exposure") && $("f-opacity").value === ""`), await js(`$("f-opacity") && $("f-opacity").value`));
+    await setF("f-exposure", "0.5");
+    check("a grade field is merged into the clip's colour grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1"));
+    await until("grade seen", atRev(load().revision));
+    await setF("f-look", "portra");
+    check("  and the look list sets the look beside it", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "portra" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

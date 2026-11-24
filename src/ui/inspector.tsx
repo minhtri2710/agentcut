@@ -6,6 +6,7 @@ import { fail, show } from "./messages.ts";
 import { $, changed, findClip, S, st, trackOf, V } from "./state.ts";
 import { dur, start } from "./time.ts";
 import { Out } from "./export.tsx";
+import { ClipForm } from "./form.tsx";
 import { openPath } from "./timeline.tsx";
 import type { Clip } from "./types.ts";
 
@@ -103,8 +104,16 @@ export function Side() {
   return (
     <div id="side">
       <div class="mut" id="selinfo">{c ? t("selInfo", c.id, trackOf(c.id)!.id, c.type) + (nested ? t("insideCompound", st.path[st.path.length - 1]) : "") : t("selectClip")}</div>
-      <textarea id="insp" spellcheck={false} placeholder={t("clipJson")} readOnly={nested} />
-      <div><button id="applyc" disabled={!c || nested} onClick={applyClip}>{t("applyClip")}</button> <button id="delc" disabled={!c || nested} onClick={() => { ops([{ op: "remove_clip", id: st.sel }], "remove " + st.sel); }}>{t("deleteClip")}</button></div>
+      <div id="msg" />
+      <div class="tabs" role="tablist">
+        {(["form", "json"] as const).map((x) => <button key={x} id={"itab-" + x} role="tab" aria-selected={st.inspTab === x} class={st.inspTab === x ? "on" : ""} onClick={() => { st.inspTab = x; changed(); }}>{t(x === "form" ? "formTab" : "jsonTab")}</button>)}
+      </div>
+      {st.inspTab === "form" && c && c.type !== "gap" && <ClipForm c={c} ro={nested} />}
+      <div style={{ display: st.inspTab === "json" ? "" : "none" }}>
+        <textarea id="insp" spellcheck={false} placeholder={t("clipJson")} readOnly={nested} />
+        <button id="applyc" disabled={!c || nested} onClick={applyClip}>{t("applyClip")}</button>
+      </div>
+      <div><button id="delc" disabled={!c || nested} onClick={() => { ops([{ op: "remove_clip", id: st.sel }], "remove " + st.sel); }}>{t("deleteClip")}</button></div>
       <div id="cbtns">
         <button id="openc" style={{ display: cmp ? "" : "none" }} onClick={() => openPath(st.path.concat([st.sel!]))}>{t("openCompound")}</button>{" "}
         <button id="expc" style={{ display: cmp && !nested ? "" : "none" }} onClick={expand}>{t("expand")}</button>{" "}
@@ -112,7 +121,6 @@ export function Side() {
         <span id="regroups">{st.S && !nested && regroupIds(S().timeline.tracks).map((id) => <button key={id} data-group={id} onClick={() => regroup(id)}>{t("regroup", id)}</button>)}</span>
       </div>
       <Keyframes c={c} ro={nested} />
-      <div id="msg" />
       <div class="mut">{t("opsHint")}</div>
       <textarea id="ops" spellcheck={false} placeholder='[{"op":"add_clip","track":"text","text":"Hi","at":0,"duration":2}]' />
       <div><button id="applyo" onClick={applyOps}>{t("applyOps")}</button></div>

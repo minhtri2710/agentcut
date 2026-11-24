@@ -75,3 +75,14 @@ export function regroupIds(tracks: Track[]): string[] {
   }));
   return out;
 }
+
+/** What a form input holds, as the field's json types read it: empty removes the field (null), "true"/"false" is a boolean where one is allowed,
+ *  a numeric text a number where numbers are allowed, else the text where strings are; anything else throws bad_value. */
+export function fieldValue(types: string[], raw: string): unknown {
+  const s = raw.trim();
+  if (s === "") return null;
+  if (types.includes("boolean") && (s === "true" || s === "false")) return s === "true";
+  if (types.includes("number") && !Number.isNaN(Number(s))) return Number(s);
+  if (types.includes("string")) return s;
+  throw { code: "bad_value", message: `expected ${types.join(" or ")}, got ${JSON.stringify(s)}` };
+}

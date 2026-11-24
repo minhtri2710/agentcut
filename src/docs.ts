@@ -206,7 +206,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - The project folder must be on a volume with hard links (APFS, NTFS, ext4; not exFAT or FAT): project.json and the lock need them, and error unsupported_fs says so. Media files may stay on any volume. A folder you cannot write to (permissions, read-only volume) is error not_writable, and its hint names the folder.
 
 ## Working alongside a human (agentcut ui)
-- \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
+- \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (timeline, viewer, inspector (a form of the clip's fields, or its JSON), keyframe
   editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
   copied into the project's media/ (never over a file there) and imported. The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
