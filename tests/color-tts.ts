@@ -36,6 +36,21 @@ check("filter order: exposure, temperature, balance, curves, eq, hsl, vibrance",
   JSON.stringify(chain.map((f) => f.split("=")[0])) === JSON.stringify(["exposure", "colortemperature", "colorbalance", "curves", "eq", "huesaturation", "vibrance"]), chain);
 const run = spawnSync("ffmpeg", ["-v", "error", "-i", join(m, "grey.mp4"), "-frames:v", "1", "-vf", chain.join(","), "-f", "null", "-"], { encoding: "utf8" });
 check("full chain is accepted by ffmpeg", run.status === 0, run.stderr);
+{
+  // film-stock looks move a muted colourful frame (testsrc2 at 0.4 saturation, so a look has room to add colour) the way the stock is known for (signalstats: means 0..255)
+  const stats = (look?: string) => {
+    const vf = [...(look ? gradeChain({ look }) : []), "signalstats", "metadata=print:file=-"].join(",");
+    const r = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x240:d=0.1", "-frames:v", "1", "-vf", "eq=saturation=0.4," + vf, "-f", "null", "-"], { encoding: "utf8" });
+    const g = (k: string) => Number(new RegExp(`signalstats\\.${k}=([\\d.]+)`).exec(r.stdout)?.[1]);
+    return { sat: g("SATAVG"), spread: g("YHIGH") - g("YLOW"), warm: g("VAVG") - g("UAVG"), ok: r.status === 0 };
+  };
+  const b = stats(), s: Record<string, ReturnType<typeof stats>> = {};
+  for (const k of ["kodak_gold", "portra", "velvia", "cinestill", "bleach_bypass", "kodachrome"]) s[k] = stats(k);
+  check("film looks: each chain is accepted by ffmpeg", Object.values(s).every((x) => x.ok && Number.isFinite(x.sat)), s);
+  check("film looks move the frame as the stock is known for: gold warmer, cinestill cooler, velvia and kodachrome more saturated, portra and bleach bypass less, bleach bypass more contrast",
+    s.kodak_gold.warm > b.warm + 2 && s.cinestill.warm < b.warm - 2 && s.velvia.sat > b.sat * 1.2 && s.kodachrome.sat > b.sat * 1.1
+      && s.portra.sat < b.sat * 0.95 && s.bleach_bypass.sat < b.sat * 0.6 && s.bleach_bypass.spread > b.spread, { b, s });
+}
 
 const P = join(tmp, "proj");
 api.create(P, { preset: "720p" });
