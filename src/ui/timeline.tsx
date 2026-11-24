@@ -5,8 +5,9 @@ import { dropEdit } from "./edits.ts";
 import { t } from "./i18n.ts";
 import { select } from "./inspector.tsx";
 import { kfTimes, near, pts } from "./keyframes.ts";
+import { applyLib, LIB_DRAG } from "./library.tsx";
 import { ASSET_DRAG } from "./media.tsx";
-import { $, changed, LABEL, LANE, refreshView, S, st, total, V } from "./state.ts";
+import { $, changed, findClip, LABEL, LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
 import { clipOrder, resolveRef, tickStep } from "./view.ts";
@@ -60,14 +61,18 @@ function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
 }
 
 /** an asset from the media pool dropped on a lane: one add_clip there (the shown tracks only: an opened compound is read-only) */
+/** what was dropped on a lane: a media pool asset is a new clip there; a library item goes on the clip under the pointer, or a text preset is a new title there */
 function laneDrop(e: DragEvent, tr: Track) {
-  const id = e.dataTransfer?.getData(ASSET_DRAG);
-  if (!id || V().nested) return;
+  const dt = e.dataTransfer, id = dt?.getData(ASSET_DRAG), lib = dt?.getData(LIB_DRAG);
+  if ((!id && !lib) || V().nested) return;
   e.preventDefault();
   const at = (e.clientX - (e.currentTarget as HTMLElement).querySelector(".lclips")!.getBoundingClientRect().left) / st.pps;
-  ops([dropEdit(tr, id, at)], "add " + id + " to " + tr.id);
+  if (id) return ops([dropEdit(tr, { asset: id }, at)], "add " + id + " to " + tr.id);
+  const [kind, name] = lib!.split("/"), on = (e.target as HTMLElement).closest<HTMLElement>(".clip");
+  if (!on && kind === "text") return ops([dropEdit(tr, { text: t("libTitle"), duration: 3, preset: name }, at)], "add " + name + " title to " + tr.id);
+  applyLib(kind, name, on ? findClip(on.dataset.id!) : null);
 }
-const laneOver = (e: DragEvent) => { if (!V().nested && e.dataTransfer && Array.prototype.includes.call(e.dataTransfer.types, ASSET_DRAG)) e.preventDefault(); };
+const laneOver = (e: DragEvent) => { if (!V().nested && e.dataTransfer && [ASSET_DRAG, LIB_DRAG].some((k) => Array.prototype.includes.call(e.dataTransfer!.types, k))) e.preventDefault(); };
 
 /** waveform peaks per asset (and file path: a relinked asset is another sound), fetched once per page */
 const waves = new Map<string, { rate: number; peaks: number[] } | "loading" | "failed">();

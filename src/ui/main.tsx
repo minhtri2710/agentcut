@@ -6,6 +6,7 @@ import { getLang, setLang, t, type Lang } from "./i18n.ts";
 import { select, Side } from "./inspector.tsx";
 import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
 import { ExportDialog, openExport } from "./export.tsx";
+import { Library } from "./library.tsx";
 import { Media } from "./media.tsx";
 import { History, Review } from "./review.tsx";
 import { initKeyboard } from "./keyboard.ts";
@@ -73,6 +74,7 @@ function Consent() {
 /** the left panel: one tab per tool */
 const TABS = [
   { id: "media", label: () => t("media"), body: Media },
+  { id: "library", label: () => t("library"), body: Library },
   { id: "review", label: () => t("review"), body: Review },
   { id: "history", label: () => t("history"), body: History },
 ];

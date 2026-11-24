@@ -7,3 +7,5 @@ declare const FORM: {
   enums: Record<string, string[]>;
   grade: [string, string][];
 };
+/** the library's items (src/library.ts LIBRARY): kind -> names, each previewed at /api/library/<kind>/<name> */
+declare const LIB: Record<string, string[]>;

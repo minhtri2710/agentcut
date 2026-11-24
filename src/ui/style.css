@@ -11,7 +11,7 @@ button:hover{background:#353a46}button.primary{background:var(--accent);border-c
 dialog{background:#1f2229;color:#dde;border:1px solid #555;border-radius:6px;max-width:420px}
 #main{display:grid;grid-template-columns:240px minmax(0,1fr) 360px;min-height:0;min-width:0}
 #left{border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;min-width:0}
-.tabs{display:flex;gap:2px;padding:6px 6px 0;border-bottom:1px solid var(--line)}
+.tabs{display:flex;flex-wrap:wrap;gap:2px;padding:6px 6px 0;border-bottom:1px solid var(--line)}
 .tabs button{border:0;border-radius:5px 5px 0 0;background:transparent;color:var(--mut)}.tabs button.on{background:var(--panel2);color:var(--text)}
 #media{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1}
 #media input{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit;min-width:0}
@@ -20,6 +20,13 @@ dialog{background:#1f2229;color:#dde;border:1px solid #555;border-radius:6px;max
 .asset{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:4px;cursor:grab;font-size:11px;min-width:0}
 .asset img,.asset .aicon{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;background:#000;display:block}
 .asset .aicon{display:flex;align-items:center;justify-content:center;color:var(--mut);background:#14261b}
+#library{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1;overflow:auto}
+#library summary{cursor:pointer;font-weight:600;padding:2px 0}
+.lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;margin:4px 0 8px}
+.litem{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:4px;cursor:grab;font:inherit;font-size:11px;color:var(--text);text-align:left;min-width:0}
+.litem:hover:not(:disabled){border-color:var(--accent)}
+.litem img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;background:#000;display:block;margin-bottom:3px}
+.litem span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .aname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
 @media (max-width:1100px){#main{grid-template-columns:minmax(0,1fr) 340px}#left{display:none}}
 #viewer{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;min-width:0;background:#0d0e11;position:relative}

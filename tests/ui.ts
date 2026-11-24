@@ -401,6 +401,19 @@ const pk = await jget("/api/peaks/" + toneId), mute = await jget("/api/peaks/" +
 check("/api/peaks: 50 peaks per second of the sound, a steady tone steady inside, 0..255", pk.j.ok && pk.j.rate === 50 && Math.abs(pk.j.peaks.length - 100) <= 1
   && pk.j.peaks.slice(2, -2).every((v: number) => v === pk.j.peaks[50] && v > 20 && v <= 255), { rate: pk.j.rate, n: pk.j.peaks?.length, some: pk.j.peaks?.slice(0, 5) });
 check("  and a video with no sound answers decode_failed", mute.status === 422 && mute.j.error?.code === "decode_failed", mute);
+// the library: each item a still from a scratch timeline, kept in previews/ui/library per AgentCut version; the scratch project is gone after
+{
+  const { VERSION } = await import("../src/version.ts");
+  const bw = await raw("/api/library/look/bw"), file = join(dir, "previews", "ui", "library", `look-bw-${VERSION}.jpg`);
+  const px = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { input: bw.body }).stdout;
+  check("/api/library/look/bw: a JPEG of the test picture in that look (grey), saved in previews/ui/library", bw.status === 200 && bw.type === "image/jpeg" && existsSync(file)
+    && px.length === 3 && Math.max(...px) - Math.min(...px) <= 6, { status: bw.status, px: [...px] });
+  const m0 = statSync(file).mtimeMs, again = await raw("/api/library/look/bw");
+  check("  a second request is the saved file", again.status === 200 && statSync(file).mtimeMs === m0 && again.body.equals(bw.body));
+  const bad = await raw("/api/library/look/nope"), deep = await raw("/api/library/look/bw/x");
+  check("  an item not in the library, or a longer path, is not_found", [bad, deep].every((r) => r.status === 404 && JSON.parse(r.body.toString()).error.code === "not_found"), [bad.status, deep.status]);
+  check("  no scratch project is left in .agentcut/tmp", !readdirSync(join(dir, ".agentcut", "tmp")).some((n) => n.startsWith(`render-${process.pid}-`)));
+}
 
 // ---------------------------------------------------------------- render job
 console.log("render");
@@ -861,7 +874,7 @@ console.log("page modules");
   const { num } = await import("../src/ui/time.ts");
   const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
   const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
-  const { dragEdit, dropEdit, fieldValue, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { dragEdit, dropEdit, fieldValue, libEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
   const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
   const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -920,9 +933,17 @@ console.log("page modules");
     JSON.stringify(dragEdit("move", att, from, all, "free", 0.25, 0, 1)) === '{"ops":[{"op":"move_clip","id":"t","track":"free"},{"op":"update_clip","id":"t","set":{"offset":0.75}}],"label":"move t"}'
     && JSON.stringify(dragEdit("move", att, from, all, "v", -0.25, 0, 1).ops) === '[{"op":"update_clip","id":"t","set":{"offset":0.25}}]');
 
-  check("dropEdit: an asset dropped on a free lane starts at the drop time (never below 0); on a magnetic lane it goes before the first clip whose middle is later",
-    JSON.stringify(dropEdit(loose, "a1", 2.34567)) === '{"op":"add_clip","track":"free","asset":"a1","at":2.346}' && dropEdit(loose, "a1", -1).at === 0
-    && dropEdit(mag, "a1", 0.9).index === 0 && dropEdit(mag, "a1", 1.1).index === 1 && dropEdit(mag, "a1", 9).index === 2);
+  const a1 = { asset: "a1" };
+  check("dropEdit: a clip dropped on a free lane starts at the drop time (never below 0); on a magnetic lane it goes before the first clip whose middle is later",
+    JSON.stringify(dropEdit(loose, a1, 2.34567)) === '{"op":"add_clip","track":"free","asset":"a1","at":2.346}' && dropEdit(loose, a1, -1).at === 0
+    && dropEdit(mag, a1, 0.9).index === 0 && dropEdit(mag, a1, 1.1).index === 1 && dropEdit(mag, a1, 9).index === 2);
+  const lib = (kind: string, name: string, c: Record<string, unknown> | null) => JSON.stringify(libEdit(kind, name, c as any));
+  check("libEdit: an effect goes on the clip or the whole video; a look only on a picture; a transition into any clip; a preset only on its own clip type",
+    lib("effect", "vhs", null) === '{"op":"add_effect","type":"vhs"}' && lib("effect", "vhs", clip("c")) === '{"op":"add_effect","id":"c","type":"vhs"}'
+    && lib("look", "warm", clip("v", { type: "video" })) === '{"op":"update_clip","id":"v","set":{"color":{"look":"warm"}}}' && lib("look", "warm", clip("c")) === "null" && lib("look", "warm", null) === "null"
+    && lib("transition", "zoom", clip("c")) === '{"op":"add_transition","to":"c","type":"zoom"}'
+    && lib("text", "neon", clip("t", { type: "text" })) === '{"op":"update_clip","id":"t","set":{"preset":"neon"}}' && lib("text", "neon", clip("k", { type: "captions" })) === "null"
+    && lib("caption", "pill", clip("k", { type: "captions" })) === '{"op":"update_clip","id":"k","set":{"preset":"pill"}}');
   const thrown = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e.code; } };
   check("fieldValue: empty removes the field, numbers and booleans where the field takes them, text where it takes strings, else bad_value",
     fieldValue(["number"], " ") === null && fieldValue(["number", "string"], "2.5") === 2.5 && fieldValue(["number", "string"], "50%") === "50%" && fieldValue(["boolean", "number"], "true") === true

@@ -26,10 +26,20 @@ export function dragEdit(mode: DragMode, c: Clip, tr: Track, tracks: Track[], de
   return { ops: [op], label: "move_clip " + c.id };
 }
 
-/** An asset dropped on a lane at time `at`: one add_clip. A magnetic track takes it at the index the drop point falls in (before every clip whose middle is later), any other track at that time. */
-export function dropEdit(tr: Track, asset: string, at: number): Op {
-  if (!tr.magnetic) return { op: "add_clip", track: tr.id, asset, at: +Math.max(0, at).toFixed(3) };
-  return { op: "add_clip", track: tr.id, asset, index: tr.clips.filter((o) => start(o) + dur(o) / 2 < at).length };
+/** A clip (its fields: an asset, or a text with a preset) dropped on a lane at time `at`: one add_clip. A magnetic track takes it at the index the drop point falls in (before every clip whose middle is later), any other track at that time. */
+export function dropEdit(tr: Track, fields: Dict, at: number): Op {
+  if (!tr.magnetic) return { op: "add_clip", track: tr.id, ...fields, at: +Math.max(0, at).toFixed(3) };
+  return { op: "add_clip", track: tr.id, ...fields, index: tr.clips.filter((o) => start(o) + dur(o) / 2 < at).length };
+}
+
+/** A library item (library.ts LIBRARY) put on clip c, or on nothing selected (null): an effect goes on the clip or the whole video, a look becomes a picture's grade base,
+ *  a transition leads into the clip, a text or caption preset restyles a clip of that type. null: the item does not go there. */
+export function libEdit(kind: string, name: string, c: Clip | null): Op | null {
+  if (kind === "effect") return c ? { op: "add_effect", id: c.id, type: name } : { op: "add_effect", type: name };
+  if (!c) return null;
+  if (kind === "look") return c.type === "video" || c.type === "image" ? { op: "update_clip", id: c.id, set: { color: { look: name } } } : null;
+  if (kind === "transition") return { op: "add_transition", to: c.id, type: name };
+  return c.type === (kind === "text" ? "text" : "captions") ? { op: "update_clip", id: c.id, set: { preset: name } } : null;
 }
 
 /** dragging a keyframe tick by `delta` seconds moves every prop's point at time kt: one set_keyframes per prop that has one there */

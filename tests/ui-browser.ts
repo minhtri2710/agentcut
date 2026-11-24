@@ -809,6 +809,38 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await setF("f-look", "portra");
     check("  and the look list sets the look beside it", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "portra" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
   }
+  // The library: every look, effect, transition and text style with a rendered still; a click puts it on the selected clip, a drag on the clip under the pointer, a text style on a free lane is a new title
+  console.log("library");
+  {
+    const item = (k: string) => `document.querySelector('[data-lib="${k}"]')`;
+    const libDrop = (k: string, target: string, sec: number) => js(`(function(){
+      var dt = new DataTransfer(); ${item(k)}.dispatchEvent(new DragEvent("dragstart", { dataTransfer: dt, bubbles: true }));
+      var t = ${target}, lane = t.closest(".lane"), r = lane.querySelector(".lclips").getBoundingClientRect(), x = r.left + ${sec} * ${zoomPps};
+      t.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+      t.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+    })()`);
+    await until("the page shows the project as it is", atRev(load().revision));
+    await click("#tab-library");
+    check("the Library tab shows each item with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
+      && await js(`document.querySelectorAll("#library .litem").length`) > 60, await js(`$("library") && $("library").textContent.slice(0, 120)`));
+    await js(`${item("look/bw")}.click()`); // rb1 is still selected from the form rows
+    check("clicking a look puts it on the selected clip's grade, keeping the rest of the grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "bw" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
+    await until("bw seen", atRev(load().revision));
+    await libDrop("effect/vhs", node("blink"), 0.4);
+    check("an effect dragged onto a clip is added to that clip", await untilFile((tl) => (clipOf(tl, "blink")?.effects ?? []).some((e: any) => e.type === "vhs")), clipOf(load(), "blink"));
+    await until("vhs seen", atRev(load().revision));
+    const titles = (tl: any) => tl.tracks.find((t: any) => t.id === "text").clips.filter((c: any) => c.glow);
+    await libDrop("text/neon", `[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "text"; })[0]`, 2);
+    check("a text style dragged onto a free lane adds a title in that style at the drop time", await untilFile((tl) => titles(tl).length === 1 && Math.abs(Number(titles(tl)[0].start) - 2) < 0.02), load().tracks.find((t: any) => t.id === "text").clips);
+    await until("title seen", atRev(load().revision));
+    const before = readFileSync(join(dir, "project.json"), "utf8");
+    await clickClip("blink");
+    await until("blink selected", `$("selinfo").textContent.indexOf("blink on ") === 0`);
+    await js(`$("msg").className = ""; ${item("look/warm")}.click()`);
+    check("  a look on a text clip is refused by name and changes nothing", await until("refused", `$("msg").className === "err" && $("msg").textContent.indexOf("warm") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
+    await click("#tab-media");
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

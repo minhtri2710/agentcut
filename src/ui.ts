@@ -10,6 +10,7 @@ import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
+import { libraryStill } from "./library.ts";
 import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
 import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
@@ -116,6 +117,11 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const a = asset(path.slice("/api/peaks/".length)), st = statSync(a.abs, { throwIfNoEntry: false }), key = `${a.abs}|${st?.mtimeMs}|${st?.size}`;
       if (!waves.has(key)) { if (waves.size > 100) waves.clear(); waves.set(key, peaks(a.abs, PEAK_RATE).catch((e) => { waves.delete(key); throw e; })); }
       return json(res, 200, { ok: true, rate: PEAK_RATE, peaks: await waves.get(key) });
+    }
+    if (req.method === "GET" && path.startsWith("/api/library/")) { // a look, effect, transition or text preset as a still (library.ts)
+      const [kind, name, ...rest] = path.slice("/api/library/".length).split("/");
+      if (rest.length) throw new EditError(`no library item ${path}`, "not_found");
+      return sendFile(req, res, await libraryStill(p, kind, name));
     }
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);
     if (req.method === "GET" && path.startsWith("/files/")) return sendFile(req, res, servedFile(path.slice("/files/".length)));
