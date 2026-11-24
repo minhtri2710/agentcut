@@ -1138,6 +1138,33 @@ console.log("pieces of an attached clip keep their place and length");
     try { (await applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }])); return "no error"; } catch (e: any) { return e.code; }
   })());
   check("remove_silence refuses a picture whose detached audio plays reversed", rv === "reversed_audio", rv);
+
+  { // remove_range: a stretch of timeline time out of a clip (the page's text-based cut); the same segment cut as remove_silence
+    const rr = () => {
+      const t = newTimeline(640, 360, 30);
+      t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
+      t.assets.i = { path: "/none.png", kind: "image" };
+      return t;
+    };
+    const clipsOf = (t: any) => t.tracks.flatMap((tr: any) => tr.clips);
+    const [m1, r1] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "sp", in: 0.5, speed: 2, duration: 2 }, { op: "add_clip", track: "main", asset: "i", id: "nx", duration: 1 },
+      { op: "remove_range", id: "sp", start: 0.5, end: 1 }]);
+    const [a1, b1] = r1[2].segments.map((id: string) => clipsOf(m1).find((c: any) => c.id === id)), nx = clipsOf(m1).find((c: any) => c.id === "nx");
+    check("remove_range at speed 2 on the magnetic track: the source before and after the stretch, back to back, and the next clip moves up",
+      a1?.id === "sp" && near(a1.in, 0.5) && near(a1.duration, 0.5) && near(b1?.in, 2.5) && near(b1?.duration, 1) && near(b1?.start, 0.5) && near(nx.start, 1.5) && near(r1[2].removed_seconds, 0.5), { a1, b1, nx });
+    const [m2, r2] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "overlay", asset: "v", id: "dv", at: 1, duration: 4 }, { op: "detach_audio", id: "dv" }, { op: "remove_range", id: "dv", start: 2, end: 3 }]);
+    const pieces = clipsOf(m2).filter((c: any) => c.type === "audio");
+    check("remove_range with detached audio: one audio piece per picture segment, attached to it, with its source",
+      r2[2].segments.length === 2 && pieces.length === 2 && r2[2].segments.every((id: string, k: number) => pieces[k].attach_to === id && near(pieces[k].in, clipsOf(m2).find((c: any) => c.id === id).in)), { r2: r2[2], pieces });
+    const [m3, r3] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "hd", duration: 3 }, { op: "remove_range", id: "hd", start: 0, end: 1 }]);
+    check("remove_range at the clip's head leaves one segment that starts later in the source", r3[1].segments.length === 1 && near(clipsOf(m3)[0].in, 1) && near(clipsOf(m3)[0].duration, 2), clipsOf(m3));
+    const rrCode = async (ops: any[]) => { try { await applyOps(null as any, rr(), ops); return "no error"; } catch (e: any) { return e.code; } };
+    const base = { op: "add_clip", track: "main", asset: "v", id: "c", duration: 3 };
+    const codes = [await rrCode([base, { op: "remove_range", id: "c", start: 0, end: 3 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 4 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 1 }]),
+      await rrCode([{ ...base, reverse: true }, { op: "remove_range", id: "c", start: 1, end: 2 }]), await rrCode([{ op: "add_clip", track: "main", asset: "i", id: "c", duration: 3 }, { op: "remove_range", id: "c", start: 1, end: 2 }])];
+    check("remove_range refuses the whole clip, a stretch outside it or backwards (bad_value), a reversed clip (unsupported), a picture (bad_type)",
+      JSON.stringify(codes) === JSON.stringify(["bad_value", "bad_value", "bad_value", "unsupported", "bad_type"]), codes);
+  }
 }
 
 console.log("clip copies: split, duplicate, freeze, remove");

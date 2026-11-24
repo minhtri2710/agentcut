@@ -116,6 +116,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    The beats that every and offset pick must each be 0 s or more and later than the one before, else bad_beats. Each retimed clip (not a kept_computed one) must span more than 0.05 s between its two cuts (the first clip from 0 s), else bad_beats; for close beats, a larger every skips them, and in a typed list you can leave one out.
    Every clip the list reaches is named in retimed or kept_computed; a clip of the track named in neither was not reached (the list ran out, or it is the last clip).
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
+{"op":"remove_range","id":"vid1","start":2.1,"end":3.4}      cut a stretch (timeline seconds, e.g. the words of a transcript) out of a video/audio clip; detached audio follows
 {"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}   half as long, same source
 {"op":"set_keyframes","id":"vid3","prop":"speed","keyframes":[[0,1],[1,0.25,"ease_in_out"],[2,3]]}   speed ramp
 {"op":"set_keyframes","id":"img2","prop":"scale","keyframes":[[0,1],[3,1.2,"ease_in_out"]]}
@@ -207,7 +208,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 
 ## Working alongside a human (agentcut ui)
 - \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (timeline, viewer, inspector (a form of the clip's fields, or its JSON), keyframe
-  editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, a library of looks, effects, transitions and text styles with rendered previews (click or drag onto a clip), review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
+  editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, a library of looks, effects, transitions and text styles with rendered previews (click or drag onto a clip), a transcript panel (click a word to seek, cut a run of words with remove_range), review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
   copied into the project's media/ (never over a file there) and imported. The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
   The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.

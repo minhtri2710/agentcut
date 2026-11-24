@@ -2,19 +2,21 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
+import { capPreviews } from "./cache.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
 import { endJob } from "./jobs.ts";
 import { libraryStill } from "./library.ts";
 import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
 import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
-import { ensureDir } from "./safe-write.ts";
+import { ensureDir, writeFile } from "./safe-write.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
 const MIME: Record<string, string> = {
@@ -139,6 +141,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
       if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, body.steps ?? 1, rev, UI_AUTHOR) }); // steps: the history panel undoes back to an entry
       if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, body.steps ?? 1, rev, UI_AUTHOR) });
+      if (path === "/api/transcript") return json(res, 200, { ok: true, ...(await transcript(body.asset, body.language, gone.signal)) });
       if (path === "/api/review") return json(res, 200, { ok: true, revision: p.load().revision, ...(await api.review(root, { signal: gone.signal })) });
       if (path === "/api/sheet") {
         const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
@@ -225,6 +228,20 @@ export async function startUi(project: string | undefined, o: { port?: number } 
         try { linkSync(part, dest); return dest; } catch (e: any) { if (e.code !== "EEXIST") throw e; }
       }
     } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+
+  /** The words of an asset's sound (media seconds), kept in previews/ui/transcripts per file version and language: whisper takes a while, the page asks again on every open. */
+  async function transcript(id: unknown, language: unknown, signal: AbortSignal) {
+    if (typeof id !== "string" || (language !== undefined && typeof language !== "string")) throw new EditError("transcript takes {asset: id, language?: code}", "bad_request");
+    const a = asset(id), st = statSync(a.abs, { throwIfNoEntry: false });
+    const file = join(cacheDir, "transcripts", createHash("sha1").update(`${a.abs}|${st?.mtimeMs}|${st?.size}|${language ?? ""}`).digest("hex").slice(0, 24) + ".json");
+    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+    const r = await api.analyze.transcribe(a.abs, language, undefined, undefined, undefined, signal);
+    const out = { language: r.language, words: r.words };
+    ensureDir(root, join(cacheDir, "transcripts"));
+    writeFile(file, JSON.stringify(out), root);
+    capPreviews(p, file);
+    return out;
   }
 
   function asset(id: string): Asset & { abs: string } {

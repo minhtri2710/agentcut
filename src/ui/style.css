@@ -20,6 +20,10 @@ dialog{background:#1f2229;color:#dde;border:1px solid #555;border-radius:6px;max
 .asset{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:4px;cursor:grab;font-size:11px;min-width:0}
 .asset img,.asset .aicon{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;background:#000;display:block}
 .asset .aicon{display:flex;align-items:center;justify-content:center;color:var(--mut);background:#14261b}
+#transcript{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1;overflow:auto}
+#words{margin:0;line-height:1.9}
+.word{border:0;background:transparent;color:var(--text);padding:1px 2px;border-radius:3px;font:inherit}
+.word.off{color:var(--mut);opacity:.5}.word.now{background:#2a3550}.word.pick{background:var(--accent);color:#fff}
 #library{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1;overflow:auto}
 #library summary{cursor:pointer;font-weight:600;padding:2px 0}
 .lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;margin:4px 0 8px}

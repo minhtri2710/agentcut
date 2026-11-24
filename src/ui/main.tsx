@@ -9,6 +9,7 @@ import { ExportDialog, openExport } from "./export.tsx";
 import { Library } from "./library.tsx";
 import { Media } from "./media.tsx";
 import { History, Review } from "./review.tsx";
+import { Transcript } from "./transcript.tsx";
 import { initKeyboard } from "./keyboard.ts";
 import { clearStateless, fail } from "./messages.ts";
 import { $, changed, findClip, onChange, refreshView, st } from "./state.ts";
@@ -75,6 +76,7 @@ function Consent() {
 const TABS = [
   { id: "media", label: () => t("media"), body: Media },
   { id: "library", label: () => t("library"), body: Library },
+  { id: "transcript", label: () => t("transcript"), body: Transcript },
   { id: "review", label: () => t("review"), body: Review },
   { id: "history", label: () => t("history"), body: History },
 ];

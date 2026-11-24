@@ -414,6 +414,22 @@ check("  and a video with no sound answers decode_failed", mute.status === 422 &
   check("  an item not in the library, or a longer path, is not_found", [bad, deep].every((r) => r.status === 404 && JSON.parse(r.body.toString()).error.code === "not_found"), [bad.status, deep.status]);
   check("  no scratch project is left in .agentcut/tmp", !readdirSync(join(dir, ".agentcut", "tmp")).some((n) => n.startsWith(`render-${process.pid}-`)));
 }
+// the transcript panel's words: the engine's words of an asset in media seconds, kept in previews/ui/transcripts so the engine runs once per file version
+if (process.platform !== "win32") { // the stand-in engine is a shell script
+  const bin = join(tmp, "asr-bin"), model = join(tmp, "asr.bin"), runs = join(tmp, "asr.runs");
+  mkdirSync(bin); writeFileSync(model, "");
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho run >> "${runs}"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"en"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}},{"text":" there","offsets":{"from":600,"to":900}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+  const env = { PATH: process.env.PATH, model: process.env.AGENTCUT_WHISPER_MODEL };
+  process.env.PATH = `${bin}:${env.PATH}`; process.env.AGENTCUT_WHISPER_MODEL = model;
+  try {
+    const t1 = await jget("/api/transcript", { method: "POST", body: { asset: toneId } }), t2 = await jget("/api/transcript", { method: "POST", body: { asset: toneId } });
+    check("/api/transcript: the words of the asset in media seconds; asked again, the saved words without a second engine run",
+      t1.j.ok && JSON.stringify(t1.j.words) === '[{"text":"Hi","start":0.2,"end":0.5},{"text":"there","start":0.6,"end":0.9}]' && JSON.stringify(t2.j.words) === JSON.stringify(t1.j.words)
+      && readFileSync(runs, "utf8").trim().split("\n").length === 1 && readdirSync(join(dir, "previews", "ui", "transcripts")).length === 1, { t1: t1.j, runs: readFileSync(runs, "utf8") });
+    const bad = await jget("/api/transcript", { method: "POST", body: { asset: 5 } });
+    check("  a request without an asset id is bad_request", bad.status === 400 && bad.j.error.code === "bad_request", bad);
+  } finally { process.env.PATH = env.PATH; if (env.model === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = env.model; }
+}
 
 // ---------------------------------------------------------------- render job
 console.log("render");
@@ -874,7 +890,7 @@ console.log("page modules");
   const { num } = await import("../src/ui/time.ts");
   const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
   const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
-  const { dragEdit, dropEdit, fieldValue, libEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { dragEdit, dropEdit, fieldValue, libEdit, clipWords, cutWords, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
   const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
   const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -944,6 +960,12 @@ console.log("page modules");
     && lib("transition", "zoom", clip("c")) === '{"op":"add_transition","to":"c","type":"zoom"}'
     && lib("text", "neon", clip("t", { type: "text" })) === '{"op":"update_clip","id":"t","set":{"preset":"neon"}}' && lib("text", "neon", clip("k", { type: "captions" })) === "null"
     && lib("caption", "pill", clip("k", { type: "captions" })) === '{"op":"update_clip","id":"k","set":{"preset":"pill"}}');
+  const tc = clip("tv", { type: "video", start: 10, in: 1, speed: 2, duration: 2 }); // plays media 1..5
+  const tw = clipWords(tc, [{ text: "a", start: 0.2, end: 0.8 }, { text: "b", start: 1.6, end: 2.4 }, { text: "c", start: 4.6, end: 5.4 }]);
+  check("clipWords: media times through in and speed onto the timeline; a word the clip does not play is off",
+    !tw[0].on && tw[1].on && near(tw[1].t0, 10.3) && near(tw[1].t1, 10.7) && tw[2].on && near(tw[2].t1, 12.2), tw);
+  check("cutWords: one remove_range over the picked words in either order, kept inside the clip",
+    JSON.stringify(cutWords(tc, tw, 2, 1)) === '{"op":"remove_range","id":"tv","start":10.3,"end":12}', cutWords(tc, tw, 2, 1));
   const thrown = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e.code; } };
   check("fieldValue: empty removes the field, numbers and booleans where the field takes them, text where it takes strings, else bad_value",
     fieldValue(["number"], " ") === null && fieldValue(["number", "string"], "2.5") === 2.5 && fieldValue(["number", "string"], "50%") === "50%" && fieldValue(["boolean", "number"], "true") === true

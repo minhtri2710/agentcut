@@ -37,6 +37,8 @@ export const st = {
   review: null as { busy: boolean; result?: Dict } | null, // the review panel's last run
   mediaQuery: "",
   uploading: null as string | null, // the dropped file being sent to media/
+  tx: {} as Record<string, { busy?: boolean; words?: { text: string; start: number; end: number }[] }>, // transcripts by asset id and file path
+  txSel: null as { id: string; a: number; b: number } | null, // the transcript words picked in clip id: anchor and end
 };
 
 let redraw = () => {};

@@ -841,6 +841,39 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
     await click("#tab-media");
   }
+  // The transcript: a clip's words from the engine (a stand-in here); a click seeks, shift-click picks a run, Cut removes their stretch with one remove_range, undo puts it back
+  console.log("transcript");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "asr-bin"), model = join(tmp, "asr.bin"), talk = join(media, "talk.mp4");
+    mkdirSync(bin, { recursive: true }); writeFileSync(model, "");
+    writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"transcription":[{"text":" one","offsets":{"from":200,"to":600}},{"text":" two","offsets":{"from":1000,"to":1400}},{"text":" three","offsets":{"from":2000,"to":2400}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+    const env = { PATH: process.env.PATH, model: process.env.AGENTCUT_WHISPER_MODEL };
+    process.env.PATH = `${bin}:${env.PATH}`; process.env.AGENTCUT_WHISPER_MODEL = model;
+    try {
+      ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=3", "-shortest", "-pix_fmt", "yuv420p", talk);
+      await applyLatest(dir, [{ op: "add_clip", track: "overlay", src: talk, id: "talk", at: 20, duration: 3 }]);
+      await until("talk seen", atRev(load().revision));
+      const talkAsset = clipOf(load(), "talk").asset;
+      await clickClip("talk");
+      await click("#tab-transcript");
+      await click("#txgo");
+      const words = `[].map.call(document.querySelectorAll("#words .word"), function (w) { return w.textContent; }).join()`;
+      check("Transcribe shows the selected clip's words", await until("words", `${words} === "one,two,three"`, 30_000), await js(`$("transcript").textContent`));
+      await js(`document.querySelectorAll("#words .word")[1].click()`);
+      await until("seek", `$("time").textContent.indexOf("21.0") >= 0`);
+      check("  clicking a word seeks to it on the timeline", Math.abs(await nowT() - 21) < 0.02, await nowT());
+      await js(`document.querySelectorAll("#words .word")[2].dispatchEvent(new MouseEvent("click", { shiftKey: true, bubbles: true }))`);
+      const revCut = load().revision;
+      await click("#txcut");
+      const parts = (tl: any) => tl.tracks.find((t: any) => t.id === "overlay").clips.filter((c: any) => c.asset === talkAsset);
+      check("  shift-click picks the run and Cut removes exactly its stretch: the clip plays 0..1 s and 2.4..3 s of its media, back to back", await untilFile((tl) => tl.revision === revCut + 1)
+        && JSON.stringify(parts(load()).map((c: any) => [c.in ?? 0, c.duration, c.start])) === JSON.stringify([[0, 1, 20], [2.4, 0.6, 21]]), parts(load()));
+      await until("cut seen", atRev(load().revision));
+      await click("#undo");
+      check("  and undo restores the whole clip", await untilFile((tl) => tl.revision === revCut + 2 && parts(tl).length === 1 && parts(tl)[0].duration === 3), parts(load()));
+    } finally { process.env.PATH = env.PATH; if (env.model === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = env.model; }
+    await click("#tab-media");
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

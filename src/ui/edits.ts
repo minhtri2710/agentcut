@@ -96,3 +96,19 @@ export function fieldValue(types: string[], raw: string): unknown {
   if (types.includes("string")) return s;
   throw { code: "bad_value", message: `expected ${types.join(" or ")}, got ${JSON.stringify(s)}` };
 }
+
+/** a transcript word on the timeline: its media times mapped through clip c (start + (media - in) / speed), and whether c plays it */
+export type TlWord = { text: string; t0: number; t1: number; on: boolean };
+export function clipWords(c: Clip, words: { text: string; start: number; end: number }[]): TlWord[] {
+  const s = start(c), d = dur(c), cin = num(c.in || 0), sp = Number(c.speed || 1) || 1;
+  return words.map((w) => {
+    const t0 = s + (w.start - cin) / sp, t1 = s + (w.end - cin) / sp;
+    return { text: w.text, t0, t1, on: t1 > s + 1e-3 && t0 < s + d - 1e-3 };
+  });
+}
+
+/** cutting words i..j (in either order) out of clip c: one remove_range of their span, kept inside the clip */
+export function cutWords(c: Clip, ws: TlWord[], i: number, j: number): Op {
+  const a = Math.min(i, j), b = Math.max(i, j), s = start(c), e = s + dur(c);
+  return { op: "remove_range", id: c.id, start: +Math.max(s, ws[a].t0).toFixed(3), end: +Math.min(e, ws[b].t1).toFixed(3) };
+}
