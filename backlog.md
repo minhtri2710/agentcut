@@ -26,9 +26,10 @@
 - [ ] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (since 2026-11-24)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
-- [ ] vlab-separate - audio: voice/music separation (kind: ship) (since 2026-11-24)
+- [x] vlab-separate - audio: voice/music separation (kind: ship) (done 2026-11-25)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
+  b46f523: field stem + op separate_audio, prepare computes both stems once per file (models pinned to the sherpa-onnx HF commit 7001ba3, sha256 checked). Music = source - voice, so the sum is exact by construction: helper max error 2.4e-7; mixed back through the renderer the residual is under -50 dB (real row). Separation on a TTS voice + synthetic bed: voice-only input keeps 99.98 % in the voice stem, music-only input leaves the voice stem at -63 dB; ~0.1 s per 1 s of audio on this Mac. vision suite (fake + AGENTCUT_TEST_VISION=1 real rows) passes except the KCF row, which fails identically on clean HEAD.
 - [x] ui-chat - UI: agent chat panel (local CLI) blocked-by: ui-shell (kind: ship) (done 2026-11-25)
   Slice. Chat panel drives a locally installed agent CLI (claude or codex, found on PATH) in non-interactive mode with agentcut's MCP server configured for the open project, streams its messages and tool calls, can stop it. The page re-reads the project after each write.
   Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
