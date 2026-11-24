@@ -23,16 +23,10 @@
   - Cloud generation (image/video/music), social publishing, stock search: OpenChatCut features unrelated to the agent-first editor.
 
 ## Queued
-- [ ] vlab-runtime - Inference runtime: Python/uv vs onnxruntime-node vs wasm (kind: scout) (since 2026-11-24)
-  Research. Question: which runtime runs agentcut's ONNX models long-term (YuNet face, saliency, tracker, u2net mattes, and new RVM + Spleeter)?
-  Options: keep the uv/Python helper (vision-py.ts) | onnxruntime-node native addon (VidLab) | onnxruntime-web wasm in Node.
-  Criteria: single binary (bun build --compile) and npm dist (Node >= 22), install size, macOS/Linux/Windows, speed per frame, first-run network needs, the CSRT tracker (no ONNX form; OpenCV TrackerNano/TrackerVit use ONNX models), determinism of cached results, one implementation path (no dual runtime).
-  Output: a decision with measurements, plus the migration slices if it changes.
-
-- [ ] vlab-rvm - remove_background: RVM temporal matte blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
+- [ ] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (since 2026-11-24)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
-- [ ] vlab-separate - audio: voice/music separation blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
+- [ ] vlab-separate - audio: voice/music separation (kind: ship) (since 2026-11-24)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
 - [x] ui-chat - UI: agent chat panel (local CLI) blocked-by: ui-shell (kind: ship) (done 2026-11-25)
