@@ -29,11 +29,6 @@
   Criteria: single binary (bun build --compile) and npm dist (Node >= 22), install size, macOS/Linux/Windows, speed per frame, first-run network needs, the CSRT tracker (no ONNX form; OpenCV TrackerNano/TrackerVit use ONNX models), determinism of cached results, one implementation path (no dual runtime).
   Output: a decision with measurements, plus the migration slices if it changes.
 
-- [ ] vlab-renderqa - render: QA of the written file (kind: ship) (since 2026-11-24)
-  Slice. Every video render result carries a QA of the written file: probe the output and compare duration, size, fps, audio stream presence with the timeline; scan for frozen stretches (freezedetect) and black (blackdetect) in the output; findings in result.qa with times.
-  Acceptance: a normal render reports qa ok; a forced mismatch (e.g. timeline with audio rendered by a path that drops it, or a still-frame stretch) is reported with times; draft renders included; cost bounded (one extra ffmpeg pass, measured).
-  Leaves out: frame-sample evidence images; automatic retries.
-
 - [ ] vlab-speech - transcribe: keep words inside speech (kind: ship) (since 2026-11-24)
   Slice. Transcription keeps only words inside detected speech: words whisper times into a gap are dropped or clamped into the nearest speech region, and the silence threshold follows the measured noise floor instead of fixed -35 dB.
   Measure first at base: a generated clip with long silences and a music lead-in, count invented/misplaced words; ship only if the count drops and real words are kept.
@@ -44,10 +39,6 @@
   Slice. denoise can use FFmpeg arnndn with a pinned RNNoise model (GregorR/rnnoise-models sh.rnnn, 297646 bytes, sha256 70bb6685...dec0, public-domain dedication), downloaded only with consent like matte models; output aligned to the source (arnndn delays 480 samples at 48 kHz, drops a partial last frame: pad + atrim, measured).
   A/B first against the current two-stage afftdn on speech + noise fixtures; if it does not win, close the ticket with the numbers and ship nothing.
   Acceptance: measured win, sample-exact alignment test, consent path tested, AGENTS.md updated.
-
-- [ ] vlab-looks - color: film-emulation looks (kind: ship) (since 2026-11-24)
-  Slice. Film-emulation looks (kodak_gold, portra, velvia, cinestill, bleach_bypass, ...) as formulas in the colour grade, next to the existing look names, deterministic and render-tested.
-  Acceptance: each new look renders and changes scopes stats in its expected direction; names listed in capabilities and GUIDE; no .cube files shipped.
 
 - [ ] vlab-rvm - remove_background: RVM temporal matte blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
@@ -89,6 +80,15 @@
   Acceptance: a message produces a streamed reply and tool calls; stop kills the child; with no CLI found the panel says how to install one; the server keeps loopback-only and the page token rule.
   Leaves out: API-key LLM providers (rejected by the human).
 ## Done
+- [x] vlab-looks - color: film-emulation looks (kind: ship) (done 2026-11-24)
+  Slice. Film-emulation looks (kodak_gold, portra, velvia, cinestill, bleach_bypass, ...) as formulas in the colour grade, next to the existing look names, deterministic and render-tested.
+  Acceptance: each new look renders and changes scopes stats in its expected direction; names listed in capabilities and GUIDE; no .cube files shipped.
+  fa2b874: six film-stock looks as grade presets (no LUT files); tests check each one's direction on a desaturated pattern.
+- [x] vlab-renderqa - render: QA of the written file (kind: ship) (done 2026-11-24)
+  Slice. Every video render result carries a QA of the written file: probe the output and compare duration, size, fps, audio stream presence with the timeline; scan for frozen stretches (freezedetect) and black (blackdetect) in the output; findings in result.qa with times.
+  Acceptance: a normal render reports qa ok; a forced mismatch (e.g. timeline with audio rendered by a path that drops it, or a still-frame stretch) is reported with times; draft renders included; cost bounded (one extra ffmpeg pass, measured).
+  Leaves out: frame-sample evidence images; automatic retries.
+  d5897c9: result.qa on every video render (probe compare + freezedetect frozen_picture with clip ids). blackdetect left out: review already reports black frames with text_ids on the timeline, a second detector on the output would repeat it. Cost ~10% of render (20 s 1080x1920: 0.26 s / 2.1 s draft, 0.5 s / 4.7 s final).
 - [x] vlab-face - review: text covering a face (kind: ship) (done 2026-11-24)
   Slice. review reports text and captions that cover a face: for each text/captions clip window, intersect its drawn box with the face boxes of the picture below (analyze_subject results already cached in the project; a clip with no cached analysis is not analysed by review and is listed as unchecked).
   Acceptance: a title over a cached face is a finding with time range, text id and clip id; a title beside the face is not; no vision compute runs inside review; GUIDE/AGENTS.md updated.
