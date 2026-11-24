@@ -603,7 +603,7 @@ export function capabilities() {
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
-    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name) })),
+    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name), ...(M.MATTE_PINS[name].licence && { licence: M.MATTE_PINS[name].licence }) })),
     engines: { transcribe: AN.transcribeEngine(), tts: AN.ttsProviders(), vision: visionEngine() },
     ops: Object.keys(OPS),
   };

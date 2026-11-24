@@ -207,7 +207,7 @@ export function registerVisionOps(h: OpHelpers) {
     });
 
   h.op("remove_background", `AI background removal on a video/image clip (sets field remove_background; fast). The alpha matte is computed by prepare into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path; preview/render fail with code not_prepared until it exists. Needs uv (downloads rembg + onnxruntime on first use). A model is never downloaded without consent: prepare fails with code model_not_cached until the model file is in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or prepare is run with allow_download=true (CLI: prepare --allow-download); sizes: ${MATTE_SIZES}. AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry). off=true removes it.`,
-    { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
+    { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people; rvm_mobilenetv3: people in video, steady from frame to frame, weights GPL-3.0)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
       if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see the project info)");

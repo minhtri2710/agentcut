@@ -134,19 +134,35 @@ def track(j):
                     "w": round(bw2 / w, 4), "h": round(bh2 / h, 4), "ok": ok})
     return {"samples": out, "init_index": i0}
 
+def _rvm(path, w, h):  # Robust Video Matting: the four recurrent states carry over from frame to frame, in reading order
+    import numpy as np, onnxruntime as ort
+    sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    rec = [np.zeros((1, 1, 1, 1), np.float32)] * 4
+    ratio = np.array([min(1.0, 512.0 / max(w, h))], np.float32)  # the model works at 256..512 px on the long side
+    def mask(f):
+        nonlocal rec
+        out = sess.run(None, {"src": (f.astype(np.float32) / 255).transpose(2, 0, 1)[None], "r1i": rec[0], "r2i": rec[1], "r3i": rec[2], "r4i": rec[3], "downsample_ratio": ratio})
+        rec = out[2:]
+        return (np.clip(out[1][0, 0], 0, 1) * 255 + 0.5).astype(np.uint8)
+    return mask
+
 def matte(j):
-    # AgentCut fetches and verifies every model first, and rembg 2.0.86 neither re-checks nor fetches a file that is present: the helper never fetches, so a missing or corrupt file fails
-    for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
-    for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
+    rvm = j.get("model") == "rvm_mobilenetv3"
+    if not rvm:
+        # AgentCut fetches and verifies every model first, and rembg 2.0.86 neither re-checks nor fetches a file that is present: the helper never fetches, so a missing or corrupt file fails
+        for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
+        for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
+        from rembg import new_session, remove
     import numpy as np
-    from rembg import new_session, remove
     from PIL import Image
     _verify(j["model_file"], j.get("model_sha256"))
-    sess = new_session(j.get("model", "u2netp"))
     w, h = j["w"], j["h"]
+    if rvm: mask = _rvm(j["model_file"], w, h)
+    else:
+        sess = new_session(j.get("model", "u2netp"))
+        mask = lambda f: np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
     def rgba(f):
-        m = np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
-        return np.dstack([f, m])
+        return np.dstack([f, mask(f)])
     if j["kind"] == "image":
         f = next(frames(j["path"], None, None, None, w, h, "rgb24", j.get("matrix"), j.get("convert")))
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset

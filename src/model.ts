@@ -224,9 +224,9 @@ export function matrixFor(colorSpace: string, w: number, h: number, convert: str
   return Math.min(w, h) >= 720 || Math.max(w, h) >= 1280 ? "bt709" : undefined;
 }
 /** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
-export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
+export interface ModelPin { name: string; url: string; sha256: string; bytes: number; licence?: string }
 const rembgAsset = (name: string, sha256: string, bytes: number): ModelPin => ({ name, url: `https://github.com/danielgatis/rembg/releases/download/v0.0.0/${name}.onnx`, sha256, bytes });
-/** The matte models, one source for the names, the sizes and the checks: rembg 2.0.86's release assets, each fetched once and matched to
+/** The matte models, one source for the names, the sizes and the checks: rembg 2.0.86's release assets (and RVM, last), each fetched once and matched to
  *  that release's md5 pin (u2netp 8e83ca70e441ab06c318d82300c84806, u2net 60024c5c889badc19c04ad937298a77b, u2net_human_seg c09ddc2e0104f800e3e1bb4652583d1f,
  *  isnet-general-use fc16ebd8b0c10d971d3513d564d01e29, silueta 55e59e0d8062d2f5d013f4725ee84782); sha256 and bytes are what that fetch measured.
  *  `downloadModel` verifies every one, and the vision helper hashes the file again where it loads it. */
@@ -236,6 +236,8 @@ export const MATTE_PINS: Record<string, ModelPin> = Object.fromEntries([
   rembgAsset("u2net_human_seg", "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c", 175997641),
   rembgAsset("isnet-general-use", "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a", 178648008),
   rembgAsset("silueta", "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb", 44173029),
+  // Robust Video Matting (people in video): recurrent, so the matte stays steady from frame to frame; its weights are GPL-3.0, fetched on request and never bundled
+  { name: "rvm_mobilenetv3", url: "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx", sha256: "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828", bytes: 14975696, licence: "GPL-3.0 (weights; downloaded on request, never bundled)" },
 ].map((p) => [p.name, p]));
 export const MATTE_MODELS = Object.keys(MATTE_PINS);
 /** Download size of each matte model in whole MB, rounded. */

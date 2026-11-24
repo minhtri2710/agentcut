@@ -778,8 +778,9 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   process.env.AGENTCUT_UV = gateUv;
   try {
     const caps = () => (api.capabilities() as any).matte_models as { name: string; approx_mb: number; cached: boolean }[];
-    check("capabilities lists the 5 matte models with their size in whole MB and cached flags", caps()?.map((x) => `${x.name}:${x.approx_mb}`).join() === "u2netp:5,u2net:176,u2net_human_seg:176,isnet-general-use:179,silueta:44"
-      && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false, caps());
+    check("capabilities lists the 6 matte models with their size in whole MB and cached flags, and RVM's licence", caps()?.map((x) => `${x.name}:${x.approx_mb}`).join() === "u2netp:5,u2net:176,u2net_human_seg:176,isnet-general-use:179,silueta:44,rvm_mobilenetv3:15"
+      && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false
+      && caps().filter((x: any) => x.licence).map((x: any) => `${x.name}:${x.licence}`).join() === "rvm_mobilenetv3:GPL-3.0 (weights; downloaded on request, never bundled)", caps());
     const st: any = api.prepareStatus(G);
     check("prepare status lists the model that would be downloaded", st.models_to_download?.length === 1 && st.models_to_download[0].model === MODEL && st.models_to_download[0].approx_mb === 176
       && st.models_to_download[0].path === modelFile(MODEL), st);
@@ -1242,7 +1243,7 @@ console.log("the face model: descriptor, job, gate, download");
     const caps = (cache: string) => inCache(cache, () => (api.capabilities() as any));
     const cOff = await caps(fresh("caps-off")), cOn = await caps(G);
     check("capabilities: engines.vision.face_model is not cached in an empty cache", JSON.stringify(cOff.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: false }), cOff.engines.vision);
-    check("capabilities: engines.vision.face_model is cached once the file is there, and matte_models stays", JSON.stringify(cOn.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: true }) && cOn.matte_models.length === 5 && cOn.engines.vision.matte_models === "see matte_models", cOn.engines.vision);
+    check("capabilities: engines.vision.face_model is cached once the file is there, and matte_models stays", JSON.stringify(cOn.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: true }) && cOn.matte_models.length === 6 && cOn.engines.vision.matte_models === "see matte_models", cOn.engines.vision);
 
     // 4. downloadModel against a local server (never the product URL)
     const good = Buffer.from("not a real model: some bytes for a local download test"), other = Buffer.from(good.toString().replace("some", "SOME"));
@@ -1384,9 +1385,9 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       const u2netp = jobOf((await go(jobs.matte(), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
       check("the matte job reaching the helper carries the model's sha256 and file, and no allow_download", u2netp.model_sha256 === M.MATTE_PINS.u2netp.sha256 && u2netp.model_file === V.modelFile("u2netp") && !("allow_download" in u2netp), u2netp);
       check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
-      check("every matte model has a pin: its own name, an https url ending /<name>.onnx, 64 hex sha256, bytes > 0, and a size in whole MB",
-        M.MATTE_MODELS.length === 5 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(`/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
-        && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 5);
+      check("every matte model has a pin: its own name, an https url ending /<name>.onnx (RVM: /rvm_mobilenetv3_fp32.onnx), 64 hex sha256, bytes > 0, and a size in whole MB",
+        M.MATTE_MODELS.length === 6 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(name === "rvm_mobilenetv3" ? "/rvm_mobilenetv3_fp32.onnx" : `/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
+        && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 6);
       check("the subject job carries the face model's sha256", face.model_sha256 === V.FACE_MODEL.sha256 && face.face_model === V.modelFile(V.FACE_MODEL.name), face);
       process.env.FAKE_PY_ERR = "model file does not match its pinned sha256: " + V.modelFile("u2netp");
       const mm = await go(jobs.matte(), false);
@@ -1509,6 +1510,34 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
     return [pr.computed[0]?.kind === "stems" && a.length === b.length && resid < -50 && (share === null || share > 20), { resid, share, speech, computed: pr.computed }];
   }],
 ];
+/** an RVM or rembg matte job for a probed video, in project `root` */
+const matteOf = async (f: string, model: string, root: string) => {
+  const a: any = await api.probe(f);
+  return V.matteJob(f, { kind: "video", fps: a.fps, duration: a.duration, container_start: a.container_start, srcW: a.width, srcH: a.height, pixFmt: a.pix_fmt, colorSpace: a.color_space, colorPrimaries: a.color_primaries, colorTransfer: a.color_transfer, model, root });
+};
+/** mean absolute change of the alpha (0..1) between consecutive frames of a matte .mov */
+const flicker = (mov: string) => {
+  const p = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", mov], { encoding: "utf8" }).stdout.trim().split(",").map(Number);
+  const b = spawnSync("ffmpeg", ["-v", "error", "-i", mov, "-vf", "alphaextract,format=gray", "-f", "rawvideo", "-"], { maxBuffer: 1 << 30 }).stdout, n = p[0] * p[1], frames = b.length / n;
+  let sum = 0;
+  for (let k = 1; k < frames; k++) for (let i = 0; i < n; i++) sum += Math.abs(b[k * n + i] - b[(k - 1) * n + i]);
+  return { frames, value: sum / Math.max(1, (frames - 1) * n) / 255 };
+};
+realRows.push(["real: RVM video matte is computed through the recurrent path, cached, and the same bytes when computed again", async () => {
+  const d = await matteOf(join(m, "mover.mp4"), "rvm_mobilenetv3", real.Q), sha = (f: string) => spawnSync("shasum", ["-a", "256", f], { encoding: "utf8" }).stdout.split(" ")[0];
+  const first = await V.compute(d, undefined, undefined, true), h1 = sha(d.file), again = await V.compute(d);
+  rmSync(d.file);
+  await V.compute(d);
+  const fl = flicker(d.file);
+  return [first.cached === false && again.cached === true && sha(d.file) === h1 && fl.frames === 90, { h1, h2: sha(d.file), fl }];
+}]);
+// footage of a person is not made offline: name a short clip of one (static subject) to compare frame-to-frame alpha change against u2net_human_seg (downloads 176 MB)
+const person = process.env.AGENTCUT_TEST_VISION_PERSON;
+if (person) realRows.push(["real: on AGENTCUT_TEST_VISION_PERSON the RVM matte changes less from frame to frame than u2net_human_seg", async () => {
+  const fl: Record<string, any> = {};
+  for (const model of ["rvm_mobilenetv3", "u2net_human_seg"]) { const d = await matteOf(person, model, real.Q); await V.compute(d, undefined, undefined, true); fl[model] = flicker(d.file); }
+  return [fl.rvm_mobilenetv3.value < fl.u2net_human_seg.value, fl];
+}]);
 // a picture of one real face is not made offline: name one to also assert the face branch finds it
 const faceFixture = process.env.AGENTCUT_TEST_VISION_FACE;
 if (faceFixture) realRows.push(["real: a face in AGENTCUT_TEST_VISION_FACE is found (subject face)", async () => {
@@ -1555,6 +1584,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   console.log(`SKIPPED: ${realRows.length} real-helper rows (AGENTCUT_TEST_VISION=1 runs them through uv and downloads packages and models): ${realRows.map(([n]) => n).join(" | ")}`);
   if (!faceFixture) console.log("SKIPPED: real face row (set AGENTCUT_TEST_VISION_FACE=<image or video with one face> together with AGENTCUT_TEST_VISION=1)");
 }
+if (!person) console.log("SKIPPED: real RVM flicker row (set AGENTCUT_TEST_VISION_PERSON=<short video of a person standing still> together with AGENTCUT_TEST_VISION=1)");
 
 // ---------------------------------------------------------------- a matte with no frames; a missing source; pending analyses and prune
 console.log("matte frame count, missing source, prune");

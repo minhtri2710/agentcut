@@ -160,7 +160,8 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 
 ## AI vision (optional: needs uv, packages download on first use; results cached in .agentcut/cache)
 {"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y (the source point kept at the view centre) follow the face (YuNet, with a confidence score), else the most salient region
-{"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it
+{"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it; model rvm_mobilenetv3 (15 MB, weights GPL-3.0,
+  listed with its licence in capabilities.matte_models) keeps a person's matte steady from frame to frame in video
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
