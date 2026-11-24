@@ -29,11 +29,6 @@
   Criteria: single binary (bun build --compile) and npm dist (Node >= 22), install size, macOS/Linux/Windows, speed per frame, first-run network needs, the CSRT tracker (no ONNX form; OpenCV TrackerNano/TrackerVit use ONNX models), determinism of cached results, one implementation path (no dual runtime).
   Output: a decision with measurements, plus the migration slices if it changes.
 
-- [ ] vlab-rnnoise - denoise: RNNoise option after A/B (kind: ship) (since 2026-11-24)
-  Slice. denoise can use FFmpeg arnndn with a pinned RNNoise model (GregorR/rnnoise-models sh.rnnn, 297646 bytes, sha256 70bb6685...dec0, public-domain dedication), downloaded only with consent like matte models; output aligned to the source (arnndn delays 480 samples at 48 kHz, drops a partial last frame: pad + atrim, measured).
-  A/B first against the current two-stage afftdn on speech + noise fixtures; if it does not win, close the ticket with the numbers and ship nothing.
-  Acceptance: measured win, sample-exact alignment test, consent path tested, AGENTS.md updated.
-
 - [ ] vlab-rvm - remove_background: RVM temporal matte blocked-by: vlab-runtime (kind: ship) (since 2026-11-24)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
