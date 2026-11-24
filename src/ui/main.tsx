@@ -7,6 +7,7 @@ import { select, Side } from "./inspector.tsx";
 import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
 import { ExportDialog, openExport } from "./export.tsx";
 import { Media } from "./media.tsx";
+import { History, Review } from "./review.tsx";
 import { initKeyboard } from "./keyboard.ts";
 import { clearStateless, fail } from "./messages.ts";
 import { $, changed, findClip, onChange, refreshView, st } from "./state.ts";
@@ -69,15 +70,19 @@ function Consent() {
   );
 }
 
-/** the left panel: one tab per tool (the media pool so far) */
-const TABS = [{ id: "media", label: () => t("media"), body: Media }];
+/** the left panel: one tab per tool */
+const TABS = [
+  { id: "media", label: () => t("media"), body: Media },
+  { id: "review", label: () => t("review"), body: Review },
+  { id: "history", label: () => t("history"), body: History },
+];
 
 function Left() {
   const tab = TABS.find((x) => x.id === st.tab) || TABS[0];
   return (
     <div id="left">
       <div class="tabs" role="tablist">
-        {TABS.map((x) => <button key={x.id} role="tab" aria-selected={x === tab} class={x === tab ? "on" : ""} onClick={() => { st.tab = x.id; changed(); }}>{x.label()}</button>)}
+        {TABS.map((x) => <button key={x.id} id={"tab-" + x.id} role="tab" aria-selected={x === tab} class={x === tab ? "on" : ""} onClick={() => { st.tab = x.id; changed(); }}>{x.label()}</button>)}
       </div>
       <tab.body />
     </div>

@@ -131,8 +131,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const rev = body.revision; // as sent: no revision is missing_revision, and anything but a whole number >= 0 is bad_revision that echoes it
       // the page is one person at one browser: its author is the server's own constant, whatever the request body says
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
-      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev, UI_AUTHOR) });
-      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev, UI_AUTHOR) });
+      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, body.steps ?? 1, rev, UI_AUTHOR) }); // steps: the history panel undoes back to an entry
+      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, body.steps ?? 1, rev, UI_AUTHOR) });
+      if (path === "/api/review") return json(res, 200, { ok: true, revision: p.load().revision, ...(await api.review(root, { signal: gone.signal })) });
       if (path === "/api/sheet") {
         const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });

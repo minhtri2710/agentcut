@@ -65,3 +65,7 @@ progress{width:100%}
 .eform{display:grid;gap:8px;min-width:300px}.eform label{display:grid;gap:2px}.eform label.row{display:flex;gap:6px;align-items:center}
 .eform input,.eform select{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}
 #qa{margin:4px 0;padding-left:18px;color:#fc9}#qa button{font-size:11px;padding:0 5px}.qaok{color:#9d9;margin:4px 0}
+.panel{display:flex;flex-direction:column;gap:6px;padding:8px;min-height:0;flex:1;overflow:auto}
+.panel ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+#findings li{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:4px 6px;cursor:pointer;font-size:12px}#findings li:hover{border-color:var(--accent)}
+#history li{font-size:12px}#history li button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}

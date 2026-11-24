@@ -30,6 +30,9 @@ const EN = {
   media: "Media", search: "Search", importPath: "/path/to/file.mp4", importBtn: "Import",
   exportBtn: "Export…", exportTitle: "Export", format: "Format", codec: "Codec (mp4)", quality: "Quality", from: "From (s)", to: "To (s)",
   subtitles: "Subtitle track from the captions (mp4, mov, mkv, webm)", exportGo: "Export", qaOk: "QA: the written file matches the timeline", seekTo: "go to {0} s",
+  review: "Review", history: "History", runReview: "Run review", reviewing: "Reviewing…", clean: "No findings", findingsN: "{0} findings",
+  forRevision: "revision {0}", staleReview: "the project changed since: run it again", undoTo: "undo this and every later edit", redoTo: "redo up to this edit",
+  by: "by {0}", undoStack: "Edits (newest first): click to undo back to before one", redoStack: "Undone (click to redo up to one)",
   hide: "hide", mute: "mute", hideTrack: "hide track {0} (not drawn)", showTrack: "show track {0}", muteTrack: "mute track {0}", unmuteTrack: "unmute track {0}",
   dropHint: "Drop files here to copy them into media/; drag an item onto a track to add it.", uploading: "Uploading {0}…", noAssets: "No media yet.",
 };
@@ -64,6 +67,9 @@ const VI: Record<Key, string> = {
   media: "Media", search: "Tìm", importPath: "/đường/dẫn/tệp.mp4", importBtn: "Nhập",
   exportBtn: "Xuất tệp…", exportTitle: "Xuất tệp", format: "Định dạng", codec: "Codec (mp4)", quality: "Chất lượng", from: "Từ (s)", to: "Đến (s)",
   subtitles: "Kèm phụ đề từ captions (mp4, mov, mkv, webm)", exportGo: "Xuất", qaOk: "QA: tệp đã ghi khớp với timeline", seekTo: "tới {0} s",
+  review: "Kiểm tra", history: "Lịch sử", runReview: "Chạy kiểm tra", reviewing: "Đang kiểm tra…", clean: "Không có vấn đề", findingsN: "{0} vấn đề",
+  forRevision: "revision {0}", staleReview: "project đã đổi từ lúc đó: chạy lại", undoTo: "hoàn tác bước này và mọi bước sau", redoTo: "làm lại tới bước này",
+  by: "bởi {0}", undoStack: "Các bước sửa (mới nhất trước): bấm để hoàn tác về trước một bước", redoStack: "Đã hoàn tác (bấm để làm lại tới một bước)",
   hide: "ẩn", mute: "tắt", hideTrack: "ẩn track {0} (không vẽ)", showTrack: "hiện track {0}", muteTrack: "tắt tiếng track {0}", unmuteTrack: "bật tiếng track {0}",
   dropHint: "Thả tệp vào đây để chép vào media/; kéo một mục lên track để thêm.", uploading: "Đang tải lên {0}…", noAssets: "Chưa có media.",
 };

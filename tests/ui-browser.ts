@@ -760,6 +760,30 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
       && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
   }
+  console.log("review and history panels");
+  {
+    await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Blink", at: 0.3, duration: 0.2, id: "blink" }]);
+    await until("blink seen", atRev(load().revision));
+    await click("#tab-review");
+    await click("#runreview");
+    const short = `[].filter.call(document.querySelectorAll("#findings li"), function (l) { return l.dataset.type === "text_too_short" && l.textContent.indexOf("blink") >= 0; })[0]`;
+    check("Run review lists the findings, a text too short to read among them", await until("findings", `!!${short}`, 60_000), await js(`$("review").textContent.slice(0, 300)`));
+    await js(`${short}.click()`);
+    check("  clicking a finding selects its clip and seeks to its time", await until("finding selected", `$("selinfo").textContent.indexOf("blink on ") === 0`) && Math.abs(await nowT() - 0.3) < 0.02, await js(`[$("selinfo").textContent, $("time").textContent]`));
+    await applyLatest(dir, [{ op: "add_marker", t: 0.41, label: "p1" }]);
+    await applyLatest(dir, [{ op: "add_marker", t: 0.42, label: "p2" }]);
+    await until("markers seen", atRev(load().revision));
+    await click("#tab-history");
+    check("the History tab lists the edits newest first, with their authors", await until("history", `document.querySelectorAll("#hundo li").length >= 2 && document.querySelector("#hundo li button").textContent === "add_marker"`)
+      && await js(`document.querySelector("#hundo li .mut").textContent`) === "by test", await js(`$("history").textContent.slice(0, 200)`));
+    const revH = load().revision;
+    await js(`document.querySelectorAll("#hundo li button")[1].click()`);
+    check("  clicking the second newest undoes it and the newest in one step", await untilFile((tl) => tl.revision === revH + 2 && !(tl.markers ?? []).some((m: any) => m.label === "p1" || m.label === "p2")), load().markers);
+    await until("redo listed", `${atRev(load().revision)} && document.querySelectorAll("#hredo li").length === 2`);
+    await js(`document.querySelectorAll("#hredo li button")[1].click()`);
+    check("  and the redo list brings both back", await untilFile((tl) => ["p1", "p2"].every((l) => (tl.markers ?? []).some((m: any) => m.label === l))), load().markers);
+    await click("#tab-media");
+  }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.
   console.log("page, unreadable history entry");

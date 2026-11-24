@@ -33,6 +33,7 @@ export const st = {
   drag: null as { id: string; mode: DragMode; dx: number } | null, // a clip being dragged, dx in px
   kfDrag: null as { id: string; kt: number; dx: number } | null, // a keyframe tick being dragged
   tab: "media", // the left panel's tab
+  review: null as { busy: boolean; result?: Dict } | null, // the review panel's last run
   mediaQuery: "",
   uploading: null as string | null, // the dropped file being sent to media/
 };

@@ -425,6 +425,20 @@ check("SSE reported the job", await waitJob(job.id));
   const empty = await play(0, 0.001), invalid = await play(-1, 1);
   check("play refuses empty normalized ranges and invalid starts before making jobs", empty.error?.code === "empty" && invalid.error?.code === "bad_value", { empty, invalid });
 }
+{ // the history panel undoes back to an entry: steps on /api/undo and /api/redo; the review panel runs review
+  await applyLatest(dir, [{ op: "add_marker", t: 0.11, label: "h1" }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.12, label: "h2" }]);
+  const labels = () => (JSON.parse(readFileSync(join(dir, "project.json"), "utf8")).markers ?? []).map((m: any) => m.label);
+  const r1 = (await api.info(dir)).revision;
+  const bad = await jget("/api/undo", { method: "POST", body: { revision: r1, steps: 0 } });
+  const two = await jget("/api/undo", { method: "POST", body: { revision: r1, steps: 2 } });
+  check("undo with steps 2 undoes the two newest entries in one call (the revision moves once per entry); steps 0 is bad_value", bad.j.error?.code === "bad_value" && two.j.ok && two.j.done === 2 && two.j.revision === r1 + 2
+    && !labels().includes("h1") && !labels().includes("h2"), { bad: bad.j.error, two: two.j, labels: labels() });
+  const back = await jget("/api/redo", { method: "POST", body: { revision: two.j.revision, steps: 2 } });
+  check("  and redo with steps 2 brings both back", back.j.done === 2 && labels().includes("h1") && labels().includes("h2"), back.j);
+  const rv = await jget("/api/review", { method: "POST", body: {} });
+  check("/api/review answers review's findings and the revision it read", rv.j.ok && Array.isArray(rv.j.findings) && typeof rv.j.clean === "boolean" && rv.j.revision === (await api.info(dir)).revision, rv.j);
+}
 { // the export dialog: a format from the list, the file named by the server in renders/, the result with its QA
   const bad = await jget("/api/render", { method: "POST", body: { format: ".txt" } }), path = await jget("/api/render", { method: "POST", body: { format: "../x.mp4" } });
   check("an export format outside the list is bad_value, before any job", bad.status === 422 && bad.j.error?.code === "bad_value" && path.j.error?.code === "bad_value", [bad.j, path.j]);
