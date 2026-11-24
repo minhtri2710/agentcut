@@ -92,8 +92,9 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    asset changed; move the captions clip back, or remove it and run add_captions again, which loses any hand-corrected words. A transcript's captions go on a
    track that is not magnetic.
    "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. Silences (0.4 s or more below
-   -35 dB, analyze_silence's defaults) are left out before whisper (the result's 'skipped_leading' is the seconds left out at the start; whisper times words into
-   a silence it hears), but a music lead-in is not silence: pass the speech only, since whisper may invent text over a long music-only stretch and times words
+   -35 dB, analyze_silence's defaults, or 6 dB over a steady hiss or room tone above that) are left out before whisper (the result's 'skipped_leading' is the seconds
+   left out at the start; whisper times words into a silence it hears, and a word it starts in the 0.25 s put between two speech pieces starts at the next one), but a
+   steady tone or hum is never taken for the noise floor, and a music lead-in is not silence: pass the speech only, since whisper may invent text over a long music-only stretch and times words
    early after a music lead-in; analyze_silence or the voiceover's length gives the span
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |

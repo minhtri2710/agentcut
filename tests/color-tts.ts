@@ -544,24 +544,34 @@ fi
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
     check("range words are clamped to the range: a word past the end is dropped, one crossing it ends there, a zero-length word stays", JSON.stringify(held.words.map((w: any) => [w.text, w.start, w.end])) === JSON.stringify([["a", 2.1, 2.3], ["b", 3, 3], ["c.", 4.8, 5]]), held.words);
     check("whisper.cpp: text is the kept words, not the dropped one", held.text === "a b c.", held.text);
-    // a silence inside or after the speech is left out too: the engine hears the speech pieces joined (each keeps 0.1 s of its silence) and its times map back piece by piece
+    // a silence inside or after the speech is left out too: the engine hears the speech pieces joined (each keeps 0.1 s of its silence, 0.25 s of silence between them) and its times map back piece by piece
     const gaps = join(tmp, "gaps.wav");
     ff("-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=1:sample_rate=24000", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=2", "-filter_complex", "concat=n=4:v=0:a=1", gaps); // tone 0-1, silence, tone 4-5, silence to 7
-    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" s", 600, 1250), tok(" b", 1300, 1600), tok(" t", 2500, 2700)] }));
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" a", 200, 500), tok(" s", 600, 1250), tok(" g", 1200, 1500), tok(" b", 1550, 1850), tok(" t", 2750, 2950)] }));
     const pieced = await AN.transcribe(gaps, "vi", fake);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
-    check("silences inside and after the speech are left out: the engine gets the two tones with 0.1 s of silence on each side (2.3 s of 7), starting on the tone", Math.abs(dur(given) - 2.3) < 0.05 && startDb(given) > -30 && pieced.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: pieced.skipped_leading });
+    check("silences inside and after the speech are left out: the engine gets the two tones with 0.1 s of silence on each side and 0.25 s between them (2.55 s of 7), starting on the tone", Math.abs(dur(given) - 2.55) < 0.05 && startDb(given) > -30 && pieced.skipped_leading === 0, { dur: dur(given), db: startDb(given), skipped: pieced.skipped_leading });
     const near = (x: number, y: number) => Math.abs(x - y) < 0.02;
-    check("a word the engine times in the second piece lands in the second tone (engine 1.3 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[2].start, 4.1) && near(pieced.words[2].end, 4.4), times(pieced.words));
+    check("a word the engine times in the second piece lands in the second tone (engine 1.55 s -> media 4.1 s), one in the first piece keeps its time", times(pieced.words.slice(0, 1)) === "[[0.2,0.5]]" && near(pieced.words[3].start, 4.1) && near(pieced.words[3].end, 4.4), times(pieced.words));
+    check("a word the engine starts in the silence between the pieces (engine 1.2 s) starts where the second piece does (3.9 s)", near(pieced.words[2].start, 3.9) && near(pieced.words[2].end, 4.05), times(pieced.words));
     check("a word starting in the first piece and ending past the join ends with the first piece (1.1 s), not in the second tone", pieced.words[1].start === 0.6 && pieced.words[1].end <= 1.1 + 1e-9 && pieced.words[1].end > 1, times(pieced.words));
-    check("a word the engine times past what it heard (engine 2.5-2.7 s of 2.3) is not inverted: it starts and ends at the end of the last piece (5.1 s)", pieced.words[3].start <= pieced.words[3].end && near(pieced.words[3].end, 5.1), times(pieced.words));
+    check("a word the engine times past what it heard (engine 2.75-2.95 s of 2.55) is not inverted: it starts and ends at the end of the last piece (5.1 s)", pieced.words[4].start <= pieced.words[4].end && near(pieced.words[4].start, 5.1) && near(pieced.words[4].end, 5.1), times(pieced.words));
+    // the silence gate follows the noise floor: a steady hiss above -35 dB is not speech, a tone is never taken for noise
+    const hiss = join(tmp, "hiss.wav"), hum = join(tmp, "hum.wav"), quiet = join(tmp, "quiet.wav");
+    ff("-f", "lavfi", "-i", "anoisesrc=a=0.06:c=white:r=16000:d=4:seed=7", "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=16000:duration=1", "-filter_complex", "[1:a]volume=8,adelay=1500[s];[0:a][s]amix=inputs=2:duration=first:normalize=0", "-c:a", "pcm_s16le", hiss);
+    ff("-f", "lavfi", "-i", "sine=frequency=50:sample_rate=16000:duration=4", "-af", "volume=0.5", "-c:a", "pcm_s16le", hum);
+    ff("-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=2", "-c:a", "pcm_s16le", quiet);
+    const gates = [AN.speechGate(hiss), AN.speechGate(hum), AN.speechGate(quiet)];
+    check("speechGate: a hiss floor (peak ~ -24 dBFS) raises the gate to 6 dB over it; a steady tone and true silence keep -35 dB", gates[0] > -20 && gates[0] < -16 && gates[1] === -35 && gates[2] === -35, gates);
+    const hissed = await AN.transcribe(hiss, "vi", fake);
+    check("  over that hiss the engine hears only the tone (+0.1 s each side: 1.2 s of 4), and the hiss before it is left out", Math.abs(dur(given) - 1.2) < 0.05 && Math.abs(hissed.skipped_leading - 1.4) < 0.03, { dur: dur(given), skipped: hissed.skipped_leading });
     // many pieces: the engine hears them joined whatever their count, and a word in the last one maps into the last tone
     const many = join(tmp, "many.wav");
     ff("-f", "lavfi", "-i", "aevalsrc='0.125*sin(2*PI*300*t)*lt(mod(t,1.1),0.5)':s=16000:d=440", many); // 400 x (0.5 s tone, 0.6 s silence)
-    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" y", 279300, 279500)] }));
+    writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" y", 379050, 379250)] }));
     const lots = await AN.transcribe(many, "vi", fake);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);
-    check("400 speech pieces: the engine hears 0.6 + 399 x 0.7 = 279.9 s of 440, and a word 0.1 s into the last piece lands in the last tone (438.9-439.4 s)", Math.abs(dur(given) - 279.9) < 0.1 && lots.words[0].start >= 438.88 && lots.words[0].end <= 439.4, { dur: dur(given), w: times(lots.words) });
+    check("400 speech pieces: the engine hears 0.6 + 399 x (0.7 + 0.25) = 379.65 s of 440, and a word 0.1 s into the last piece lands in the last tone (438.9-439.4 s)", Math.abs(dur(given) - 379.65) < 0.1 && lots.words[0].start >= 438.88 && lots.words[0].end <= 439.4, { dur: dur(given), w: times(lots.words) });
     writeFileSync(join(tmp, "whisper.json"), JSON.stringify({ result: { language: "vi" }, transcription: [tok(" z", 3800, 4600)] }));
     const past = await AN.transcribe(src, "vi", fake), pastRange = await AN.transcribe(src, "vi", fake, [2, 100]);
     writeFileSync(join(tmp, "whisper.json"), fakeJson);

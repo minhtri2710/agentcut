@@ -432,6 +432,32 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
   return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
 
+/** The level (dBFS) below which the extracted 16-bit wav is taken as silence: GATE_MARGIN dB over its noise floor (the window at the 10th percentile of
+ *  the peak level of its 50 ms windows: silencedetect compares samples, not RMS), never below -35 dB (analyze_silence's default). A steady hiss or
+ *  room tone above -35 dB otherwise leaves no silence, and whisper times words into it. A floor that is a steady tone (peak under 4 dB over its RMS, a sine is 3 dB, noise 5 to 10:
+ *  hum, a held note, a test tone) is not taken as noise: the gate stays at -35 dB. */
+export function speechGate(wav: string): number {
+  const fd = openSync(wav, "r");
+  try {
+    const { offset, bytes, rate, channels } = wavData(fd, wav), win = Math.max(1, Math.round(rate * 0.05)) * channels, buf = Buffer.alloc(bytes - (bytes % 2));
+    readSync(fd, buf, 0, buf.length, offset);
+    const wins: { peak: number; rms: number }[] = [];
+    for (let i = 0; i + win * 2 <= buf.length; i += win * 2) {
+      let p = 0, sq = 0;
+      for (let j = i; j < i + win * 2; j += 2) { const v = buf.readInt16LE(j); p = Math.max(p, Math.abs(v)); sq += v * v; }
+      wins.push({ peak: p, rms: Math.sqrt(sq / win) });
+    }
+    if (!wins.length) return -35;
+    wins.sort((a, b) => a.peak - b.peak);
+    const floor = wins[Math.floor(wins.length * 0.1)];
+    if (floor.rms <= 0 || 20 * Math.log10(floor.peak / floor.rms) < 4) return -35;
+    return Math.max(-35, +(20 * Math.log10(floor.peak / 32768) + GATE_MARGIN).toFixed(1));
+  } finally { closeSync(fd); }
+}
+const GATE_MARGIN = 6;
+/** Seconds of silence put between the speech pieces joined for the engine: a word it times early lands there, not at the end of the piece before. */
+const JOIN_GAP = 0.25;
+
 /** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
@@ -469,9 +495,9 @@ function spoken(words: { text: string; start: number; end: number }[]) {
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
  * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
  * Checks run cheapest first: the media (not_found, bad_media, no_audio), the range, the engine (missing_dependency, not_found for a model file), then the extraction.
- * The engine hears the speech only: every silence (silence()'s default threshold) is left out but LEAD_PAD on each side of the speech, the pieces are
- * joined into one stretch and the engine's times are mapped back piece by piece (a word's end stays in the piece that holds its start); whisper times
- * words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
+ * The engine hears the speech only: every silence (below speechGate's level) is left out but LEAD_PAD on each side of the speech, the pieces are
+ * joined with JOIN_GAP of silence between them and the engine's times are mapped back piece by piece (a word started in a gap starts at the next piece;
+ * a word's end stays in the piece that holds its start); whisper times words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  * Its sound notes are not words (spoken()): a spoken aside it puts in brackets or parentheses goes with them.
  */
@@ -491,33 +517,44 @@ export async function transcribe(path: string, language?: string, model?: string
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
     const ss = seekArgs(from, info.kind === "video" ? info : undefined, info.fps);
-    const cut = await run("ffmpeg", ["-v", "error", "-y", ...ss.input, ...inp(path), ...ss.output, ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
+    const cut = await run("ffmpeg", ["-v", "error", "-y", ...ss.input, ...inp(path), ...ss.output, ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", raw], { signal });
     if (cut.status !== 0) throw new EditError(`cannot extract audio from ${path}: ${cut.stderr.trim().slice(0, 300)}`, "decode_failed");
-    const { speech, duration: heard } = await silence(raw, undefined, undefined, signal);
+    const { speech, duration: heard } = await silence(raw, speechGate(raw), undefined, signal);
     const pieces = speech.map(([a, b]) => [Math.max(0, +(a - LEAD_PAD).toFixed(3)), Math.min(heard, +(b + LEAD_PAD).toFixed(3))]);
     if (!pieces.length) pieces.push([0, heard]);
+    let joinGap = 0;
     if (pieces.length > 1 || pieces[0][0] || pieces[0][1] < heard) {
       // the pieces' samples are copied into one wav in process, so nothing grows with their count; edges are whole samples, so the time map below is exact
       let src = -1, out = -1;
       try {
         src = openSync(raw, "r"); out = openSync(wav, "w");
         const { offset, bytes, rate, channels, bits } = wavData(src, raw), frame = (channels * bits) / 8, frames = Math.floor(bytes / frame), block = 65536;
-        const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]);
+        const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]), gap = Math.round(JOIN_GAP * rate);
         spans.forEach(([a, b], k) => { pieces[k] = [a / rate, b / rate]; });
-        const size = spans.reduce((n, [a, b]) => n + (b - a) * frame, 0), h = Buffer.alloc(44);
+        joinGap = gap / rate;
+        const size = spans.reduce((n, [a, b]) => n + (b - a) * frame, 0) + (spans.length - 1) * gap * frame, h = Buffer.alloc(44);
         h.write("RIFF", 0, "ascii"); h.writeUInt32LE(36 + size, 4); h.write("WAVEfmt ", 8, "ascii"); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(channels, 22);
         h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * frame, 28); h.writeUInt16LE(frame, 32); h.writeUInt16LE(bits, 34); h.write("data", 36, "ascii"); h.writeUInt32LE(size, 40);
         writeSync(out, h);
         const buf = Buffer.allocUnsafe(block * frame);
-        for (const [a, b] of spans) for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
+        const zeros = Buffer.alloc(gap * frame);
+        spans.forEach(([a, b], k) => {
+          if (k) writeSync(out, zeros);
+          for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
+        });
       } catch (e: any) { throw e instanceof EditError ? e : new EditError(`cannot prepare the audio extracted from ${path}: ${e.message}`, "decode_failed"); }
       finally { if (src >= 0) closeSync(src); if (out >= 0) closeSync(out); }
     } else renameSync(raw, wav);
     const skipped = +pieces[0][0].toFixed(3);
-    const starts: number[] = []; // where each piece begins in what the engine hears
-    pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a), 0);
-    const holder = (x: number) => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; } return lo; };
-    const media = (x: number) => { const k = holder(x); return x - starts[k] + pieces[k][0] + from; };
+    const starts: number[] = []; // where each piece begins in what the engine hears (JOIN_GAP of silence between pieces)
+    pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a + joinGap), 0);
+    // the piece a time belongs to: one in the gap after a piece belongs to the next (whisper times a word early, into the silence before it)
+    const holder = (x: number) => {
+      let lo = 0, hi = starts.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; }
+      return lo + 1 < starts.length && x > starts[lo] + pieces[lo][1] - pieces[lo][0] ? lo + 1 : lo;
+    };
+    const media = (x: number) => { const k = holder(x); return Math.max(0, x - starts[k]) + pieces[k][0] + from; };
     const last = Math.min(to ?? Infinity, from + pieces[pieces.length - 1][1]); // no word time past the range or the last thing the engine heard
     const at = (x: number) => +Math.min(Math.max(media(x), from), last).toFixed(3); // engine time -> media time, inside the range
     const till = (x: number, start: number) => Math.min(at(x), +(pieces[holder(start)][1] + from).toFixed(3)); // a word's end stays in the piece that holds its start
