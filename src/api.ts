@@ -98,7 +98,7 @@ const loadForText = async (tl: M.Timeline) => {
 function hidesBelow(tl: M.Timeline, c: M.Clip) {
   if (c.enabled === false || Number(c.opacity ?? 1) < 1 || (c.blend ?? "normal") !== "normal"
     || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)
-    || (c.effects || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "strobe")) return false; // strobe is the one effect that drops the layer's opacity (effects.ts); the others draw over it
+    || (c.effects || []).some((f: any) => ["strobe","blur"].includes(typeof f === "string" ? f : f?.type))) return false; // strobe drops the layer's opacity and blur fades its edges (effects.ts); the others draw over an opaque layer
   if (c.type === "color") return c.gradient ? (c.gradient.colors || []).every((x: unknown) => M.parseColor(x)[3] === 255) : M.parseColor(c.color ?? "black")[3] === 255;
   if (c.type !== "video" && c.type !== "image") return false;
   const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");
