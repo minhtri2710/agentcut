@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { COMPRESSORS, EQ_PRESETS } from "../src/audiofx.ts";
 import { GRADE_FIELDS, LOOKS } from "../src/color.ts";
 import { LIBRARY } from "../src/library.ts";
+import { TEMPLATES } from "../src/presets.ts";
 import * as M from "../src/model.ts";
 
 /** The inspector form's tables, from the model's own: each section's fields once ([json types, doc]), the sections and keys each clip type has (fieldsFor), and the value lists of the fields that name one. */
@@ -45,7 +46,8 @@ export async function buildPage(): Promise<string> {
   process.chdir(join(ui, "..", ".."));
   const res = await Bun.build({
     entrypoints: [join(ui, "main.tsx")], target: "browser", format: "iife", minify: false, sourcemap: "none",
-    define: { ENUM: JSON.stringify({ animatable: M.ANIMATABLE, easings: M.EASINGS }), FORM: JSON.stringify(FORM), LIB: JSON.stringify(LIBRARY) },
+    define: { ENUM: JSON.stringify({ animatable: M.ANIMATABLE, easings: M.EASINGS }), FORM: JSON.stringify(FORM), LIB: JSON.stringify(LIBRARY),
+      TPL: JSON.stringify(Object.fromEntries(Object.entries(TEMPLATES).map(([k, v]) => [k, { doc: v.doc, args: v.args }]))) },
   }).finally(() => process.chdir(from));
   if (!res.success) throw new Error(res.logs.map(String).join("\n"));
   return assemble(readFileSync(join(ui, "shell.html"), "utf8"), readFileSync(join(ui, "style.css"), "utf8"), await res.outputs[0].text());

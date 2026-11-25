@@ -8,6 +8,7 @@ import { onJobEvent, startPrepare, startRender, startSheet } from "./jobs.ts";
 import { Chat, onChatEvent } from "./chat.tsx";
 import { Dashboard } from "./dashboard.tsx";
 import { ExportDialog, openExport } from "./export.tsx";
+import { TemplateDialog } from "./templates.tsx";
 import { Library } from "./library.tsx";
 import { Media } from "./media.tsx";
 import { History, Review } from "./review.tsx";
@@ -105,6 +106,7 @@ function App() {
       <div id="main"><Left /><Viewer /><Side /></div>
       <Consent />
       <ExportDialog />
+      <TemplateDialog />
       <Timeline />
     </>
   );

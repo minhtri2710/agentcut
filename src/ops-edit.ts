@@ -197,9 +197,9 @@ export function registerEditOps(h: OpHelpers) {
       const trackOf = (c: Clip) => tl.tracks.find((t) => t.clips.includes(c))!;
       const atr = trackOf(aud);
       const quiet = (t: Track) => (t.muted ? `track '${t.id}' is muted` : !(Number(t.volume ?? 1) > 0) ? `track '${t.id}' has volume 0` : ""); // the sound is silent on one track and audible on the other
-      const silent = quiet(atr) || quiet(trackOf(v)) || (v.freeze ? `'${v.id}' is a freeze frame, which plays no audio` : aud.until_end || typeof aud.match_duration === "string" ? `'${aud.id}' has its own length rule (until_end or match_duration)` : "");
+      const silent = quiet(atr) || quiet(trackOf(v)) || (v.freeze ? `'${v.id}' is a freeze frame, which plays no audio` : aud.until_end || typeof aud.match_duration === "string" || aud.end_at !== undefined ? `'${aud.id}' has its own length rule (until_end, match_duration or end_at)` : "");
       if (silent) throw new EditError(`attach_audio would change what '${aud.id}' plays: ${silent}`, "audio_state",
-        "unmute or raise that track and unfreeze the video; remove until_end/match_duration from the audio; or remove_clip the audio to drop it", undefined, { audio: aud.id });
+        "unmute or raise that track and unfreeze the video; remove until_end/match_duration/end_at from the audio; or remove_clip the audio to drop it", undefined, { audio: aud.id });
       for (const k of MOVE_KEYS) { if (aud[k] !== undefined) v[k] = structuredClone(aud[k]); else delete v[k]; }
       if (aud.keyframes?.volume) v.keyframes = { ...v.keyframes, volume: structuredClone(aud.keyframes.volume) };
       else if (v.keyframes) { delete v.keyframes.volume; if (!Object.keys(v.keyframes).length) delete v.keyframes; }
@@ -208,6 +208,7 @@ export function registerEditOps(h: OpHelpers) {
       for (const x of allClips(tl)) { // aud lines up with v exactly, so what followed aud keeps its place and length
         if (x.attach_to === aud.id) x.attach_to = v.id;
         if (x.match_duration === aud.id) x.match_duration = v.id;
+        if (x.end_at === aud.id) x.end_at = v.id;
       }
       atr.clips = atr.clips.filter((x) => x !== aud);
       resolve(tl);

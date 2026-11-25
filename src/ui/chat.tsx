@@ -16,7 +16,7 @@ export function onChatEvent(e: Dict) {
 function send(ev: Event) {
   ev.preventDefault();
   const box = (ev.currentTarget as HTMLFormElement).elements.namedItem("msg") as HTMLTextAreaElement, message = box.value.trim();
-  if (message) api("/api/chat", { message }).then(() => { box.value = ""; }, (e: ApiError) => fail(e));
+  if (message) api("/api/chat", { message, cli: st.chat.cli }).then(() => { box.value = ""; }, (e: ApiError) => fail(e));
 }
 
 function Entry({ e }: { e: Dict }) {
@@ -28,11 +28,20 @@ function Entry({ e }: { e: Dict }) {
 }
 
 export function Chat() {
-  useEffect(() => { fetch("/api/chat").then((r) => r.json()).then((j) => { st.chat.engine = j; st.chat.busy = j.busy; changed(); }); }, []);
+  useEffect(() => { fetch("/api/chat").then((r) => r.json()).then((j) => { st.chat.engine = j; st.chat.busy = j.busy; st.chat.cli = j.cli ?? j.clis[0] ?? null; changed(); }); }, []);
   const eng = st.chat.engine;
-  if (eng && !eng.available) return <div id="chat" class="mut">{t("chatMissing", eng.hint)}</div>;
+  const newChat = () => api("/api/chat/reset").then(() => { st.chat.log = []; changed(); }, (e: ApiError) => fail(e));
+  if (!eng) return <div id="chat" />; // no form before the CLI to send is known
+  if (!eng.available) return <div id="chat" class="mut">{t("chatMissing", eng.hint)}</div>;
   return (
     <div id="chat">
+      {eng.clis.length > 1 && (
+        <label class="row">{t("chatCli")}{" "}
+          <select id="ccli" value={st.chat.cli ?? ""} disabled={st.chat.busy} onChange={(e) => { st.chat.cli = e.currentTarget.value; newChat(); }}>
+            {eng.clis.map((c: string) => <option value={c}>{c}</option>)}
+          </select>
+        </label>
+      )}
       <div id="clog">
         {!st.chat.log.length && <div class="mut">{t("chatHint")}</div>}
         {st.chat.log.map((e, i) => <Entry key={i} e={e} />)}
@@ -42,7 +51,7 @@ export function Chat() {
         <div>
           <button id="csend" class="primary" disabled={st.chat.busy}>{t("chatSend")}</button>{" "}
           <button id="cstop" type="button" disabled={!st.chat.busy} onClick={() => api("/api/chat/stop").catch((e: ApiError) => fail(e))}>{t("chatStop")}</button>{" "}
-          <button id="cnew" type="button" disabled={st.chat.busy} onClick={() => api("/api/chat/reset").then(() => { st.chat.log = []; changed(); }, (e: ApiError) => fail(e))}>{t("chatNew")}</button>
+          <button id="cnew" type="button" disabled={st.chat.busy} onClick={newChat}>{t("chatNew")}</button>
         </div>
       </form>
     </div>

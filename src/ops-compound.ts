@@ -171,6 +171,7 @@ export function registerCompoundOps(h: OpHelpers) {
           if (!t) unlinked.push(...unfollow([n], () => true));
           else { const eo = round6(clipDur(t) - clipDur(n)); if (Math.abs(eo) > EPS) n.end_offset = eo; else delete n.end_offset; }
         }
+        unlinked.push(...unfollow([n], (id) => !placed.has(id))); // an end_at whose target did not come back keeps its length
         if (!n.attach_to) continue;
         const t = placed.get(n.attach_to);
         if (!t) { detach(n); continue; }

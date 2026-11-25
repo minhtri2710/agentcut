@@ -14,7 +14,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine (later on top).
 - Clip types: video · image · text · captions · shape · color (solid/gradient) · lottie · audio · gap · compound (nested tracks).
 - Times: 2.5, "2.5s", "1500ms", "00:02.5". Lengths: px or "10%". Colours: "#RRGGBB[AA]", rgba(), basic names.
-- until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits; a clip whose length follows it (match_duration) counts only at its minimum length, and clips that move with it not at all; an explicit length edit of that clip (split, trim, roll, slide, duration) ends the stretch.
+- until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits; a clip whose length follows it (match_duration) counts only at its minimum length, and clips that move with it not at all; an explicit length edit of that clip (split, trim, roll, slide, duration) ends the stretch. end_at: "<clip id>" (not on a magnetic track) makes a clip end where that clip starts and follow it (a music bed handing over to the next section's song); the same edits end it; a clip whose length follows it must not be on a magnetic track.
 - Connected clips (Final Cut): attach_to "vid3" (or "main#2" = 3rd clip of main, "main#-1" = last) + offset (+ match_duration,
   end_offset) pins a title/overlay to a clip: retiming (snap_to_beats, trims, reorders) keeps it in sync; removing the
   clip removes what is attached. PREFER this over absolute 'at' for anything that belongs to a specific shot.
@@ -29,7 +29,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 
 ## Fastest path: templates
 {"op":"apply_template","name":"promo","media":["/abs/a.mp4","/abs/b.jpg","/abs/c.mp4"],"hook":"Ra mắt sản phẩm","points":["Nhẹ hơn 30%","Pin 2 ngày"],"cta":"Mua ngay","music":"/abs/song.mp3"}
-Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.templates). They expand into normal clips -> keep editing.
+Templates: slideshow, promo, beat_montage, quote, listicle (args: capabilities.templates). They expand into normal clips -> keep editing. On a timeline with clips a template adds a section after the end of main.
 capabilities.engines says which transcription, TTS and vision engines are usable now.
 
 ## Workflow that works
@@ -213,7 +213,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 
 ## Working alongside a human (agentcut ui)
 - \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (on a folder with no project: a dashboard of the projects in its subfolders, to open, create or duplicate; timeline, viewer, inspector (a form of the clip's fields, or its JSON), keyframe
-  editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, a library of looks, effects, transitions and text styles with rendered previews (click or drag onto a clip), a transcript panel (click a word to seek, cut a run of words with remove_range), a chat panel (a local Claude Code run per message with only the agentcut MCP tools of this project; its edits are authored by its MCP client name), review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
+  editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, a library of looks, effects, transitions and text styles with rendered previews (click or drag onto a clip), a transcript panel (click a word to seek, cut a run of words with remove_range), a library of templates (a form of each template's args builds it with apply_template), a chat panel (a run of a local agent CLI per message: Claude Code, pi, omp, Antigravity (agy) or Devin, picked in the panel when more than one is installed, with only the agentcut MCP tools of this project; its edits are authored by its MCP client name), review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
   copied into the project's media/ (never over a file there) and imported. The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
   The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.

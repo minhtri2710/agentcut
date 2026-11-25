@@ -219,7 +219,7 @@ function probeTimes(L: Layer): number[] {
 
 /** Clip fields a plain video clip may carry: none moves, scales, fades, masks or draws over the picture, so a sample the clip is on top of
  *  is its source frame as decoded. Any other field (a new one included) sends the clip through the renderer. */
-const PLAIN_KEYS = new Set(["id", "type", "name", "start", "duration", "enabled", "note", "group", "preset", "until_end", "attach_to", "offset", "match_duration", "end_offset",
+const PLAIN_KEYS = new Set(["id", "type", "name", "start", "duration", "enabled", "note", "group", "preset", "until_end", "end_at", "attach_to", "offset", "match_duration", "end_offset",
   "asset", "src", "in", "transition", "volume", "muted", "fade_in", "fade_out", "denoise", "eq", "compressor", "pan", "pitch", "normalize", "fit", "focus", "crop", "filters", "color", "speed", "keyframes"]);
 /** Filters that look at one frame alone (the others look at earlier frames, at a file, or key out alpha). */
 const PLAIN_FILTERS = new Set(["eq", "blur", "sharpen", "grayscale", "vignette", "hflip", "vflip"]);

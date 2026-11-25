@@ -45,9 +45,16 @@ export function expandPreset(kind: "text" | "captions", name: string, text: stri
 // ------------------------------------------------------------------ templates
 type Media = string | Dict;
 const src = (m: Media) => (typeof m === "string" ? { src: m } : m);
+/** the items with a transition into each but the first: a section starts with a cut, on the beat its music starts on (an item's own transition wins) */
+const cutIn = (media: Media[], transition: Dict) => media.map((m, i) => (i ? { transition, ...src(m) } : src(m)));
 
-type Size = { width: number; height: number };
-type Template = { doc: string; args: Dict; build: (a: Dict, size: Size) => Dict[] };
+/** where a template builds: the canvas size, and the index on `main` of its section's first clip (0 on an empty timeline); what else it adds attaches to that clip, so it moves with the section */
+type Ctx = { width: number; height: number; first: number };
+/** What a template arg holds: media = a list of pictures (paths or clip specs), audio / visual = one file path, lines = a list of strings, items = [{text, media}]. */
+export type ArgKind = "media" | "audio" | "visual" | "text" | "lines" | "items" | "number" | "color" | "text_preset" | "transition";
+export type TemplateArg = { kind: ArgKind; doc: string; required?: true };
+const arg = (kind: ArgKind, doc: string, required?: "required"): TemplateArg => (required ? { kind, doc, required: true } : { kind, doc });
+type Template = { doc: string; args: Record<string, TemplateArg>; build: (a: Dict, ctx: Ctx) => Dict[] };
 /** Placement fields for text set in `preset`: its own position, with a margin that keeps the box inside the safe area of a W x H canvas (never less than the preset's own margin).
  * A preset with no position stays where it is, centred, except on a canvas with UI zones, where a wide centred box would cover the side buttons: it goes to the top.
  * Text anchored on the left also gets the widest `max_width` that ends before the side zones; the box ring (stroke + background padding) is counted, a shadow or glow is not. */
@@ -61,75 +68,75 @@ function placed(preset: string, text: string, W: number, H: number): Dict {
 }
 
 /** `build` reads only the args the template declares: its `a` is typed from them, so another key is a compile error (apply_template refuses it at run time). `size` is the project's width and height: text placed against an edge takes its margin from the safe area. */
-const tpl = <A extends Dict>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }, size: Size) => Dict[] }): Template => t;
+const tpl = <A extends Record<string, TemplateArg>>(t: { doc: string; args: A; build: (a: { [K in keyof A]?: any }, ctx: Ctx) => Dict[] }): Template => t;
 
 export const TEMPLATES: Record<string, Template> = {
   slideshow: tpl({
     doc: "photos/clips with Ken Burns + crossfades, optional title and music (cuts snap to beats)",
-    args: { media: "list of paths/clip specs (required)", title: "text", music: "path", seconds: "per item (2.5)", transition: "crossfade", title_preset: "text preset for the title (title_bold)", every: "beats per cut (4)" },
-    build: (a, { width, height }) => {
-      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: a.seconds ?? 2.5, transition: { type: a.transition ?? "crossfade", duration: 0.5 }, motion: "ken_burns", fit: "blur" } }];
-      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold", ...placed(a.title_preset ?? "title_bold", String(a.title), width, height) });
-      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 4 });
+    args: { media: arg("media", "list of paths/clip specs", "required"), title: arg("text", "title on the first picture"), music: arg("audio", "music path; cuts snap to its beats"), seconds: arg("number", "per item (2.5)"),
+      transition: arg("transition", "between items (crossfade)"), title_preset: arg("text_preset", "text preset for the title (title_bold)"), every: arg("number", "beats per cut (4)") },
+    build: (a, { width, height, first }) => {
+      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: cutIn(a.media, { type: a.transition ?? "crossfade", duration: 0.5 }), defaults: { duration: a.seconds ?? 2.5, motion: "ken_burns", fit: "blur" } }];
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: `main#${first}`, offset: 0.3, match_duration: true, end_offset: 0.2, preset: a.title_preset ?? "title_bold", ...placed(a.title_preset ?? "title_bold", String(a.title), width, height) });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, attach_to: `main#${first}`, fade_out: 1.5, until_end: true }, { op: "snap_to_beats", track: "main", from: `main#${first}`, beats: a.music, every: a.every ?? 4 });
       return ops;
     },
   }),
   promo: tpl({
     doc: "product promo: hook title, one proof point per clip, CTA end card, beat-synced",
-    args: { media: "clips/photos (required)", hook: "opening line", points: "list of short lines", cta: "end card text", music: "path", brand_color: "#FFD60A", seconds: "per clip (2)", every: "beats per cut (2)" },
-    build: (a, { width, height }) => {
+    args: { media: arg("media", "clips/photos", "required"), hook: arg("text", "opening line"), points: arg("lines", "one short line per clip after the first"), cta: arg("text", "end card text"),
+      music: arg("audio", "music path; cuts snap to its beats"), brand_color: arg("color", "points and end card (#FFD60A)"), seconds: arg("number", "per clip (2)"), every: arg("number", "beats per cut (2)") },
+    build: (a, { width, height, first }) => {
       const n = a.media.length, seg = a.seconds ?? 2;
-      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: a.media.map(src), defaults: { duration: seg, transition: { type: "zoom", duration: 0.3 }, fit: "cover" } }];
-      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: "main#0", offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, ["top"], 16), max_width: safeWidth(width, height, width * 0.16, 26) });
+      const ops: Dict[] = [{ op: "add_sequence", track: "main", items: cutIn(a.media, { type: "zoom", duration: 0.3 }), defaults: { duration: seg, fit: "cover" } }];
+      if (a.hook) ops.push({ op: "add_clip", track: "text", text: a.hook, attach_to: `main#${first}`, offset: 0.15, match_duration: true, end_offset: 0.1, preset: "title_bold", position: "top", margin: safeMargin(width, height, ["top"], 16), max_width: safeWidth(width, height, width * 0.16, 26) });
       (a.points || []).slice(0, Math.max(0, n - 1)).forEach((p: string, i: number) =>
-        ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
+        ops.push({ op: "add_clip", track: "text", text: p, attach_to: `main#${first + i + 1}`, offset: 0.25, match_duration: true, end_offset: 0.1, preset: "subtitle_box", y: "64%", ...(a.brand_color ? { background: { color: a.brand_color, padding: 26, radius: 22 } } : {}) }));
       if (a.cta) ops.push({ op: "add_clip", track: "main", type: "color", gradient: { colors: [a.brand_color ?? "#111111", "#000000"], angle: 160 }, duration: 2.5, transition: "flash" },
         { op: "add_clip", track: "text", text: a.cta, attach_to: "main#-1", offset: 0.3, match_duration: true, preset: "sticker" });
-      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, fade_out: 1, until_end: true }, { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 2 });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, attach_to: `main#${first}`, fade_out: 1, until_end: true }, { op: "snap_to_beats", track: "main", from: `main#${first}`, beats: a.music, every: a.every ?? 2 });
       return ops;
     },
   }),
   beat_montage: tpl({
     doc: "fast montage: a cut on every N beats, flash/glitch transitions, shake on drops",
-    args: { media: "clips/photos (required)", music: "path (required)", every: "beats per cut (1)", title: "optional" },
-    build: (a) => {
-      if (!a.music) throw new EditError("beat_montage needs music", "missing_arg");
+    args: { media: arg("media", "clips/photos", "required"), music: arg("audio", "music path; a cut on its beats", "required"), every: arg("number", "beats per cut (1)"), title: arg("text", "title on the first clip") },
+    build: (a, { first }) => {
       const trs = ["flash", "glitch", "zoom_blur", "push_left", "spin"];
       const items = a.media.map((m: Media, i: number) => ({ ...src(m), ...(i ? { transition: { type: trs[i % trs.length], duration: 0.2 } } : {}), effects: i % 3 === 2 ? [{ type: "rgb_split", amount: 8 }] : undefined }));
       const ops: Dict[] = [{ op: "add_sequence", track: "main", items, defaults: { duration: 1, fit: "cover", motion: "zoom_slow" } },
-        { op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 0.8 },
-        { op: "snap_to_beats", track: "main", beats: a.music, every: a.every ?? 1 }];
-      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.1, match_duration: true, preset: "gradient" });
+        { op: "add_clip", track: "music", src: a.music, attach_to: `main#${first}`, until_end: true, fade_out: 0.8 },
+        { op: "snap_to_beats", track: "main", from: `main#${first}`, beats: a.music, every: a.every ?? 1 }];
+      if (a.title) ops.push({ op: "add_clip", track: "text", text: a.title, attach_to: `main#${first}`, offset: 0.1, match_duration: true, preset: "gradient" });
       return ops;
     },
   }),
   quote: tpl({
     doc: "single quote card over a background clip/photo or gradient",
-    args: { text: "quote (required)", author: "attribution", background: "path (optional)", seconds: "6", music: "path" },
-    build: (a, { width, height }) => {
-      if (typeof a.text !== "string" || !a.text.trim()) throw new EditError("quote needs text", "missing_arg", "pass text: the quote");
+    args: { text: arg("text", "the quote", "required"), author: arg("text", "attribution"), background: arg("visual", "background clip/photo path (else a gradient)"), seconds: arg("number", "length (6)"), music: arg("audio", "music path") },
+    build: (a, { width, height, first }) => {
       const d = a.seconds ?? 6;
       const ops: Dict[] = [a.background ? { op: "add_clip", track: "main", src: a.background, duration: d, motion: "zoom_slow", color: { look: "moody" }, effects: [{ type: "vignette", intensity: 0.6 }] }
         : { op: "add_clip", track: "main", type: "color", gradient: { colors: ["#0f2027", "#203a43", "#2c5364"], angle: 135 }, duration: d }];
-      ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, at: 0.4, duration: d - 0.6, preset: "quote", max_width: safeZones(width, height).ui.length ? safeWidth(width, height, width * 0.14, 12) : "80%" });
-      if (a.author) ops.push({ op: "add_clip", track: "text", text: `— ${a.author}`, at: 1.6, duration: d - 1.8, font_size: 44, color: "#ffffffcc", y: "72%", enter: "fade" });
-      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, duration: d, fade_in: 0.5, fade_out: 1.2 });
+      ops.push({ op: "add_clip", track: "text", text: `“${a.text}”`, attach_to: `main#${first}`, offset: 0.4, duration: d - 0.6, preset: "quote", max_width: safeZones(width, height).ui.length ? safeWidth(width, height, width * 0.14, 12) : "80%" });
+      if (a.author) ops.push({ op: "add_clip", track: "text", text: `— ${a.author}`, attach_to: `main#${first}`, offset: 1.6, duration: d - 1.8, font_size: 44, color: "#ffffffcc", y: "72%", enter: "fade" });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, attach_to: `main#${first}`, duration: d, fade_in: 0.5, fade_out: 1.2 });
       return ops;
     },
   }),
   listicle: tpl({
     doc: "numbered list: title card, then one clip per item with a numbered label",
-    args: { title: "headline (required)", items: "[{text, media}] (required)", seconds: "per item (3)", music: "path" },
-    build: (a, { width, height }) => {
+    args: { title: arg("text", "headline", "required"), items: arg("items", "[{text, media}]: one numbered clip each", "required"), seconds: arg("number", "per item (3)"), music: arg("audio", "music path") },
+    build: (a, { width, height, first }) => {
       const s = a.seconds ?? 3;
       const ops: Dict[] = [{ op: "add_clip", track: "main", type: "color", gradient: { colors: ["#111827", "#1f2937"], angle: 180 }, duration: 2.2 },
-        { op: "add_clip", track: "text", text: a.title, attach_to: "main#0", offset: 0.2, match_duration: true, preset: "title_bold" }];
+        { op: "add_clip", track: "text", text: a.title, attach_to: `main#${first}`, offset: 0.2, match_duration: true, preset: "title_bold" }];
       (a.items || []).forEach((it: Dict, i: number) => {
         const label = `${i + 1}. ${it.text}`;
         ops.push({ op: "add_clip", track: "main", ...src(it.media), duration: s, transition: { type: "slide_left", duration: 0.35 }, fit: "blur" });
-        ops.push({ op: "add_clip", track: "text", text: label, attach_to: `main#${i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third", ...placed("lower_third", label, width, height) });
+        ops.push({ op: "add_clip", track: "text", text: label, attach_to: `main#${first + i + 1}`, offset: 0.4, match_duration: true, end_offset: 0.1, preset: "lower_third", ...placed("lower_third", label, width, height) });
       });
-      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, until_end: true, fade_out: 1 });
+      if (a.music) ops.push({ op: "add_clip", track: "music", src: a.music, attach_to: `main#${first}`, until_end: true, fade_out: 1 });
       return ops;
     },
   }),

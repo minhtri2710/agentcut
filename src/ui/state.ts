@@ -27,6 +27,7 @@ export const st = {
   playing: false, // the play draft is shown in <video>
   rendering: false,
   exporting: false, // the export dialog is open
+  template: null as string | null, // the template whose dialog is open
   sheeting: false,
   out: null as Out | null,
   consent: null as ApiError | null, // the model download the dialog asks about
@@ -38,7 +39,7 @@ export const st = {
   mediaQuery: "",
   uploading: null as string | null, // the dropped file being sent to media/
   tx: {} as Record<string, { busy?: boolean; words?: { text: string; start: number; end: number }[] }>, // transcripts by asset id and file path
-  chat: { log: [] as Dict[], busy: false, engine: null as Dict | null }, // the chat panel: the events of this page's view of the conversation, an agent run going on, what CLI drives it
+  chat: { log: [] as Dict[], busy: false, engine: null as Dict | null, cli: null as string | null }, // the chat panel: the events of this page's view of the conversation, an agent run going on, what CLI drives it
   txSel: null as { id: string; a: number; b: number } | null, // the transcript words picked in clip id: anchor and end
 };
 
