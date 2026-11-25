@@ -1477,6 +1477,32 @@ console.log("templates and beats");
       && Object.keys(t3.assets).length === 2 && go?.attach_to === main3[2].id && Math.abs(go.start - 8.1) < 1e-6,
     { main: main3.map((c: any) => [c.id, c.start, c.duration]), alone, bed, go, assets: Object.keys(t3.assets) });
   check("snap_to_beats from a clip not on the track is refused by name", await code([{ op: "snap_to_beats", track: "main", from: "nope", beats: [0, 1, 2] }]) === "bad_value");
+  // a second section with music: the first section's bed ends where it starts, so two songs never overlap
+  await applyLatest(P4, [{ op: "apply_template", name: "beat_montage", media: [png, png], music: song }]);
+  const t4 = resolve((await api.info(P4, "json")).timeline), beds = t4.tracks.find((t: any) => t.id === "music")!.clips as any[], sec2: any = t4.tracks.find((t: any) => t.id === "main")!.clips[3];
+  check("a second template with music: the earlier bed now ends where the new section starts, the new bed runs from there to the end",
+    beds.length === 2 && !beds[0].until_end && Math.abs(beds[0].start + beds[0].duration - sec2.start) < 1e-6 && beds[1].until_end === true && beds[1].start === sec2.start, { beds, sec2 });
+  // a quote after a clip stretched to the end (until_end) by a voice: its text and music move with its background, so they do not stretch that clip
+  const P5 = join(tmp, "proj-section-stretch");
+  api.create(P5, { preset: "720p" });
+  await applyLatest(P5, [{ op: "add_clip", track: "main", src: png, id: "bg", until_end: true }, { op: "add_clip", track: "voice", src: song, at: 0 }]);
+  await applyLatest(P5, [{ op: "apply_template", name: "quote", text: "Hi", author: "Me", music: song }]);
+  const clipEndOf = (tl: any, id: string) => { const c = tl.tracks.flatMap((t: any) => t.clips).find((x: any) => x.id === id); return c.start + c.duration; };
+  const t5 = resolve((await api.info(P5, "json")).timeline), qbg: any = t5.tracks.find((t: any) => t.id === "main")!.clips[1], all5 = t5.tracks.flatMap((t: any) => t.clips);
+  const qtext = all5.find((c: any) => c.text === "“Hi”"), qby = all5.find((c: any) => c.text === "— Me"), qmusic: any = t5.tracks.find((t: any) => t.id === "music")!.clips[0];
+  check("quote after an until_end clip: the stretched clip ends with the voice (6 s), the quote text, attribution and music start 0.4 s, 1.6 s and 0 s into its background",
+    Math.abs(clipEndOf(t5, "bg") - 6) < 1e-3 && Math.abs(qbg.start - 6) < 1e-3 && Math.abs(qtext.start - qbg.start - 0.4) < 1e-6 && Math.abs(qby.start - qbg.start - 1.6) < 1e-6 && Math.abs(qmusic.start - qbg.start) < 1e-6,
+    { bg: clipEndOf(t5, "bg"), qbg: qbg.start, text: qtext?.start, by: qby?.start, music: qmusic?.start });
+  // snap_to_beats from a clip whose transition in is capped by its length: a new length would move its start (beat time 0), so it is refused
+  let n6 = 0;
+  const snapFrom = async (bLen: number, beats: number[]) => {
+    const P6 = join(tmp, `proj-snap-from-${n6++}`);
+    api.create(P6, { preset: "720p" });
+    await applyLatest(P6, [{ op: "add_clip", track: "main", src: png, id: "a", duration: 5 }, { op: "add_clip", track: "main", src: png, id: "b", duration: bLen, transition: { type: "crossfade", duration: 1 } }, { op: "add_clip", track: "main", src: png, id: "c", duration: 2 }]);
+    try { await applyLatest(P6, [{ op: "snap_to_beats", track: "main", from: "b", beats }]); return "accepted"; } catch (e: any) { return e.code; }
+  };
+  check("snap_to_beats from: refused when the new length caps the transition into it, or frees it from a cap; accepted when the start stays",
+    await snapFrom(2, [0, 0.5, 1]) === "bad_beats" && await snapFrom(0.5, [0, 2, 3]) === "bad_beats" && await snapFrom(2, [0, 1.5, 3]) === "accepted");
 
   // beats read from an audio path follow the file: a replaced file gives its own beats
   const click = join(m, "click.wav");

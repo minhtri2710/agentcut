@@ -826,6 +826,7 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     const starts = [0, ...cuts.slice(1, clips.length)]; // the first clip starts at 0, so its span ends at the second cut
     starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN && !computedDuration(clips[i - 1])) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
     resolve(tl);
+    const origin = clipStart(clips[0]); // beat time 0
     const changed: Clip[] = [], kept: string[] = [];
     clips.forEach((c, i) => {
       if (i + 1 >= starts.length) return;
@@ -835,6 +836,8 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
       c.duration = round6(starts[i + 1] - starts[i] + td); delete c.until_end; changed.push(c);
     });
     resolve(tl);
+    if (Math.abs(clipStart(clips[0]) - origin) > 1e-6) // a transition into it is capped by its length: a new length moves its start, and every beat after it
+      throw new EditError(`retiming '${clips[0].id}' moves its start from ${round6(origin)} s to ${round6(clipStart(clips[0]))} s: the transition into it is longer than it can overlap`, "bad_beats", `shorten or remove that transition (update_clip id=${clips[0].id} set={transition: null}), or snap from another clip`);
     return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
   });
 
@@ -944,9 +947,13 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     const file = (v: unknown) => (typeof v === "string" && own(tl.assets, v) ? p.abs(tl.assets[v].path) : v); // an asset id names the project's file, not one relative to the current directory
     const args: Dict = { ...a };
     for (const [k, s] of Object.entries(t.args)) if (s.kind === "audio" || s.kind === "visual") args[k] = file(a[k]); else if (s.kind === "media" && Array.isArray(a[k])) args[k] = a[k].map(file);
-    const main = tl.tracks.find((x) => x.id === "main");
-    if (main) resolve(tl);
-    const ops = t.build(args, { width: tl.settings.width, height: tl.settings.height, first: main?.clips.length ?? 0, at: main ? round6(trackEnd(main)) : 0 });
+    const main = tl.tracks.find((x) => x.id === "main"), first = main?.clips.length ?? 0;
+    if (first && Object.entries(t.args).some(([k, s]) => s.kind === "audio" && args[k])) { // a new section's music takes over: a bed that ran to the end now ends where the section starts
+      resolve(tl);
+      const at = trackEnd(main!);
+      for (const c of tl.tracks.find((x) => x.id === "music")?.clips ?? []) if (c.until_end && clipStart(c) < at) { c.duration = round6(at - clipStart(c)); delete c.until_end; }
+    }
+    const ops = t.build(args, { width: tl.settings.width, height: tl.settings.height, first });
     const results: Dict[] = [];
     for (const [i, o] of ops.entries()) {
       const { op: name, ...args } = o;

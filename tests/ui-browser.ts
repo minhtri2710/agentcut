@@ -926,9 +926,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("  Build without a required arg is refused by name inside the dialog, changes nothing and keeps it open", await until("refused", `!!$("terr") && $("tpl").contains($("terr")) && $("terr").textContent.indexOf("text") >= 0 && $("tpl").open`)
       && load().revision === revQ, await js(`$("terr") && $("terr").textContent`));
     await js(`$("tpl").querySelector('[name="text"]').value = "Stay hungry"`);
+    const endQ = ends(resolved(load())); // before Build: the end of main the section follows
     await click("#tgo");
     const quoted = (tl: any) => tl.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.text === "\u201cStay hungry\u201d");
-    const endQ = ends(resolved(load()));
     check("  with it filled in, Build adds the template's clips in one step and closes the dialog", await untilFile((tl) => tl.revision === revQ + 1 && quoted(tl).length === 1)
       && await until("closed", `!$("tpl").open`), quoted(load()));
     check("  on a timeline with clips the quote is a section after main's end: its text starts 0.4 s into it", Math.abs(quoted(load())[0].start - (endQ + 0.4)) < 1e-6, { start: quoted(load())[0].start, endQ });
