@@ -1010,10 +1010,15 @@ console.log("dashboard");
   ff("-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", join(home, "alpha", "media", "red.png"));
   await applyLatest(join(home, "alpha"), [{ op: "add_clip", track: "main", src: join(home, "alpha", "media", "red.png"), duration: 2 }]);
   mkdirSync(join(home, "not-a-project"));
+  api.create(join(home, "damaged"), { preset: "square" });
+  const { revision: _, ...norev } = JSON.parse(readFileSync(join(home, "damaged", "project.json"), "utf8"));
+  writeFileSync(join(home, "damaged", "project.json"), JSON.stringify(norev));
   const db = await startDashboard(home, { port: 0 }), at = { port: db.port };
   try {
     const list = await jget("/api/projects", at);
-    check("the dashboard lists the project folders in it (not other folders), with size, length and revision", list.j.ok && JSON.stringify(list.j.projects.map((p: any) => [p.name, p.width, p.duration, p.revision])) === '[["alpha",1080,2,1]]', list.j);
+    const listed = list.j.ok ? list.j.projects : [], damaged = listed.find((p: any) => p.name === "damaged");
+    check("the dashboard lists the project folders in it (not other folders), with size, length and revision", JSON.stringify(listed.filter((p: any) => p !== damaged).map((p: any) => [p.name, p.width, p.duration, p.revision])) === '[["alpha",1080,2,1]]', list.j);
+    check("  a project.json with no valid revision is listed with the editor's bad_revision text, not a revision", damaged && damaged.revision === undefined && /no valid 'revision'/.test(damaged.error), damaged);
     const page = await raw("/", at);
     check("  its page is the editor's page marked as the dashboard", page.status === 200 && page.body.toString().includes('<div id="app" data-dashboard>'));
     const th = await raw("/api/projects/alpha/thumb", at);

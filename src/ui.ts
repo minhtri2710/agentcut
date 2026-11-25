@@ -16,7 +16,7 @@ import { endJob } from "./jobs.ts";
 import { libraryStill } from "./library.ts";
 import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
 import { type Asset, EditError, PRESETS, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
-import { UI_AUTHOR } from "./project.ts";
+import { Project, UI_AUTHOR } from "./project.ts";
 import { ensureDir, writeFile } from "./safe-write.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
@@ -337,7 +337,7 @@ export async function startDashboard(dir: string, o: { port?: number } = {}) {
   const projects = () => readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".") && existsSync(join(root, e.name, "project.json"))).map((e) => {
     const file = join(root, e.name, "project.json"), modified = statSync(file).mtimeMs;
     try {
-      const tl = JSON.parse(readFileSync(file, "utf8"));
+      const tl = new Project(join(root, e.name)).load(); // the editor's read: a damaged project.json is its error here, not 'rev undefined'
       return { name: e.name, modified, revision: tl.revision, width: tl.settings.width, height: tl.settings.height, duration: +totalDuration(resolveTimeline(tl)).toFixed(2) };
     } catch (err: any) { return { name: e.name, modified, error: String(err?.message ?? err) }; }
   }).sort((a, b) => b.modified - a.modified);
@@ -349,7 +349,7 @@ export async function startDashboard(dir: string, o: { port?: number } = {}) {
     if (req.method === "GET" && path === "/api/projects") return json(res, 200, { ok: true, dir: root, presets: Object.keys(PRESETS), projects: projects() });
     const thumb = /^\/api\/projects\/([^/]+)\/thumb$/.exec(path);
     if (req.method === "GET" && thumb) {
-      const d = folder(thumb[1]), tl = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+      const d = folder(thumb[1]), tl = new Project(d).load();
       const r = await api.frameImage(d, +(totalDuration(resolveTimeline(tl)) * 0.25).toFixed(3), { scale: 240 / Math.max(tl.settings.width, tl.settings.height), reuse: true });
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
       return res.end(r.data);

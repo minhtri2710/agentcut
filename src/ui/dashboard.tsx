@@ -9,6 +9,7 @@ const go = (path: string, body: Dict, then: (r: Dict) => void) => api(path, body
 
 export function Dashboard() {
   const [d, setD] = useState<Dict | null>(null), [dup, setDup] = useState<string | null>(null), [, redraw] = useState(0);
+  const [blank, setBlank] = useState<Record<string, true>>({}); // projects whose picture failed: an empty timeline has none
   const reload = () => { fetch("/api/projects").then((r) => r.json()).then((j) => (j.ok ? setD(j) : fail(j.error))); };
   useEffect(reload, []);
   const open = (name: string) => go("/api/open", { name }, (r) => { location.href = r.url; });
@@ -31,9 +32,11 @@ export function Dashboard() {
         {d && d.projects.map((p: Dict) => (
           <div key={p.name} class="pcard" data-project={p.name}>
             <button class="popen" title={t("dashOpen")} onClick={() => open(p.name)}>
-              <img src={"/api/projects/" + encodeURIComponent(p.name) + "/thumb"} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
+              {p.error || blank[p.name]
+                ? <span class="pthumb none">{t("dashNoPicture")}</span>
+                : <img class="pthumb" src={"/api/projects/" + encodeURIComponent(p.name) + "/thumb"} alt="" loading="lazy" onError={() => setBlank((b) => ({ ...b, [p.name]: true }))} />}
               <span class="aname">{p.name}</span>
-              <span class="mut">{p.error ? p.error : p.width + "x" + p.height + " · " + p.duration + " s · rev " + p.revision}</span>
+              <span class={p.error ? "perr" : "mut"}>{p.error ? p.error : p.width + "x" + p.height + " · " + p.duration + " s · rev " + p.revision}</span>
               <span class="mut">{new Date(p.modified).toLocaleString(getLang())}</span>
             </button>
             {dup === p.name
