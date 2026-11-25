@@ -489,10 +489,11 @@ export class FrameSource {
   /** Whether the passes after a stream's first may come from one un-sought `-stream_loop -1` stream: only when the period such a stream would have is the pass length.
    *  That period runs from the video's first packet to the picture's end: the picture's recorded length (`video_duration`, else the container's `duration`) less `video_start`. It must equal `srcDuration` within
    *  PERIOD_TOLERANCE. In a render `srcDuration` is that same recorded length, so the two lengths cancel and the live test is `video_start` within the tolerance; the length comparison only bites for a `srcDuration`
-   *  passed by hand, and a record that leaves the length out says nothing, so it is not trusted. Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
+   *  passed by hand, and a record that leaves the length out says nothing, so it is not trusted. A file with sound is never un-sought: the demuxer's loop period runs to the last packet of any stream, `-an` included
+   *  (FFmpeg 9.1 starts the next pass one AAC frame late on an mp4 whose probed lengths are all equal). Otherwise every pass is its own bounded stream, at `n * srcDuration` apart. */
   private fillsPass() {
-    const f = this.o.facts as VideoFacts & { duration?: number; video_duration?: number | null };
-    return Math.abs((f.video_duration ?? f.duration)! - f.video_start - this.o.srcDuration!) <= PERIOD_TOLERANCE;
+    const f = this.o.facts as VideoFacts & { duration?: number; video_duration?: number | null; has_audio?: boolean };
+    return !f.has_audio && Math.abs((f.video_duration ?? f.duration)! - f.video_start - this.o.srcDuration!) <= PERIOD_TOLERANCE;
   }
 
   /** The ffmpeg command whose first frame is slot k of the clip (a reverse clip: its first slot), the same source frame whether the stream starts here or earlier, and with or without an audio track.
