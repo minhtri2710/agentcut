@@ -1551,8 +1551,9 @@ if (faceFixture) realRows.push(["real: a face in AGENTCUT_TEST_VISION_FACE is fo
 if (process.env.AGENTCUT_TEST_VISION === "1") {
   console.log("real helper (uv)");
   delete process.env.AGENTCUT_UV;
+  // a rigid object: the pattern's first frame held, moved across (KCF follows the look it learned at the start, and testsrc2's own animation loses it)
   ff("-f", "lavfi", "-i", "color=c=0x203040:s=640x360:r=30:d=3", "-f", "lavfi", "-i", "testsrc2=s=80x80:r=30:d=3",
-    "-filter_complex", "[0][1]overlay=x='40+t*130':y=140", "-pix_fmt", "yuv420p", join(m, "mover.mp4"));
+    "-filter_complex", "[1]trim=end_frame=1,loop=-1:1:0,setpts=N/30/TB[s];[0][s]overlay=x='40+t*130':y=140:shortest=1", "-pix_fmt", "yuv420p", join(m, "mover.mp4"));
   // a cache of its own: the suite's cache holds 0-byte model seeds the real helper cannot load
   real.mainCache = process.env.AGENTCUT_CACHE!;
   const realCache = join(tmp, "real-cache");
