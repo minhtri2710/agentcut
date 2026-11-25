@@ -97,20 +97,29 @@ const loadForText = async (tl: M.Timeline) => {
 /** A layer that hides everything under it while it lasts: a full-canvas, fully opaque picture placed plainly (nothing that moves, shrinks, fades or blends it). */
 function hidesBelow(tl: M.Timeline, c: M.Clip) {
   if (c.enabled === false || Number(c.opacity ?? 1) < 1 || (c.blend ?? "normal") !== "normal"
-    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)
-    || (c.effects || []).some((f: any) => ["strobe","blur"].includes(typeof f === "string" ? f : f?.type))) return false; // strobe drops the layer's opacity and blur fades its edges (effects.ts); the others draw over an opaque layer
+    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)) return false;
   if (c.type === "color") return c.gradient ? (c.gradient.colors || []).every((x: unknown) => M.parseColor(x)[3] === 255) : M.parseColor(c.color ?? "black")[3] === 255;
   if (c.type !== "video" && c.type !== "image") return false;
   const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");
   return !tl.assets[c.asset]?.alpha && !keyed && ["cover", "fill", "blur"].includes(c.fit ?? "cover");
 }
+/** Clip-relative windows in which an effect lets the layer below show: strobe drops the layer's opacity and blur fades its edges (effects.ts, same window rule); the others draw over an opaque layer. */
+const seeThrough = (c: M.Clip): [number, number][] => (c.effects || []).map((f: any) => typeof f === "string" ? { type: f } : f)
+  .filter((f: any) => f?.type === "strobe" || f?.type === "blur")
+  .map((f: any) => { const s = f.start !== undefined ? M.parseTime(f.start) : 0; return [s, f.duration !== undefined ? s + M.parseTime(f.duration) : Infinity]; });
+const minus = (spans: [number, number][], cuts: [number, number][]) =>
+  cuts.reduce((acc, [a, b]) => acc.flatMap(([x, y]): [number, number][] => [[x, Math.min(y, a)], [Math.max(x, b), y]]).filter(([x, y]) => y - x > 1e-6), spans);
 /** The spans in which each enabled video clip plays and can be seen (compounds included, in timeline time), for the render's frozen_picture check: a layer above that hides it takes its span out. */
 function seenVideo(tl: M.Timeline) {
   const out: { id: string; start: number; end: number }[] = [];
   const walk = (tracks: M.Track[], at: (t: number) => number, win: [number, number], above: [number, number][]) => {
     const shown = tracks.filter((t) => !t.hidden && t.kind !== "audio");
     shown.forEach((tr, i) => {
-      const cover = (k: M.Clip): [number, number][] => hidesBelow(tl, k) ? [[at(M.clipStart(k)), at(M.clipEnd(k))]] : [];
+      const cover = (k: M.Clip): [number, number][] => {
+        if (!hidesBelow(tl, k)) return [];
+        const s = M.clipStart(k);
+        return minus([[s, M.clipEnd(k)]], seeThrough(k).map(([a, b]) => [s + a, s + b])).map(([a, b]) => [at(a), at(b)]);
+      };
       const upper = [...above, ...shown.slice(i + 1).flatMap((u) => u.clips.flatMap(cover))];
       tr.clips.forEach((c, ci) => {
         const covers = [...upper, ...tr.clips.slice(ci + 1).flatMap(cover)]; // a later clip of the same track is drawn over it where they overlap
@@ -121,7 +130,7 @@ function seenVideo(tl: M.Timeline) {
           const s = M.clipStart(c), cin = M.parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1;
           walk(c.tracks, (t) => at(s + (t - cin) / sp), span, covers);
         } else if (c.type === "video" && !c.freeze)
-          out.push(...covers.reduce((spans, [a, b]) => spans.flatMap(([x, y]): [number, number][] => [[x, Math.min(y, a)], [Math.max(x, b), y]]).filter(([x, y]) => y - x > 1e-6), [span]).map(([x, y]) => ({ id: c.id, start: x, end: y })));
+          out.push(...minus([span], covers).map(([x, y]) => ({ id: c.id, start: x, end: y })));
       });
     });
   };

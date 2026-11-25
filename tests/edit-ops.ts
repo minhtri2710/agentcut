@@ -1214,6 +1214,14 @@ console.log("track lock");
     check("  replace_timeline that drops a lock and changes that track's clips is refused (locked)", code === "locked", code);
     const both = await codeOf([{ op: "update_track", id: "main", set: { locked: true } }, { op: "update_track", id: "main", set: { locked: false, magnetic: false } }]);
     check("  one update_track that unlocks a magnetic track and makes it plain passes (no clip moves)", both === "ok", both);
+    const plain: any = structuredClone(t0), pm = plain.tracks.find((tr: any) => tr.id === "main");
+    pm.locked = true; pm.magnetic = false; pm.clips[0].start = 3;
+    let moved = "ok";
+    try { await applyOps(null as any, t0, [{ op: "update_track", id: "main", set: { locked: true } }, { op: "replace_timeline", timeline: plain }]); } catch (e: any) { moved = e.code; }
+    check("  replace_timeline that makes a locked magnetic track plain and moves a clip is refused (locked)", moved === "locked", moved);
+    const back = await codeOf([{ op: "update_track", id: "main", set: { locked: false, magnetic: false } }, { op: "update_clip", id: "m2", set: { start: 9 } },
+      { op: "update_track", id: "main", set: { locked: true } }, { op: "update_track", id: "main", set: { magnetic: true } }]);
+    check("  update_track that turns a locked plain track magnetic and so moves its clips is refused (locked)", back === "locked", back);
   }
   check("  locked must be a boolean (validate)", validate({ ...(await mk()), tracks: (await mk()).tracks.map((tr: any) => (tr.id === "overlay" ? { ...tr, locked: "yes" } : tr)) }).some((i: any) => i.level === "error" && /locked/.test(i.path + i.message)));
 }

@@ -262,7 +262,7 @@ console.log("timeline without an audible clip: no audio track");
     check(`silent ${f}, joined segments: no audio stream, has_audio false`, kinds(so(f)) === "video" && rs.has_audio === false, { k: kinds(so(f)), rs });
   }
   // a video clip whose footage holds still (a solid colour) is reported with its id; a still image is not footage and is never reported
-  ff("-f", "lavfi", "-i", "color=c=0x3366aa:size=320x240:rate=24:duration=2", "-pix_fmt", "yuv420p", join(m, "flat.mp4"));
+  ff("-f", "lavfi", "-i", "color=c=0x3366aa:size=320x240:rate=24:duration=4", "-pix_fmt", "yuv420p", join(m, "flat.mp4"));
   const FZ = join(tmp, "frozen");
   api.create(FZ, { width: W, height: H, fps: 24 });
   await applyLatest(FZ, [{ op: "add_clip", track: "main", src: join(m, "mute.mp4"), duration: 1 }, { op: "add_clip", track: "main", src: join(m, "flat.mp4"), duration: 2 }]);
@@ -284,13 +284,15 @@ console.log("timeline without an audible clip: no audio track");
   check("output QA: footage in a compound drawn at opacity 0 is not blamed", !zero.qa?.issues?.some((i: any) => i.type === "frozen_picture"), zero.qa);
   const FS = join(tmp, "frozen-same-track");
   api.create(FS, { width: W, height: H, fps: 24 });
-  await applyLatest(FS, [{ op: "add_clip", track: "overlay", src: join(m, "flat.mp4"), at: 0, duration: 2 }, { op: "add_clip", track: "overlay", type: "color", color: "black", at: 0, duration: 2 }]);
+  await applyLatest(FS, [{ op: "add_clip", track: "overlay", src: join(m, "flat.mp4"), at: 0, duration: 4 }, { op: "add_clip", track: "overlay", type: "color", color: "black", at: 0, duration: 4 }]);
   const same: any = await api.render(FS, { out: join(FS, "renders", "s.mp4"), workers: 1, sheet: false });
   check("output QA: footage under a later opaque clip of the same track is not blamed", !same.qa?.issues?.some((i: any) => i.type === "frozen_picture"), same.qa);
   await applyLatest(FS, [{ op: "add_effect", id: "col1", type: "letterbox" }]);
   const lbx: any = await api.render(FS, { out: join(FS, "renders", "l.mp4"), workers: 1, sheet: false });
   check("output QA: an opaque cover with an effect that keeps it opaque (letterbox) still hides the footage", !lbx.qa?.issues?.some((i: any) => i.type === "frozen_picture"), lbx.qa);
-  await applyLatest(FS, [{ op: "add_effect", id: "col1", type: "blur" }]);
+  await applyLatest(FS, [{ op: "add_effect", id: "col1", type: "blur", start: 2 }]);
+  const pre: any = await api.render(FS, { out: join(FS, "renders", "p.mp4"), workers: 1, sheet: false, end: 1.9 });
+  check("output QA: before a timed blur starts the cover still hides the footage", !pre.qa?.issues?.some((i: any) => i.type === "frozen_picture"), pre.qa);
   const blr: any = await api.render(FS, { out: join(FS, "renders", "b.mp4"), workers: 1, sheet: false });
   check("output QA: a cover whose blur leaves its edges translucent does not hide the still footage", blr.qa?.issues?.some((i: any) => i.type === "frozen_picture" && i.ids.includes("vid1")), blr.qa);
   const gf: any = await api.render(SP, { out: so("mute.gif"), end: 1 });

@@ -990,6 +990,16 @@ function keepLocked(before: Map<string, string>, after: Map<string, string>) {
     throw new EditError(`track '${id}' is locked`, "locked", `update_track id=${id} set={locked: false} first`);
 }
 
+/** A locked track whose placement the op switches (magnetic on or off) keeps where its clips play: the stored fields alone cannot show that, so the resolved starts are compared. */
+function keepPlaced(prior: Timeline, work: Timeline) {
+  const switched = prior.tracks.filter((tr) => tr.locked === true && work.tracks.some((w) => w.id === tr.id && !!w.magnetic !== !!tr.magnetic)).map((tr) => tr.id);
+  if (!switched.length) return;
+  const starts = (tl: Timeline) => new Map(resolve(structuredClone(tl)).tracks.map((tr) => [tr.id, JSON.stringify(tr.clips.map((c) => [c.id, round6(clipStart(c))]))]));
+  const a = starts(prior), b = starts(work);
+  for (const id of switched) if (a.get(id) !== b.get(id))
+    throw new EditError(`track '${id}' is locked`, "locked", `update_track id=${id} set={locked: false} first`);
+}
+
 function* opSteps(p: Project, tl: Timeline, ops: Dict[]): Generator<Dict | Promise<Dict>, [Timeline, Dict[]], Dict> {
   const work = structuredClone(tl);
   const results: Dict[] = [];
@@ -1001,9 +1011,10 @@ function* opSteps(p: Project, tl: Timeline, ops: Dict[]): Generator<Dict | Promi
       const { op: _n, ...args } = o;
       refuseProtoKeys(args);
       if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(name), name);
-      const before = lockedClips(work), magnetic = new Map(work.tracks.map((tr) => [tr.id, !!tr.magnetic]));
+      const before = lockedClips(work), magnetic = new Map(work.tracks.map((tr) => [tr.id, !!tr.magnetic])), prior = before.size ? structuredClone(work) : null;
       results.push({ op: name, ...yield def.fn(p, work, args) });
       keepLocked(before, lockedClips(work, true, magnetic));
+      if (prior) keepPlaced(prior, work);
     } catch (e: any) {
       if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${name})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${name})`; throw e; }
       if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${name}): missing or invalid argument`, "missing_arg", `${name} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
