@@ -316,9 +316,11 @@ row("a looping GIF is accepted and its frames follow the rule across a wrap", aw
     ...await sweep("loopsound25", loopSound, 25, [0, 1.5], [0, 0.5], [0, 20, 49, 50, 51, 99, 100, 101, 149, 150, 151], { loop: true }),
     ...await sweep("loopsound30", loopSound, 30, [0, 1.99], [0], [0, 20, 59, 60, 61, 119, 120, 121, 179, 180], { loop: true })]);
   const fills = async (f: string, o: Opts = {}) => ((await source(f, 25, 0, { loop: true, ...o })) as any).fillsPass();
-  check("the probe record of a file whose picture fills its pass lets later passes come from one looping stream, a picture shorter than the sound included; a late video (0.54 s, or 0.02 s), a longer recorded pass or a shorter picture does not",
-    (await api.probe(loopSound)).video_duration > 1.9 && (await fills(loop2k)) && (await fills(loop2kMov)) && (await fills(loop18)) && (await fills(loop04)) && (await fills(loopSound)) && !(await fills(loopLate)) && !(await fills(nz25)) && !(await fills(loop2k, { srcDuration: 2.2 })) && !(await fills(loop2k, { facts: { ...(await api.probe(loop2k)), video_duration: 1.9 } })),
-    [(await api.probe(loopSound)).video_duration, (await fills(loop2k)), (await fills(loop2kMov)), (await fills(loop18)), (await fills(loop04)), (await fills(loopSound)), (await fills(loopLate)), (await fills(nz25)), (await fills(loop2k, { srcDuration: 2.2 })), (await fills(loop2k, { facts: { ...(await api.probe(loop2k)), video_duration: 1.9 } }))]);
+  const mov = await api.probe(loop2kMov);
+  const fl = [await fills(loop2kMov), await fills(loop18), await fills(loop04), await fills(loop2k), await fills(loopSound), await fills(loopLate), await fills(nz25), await fills(loop2kMov, { srcDuration: 2.2 }), await fills(loop2kMov, { facts: { ...mov, video_duration: 1.9 } }),
+    await fills(loop2kMov, { facts: { ...mov, video_start: 0.54 } }), await fills(loop2kMov, { facts: { ...mov, video_start: 0.02 } })];
+  check("the probe record of a silent file whose picture fills its pass lets later passes come from one looping stream; a file with sound (mp4 with AAC, a picture shorter than its sound), a late video (0.54 s, or 0.02 s; with sound and in a silent record), a longer recorded pass or a shorter picture does not",
+    !mov.has_audio && (await api.probe(loop2k)).has_audio && fl.join() === "true,true,true,false,false,false,false,false,false,false,false", fl);
   { // a named limit (not a defect): a record whose picture is shorter than its length (the picture is 1.7 s, the record says 2 s) passes the check above, so the first wrap is at the record's length and later wraps at the file's own period
     const bad = await attempt(async () => {
       const s = (await source(loopShort, 25, 0.5, { loop: true, srcDuration: 2, facts: { ...(await api.probe(loopShort)), duration: 2 } })), got: number[] = [];

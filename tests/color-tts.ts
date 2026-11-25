@@ -393,6 +393,7 @@ printf '%s' "$ORT_DISABLE_TELEMETRY" > "${tmp}/ps.ort.$n"
 [ "$(cat "${tmp}/ps.fail" 2>/dev/null)" = "$n" ] && { echo "boom" >&2; exit 1; }
 while [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done
 w=$(wc -w < "${tmp}/ps.in.$n" | tr -d ' ')
+[ "$w" -gt 0 ] || { echo "no words" >&2; exit 1; } # sine with duration 0 never ends
 if grep -q , "${tmp}/ps.in.$n"; then
   # a clause sentence: 1.2 s, a 0.5 s pause, 0.6 s, then a 0.5 s silent tail
   S="-f lavfi -t 0.5 -i anullsrc=r=22050:cl=mono"
@@ -756,9 +757,9 @@ fi
 
       // two voiceovers in one batch, in the same millisecond: each gets its own file and keeps its own speech (a stand-in piper speaks 0.5 s per word)
       {
-        const binV = join(tmp, "bin-vo"), pathNow = process.env.PATH;
+        const binV = join(tmp, "bin-vo"), pathNow = process.env.PATH; // sentences are synthesized in parallel: each call reads its own input file
         mkdirSync(binV);
-        writeFileSync(join(binV, "piper"), `#!/bin/sh\ncat > "${tmp}/vo.in"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done\nexec ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $(wc -w < "${tmp}/vo.in" | tr -d ' ')*0.5}")" -ar 22050 "$o"\n`);
+        writeFileSync(join(binV, "piper"), `#!/bin/sh\ni=$(mktemp "${tmp}/vo.in.XXXXXX")\ncat > "$i"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done\nw=$(wc -w < "$i" | tr -d ' ')\n[ "$w" -gt 0 ] || { echo "no words" >&2; exit 1; }\nexec ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $w*0.5}")" -ar 22050 "$o"\n`);
         chmodSync(join(binV, "piper"), 0o755);
         const V2 = join(tmp, "two-vo");
         api.create(V2, { preset: "720p" });
