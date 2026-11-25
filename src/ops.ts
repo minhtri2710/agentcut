@@ -854,8 +854,8 @@ function keepSegments(tl: Timeline, tr: Track, ci: number, c: Clip, la: ReturnTy
     const nc: Clip = structuredClone(c);
     if (j) { nc.id = newId(tl, PREFIX[c.type]); delete nc.transition; delete nc.enter; delete nc.fade_in; }
     if (j < segs.length - 1) { delete nc.exit; delete nc.fade_out; } // the fades and the exit belong to the ends of the whole clip
-    nc.in = round6(s); nc.duration = round6((e - s) / speed); delete nc.keyframes; dropFollow(nc);
-    shiftKfs(nc, -(s - cin) / speed); // effect windows stay on their content
+    nc.in = round6(s); nc.duration = round6((e - s) / speed); dropFollow(nc);
+    shiftKfs(nc, -(s - cin) / speed); // keyframes and effect windows stay on their content
     placeAt(tl, tr, nc, t); t += nc.duration as number;
     tr.clips.splice(ci + j, 0, nc);
     ids.push(nc.id);

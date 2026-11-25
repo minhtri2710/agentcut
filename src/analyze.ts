@@ -226,7 +226,7 @@ export async function outputQa(path: string, want: { duration: number; width: nu
   if (r.status !== 0) issues.push({ type: "decode_failed", message: `the file's picture does not decode to its end: ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 300)}` });
   const starts = [...r.stderr.matchAll(/freeze_start: ([\d.]+)/g)].map((m) => +m[1] + offset), ends = [...r.stderr.matchAll(/freeze_end: ([\d.]+)/g)].map((m) => +m[1] + offset);
   starts.forEach((s, i) => {
-    const e = ends[i] ?? offset + len, ids = moving.filter((c) => c.start < e - 1e-6 && c.end > s + 1e-6).map((c) => c.id);
+    const e = ends[i] ?? offset + len, ids = [...new Set(moving.filter((c) => c.start < e - 1e-6 && c.end > s + 1e-6).map((c) => c.id))];
     if (ids.length) issues.push({ type: "frozen_picture", t: +s.toFixed(3), end: +e.toFixed(3), ids, message: `the picture holds still ${s.toFixed(2)}-${e.toFixed(2)} s while ${ids.join(", ")} ${ids.length > 1 ? "play" : "plays"}: still footage, or frames the decode repeated` });
   });
   return { ok: !issues.length, issues };

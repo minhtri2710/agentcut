@@ -3372,7 +3372,7 @@ export const PAGE = [
   "          id: \"render\",",
   "          class: \"primary\",",
   "          disabled: st.rendering,",
-  "          onClick: startRender,",
+  "          onClick: () => startRender(),",
   "          children: t3(\"render\")",
   "        }, undefined, false, undefined, this),",
   "        /* @__PURE__ */ a3(\"button\", {",

@@ -270,6 +270,14 @@ console.log("timeline without an audible clip: no audio track");
   const froze = fz.qa?.issues?.filter((i: any) => i.type === "frozen_picture") ?? [];
   check("output QA: footage that holds still while a video clip plays is frozen_picture with the clip id and its times",
     froze.length === 1 && froze[0].ids.join() === "vid2" && froze[0].t >= 0.9 && froze[0].t <= 1.1 && froze[0].end >= 2.9 && fz.qa.ok === false, fz.qa);
+  // a full-frame opaque card above the still footage hides it: nothing plays that can be seen, so nothing is frozen; inside a compound the footage is still checked
+  await applyLatest(FZ, [{ op: "add_clip", track: "overlay", type: "color", color: "black", at: 1, duration: 2 }]);
+  const cov: any = await api.render(FZ, { out: join(FZ, "renders", "c.mp4"), workers: 1, sheet: false });
+  check("output QA: footage hidden under a full-frame opaque card is not frozen_picture", !cov.qa?.issues?.some((i: any) => i.type === "frozen_picture"), cov.qa);
+  await applyLatest(FZ, [{ op: "remove_clip", id: "col1" }, { op: "make_compound", ids: ["vid2"] }]);
+  const nst: any = await api.render(FZ, { out: join(FZ, "renders", "n.mp4"), workers: 1, sheet: false });
+  const nf = nst.qa?.issues?.filter((i: any) => i.type === "frozen_picture") ?? [];
+  check("output QA: still footage inside a compound is frozen_picture with the nested clip's id", nf.length === 1 && nf[0].ids.join() === "vid2" && nf[0].t >= 0.9 && nf[0].t <= 1.1, nst.qa);
   const gf: any = await api.render(SP, { out: so("mute.gif"), end: 1 });
   check("gif: no output QA (resampled on purpose)", gf.qa === undefined, gf.qa);
   check("gif: has_audio false, no no-audible-clips warning", gf.has_audio === false && !gf.warnings?.some((w: string) => /audible/.test(w)), gf);

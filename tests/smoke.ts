@@ -235,6 +235,10 @@ console.log("required revision");
 
 console.log("look");
 check("frame jpg", existsSync(cli(["frame", "1.5", "--guides"], C).image));
+{ // a project named by -p or $AGENTCUT_PROJECT that is not one fails; only a folder given as the argument (or the cwd) opens the dashboard
+  const byFlag = cli(["ui", "-p", m, "--port", "0"], { ok: false }), byEnv = cli(["ui", "--port", "0"], { ok: false, env: { AGENTCUT_PROJECT: m } });
+  check("ui -p / $AGENTCUT_PROJECT naming a folder that is not a project: no_project, no dashboard", byFlag.error?.code === "no_project" && byEnv.error?.code === "no_project", [byFlag, byEnv]);
+}
 check("contact sheet", existsSync(cli(["sheet", "--every", "1"], C).image));
 
 console.log("frame time and caption file format");

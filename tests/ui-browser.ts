@@ -465,9 +465,11 @@ try {
   console.log("keyboard");
   await js(`document.activeElement.blur()`);
   // a render is under way while the Render button is disabled; a play while the Play button no longer reads "Play"
+  await js(`(function(){ var f = window.fetch; window.renderBodies = []; window.fetch = function (u, o) { if (String(u) === "/api/render") window.renderBodies.push(JSON.parse(o.body)); return f.apply(this, arguments); }; return true; })()`);
   check("Tab reaches Render, and Space on it starts a render, not play", await tabTo(`e.id === "render"`)
     && (await SPACE(), await until("render started", `$("render").disabled || !!document.querySelector("#out a")`)) && await js(`$("play").textContent === "Play" && $("video").style.display === "none"`),
     await js(`[document.activeElement.id, $("render").disabled, $("play").textContent]`));
+  check("  it sends the Draft checkbox (ticked by default) as draft", await js(`window.renderBodies.length === 1 && window.renderBodies[0].draft === true && $("draft").checked`), await js(`window.renderBodies`));
   check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !$("render").disabled`, 120_000), await js(`[$("msg").textContent, $("render").disabled]`));
   await applyLatest(dir, [{ op: "add_marker", t: 0.5 }]);
   await until("marker seen", `${atRev(load().revision)} && !$("undo").disabled`);

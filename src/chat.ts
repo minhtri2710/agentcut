@@ -24,10 +24,11 @@ export function mcpCommand(): { command: string; args: string[] } {
   return { command: process.execPath, args: [...flags, join(dirname(here), `mcp${extname(here)}`)] };
 }
 
-/** The CLI's arguments: print mode with streamed JSON, no built-in tools, only the agentcut MCP server (AGENTCUT_PROJECT names the project) and its tools allowed without asking. */
-export function chatArgs(root: string, message: string, session?: string): string[] {
+/** The CLI's arguments: print mode with streamed JSON, no built-in tools, only the agentcut MCP server (AGENTCUT_PROJECT names the project) and its tools allowed without asking.
+ *  The message itself goes on stdin: in argv one that starts with '-' would be read as an option. */
+export function chatArgs(root: string, session?: string): string[] {
   const mcp = { mcpServers: { agentcut: { ...mcpCommand(), env: { AGENTCUT_PROJECT: root } } } };
-  return ["-p", message, "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
+  return ["-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
     "--tools", "", "--allowedTools", "mcp__agentcut", "--permission-mode", "dontAsk",
     "--append-system-prompt", `You are the editing assistant inside the AgentCut UI. The open project is ${root}; edit it only with the agentcut MCP tools (read guide first if unsure). A human watches the same timeline and may edit too: take the revision from project_info before writing.`,
     ...(session ? ["--resume", session] : [])];
@@ -49,8 +50,10 @@ export function chatEvents(line: string): ChatEvent[] {
 export function runChat(root: string, message: string, session: string | undefined, on: (e: ChatEvent) => void, signal: AbortSignal): Promise<void> {
   if (!has("claude")) throw new EditError("no agent CLI found for the chat", "missing_dependency", INSTALL);
   return new Promise((ok) => {
-    const ch = spawn("claude", chatArgs(root, message, session), { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const ch = spawn("claude", chatArgs(root, session), { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
     stopOnAbort(ch, signal);
+    ch.stdin.on("error", () => {}); // a CLI that exits before reading: its close below reports it
+    ch.stdin.end(message);
     let err = "", done = false;
     ch.stderr.on("data", (c) => { err = (err + c).slice(-2000); });
     createInterface({ input: ch.stdout }).on("line", (l) => { for (const e of chatEvents(l)) { if (e.kind === "done") done = true; on(e); } });

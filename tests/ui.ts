@@ -888,9 +888,9 @@ hold.close();
 console.log("chat");
 {
   const { chatArgs, chatEvents } = await import("../src/chat.ts");
-  const a = chatArgs("/p/root", "hi", "s0"), mcp = JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.agentcut;
+  const a = chatArgs("/p/root", "s0"), mcp = JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.agentcut;
   check("chatArgs: streamed JSON, no built-in tools, only the agentcut MCP server for the project, its tools allowed, the session resumed",
-    a[0] === "-p" && a[1] === "hi" && a[a.indexOf("--output-format") + 1] === "stream-json" && a[a.indexOf("--tools") + 1] === "" && a.includes("--strict-mcp-config")
+    a[0] === "-p" && a[1] === "--output-format" && a[a.indexOf("--output-format") + 1] === "stream-json" && a[a.indexOf("--tools") + 1] === "" && a.includes("--strict-mcp-config")
     && a[a.indexOf("--allowedTools") + 1] === "mcp__agentcut" && a[a.indexOf("--permission-mode") + 1] === "dontAsk" && a[a.indexOf("--resume") + 1] === "s0"
     && mcp.env.AGENTCUT_PROJECT === "/p/root" && existsSync(mcp.args[mcp.args.length - 1]) && mcp.args[mcp.args.length - 1].endsWith("mcp.ts"), a);
   const ev = (o: unknown) => JSON.stringify(chatEvents(JSON.stringify(o)));
@@ -902,19 +902,19 @@ console.log("chat");
   if (process.platform !== "win32") {
     const bin = join(tmp, "chat-bin"), argsFile = join(tmp, "chat.args"), slow = join(tmp, "chat.slow");
     mkdirSync(bin);
-    writeFileSync(join(bin, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\npwd -P > "${argsFile}.cwd"\n[ -f "${slow}" ] && exec sleep 30\n`
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\ncat > "${argsFile}.msg"\npwd -P > "${argsFile}.cwd"\n[ -f "${slow}" ] && exec sleep 30\n`
       + `echo '{"type":"system","subtype":"init","session_id":"s1"}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","name":"mcp__agentcut__project_info","input":{}}]}}'\n`
       + `echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"rev 3"}]}}'\necho '{"type":"result","subtype":"success","session_id":"s1","result":"Hello"}'\n`, { mode: 0o755 });
     const PATH = process.env.PATH;
     process.env.PATH = `${bin}:${PATH}`;
     try {
       const idle = async () => { for (let i = 0; i < 100; i++) { if (!(await jget("/api/chat")).j.busy) return true; await Bun.sleep(50); } return false; };
-      const first = await jget("/api/chat", { method: "POST", body: { message: "hi there" } });
+      const first = await jget("/api/chat", { method: "POST", body: { message: "- hi there" } });
       const got = (k: string) => waitEvent((e) => e.event === "chat" && e.data.kind === k);
       check("POST /api/chat runs the agent: the message, its text, tool call, tool result and end reach every page as chat events", first.j.ok && await got("user") && await got("text") && await got("tool") && await got("tool_result") && await got("done")
         && events.some((e) => e.event === "chat" && e.data.kind === "tool" && e.data.name === "project_info"), events.filter((e) => e.event === "chat").map((e) => e.data));
-      check("  in the project folder, with the message, and the next message resumes its session", await idle() && (await jget("/api/chat")).j.session === "s1"
-        && readFileSync(argsFile, "utf8").split("\n")[1] === "hi there" && readFileSync(argsFile + ".cwd", "utf8").trim() === realpathSync(dir) && (await jget("/api/chat", { method: "POST", body: { message: "more" } })).j.ok && await idle()
+      check("  in the project folder, with the message on stdin (a leading '-' is not an option), and the next message resumes its session", await idle() && (await jget("/api/chat")).j.session === "s1"
+        && readFileSync(argsFile + ".msg", "utf8") === "- hi there" && !readFileSync(argsFile, "utf8").includes("hi there") && readFileSync(argsFile + ".cwd", "utf8").trim() === realpathSync(dir) && (await jget("/api/chat", { method: "POST", body: { message: "more" } })).j.ok && await idle()
         && readFileSync(argsFile, "utf8").includes("--resume\ns1\n"), readFileSync(argsFile, "utf8"));
       writeFileSync(slow, "");
       const run = await jget("/api/chat", { method: "POST", body: { message: "slow" } }), again = await jget("/api/chat", { method: "POST", body: { message: "x" } });

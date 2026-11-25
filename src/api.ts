@@ -94,6 +94,38 @@ const loadForText = async (tl: M.Timeline) => {
   } catch { /* fall through: validate reports what is wrong, and a font check may still run */ }
   await loadCanvas();
 };
+/** A layer that hides everything under it while it lasts: a full-canvas, fully opaque picture placed plainly (nothing that moves, shrinks, fades or blends it). */
+function hidesBelow(tl: M.Timeline, c: M.Clip) {
+  if (c.enabled === false || Number(c.opacity ?? 1) < 1 || (c.blend ?? "normal") !== "normal"
+    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)) return false;
+  if (c.type === "color") return c.gradient ? (c.gradient.colors || []).every((x: unknown) => M.parseColor(x)[3] === 255) : M.parseColor(c.color ?? "black")[3] === 255;
+  if (c.type !== "video" && c.type !== "image") return false;
+  const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");
+  return !tl.assets[c.asset]?.alpha && !keyed && ["cover", "fill", "blur"].includes(c.fit ?? "cover");
+}
+/** The spans in which each enabled video clip plays and can be seen (compounds included, in timeline time), for the render's frozen_picture check: a layer above that hides it takes its span out. */
+function seenVideo(tl: M.Timeline) {
+  const out: { id: string; start: number; end: number }[] = [];
+  const walk = (tracks: M.Track[], at: (t: number) => number, win: [number, number], above: [number, number][]) => {
+    const shown = tracks.filter((t) => !t.hidden && t.kind !== "audio");
+    shown.forEach((tr, i) => {
+      const covers = [...above, ...shown.slice(i + 1).flatMap((u) => u.clips.filter((k) => hidesBelow(tl, k)).map((k): [number, number] => [at(M.clipStart(k)), at(M.clipEnd(k))]))];
+      for (const c of tr.clips) {
+        if (c.enabled === false) continue;
+        const span: [number, number] = [Math.max(win[0], at(M.clipStart(c))), Math.min(win[1], at(M.clipEnd(c)))];
+        if (span[1] - span[0] <= 1e-6) continue;
+        if (c.type === "compound" && Array.isArray(c.tracks)) {
+          const s = M.clipStart(c), cin = M.parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1;
+          walk(c.tracks, (t) => at(s + (t - cin) / sp), span, covers);
+        } else if (c.type === "video" && !c.freeze)
+          out.push(...covers.reduce((spans, [a, b]) => spans.flatMap(([x, y]): [number, number][] => [[x, Math.min(y, a)], [Math.max(x, b), y]]).filter(([x, y]) => y - x > 1e-6), [span]).map(([x, y]) => ({ id: c.id, start: x, end: y })));
+      }
+    });
+  };
+  walk(tl.tracks, (t) => t, [-Infinity, Infinity], []);
+  return out;
+}
+
 /** timeline ready to draw: absolute paths + prepared background mattes (EditError not_prepared if prepare is needed) */
 export const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
@@ -547,12 +579,10 @@ export async function render(project: string | undefined, o: {
       res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
     }
     if (!out.endsWith(".gif")) { // a gif is resampled to 15 fps and 540 px on purpose: nothing to compare
-      const rt = M.resolve(M.clone(tl)), moving = rt.tracks.filter((t) => !t.hidden).flatMap((t) => t.clips)
-        .filter((c) => c.type === "video" && c.enabled !== false && !c.freeze).map((c) => ({ id: c.id, start: M.clipStart(c), end: M.clipEnd(c) }));
       try {
         o.signal?.throwIfAborted();
-        res.qa = await AN.outputQa(out, { duration: res.duration, width: res.width, height: res.height, fps: res.fps, has_audio: res.has_audio }, moving, start, o.signal);
-      } catch (e) { if (!o.signal?.aborted) throw e; res.qa_error = "skipped: cancelled after the output was written"; }
+        res.qa = await AN.outputQa(out, { duration: res.duration, width: res.width, height: res.height, fps: res.fps, has_audio: res.has_audio }, seenVideo(M.resolve(M.clone(tl))), start, o.signal);
+      } catch (e: any) { res.qa_error = o.signal?.aborted ? "skipped: cancelled after the output was written" : `skipped: ${e?.message ?? e}`; } // the output is written: a QA failure never fails the render
     }
     FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
       encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),

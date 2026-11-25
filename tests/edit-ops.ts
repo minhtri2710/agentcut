@@ -1158,6 +1158,11 @@ console.log("pieces of an attached clip keep their place and length");
       r2[2].segments.length === 2 && pieces.length === 2 && r2[2].segments.every((id: string, k: number) => pieces[k].attach_to === id && near(pieces[k].in, clipsOf(m2).find((c: any) => c.id === id).in)), { r2: r2[2], pieces });
     const [m3, r3] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "hd", duration: 3 }, { op: "remove_range", id: "hd", start: 0, end: 1 }]);
     check("remove_range at the clip's head leaves one segment that starts later in the source", r3[1].segments.length === 1 && near(clipsOf(m3)[0].in, 1) && near(clipsOf(m3)[0].duration, 2), clipsOf(m3));
+    const [m4, r4] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "kf", duration: 3, keyframes: { opacity: [[0, 0], [3, 1]], focus_x: [[0, 0.2], [3, 0.8]] } },
+      { op: "remove_range", id: "kf", start: 1, end: 2 }]);
+    const [k1, k2] = r4[1].segments.map((id: string) => clipsOf(m4).find((c: any) => c.id === id));
+    check("remove_range keeps the keyframes on their content: the first piece as it was, the second shifted by the source it skips",
+      JSON.stringify(k1?.keyframes) === JSON.stringify({ opacity: [[0, 0], [3, 1]], focus_x: [[0, 0.2], [3, 0.8]] }) && JSON.stringify(k2?.keyframes) === JSON.stringify({ opacity: [[-2, 0], [1, 1]], focus_x: [[-2, 0.2], [1, 0.8]] }), [k1?.keyframes, k2?.keyframes]);
     const rrCode = async (ops: any[]) => { try { await applyOps(null as any, rr(), ops); return "no error"; } catch (e: any) { return e.code; } };
     const base = { op: "add_clip", track: "main", asset: "v", id: "c", duration: 3 };
     const codes = [await rrCode([base, { op: "remove_range", id: "c", start: 0, end: 3 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 4 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 1 }]),

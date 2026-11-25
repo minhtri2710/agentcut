@@ -45,7 +45,7 @@ function Header() {
         <option value="en">English</option><option value="vi">Tiếng Việt</option>
       </select>
       <label class="mut"><input type="checkbox" id="draft" defaultChecked /> {t("draft")}</label>
-      <button id="render" class="primary" disabled={st.rendering} onClick={startRender}>{t("render")}</button>
+      <button id="render" class="primary" disabled={st.rendering} onClick={() => startRender()}>{t("render")}</button>
       <button id="exportb" disabled={st.rendering} onClick={openExport}>{t("exportBtn")}</button>
       <button id="sheet" disabled={st.sheeting} onClick={startSheet}>{t("sheet")}</button>
     </header>

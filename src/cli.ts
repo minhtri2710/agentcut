@@ -220,8 +220,9 @@ export async function main(argv = process.argv.slice(2)) {
       case "ui": {
         const { startDashboard, startUi } = await import("./ui.ts");
         const port = num(f.port, "--port"), dir = pos[0] ?? P;
-        // a folder with no project (in it or above it) gets the dashboard of the projects inside it
-        const { server: _, ...r } = await startUi(dir, { port }).catch((e) => { if (e?.code === "no_project") return startDashboard(dir ?? process.env.AGENTCUT_PROJECT ?? process.cwd(), { port }); throw e; });
+        // a folder with no project (in it or above it) gets the dashboard of the projects inside it; a project named by -p or $AGENTCUT_PROJECT that is not one stays no_project
+        const browse = pos[0] !== undefined || (P === undefined && !process.env.AGENTCUT_PROJECT);
+        const { server: _, ...r } = await startUi(dir, { port }).catch((e) => { if (e?.code === "no_project" && browse) return startDashboard(pos[0] ?? process.cwd(), { port }); throw e; });
         process.stdout.write(JSON.stringify({ ok: true, ...r }) + "\n"); // server keeps running; Ctrl-C to stop
         return;
       }

@@ -1652,6 +1652,13 @@ console.log("review text_over_face");
   check("review reports the text over the face with its time range, and not the text above it",
     hits.length === 1 && hits[0].id === over && hits[0].t >= 0.5 && hits[0].end <= 2.5 && hits[0].end > hits[0].t && /vid1/.test(hits[0].message) && !!hits[0].hint
       && !hits.some((f: any) => f.id === top) && rv.checked.faces.clips === 1 && !rv.checked.faces.unchecked && nCalls("subject") === c0 + 1, { hits, checked: rv.checked });
+  // a cached analysis that decoded no frames: the clip is unchecked, the review itself still runs
+  const E = join(tmp, "reel-empty-faces");
+  api.create(E, { preset: "reels" });
+  await apply(E, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 2 }, { op: "add_clip", track: "text", text: "OVER", at: 0.2, duration: 1, y: "50%" }]);
+  await api.analyze.subject(join(m, "empty.mp4"), 6, false, E).catch(() => null);
+  const er: any = await api.review(E, { black: false }).catch((e: any) => e);
+  check("review with an empty cached subject analysis does not fail: that clip is listed unchecked", Array.isArray(er.findings) && er.checked?.faces?.unchecked?.[0]?.id === "vid1", er.checked ?? er);
 }
 
 console.log(`\n${failures() ? `✗ ${failures()} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

@@ -78,8 +78,11 @@ export function cachedFaces(root: string, tl: Timeline, c: Clip): { at: (T: numb
       V.subjectJob(a.path, { start: 0, duration: a.duration, fps: 6, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root })]).find(V.isReady);
   } catch (e) { if (e instanceof EditError) return { unchecked: e.message }; throw e; }
   if (!d) return { unchecked: `no cached subject analysis of ${c.id} (run analyze_subject or auto_reframe)` };
+  let raw: V.Sample[];
+  try { raw = V.subjectSamples(d); } // an analysis that decoded no frames, or a damaged file, leaves the clip unchecked instead of failing the review
+  catch (e) { if (e instanceof EditError || e instanceof SyntaxError) return { unchecked: `the cached subject analysis of ${c.id} cannot be read: ${e.message}` }; throw e; }
   const L = layout(tl, c), s0 = clipStart(c), { in0, speed } = srcRange(c), fps = Number(d.job.fps) || 0;
-  const samples = V.subjectSamples(d).map((s) => ({ T: s0 + (s.t - in0) / speed, s }));
+  const samples = raw.map((s) => ({ T: s0 + (s.t - in0) / speed, s }));
   const box = (T: number, s: V.Sample): FaceBox => {
     const [x0, y0] = srcToCanvas(tl, c, L, T - s0, s.x! - s.w! / 2, s.y! - s.h! / 2), [x1, y1] = srcToCanvas(tl, c, L, T - s0, s.x! + s.w! / 2, s.y! + s.h! / 2);
     return [x0, y0, x1 - x0, y1 - y0];
