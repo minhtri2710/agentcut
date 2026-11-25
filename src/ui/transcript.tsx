@@ -22,9 +22,11 @@ function load(c: Clip) {
 /** The cut is made only with words that still match the file: the server's copy follows the file's version, so a source replaced since the panel loaded refreshes the words instead. */
 function cut(c: Clip) {
   const k = keyOf(c), had = st.tx[k]!.words!, { a, b } = st.txSel!;
+  const timing = (x: Clip | null) => x && JSON.stringify([x.asset, x.in, x.start, x.duration, x.speed]);
   api("/api/transcript", { asset: c.asset }).then((r) => {
-    if (JSON.stringify(r.words) !== JSON.stringify(had)) { st.tx[k] = { words: r.words }; st.txSel = null; changed(); fail({ code: "stale", message: t("txStale") }); return; }
-    ops([cutWords(c, clipWords(c, had), a, b)], "cut words from " + c.id).then((x) => { if (x) { st.txSel = null; changed(); } });
+    const now = findClip(c.id); // the project may have changed while the words were checked: cut only the clip the words were picked on
+    if (JSON.stringify(r.words) !== JSON.stringify(had) || timing(now) !== timing(c)) { st.tx[k] = { words: r.words }; st.txSel = null; changed(); fail({ code: "stale", message: t("txStale") }); return; }
+    ops([cutWords(now!, clipWords(now!, had), a, b)], "cut words from " + c.id).then((x) => { if (x) { st.txSel = null; changed(); } });
   }, (e: ApiError) => fail(e));
 }
 

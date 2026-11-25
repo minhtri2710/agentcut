@@ -97,7 +97,8 @@ const loadForText = async (tl: M.Timeline) => {
 /** A layer that hides everything under it while it lasts: a full-canvas, fully opaque picture placed plainly (nothing that moves, shrinks, fades or blends it). */
 function hidesBelow(tl: M.Timeline, c: M.Clip) {
   if (c.enabled === false || Number(c.opacity ?? 1) < 1 || (c.blend ?? "normal") !== "normal"
-    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background", "effects"].some((k) => c[k] != null)) return false; // effects: a strobe shows what is below
+    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)
+    || (c.effects || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "strobe")) return false; // strobe is the one effect that drops the layer's opacity (effects.ts); the others draw over it
   if (c.type === "color") return c.gradient ? (c.gradient.colors || []).every((x: unknown) => M.parseColor(x)[3] === 255) : M.parseColor(c.color ?? "black")[3] === 255;
   if (c.type !== "video" && c.type !== "image") return false;
   const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");

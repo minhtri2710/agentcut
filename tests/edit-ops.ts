@@ -1212,6 +1212,8 @@ console.log("track lock");
     let code = "ok";
     try { await applyOps(null as any, t0, [{ op: "replace_timeline", timeline: alt }]); } catch (e: any) { code = e.code; }
     check("  replace_timeline that drops a lock and changes that track's clips is refused (locked)", code === "locked", code);
+    const both = await codeOf([{ op: "update_track", id: "main", set: { locked: true } }, { op: "update_track", id: "main", set: { locked: false, magnetic: false } }]);
+    check("  one update_track that unlocks a magnetic track and makes it plain passes (no clip moves)", both === "ok", both);
   }
   check("  locked must be a boolean (validate)", validate({ ...(await mk()), tracks: (await mk()).tracks.map((tr: any) => (tr.id === "overlay" ? { ...tr, locked: "yes" } : tr)) }).some((i: any) => i.level === "error" && /locked/.test(i.path + i.message)));
 }

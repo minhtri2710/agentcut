@@ -976,10 +976,11 @@ registerVisionOps(helpers);
 const ALIASES: Record<string, string> = { ripple_delete: "remove_clip" };
 
 /** The stored clips of each locked track, without what resolve computes (a start on a magnetic track or an attached clip; a length that follows the timeline's end or another clip). */
-function lockedClips(tl: Timeline, all = false): Map<string, string> {
+/** `magnetic`: the tracks' magnetic flags before the op, so a track the op turns magnetic or not compares its clips by the same rule on both sides. */
+function lockedClips(tl: Timeline, all = false, magnetic?: Map<string, boolean>): Map<string, string> {
   return new Map(tl.tracks.filter((tr) => all || tr.locked === true).map((tr) => [tr.id, JSON.stringify(tr.clips.map((c) => {
     const { start, duration, ...rest } = c;
-    return { ...rest, ...(tr.magnetic || c.attach_to ? {} : { start }), ...(c.until_end || c.match_duration ? {} : { duration }) };
+    return { ...rest, ...((magnetic?.get(tr.id) ?? tr.magnetic) || c.attach_to ? {} : { start }), ...(c.until_end || c.match_duration ? {} : { duration }) };
   }))]));
 }
 
@@ -1000,9 +1001,9 @@ function* opSteps(p: Project, tl: Timeline, ops: Dict[]): Generator<Dict | Promi
       const { op: _n, ...args } = o;
       refuseProtoKeys(args);
       if (!("..." in def.args)) refuseUnknown(Object.keys(args), argNames(name), name);
-      const before = lockedClips(work);
+      const before = lockedClips(work), magnetic = new Map(work.tracks.map((tr) => [tr.id, !!tr.magnetic]));
       results.push({ op: name, ...yield def.fn(p, work, args) });
-      keepLocked(before, lockedClips(work, true));
+      keepLocked(before, lockedClips(work, true, magnetic));
     } catch (e: any) {
       if (e instanceof EditError) { e.path = e.path ? `ops[${i}](${name})${e.path.startsWith(".") ? "" : " "}${e.path}` : `ops[${i}](${name})`; throw e; }
       if (e instanceof TypeError && /undefined|null/.test(e.message)) throw new EditError(`ops[${i}](${name}): missing or invalid argument`, "missing_arg", `${name} takes: ${Object.keys(def.args).join(", ")}`, `ops[${i}]`);
