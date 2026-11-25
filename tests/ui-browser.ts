@@ -839,7 +839,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await js(`(function(){var f=$("cform2"); f.elements.msg.value="what revision?"; f.requestSubmit();})()`);
       const log = `[].map.call($("clog").children, function (n) { return n.className + ":" + n.textContent; }).join("|")`;
       check("a chat message shows as sent, then the agent's text, tool call and result, and the end; Send is back", await until("chat done", `${log}.indexOf("Done.") >= 0 && !$("csend").disabled`, 10_000)
-        && /^cuser:what revision\?\|cbot:Looking\.\|ctool:→ project_info \{\}\|ctool:← rev 1\|cbot:It is at rev 1\.\|mut:Done\.$/.test(await js(log)), await js(log));
+        && /^cuser:what revision\?\|cbot:Looking\.\|ctool:→ project_info \{\}\|ctool:← rev 1\|cbot:It is at rev 1\.\|mut:Done\.$/.test(await js(log)), await js(`${log} + " / " + $("msg").textContent`));
     } finally { process.env.PATH = PATH; }
     await click("#tab-media");
   }
