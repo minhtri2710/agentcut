@@ -756,9 +756,9 @@ fi
 
       // two voiceovers in one batch, in the same millisecond: each gets its own file and keeps its own speech (a stand-in piper speaks 0.5 s per word)
       {
-        const binV = join(tmp, "bin-vo"), pathNow = process.env.PATH;
+        const binV = join(tmp, "bin-vo"), pathNow = process.env.PATH; // sentences are synthesized in parallel: each call reads its own input file
         mkdirSync(binV);
-        writeFileSync(join(binV, "piper"), `#!/bin/sh\ncat > "${tmp}/vo.in"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done\nexec ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $(wc -w < "${tmp}/vo.in" | tr -d ' ')*0.5}")" -ar 22050 "$o"\n`);
+        writeFileSync(join(binV, "piper"), `#!/bin/sh\ni=$(mktemp "${tmp}/vo.in.XXXXXX")\ncat > "$i"\nwhile [ $# -gt 0 ]; do [ "$1" = "--output_file" ] && o="$2"; shift; done\nexec ffmpeg -v error -y -f lavfi -i "sine=frequency=400:duration=$(awk "BEGIN{print $(wc -w < "$i" | tr -d ' ')*0.5}")" -ar 22050 "$o"\n`);
         chmodSync(join(binV, "piper"), 0o755);
         const V2 = join(tmp, "two-vo");
         api.create(V2, { preset: "720p" });
