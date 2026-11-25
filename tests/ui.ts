@@ -69,10 +69,10 @@ for (const port of [99999, -1, 4810.5]) { // a port is a whole number from 0 to 
 const ui = await startUi(dir, { port: 0 });
 const base = ui.url.replace(/\/$/, "");
 // `text` is a raw JSON body (possibly empty or malformed); `port` aims at another ui server
-const raw = (path: string, o: { method?: string; host?: string; body?: unknown; text?: string; port?: number; origin?: string } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
+const raw = (path: string, o: { method?: string; host?: string; body?: unknown; text?: string; port?: number; origin?: string; headers?: Record<string, string> } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
   const port = o.port ?? ui.port;
   const rq = request({ host: "127.0.0.1", port, path, method: o.method ?? "GET",
-    headers: { host: o.host ?? `127.0.0.1:${port}`, ...(o.origin ? { origin: o.origin } : {}), ...(o.body || o.text !== undefined ? { "content-type": "application/json" } : {}) } }, (res) => {
+    headers: { host: o.host ?? `127.0.0.1:${port}`, ...o.headers, ...(o.origin ? { origin: o.origin } : {}), ...(o.body || o.text !== undefined ? { "content-type": "application/json" } : {}) } }, (res) => {
     const ch: Buffer[] = [];
     res.on("data", (c) => ch.push(c));
     res.on("end", () => ok({ status: res.statusCode!, body: Buffer.concat(ch), type: String(res.headers["content-type"]), headers: res.headers }));
@@ -408,6 +408,8 @@ check("  and a video with no sound answers decode_failed", mute.status === 422 &
   const px = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { input: bw.body }).stdout;
   check("/api/library/look/bw: a JPEG of the test picture in that look (grey), saved in previews/ui/library", bw.status === 200 && bw.type === "image/jpeg" && existsSync(file)
     && px.length === 3 && Math.max(...px) - Math.min(...px) <= 6, { status: bw.status, px: [...px] });
+  const xs = await raw("/api/library/look/warm", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" } }), nav = await raw("/", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" } });
+  check("a request another site's page makes is refused (403, nothing rendered); opening the page from a link is not", xs.status === 403 && !existsSync(join(dir, "previews", "ui", "library", `look-warm-${VERSION}.jpg`)) && nav.status === 200, [xs.status, nav.status]);
   const m0 = statSync(file).mtimeMs, again = await raw("/api/library/look/bw");
   check("  a second request is the saved file", again.status === 200 && statSync(file).mtimeMs === m0 && again.body.equals(bw.body));
   const bad = await raw("/api/library/look/nope"), deep = await raw("/api/library/look/bw/x");
@@ -957,6 +959,13 @@ console.log("dashboard");
     const copy = api.openProject(join(home, "alpha2")).load();
     check("duplicate copies the timeline (renamed) and its media into a new project", dup.j.ok && copy.name === "alpha2" && copy.tracks[0].clips.length === 1 && existsSync(join(home, "alpha2", "media", "red.png")) && Object.values(copy.assets).every((a: any) => a.path === join("media", "red.png"))
       && (await api.info(join(home, "alpha2"), "json")).errors === 0, copy);
+    // media beside project.json (linked by a relative path, not under media/) is copied too; the history, previews and renders are not
+    ff("-f", "lavfi", "-i", "color=c=blue:size=64x64", "-frames:v", "1", join(home, "alpha", "beside.png"));
+    mkdirSync(join(home, "alpha", "renders"), { recursive: true }); writeFileSync(join(home, "alpha", "renders", "old.mp4"), "x");
+    await applyLatest(join(home, "alpha"), [{ op: "add_clip", track: "overlay", src: join(home, "alpha", "beside.png"), at: 0, duration: 1 }]);
+    const dup3 = await jget("/api/duplicate", { ...at, method: "POST", body: { name: "alpha", as: "alpha3" } }), c3 = api.openProject(join(home, "alpha3"));
+    check("duplicate copies media beside the timeline, and starts with no renders and a fresh history", dup3.j.ok && existsSync(join(home, "alpha3", "beside.png")) && (await api.info(join(home, "alpha3"), "json")).errors === 0
+      && !existsSync(join(home, "alpha3", "renders", "old.mp4")) && api.history(join(home, "alpha3")).undo.length === 0 && c3.load().name === "alpha3", { dup: dup3.j, hist: api.history(join(home, "alpha3")) });
     const o1 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } }), o2 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } });
     const ed = o1.j.ok && await jget("/api/state", { port: Number(new URL(o1.j.url).port) });
     check("open starts that project's editor once and answers its URL", o1.j.ok && o2.j.url === o1.j.url && ed && ed.j.project === realpathSync(join(home, "alpha")), { o1: o1.j, state: ed && Object.keys(ed.j) });

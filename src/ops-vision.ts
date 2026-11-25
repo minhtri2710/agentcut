@@ -7,6 +7,7 @@ import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
+import { audioSources } from "./audio.ts";
 import { kfValue } from "./anim.ts";
 
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
@@ -305,11 +306,14 @@ export function stemsFor(tl: Timeline, root: string) {
     .map((c) => ({ clip: c, job: V.stemsJob(tl.assets[c.asset].path, { duration: tl.assets[c.asset].duration, root }) }));
 }
 
-/** Sound prep on an absolutized copy: point every clip with a stem at its stem file (`_stem`, never saved; any other `_stem` is dropped). Returns the ids still missing one. */
+/** Sound prep on an absolutized copy: point every clip with a stem at its stem file (`_stem`, never saved; any other `_stem` is dropped). Returns the ids still missing one
+ *  that the mix plays (a muted track or compound, or a gain of 0, needs none). */
 function linkStems(tl: Timeline, root: string) {
   for (const c of allClips(tl.tracks)) delete c._stem; // this is the only source of `_stem`
-  return stemsFor(tl, root).filter(({ clip, job }) => {
-    if (!V.isReady(job)) return true;
+  const jobs = stemsFor(tl, root);
+  const heard = new Set(jobs.length ? audioSources(resolve(structuredClone(tl))).map((s) => s.clip.id) : []);
+  return jobs.filter(({ clip, job }) => {
+    if (!V.isReady(job)) return heard.has(clip.id);
     clip._stem = V.stemFile(job, clip.stem);
     return false;
   }).map(({ clip }) => clip.id);

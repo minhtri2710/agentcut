@@ -772,6 +772,18 @@ console.log("inherited names are no eq or compressor presets");
   check("eq and compressor preset names that only the prototype chain holds are refused", paths.includes("$.eq") && paths.includes("$.compressor"), paths);
 }
 
+{ // a file whose sound starts after its picture: the mix keeps that lead-in as silence instead of playing the sound early
+  const v = join(tmp, "late-src.mp4"), late = join(tmp, "late.mp4"), L = join(tmp, "late-proj");
+  ff("-f", "lavfi", "-i", "color=c=gray:s=160x90:r=30:d=3", "-f", "lavfi", "-i", "sine=f=440:d=2", "-c:v", "libx264", "-c:a", "aac", "-shortest", v);
+  ff("-i", v, "-itsoffset", "0.5", "-i", v, "-map", "0:v", "-map", "1:a", "-c", "copy", late);
+  const a0 = Number(spawnSync("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=start_time", "-of", "csv=p=0", late], { encoding: "utf8" }).stdout);
+  api.create(L, { preset: "square" });
+  await applyLatest(L, [{ op: "add_clip", track: "main", src: late, duration: 2 }]);
+  const r: any = await api.render(L, { out: join(L, "renders", "late.wav") });
+  const head = rms(r.output, 0, a0 - 0.05), body = rms(r.output, a0 + 0.05, a0 + 0.5);
+  check(`late sound (starts at ${a0.toFixed(3)} s): silent before it, the tone after`, a0 > 0.3 && !(head > -60) && body > -30, { a0, head, body });
+}
+
 const el = ((performance.now() - t0) / 1000).toFixed(1);
 if (!process.argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true });
 if (failures()) { console.log(`\n${failures()} check(s) FAILED in ${el}s`); process.exit(1); }

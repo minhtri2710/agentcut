@@ -1206,6 +1206,13 @@ console.log("track lock");
   check("  update_track (volume, or locked false) and remove_track pass; after unlocking the clip can be edited",
     await codeOf([{ op: "update_track", id: "overlay", set: { volume: 0.5 } }]) === "ok" && await codeOf([{ op: "update_track", id: "overlay", set: { locked: false } }, { op: "update_clip", id: "ov", set: { opacity: 0.5 } }]) === "ok"
     && await codeOf([{ op: "remove_track", id: "overlay" }]) === "ok");
+  { // replace_timeline that keeps the track but drops its lock cannot change its clips in the same call
+    const t0 = await mk(), alt: any = structuredClone(t0), ov = alt.tracks.find((tr: any) => tr.id === "overlay");
+    delete ov.locked; ov.clips[0].opacity = 0.5;
+    let code = "ok";
+    try { await applyOps(null as any, t0, [{ op: "replace_timeline", timeline: alt }]); } catch (e: any) { code = e.code; }
+    check("  replace_timeline that drops a lock and changes that track's clips is refused (locked)", code === "locked", code);
+  }
   check("  locked must be a boolean (validate)", validate({ ...(await mk()), tracks: (await mk()).tracks.map((tr: any) => (tr.id === "overlay" ? { ...tr, locked: "yes" } : tr)) }).some((i: any) => i.level === "error" && /locked/.test(i.path + i.message)));
 }
 

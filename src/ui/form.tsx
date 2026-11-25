@@ -34,7 +34,8 @@ function Field({ c, k, types, doc, ro, value, onSet }: { c: Clip; k: string; typ
       {list.map((x) => <option value={x} selected={x === value}>{x}</option>)}
     </select>;
   else if (types.length === 1 && types[0] === "boolean")
-    input = <input key={key} id={id} type="checkbox" disabled={ro} defaultChecked={value === true} onChange={(e) => onSet(e.currentTarget.checked ? "true" : "")} />;
+    { const on = k === "enabled" || (k === "loop" && c.type === "lottie"); // fields that are on unless set false: unchecking writes false, checking drops the field
+      input = <input key={key} id={id} type="checkbox" disabled={ro} defaultChecked={on ? value !== false : value === true} onChange={(e) => onSet(e.currentTarget.checked ? (on ? "" : "true") : (on ? "false" : ""))} />; }
   else if (types.some((x) => x === "number" || x === "string" || x === "boolean") && !(value !== null && typeof value === "object"))
     input = <input key={key} id={id} type="text" disabled={ro} defaultValue={shown(value)} spellcheck={false} onChange={(e) => onSet(e.currentTarget.value)} />;
   else input = <span class="mut">{value === undefined ? t("jsonOnly") : t("jsonEdit")}</span>; // an object or list: edited in the JSON tab

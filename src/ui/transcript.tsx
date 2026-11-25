@@ -19,9 +19,13 @@ function load(c: Clip) {
   api("/api/transcript", { asset: c.asset }).then((r) => { st.tx[k] = { words: r.words }; changed(); }, (e: ApiError) => { delete st.tx[k]; changed(); fail(e); });
 }
 
+/** The cut is made only with words that still match the file: the server's copy follows the file's version, so a source replaced since the panel loaded refreshes the words instead. */
 function cut(c: Clip) {
-  const ws = clipWords(c, st.tx[keyOf(c)]!.words!), { a, b } = st.txSel!;
-  ops([cutWords(c, ws, a, b)], "cut words from " + c.id).then((r) => { if (r) { st.txSel = null; changed(); } });
+  const k = keyOf(c), had = st.tx[k]!.words!, { a, b } = st.txSel!;
+  api("/api/transcript", { asset: c.asset }).then((r) => {
+    if (JSON.stringify(r.words) !== JSON.stringify(had)) { st.tx[k] = { words: r.words }; st.txSel = null; changed(); fail({ code: "stale", message: t("txStale") }); return; }
+    ops([cutWords(c, clipWords(c, had), a, b)], "cut words from " + c.id).then((x) => { if (x) { st.txSel = null; changed(); } });
+  }, (e: ApiError) => fail(e));
 }
 
 export function Transcript() {

@@ -860,6 +860,13 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await js(`$("f-uppercase").click()`);
     check("a checkbox sets the boolean field", await untilFile((tl) => clipOf(tl, "blink")?.uppercase === true), clipOf(load(), "blink"));
     await until("upper seen", atRev(load().revision));
+    check("enabled shows ticked when the field is absent", await js(`$("f-enabled").checked === true`));
+    await js(`$("f-enabled").click()`);
+    check("  unticking enabled disables the clip (enabled false)", await untilFile((tl) => clipOf(tl, "blink")?.enabled === false), clipOf(load(), "blink"));
+    await until("disabled seen", `${atRev(load().revision)} && $("f-enabled").checked === false`);
+    await js(`$("f-enabled").click()`);
+    check("  ticking it again enables it (the field is dropped)", await untilFile((tl) => clipOf(tl, "blink") && clipOf(tl, "blink").enabled === undefined), clipOf(load(), "blink"));
+    await until("enabled seen", atRev(load().revision));
     await clickClip("rb1");
     check("another clip's form shows its own values, not what was typed into the last one", await until("video form", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("f-exposure") && $("f-opacity").value === ""`), await js(`$("f-opacity") && $("f-opacity").value`));
     await setF("f-exposure", "0.5");
@@ -930,6 +937,15 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await until("cut seen", atRev(load().revision));
       await click("#undo");
       check("  and undo restores the whole clip", await untilFile((tl) => tl.revision === revCut + 2 && parts(tl).length === 1 && parts(tl)[0].duration === 3), parts(load()));
+      await until("undo seen", atRev(load().revision));
+      // the source is replaced in place (another recording, other words): a cut with the words loaded before is refused and the words are refreshed
+      writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"transcription":[{"text":" four","offsets":{"from":300,"to":700}},{"text":" five","offsets":{"from":1500,"to":1900}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+      ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=500:duration=3", "-shortest", "-pix_fmt", "yuv420p", talk);
+      const revStale = load().revision;
+      await js(`document.querySelectorAll("#words .word")[0].click()`);
+      await click("#txcut");
+      check("  after the source was replaced, Cut changes nothing: it says so and shows the new words", await until("stale", `${words} === "four,five" && $("msg").className === "err"`, 30_000)
+        && load().revision === revStale, [await js(words), await js(`$("msg").textContent`), load().revision, revStale]);
     } finally { process.env.PATH = env.PATH; if (env.model === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = env.model; }
     await click("#tab-media");
   }

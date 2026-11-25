@@ -293,6 +293,8 @@ function guard(req: IncomingMessage, res: ServerResponse, server: ReturnType<typ
   const port = (server.address() as any).port;
   if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
   if (path.split("/").includes("..") || path.includes("\0")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
+  // another site's page may not make this one compute or read anything (an <img> or fetch to the loopback port); opening the page from a link is fine
+  if (req.headers["sec-fetch-site"] === "cross-site" && !(path === "/" && req.headers["sec-fetch-mode"] === "navigate")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-site request" } });
   if (req.method === "POST") {
     if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
     const want = path === "/api/upload" ? "application/octet-stream" : "application/json";
@@ -354,8 +356,9 @@ export async function startDashboard(dir: string, o: { port?: number } = {}) {
     if (path === "/api/create") { const d = folder(body.name, true); api.create(d, { preset: body.preset }); return json(res, 200, { ok: true, name: body.name }); }
     if (path === "/api/duplicate") {
       const from = folder(body.name), to = folder(body.as, true);
-      api.create(to, { empty: true }); // the folders and history of a project; then its timeline, media and fonts
-      for (const sub of ["media", "fonts"]) if (existsSync(join(from, sub))) cpSync(join(from, sub), join(to, sub), { recursive: true });
+      api.create(to, { empty: true }); // the folders and history of a project; then its timeline and every file beside it (media under it may sit anywhere, linked by a relative path)
+      const own = new Set(["project.json", ".agentcut", "previews", "renders"].map((n) => join(from, n)));
+      cpSync(from, to, { recursive: true, filter: (f) => !own.has(f) });
       writeFile(join(to, "project.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(from, "project.json"), "utf8")), name: body.as }, null, 2), to);
       return json(res, 200, { ok: true, name: body.as });
     }
