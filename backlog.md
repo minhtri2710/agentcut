@@ -9,6 +9,7 @@
   - Branch research/vidlab-openchatcut, one commit per ticket, no push. Checks: bun run typecheck, bun run test (per-user TMPDIR).
   - Contract changes (new op args, new fields) go in model.ts / ops.ts / docs.ts + regenerate AGENTS.md.
   - Model downloads keep the consent rule (allow_download, pinned sha256 + size).
+  - Loop decode fix (PR #33, a file with sound reads each pass as its own stream) measured 2026-11-25 on a 20 s loop of a 2 s 1080p mp4 with AAC: draft render 3.4-3.6 s new vs 3.2-3.9 s old, final 5.9-6.6 s new vs 6.6-8.9 s old: no measurable cost.
 
   ## Decisions so far
   - UI stack: Preact (vlab-uistack).
@@ -22,11 +23,18 @@
   All tickets shipped in PR #32 (merged 68b8ae3).
 
 ## Queued
+- [ ] ui-templates - UI: templates in the Library (kind: ship) (since 2026-11-25)
+  Slice. The Library gains a Templates section: pick a template, fill its args (media from the media pool, text fields), apply = one apply_template batch with the revision rule.
+  Acceptance: every template in capabilities.templates is listed with its args; applying adds its clips in one undoable step; a missing required arg shows the validation message; ui + ui-browser checks.
+- [ ] chat-clis - UI chat: more local agent CLIs (kind: ship) (since 2026-11-25)
+  Slice. The chat panel can drive the agent CLIs installed here besides claude: pi, omp, devin (acp), agy. Each run keeps today's guarantees: the agentcut MCP server for the open project is the only tool set (no shell, no file edits), nothing in the user's own CLI config is changed, no model keys in agentcut, stop kills the run, replies and tool calls stream.
+  Acceptance: per CLI, a real run on this machine makes an MCP call and streams its reply, or the CLI is left out with the reason it cannot meet the guarantees; the panel lets the human pick among the available ones.
 - [x] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (done 2026-11-25)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
   653e930: built (model rvm_mobilenetv3, recurrent states carried across frames, capabilities lists the GPL-3.0 licence); cached and byte-identical on recompute (real row). Not verified: the flicker comparison, since no footage of a person is available here. Run AGENTCUT_TEST_VISION=1 AGENTCUT_TEST_VISION_PERSON=<clip of a person standing still> bun tests/vision.ts to measure it (downloads u2net_human_seg, 176 MB).
   Flicker measured 2026-11-25 on an 8 s CC0 clip (Wikimedia Commons "Entrevista Maricarmen Canales - TECMTY.webm" from 60 s, cropped 300x360 to the seated speaker, not committed): mean abs alpha change per frame RVM 0.00215 vs u2net_human_seg 0.00229 (240 frames, ~6 % lower); the real row passes. Both mattes checked by eye at 4 s: full person masks, RVM keeps more hair detail. The margin is small on a talking subject.
+  Static subject 2026-11-25: public-domain NASA photo "Jessica Meir full length portrait (1).jpg" as an 8 s 30 fps clip (360x480) with temporal noise (noise=alls=8:allf=t), not committed: RVM 0.000352 vs u2net_human_seg 0.000432 (240 frames, ~19 % lower); mean alpha 0.169 vs 0.173 (both cover the person).
 - [x] vlab-separate - audio: voice/music separation (kind: ship) (done 2026-11-25)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
