@@ -1460,6 +1460,24 @@ console.log("templates and beats");
     && await (async () => { try { await ap([{ op: "apply_template", name: "listicle" }]); return false; } catch (e: any) { return /needs title, items/.test(e.message) && /headline/.test(e.hint); } })());
   check("capabilities.templates gives each arg its kind and doc, and marks the required ones", (api.capabilities().templates as any).listicle.args.items.kind === "items" && (api.capabilities().templates as any).listicle.args.title.required === true && !(api.capabilities().templates as any).listicle.args.music.required);
 
+  // a template on a timeline with clips builds a section after main's end; music given by asset id is the project's file
+  const P3 = join(tmp, "proj-section"), song = join(tmp, "section-beats.wav");
+  api.create(P3, { preset: "720p" });
+  ff("-f", "lavfi", "-i", "aevalsrc=if(lt(mod(t\\,0.5)\\,0.03)\\,sin(2*PI*1000*t)\\,0):s=22050:d=6", song);
+  await applyLatest(P3, [{ op: "add_clip", track: "main", src: png, id: "x1", duration: 4 }, { op: "add_clip", track: "main", src: png, id: "x2", duration: 4 }, { op: "import_media", path: song, id: "song" }]);
+  await applyLatest(P3, [{ op: "apply_template", name: "beat_montage", media: [png, png, png], music: "song", title: "Go" }]);
+  const t3 = resolve((await api.info(P3, "json")).timeline), main3 = t3.tracks.find((t: any) => t.id === "main")!.clips as any[];
+  const bed = t3.tracks.find((t: any) => t.id === "music")!.clips[0], go = t3.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Go");
+  const P4 = join(tmp, "proj-section-empty");
+  api.create(P4, { preset: "720p" });
+  await applyLatest(P4, [{ op: "apply_template", name: "beat_montage", media: [png, png, png], music: song }]);
+  const alone = (await api.info(P4, "json")).timeline.tracks.find((t: any) => t.id === "main")!.clips.map((c: any) => c.duration);
+  check("beat_montage on a timeline with clips: the clips there keep their lengths, the new ones follow at 8 s with the lengths the same build has alone, the music (asset id, not imported again) and the title start with them",
+    main3.length === 5 && main3[0].duration === 4 && main3[1].duration === 4 && main3[2].start === 8 && JSON.stringify(main3.slice(2).map((c: any) => c.duration)) === JSON.stringify(alone) && alone[0] !== 1 && bed.asset === "song" && bed.start === 8
+      && Object.keys(t3.assets).length === 2 && go?.attach_to === main3[2].id && Math.abs(go.start - 8.1) < 1e-6,
+    { main: main3.map((c: any) => [c.id, c.start, c.duration]), alone, bed, go, assets: Object.keys(t3.assets) });
+  check("snap_to_beats from a clip not on the track is refused by name", await code([{ op: "snap_to_beats", track: "main", from: "nope", beats: [0, 1, 2] }]) === "bad_value");
+
   // beats read from an audio path follow the file: a replaced file gives its own beats
   const click = join(m, "click.wav");
   const makeClicks = (period: number) => ff("-f", "lavfi", "-i", `sine=f=1000:d=14,volume='lt(mod(t,${period}),0.05)':eval=frame`, "-ar", "22050", click);

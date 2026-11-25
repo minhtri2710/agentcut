@@ -809,10 +809,13 @@ function wholeNumber(v: unknown, name: string, d: number, lo: number): number {
   return v;
 }
 
-op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. Clips with a computed length (match_duration) are kept as they are (kept_computed).",
-  { track: "main", beats: "required", every: "cut every N beats (1)", offset: "first beat index (0)" }, (p, tl, a) => {
+op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats: list | beats.json | audio path | asset id. from: retime only that clip and the ones after it, counting beat time from its start (music added at that clip's start). Clips with a computed length (match_duration) are kept as they are (kept_computed).",
+  { track: "main", beats: "required", every: "cut every N beats (1)", offset: "first beat index (0)", from: "first clip to retime: id or track#n (the first)" }, (p, tl, a) => {
     const tr = findTrack(tl, a.track ?? "main");
     if (!tr.magnetic) throw new EditError("snap_to_beats works on magnetic tracks", "magnetic");
+    const k = a.from === undefined ? 0 : tr.clips.findIndex((c) => c.id === resolveRef(tl, String(a.from)));
+    if (k < 0) throw new EditError(`clip '${a.from}' is not on track '${tr.id}'`, "bad_value", `from names a clip on '${tr.id}': ${tr.clips.map((x) => x.id).join(", ") || "it is empty"}`);
+    const clips = tr.clips.slice(k);
     const beats = beatList(p, tl, a.beats);
     const every = wholeNumber(a.every, "every", 1, 1), off = wholeNumber(a.offset, "offset", 0, 0);
     const cuts = beats.filter((_, i) => i >= off && (i - off) % every === 0);
@@ -820,14 +823,14 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     const rise = "give the beats in rising order from 0 s, or a larger every to skip close ones (typed list: leave the beat out)";
     // order is judged over the whole selected list; closeness only over the pairs of the clips it retimes (an analysis can put two beats a few ms apart far past the track)
     cuts.forEach((t, i) => { if (t < 0 || (i && t <= cuts[i - 1])) throw new EditError(`cut ${i + 1} of the selected beats is ${t} s${i ? `, not after ${cuts[i - 1]} s` : ""}: beats must be 0 s or more and rise`, "bad_beats", rise); });
-    const starts = [0, ...cuts.slice(1, tr.clips.length)]; // the first clip starts at 0, so its span ends at the second cut
-    starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN && !computedDuration(tr.clips[i - 1])) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
+    const starts = [0, ...cuts.slice(1, clips.length)]; // the first clip starts at 0, so its span ends at the second cut
+    starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN && !computedDuration(clips[i - 1])) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
     resolve(tl);
     const changed: Clip[] = [], kept: string[] = [];
-    tr.clips.forEach((c, i) => {
+    clips.forEach((c, i) => {
       if (i + 1 >= starts.length) return;
       if (computedDuration(c)) { kept.push(c.id); return; } // its length is computed; retiming it would be overwritten
-      const nxt = tr.clips[i + 1];
+      const nxt = clips[i + 1];
       const td = nxt?.transition ? normAnim(nxt.transition, 0.5)!.duration : 0;
       c.duration = round6(starts[i + 1] - starts[i] + td); delete c.until_end; changed.push(c);
     });
@@ -931,14 +934,19 @@ op("remove_range", "Cut a stretch out of a video/audio clip (text-based editing:
     return { segments: ids, removed_seconds: round6(Math.min(ce, to) - Math.max(cs, from)) };
   });
 
-op("apply_template", "Build a whole video from a template (expands into ordinary ops you can edit afterwards). Templates: " + Object.keys(TEMPLATES).join(", ") + ".",
+op("apply_template", "Build a whole video from a template (expands into ordinary ops you can edit afterwards). On a timeline with clips it builds a section after the end of main: its titles, music and beat cuts follow the new clips. Media, audio and visual args take paths or asset ids. Templates: " + Object.keys(TEMPLATES).join(", ") + ".",
   { name: Object.keys(TEMPLATES).join("|"), "...": "template args (see capabilities.templates)" }, async (p, tl, a) => {
     const t = own(TEMPLATES, a.name);
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
     refuseUnknown(Object.keys(a), ["name", ...Object.keys(t.args)], `apply_template ${a.name}`);
     const missing = Object.keys(t.args).filter((k) => t.args[k].required && (a[k] == null || (typeof a[k] === "string" && !a[k].trim()) || (Array.isArray(a[k]) && !a[k].length)));
     if (missing.length) throw new EditError(`template '${a.name}' needs ${missing.join(", ")}`, "missing_arg", missing.map((k) => `${k}: ${t.args[k].doc}`).join("; "));
-    const ops = t.build(a, tl.settings as { width: number; height: number });
+    const file = (v: unknown) => (typeof v === "string" && own(tl.assets, v) ? p.abs(tl.assets[v].path) : v); // an asset id names the project's file, not one relative to the current directory
+    const args: Dict = { ...a };
+    for (const [k, s] of Object.entries(t.args)) if (s.kind === "audio" || s.kind === "visual") args[k] = file(a[k]); else if (s.kind === "media" && Array.isArray(a[k])) args[k] = a[k].map(file);
+    const main = tl.tracks.find((x) => x.id === "main");
+    if (main) resolve(tl);
+    const ops = t.build(args, { width: tl.settings.width, height: tl.settings.height, first: main?.clips.length ?? 0, at: main ? round6(trackEnd(main)) : 0 });
     const results: Dict[] = [];
     for (const [i, o] of ops.entries()) {
       const { op: name, ...args } = o;
