@@ -907,6 +907,42 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
     await click("#tab-media");
   }
+  // Templates: each template's args as a form; Build is one apply_template (one undo step); a missing required arg is refused by name and the dialog stays open
+  console.log("templates");
+  {
+    mkdirSync(join(dir, "media"), { recursive: true });
+    ff("-f", "lavfi", "-i", "aevalsrc=if(lt(mod(t\\,0.5)\\,0.03)\\,sin(2*PI*1000*t)\\,0):s=22050:d=6", join(dir, "media", "tplbeat.wav"));
+    await applyLatest(dir, [{ op: "import_media", path: join(dir, "media", "tplbeat.wav") }]);
+    await until("beat seen", atRev(load().revision));
+    const beatId = Object.keys(load().assets).find((k) => String(load().assets[k].path).endsWith("tplbeat.wav"))!, beatPath = String(load().assets[beatId].path);
+    await click("#tab-library");
+    await js(`document.querySelector('[data-template="quote"]').click()`);
+    check("a template opens a dialog with its args", await until("quote dialog", `$("tpl").open && !!$("tpl").querySelector('[name="text"]') && !!$("tpl").querySelector('[data-arg="background"] select')`));
+    const revQ = load().revision;
+    await js(`$("msg").className = ""`);
+    await click("#tgo");
+    check("  Build without a required arg is refused by name, changes nothing and keeps the dialog open", await until("refused", `$("msg").className === "err" && $("msg").textContent.indexOf("text") >= 0 && $("tpl").open`)
+      && load().revision === revQ, await js(`$("msg").textContent`));
+    await js(`$("tpl").querySelector('[name="text"]').value = "Stay hungry"`);
+    await click("#tgo");
+    const quoted = (tl: any) => tl.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.text === "\u201cStay hungry\u201d");
+    check("  with it filled in, Build adds the template's clips in one step and closes the dialog", await untilFile((tl) => tl.revision === revQ + 1 && quoted(tl).length === 1)
+      && await until("closed", `!$("tpl").open`), quoted(load()));
+    await until("quote seen", atRev(load().revision));
+    await click("#undo");
+    check("  and one undo takes the whole template out", await untilFile((tl) => tl.revision === revQ + 2 && quoted(tl).length === 0), load().revision);
+    await until("undo seen", atRev(load().revision));
+    const pic = Object.keys(load().assets).find((k) => ["video", "image"].includes(load().assets[k].kind))!, nAssets = Object.keys(load().assets).length, revS = load().revision;
+    const music = (tl: any) => tl.tracks.find((t: any) => t.id === "music")?.clips.filter((c: any) => c.asset === beatId) ?? [];
+    await js(`document.querySelector('[data-template="slideshow"]').click()`);
+    await until("slideshow dialog", `$("tpl").open && !!$("tpl").querySelector('input[name="media"][value="${pic}"]')`);
+    await js(`$("tpl").querySelector('input[name="media"][value="${pic}"]').click(); $("tpl").querySelector('select[name="music"]').value = ${JSON.stringify(beatPath)}`);
+    await click("#tgo");
+    check("  slideshow from a picked pool asset and pool music (its project-relative path): the music bed and the cuts on its beats, no asset imported twice",
+      await untilFile((tl) => tl.revision === revS + 1 && music(tl).length === 1) && Object.keys(load().assets).length === nAssets, { music: music(load()), assets: Object.keys(load().assets).length, nAssets, beatPath });
+    await until("slideshow seen", atRev(load().revision));
+    await click("#tab-media");
+  }
   // The transcript: a clip's words from the engine (a stand-in here); a click seeks, shift-click picks a run, Cut removes their stretch with one remove_range, undo puts it back
   console.log("transcript");
   if (process.platform !== "win32") {

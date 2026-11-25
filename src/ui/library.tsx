@@ -2,7 +2,7 @@ import { ops } from "./api.ts";
 import { libEdit } from "./edits.ts";
 import { t, type Key } from "./i18n.ts";
 import { fail } from "./messages.ts";
-import { findClip, st, V } from "./state.ts";
+import { changed, findClip, st, V } from "./state.ts";
 import type { Clip } from "./types.ts";
 
 /** the drag type that carries "kind/name" of a library item to a clip or a lane */
@@ -34,6 +34,15 @@ export function Library() {
           </div>
         </details>
       ))}
+      <details>
+        <summary>{t("lib_template")}</summary>
+        <div class="mut">{t("tplHint")}</div>
+        {Object.entries(TPL).map(([name, tp]) => (
+          <button key={name} class="tplitem" data-template={name} disabled={!st.S || V().nested} onClick={() => { st.template = name; changed(); }}>
+            <b>{name}</b> <span class="mut">{tp.doc}</span>
+          </button>
+        ))}
+      </details>
     </div>
   );
 }

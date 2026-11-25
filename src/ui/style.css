@@ -101,3 +101,5 @@ progress{width:100%}
 .ctool{font:11px ui-monospace,monospace;color:var(--mut);overflow-wrap:anywhere}.cerr{color:#ff7b7b}
 #cform2 textarea{width:100%;box-sizing:border-box;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;font:inherit;resize:vertical}
 .lane.locked .lclips{background:repeating-linear-gradient(135deg,transparent 0 8px,#ffffff08 8px 16px)}.lane.locked .clip{opacity:.6;cursor:not-allowed}
+.eform .targ{display:grid;gap:2px}.tplitem{display:block;width:100%;text-align:left;margin:2px 0}.tplmedia{display:grid;gap:2px;max-height:160px;overflow:auto}.tplitems{display:grid;gap:4px}
+.eform textarea{background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}

@@ -1455,6 +1455,10 @@ console.log("templates and beats");
   const title = (await api.info(P2, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.text === "Hi");
   check("slideshow title_preset styles the title", !!title?.glow, title);
   check("quote template without text is refused as missing_arg", await code([{ op: "apply_template", name: "quote" }]) === "missing_arg");
+  check("every required template arg is refused by name when missing or blank (listicle title and items, beat_montage music)",
+    await code([{ op: "apply_template", name: "listicle", title: " ", items: [] }]) === "missing_arg" && await code([{ op: "apply_template", name: "beat_montage", media: [png] }]) === "missing_arg"
+    && await (async () => { try { await ap([{ op: "apply_template", name: "listicle" }]); return false; } catch (e: any) { return /needs title, items/.test(e.message) && /headline/.test(e.hint); } })());
+  check("capabilities.templates gives each arg its kind and doc, and marks the required ones", (api.capabilities().templates as any).listicle.args.items.kind === "items" && (api.capabilities().templates as any).listicle.args.title.required === true && !(api.capabilities().templates as any).listicle.args.music.required);
 
   // beats read from an audio path follow the file: a replaced file gives its own beats
   const click = join(m, "click.wav");
@@ -1472,6 +1476,14 @@ console.log("templates and beats");
   makeClicks(1);
   const d2 = await firstCut(2);
   check("snap_to_beats re-reads beats after the audio file is replaced", Math.abs(d2 - d1) > 0.2, { d1, d2 });
+  { // a path relative to the project folder (as the UI passes an asset's stored path) is found by snap_to_beats as by add_clip, from another working directory
+    const Pr = join(tmp, "snap-rel");
+    api.create(Pr, { width: 640, height: 360, fps: 30 });
+    mkdirSync(join(Pr, "media"), { recursive: true }); copyFileSync(click, join(Pr, "media", "click.wav"));
+    const { results } = await applyLatest(Pr, [{ op: "add_clip", track: "main", src: png, duration: 3 }, { op: "add_clip", track: "main", src: png, duration: 3 },
+      { op: "snap_to_beats", track: "main", beats: join("media", "click.wav"), every: 1 }]);
+    check("snap_to_beats takes an audio path relative to the project folder", process.cwd() !== Pr && Math.abs(results[2].retimed[0].duration - d2) < 1e-6, results[2]);
+  }
 }
 
 console.log("colour validation and atomic batches");

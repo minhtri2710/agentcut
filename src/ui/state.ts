@@ -27,6 +27,7 @@ export const st = {
   playing: false, // the play draft is shown in <video>
   rendering: false,
   exporting: false, // the export dialog is open
+  template: null as string | null, // the template whose dialog is open
   sheeting: false,
   out: null as Out | null,
   consent: null as ApiError | null, // the model download the dialog asks about

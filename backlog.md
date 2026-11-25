@@ -23,9 +23,10 @@
   All tickets shipped in PR #32 (merged 68b8ae3).
 
 ## Queued
-- [ ] ui-templates - UI: templates in the Library (kind: ship) (since 2026-11-25)
+- [x] ui-templates - UI: templates in the Library (kind: ship) (done 2026-11-25)
   Slice. The Library gains a Templates section: pick a template, fill its args (media from the media pool, text fields), apply = one apply_template batch with the revision rule.
   Acceptance: every template in capabilities.templates is listed with its args; applying adds its clips in one undoable step; a missing required arg shows the validation message; ui + ui-browser checks.
+  Built: template args typed in presets.ts (kind, doc, required), one generic required check in apply_template (replaces the media-only and per-template checks), capabilities.templates and the page share that table; Library > Templates opens a form per template (media from the pool, music/background pickers, item rows). Found on the way: snap_to_beats and add_captions transcribe resolved a relative path against the working directory only (add_clip also tried the project folder); all three now use the same rule. edit-ops, ui-browser and the full suite pass.
 - [ ] chat-clis - UI chat: more local agent CLIs (kind: ship) (since 2026-11-25)
   Slice. The chat panel can drive the agent CLIs installed here besides claude: pi, omp, devin (acp), agy. Each run keeps today's guarantees: the agentcut MCP server for the open project is the only tool set (no shell, no file edits), nothing in the user's own CLI config is changed, no model keys in agentcut, stop kills the run, replies and tool calls stream.
   Acceptance: per CLI, a real run on this machine makes an MCP call and streams its reply, or the CLI is left out with the reason it cannot meet the guarantees; the panel lets the human pick among the available ones.

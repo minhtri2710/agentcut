@@ -9,3 +9,5 @@ declare const FORM: {
 };
 /** the library's items (src/library.ts LIBRARY): kind -> names, each previewed at /api/library/<kind>/<name> */
 declare const LIB: Record<string, string[]>;
+/** the templates (src/presets.ts TEMPLATES): name -> doc and args, each arg with its kind (media, audio, visual, text, lines, items, number, color, text_preset, transition) */
+declare const TPL: Record<string, { doc: string; args: Record<string, { kind: string; doc: string; required?: true }> }>;

@@ -47,7 +47,7 @@ function parseAt(tl: Timeline, v: unknown): number {
 function mediaSource(p: Project, path: string): string {
   let src = absPath(path);
   if (!existsSync(src) && existsSync(join(p.root, path))) src = join(p.root, path);
-  if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path or a path relative to the current directory");
+  if (!existsSync(src)) throw new EditError(`file not found: ${path}`, "not_found", "use an absolute path, or a path relative to the current directory or the project folder");
   return src;
 }
 
@@ -701,7 +701,7 @@ async function addCaptions(p: Project, tl: Timeline, a: Dict, cap?: number, time
   let unmapped: string[] = [];
   if (a.transcribe) {
     const s = a.transcribe;
-    const path = own(tl.assets, s) ? p.abs(tl.assets[s].path) : absPath(s);
+    const path = own(tl.assets, s) ? p.abs(tl.assets[s].path) : mediaSource(p, s);
     const asset = own(tl.assets, s) ? s : Object.keys(tl.assets).find((k) => presolve(p.abs(tl.assets[k].path)) === presolve(path));
     const played = asset ? (resolve(tl), playedCut(tl, asset)) : undefined;
     const follows = !!played && (played.cut.length > 0 || played.unmapped.length > 0);
@@ -795,8 +795,8 @@ function beatList(p: Project, tl: Timeline, b: unknown): number[] {
   if (Array.isArray(b)) return seconds(b, "an inline beats list must hold only numbers", "give seconds as numbers, e.g. [0.5,1,1.5], or pass the audio path or a beats .json");
   if (typeof b !== "string") throw new EditError("beats must be a list of seconds, a beats .json, an audio path or asset id", "bad_beats");
   const asset = own(tl.assets, b);
-  const path = asset ? p.abs(tl.assets[b].path) : absPath(b);
-  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found", asset ? undefined : "use an absolute path or a path relative to the current directory");
+  const path = asset ? p.abs(tl.assets[b].path) : mediaSource(p, b);
+  if (!existsSync(path)) throw new EditError(`file not found: ${path}`, "not_found");
   return path.endsWith(".json") ? beatsFile(path) : AN.analysis(p, { kind: "beats", path }).beats;
 }
 
@@ -936,7 +936,8 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     const t = own(TEMPLATES, a.name);
     if (!t) { const s = suggest(a.name, Object.keys(TEMPLATES)); throw new EditError(`unknown template '${a.name}'`, "bad_template", `${s ? `did you mean '${s}'? ` : ""}templates: ${Object.keys(TEMPLATES).join(", ")}`); }
     refuseUnknown(Object.keys(a), ["name", ...Object.keys(t.args)], `apply_template ${a.name}`);
-    if (["slideshow", "promo", "beat_montage"].includes(a.name) && !a.media?.length) throw new EditError(`template '${a.name}' needs media: [paths]`, "missing_arg");
+    const missing = Object.keys(t.args).filter((k) => t.args[k].required && (a[k] == null || (typeof a[k] === "string" && !a[k].trim()) || (Array.isArray(a[k]) && !a[k].length)));
+    if (missing.length) throw new EditError(`template '${a.name}' needs ${missing.join(", ")}`, "missing_arg", missing.map((k) => `${k}: ${t.args[k].doc}`).join("; "));
     const ops = t.build(a, tl.settings as { width: number; height: number });
     const results: Dict[] = [];
     for (const [i, o] of ops.entries()) {
