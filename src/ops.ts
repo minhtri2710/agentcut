@@ -306,7 +306,6 @@ function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   const bad = (why: string, fix: string) => new EditError(`match_duration '${ref}': ${why}`, "bad_ref", fix);
   if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
   if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
-  if (t.end_at !== undefined) throw bad(`'${t.id}' ends where '${t.end_at}' starts (end_at), so its length is settled last`, "follow a clip with its own duration");
   const clips = tl.tracks.flatMap((x) => x.clips);
   for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = clips.find((y) => y.id === lengthTarget(x!))) {
     seen.add(x);
