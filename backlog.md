@@ -1,7 +1,7 @@
 # Backlog
 
 ## In flight
-- [ ] vlab-map - MAP: adopt VidLab/OpenChatCut strengths (kind: scout) (since 2026-11-24)
+- [x] vlab-map - MAP: adopt VidLab/OpenChatCut strengths (kind: scout) (done 2026-11-25)
   ## Destination
   agentcut gains what VidLab / OpenChatCut do better (research 2026-11-24, clones of 0xsline/OpenChatCut f96502a and mkh1148/vidlab 466c9f2): text-over-face review, render QA, speech-gated transcription, RNNoise, temporal person matte, voice/music separation, film looks, and a full editor UI with an agent chat panel. Ideas only: both repos are AGPL-3.0, agentcut is MIT, no code is copied.
 
@@ -15,18 +15,18 @@
   - UI scope: base + media/library + inspector/export + transcript/review/history + dashboard, EN/VI switch (vlab-uiscope).
   - Chat panel: local agent CLI over agentcut MCP, no API keys (vlab-chat).
 
-  ## Not yet specified
-  - Desktop packaging (Electron-like app) of the UI: unclear whether wanted.
-
   ## Out of scope
   - Copying AGPL code from either repo (licence: agentcut is MIT).
   - Cloud generation (image/video/music), social publishing, stock search: OpenChatCut features unrelated to the agent-first editor.
+  - Desktop packaging (Electron-like app) of the UI: human chose 2026-11-25 to keep `agentcut ui` in a local browser.
+  All tickets shipped in PR #32 (merged 68b8ae3).
 
 ## Queued
-- [ ] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (since 2026-11-24)
+- [x] vlab-rvm - remove_background: RVM temporal matte (kind: ship) (done 2026-11-25)
   Slice. remove_background gains a temporally stable video matte model: Robust Video Matting mobilenetv3 (15 MB ONNX, weights GPL-3.0, downloaded on consent, never bundled), recurrent state carried across frames, through the runtime chosen in "Inference runtime".
   Acceptance: flicker metric (mean abs alpha change between frames on a static subject) lower than u2net_human_seg on a fixture; cached and deterministic; capabilities.matte_models lists it with licence.
   653e930: built (model rvm_mobilenetv3, recurrent states carried across frames, capabilities lists the GPL-3.0 licence); cached and byte-identical on recompute (real row). Not verified: the flicker comparison, since no footage of a person is available here. Run AGENTCUT_TEST_VISION=1 AGENTCUT_TEST_VISION_PERSON=<clip of a person standing still> bun tests/vision.ts to measure it (downloads u2net_human_seg, 176 MB).
+  Flicker measured 2026-11-25 on an 8 s CC0 clip (Wikimedia Commons "Entrevista Maricarmen Canales - TECMTY.webm" from 60 s, cropped 300x360 to the seated speaker, not committed): mean abs alpha change per frame RVM 0.00215 vs u2net_human_seg 0.00229 (240 frames, ~6 % lower); the real row passes. Both mattes checked by eye at 4 s: full person masks, RVM keeps more hair detail. The margin is small on a talking subject.
 - [x] vlab-separate - audio: voice/music separation (kind: ship) (done 2026-11-25)
   Slice. A new op/analysis separates a clip's audio into voice and music stems (Spleeter 2stems ONNX, MIT weights, 2 x 39 MB, consent download), cached, usable as audio clips (e.g. duck or drop the music under captions).
   Acceptance: stems sum back to the source within a tolerance; op documented; prepare-style pending flow like vision ops.
