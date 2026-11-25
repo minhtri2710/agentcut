@@ -382,8 +382,11 @@ for (const [file, codec] of [["mix.mp3", "mp3"], ["mix.wav", "pcm_s16le"], ["mix
   r = await timed(file, () => renderVideo(tl(), p.root, out(file), {}));
   const pr = probe(out(file));
   const a = pr.streams.find((s) => s.codec_type === "audio");
+  // raw ADTS has no length in its header (ffprobe guesses one from the bitrate): count its 1024-sample frames
+  const d = file.endsWith(".aac") ? +spawnSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "a:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", out(file)], { encoding: "utf8" }).stdout * 1024 / Number(a?.sample_rate)
+    : Number(pr.format.duration ?? a?.duration);
   check(`${file}: audio only, ${codec}, 2s`, r.audio_only === true && r.codec === codec && !pr.streams.some((s) => s.codec_type === "video")
-    && a?.codec_name === codec && Math.abs(Number(pr.format.duration ?? a?.duration) - 2) < 0.1 && r.size_bytes > 1000, { r, d: pr.format.duration, c: a?.codec_name });
+    && a?.codec_name === codec && Math.abs(d - 2) < 0.1 && r.size_bytes > 1000, { r, d, c: a?.codec_name });
 }
 r = await renderVideo(tl(), p.root, out("part.mp3"), { start: 0.5, end: 1.5 });
 check("audio range 1s", Math.abs(Number(probe(out("part.mp3")).format.duration) - 1) < 0.1 && r.duration === 1, r);
