@@ -2,15 +2,22 @@
 // revision the page saw, so a stale page gets a "conflict" instead of overwriting an agent's work. Changes made by other
 // processes (CLI/MCP) are picked up by polling project.json and pushed to the page over Server-Sent Events.
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, realpathSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, createReadStream, createWriteStream, existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unwatchFile, utimesSync, watchFile } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
+import { capPreviews } from "./cache.ts";
 import { inp, VIDEO_MAP } from "./ffinput.ts";
+import { chatEngine, runChat } from "./chat.ts";
 import { endJob } from "./jobs.ts";
-import { seekArgs } from "./media.ts";
-import { type Asset, EditError, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
+import { libraryStill } from "./library.ts";
+import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
+import { type Asset, EditError, PRESETS, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { UI_AUTHOR } from "./project.ts";
+import { ensureDir, writeFile } from "./safe-write.ts";
 import { PAGE } from "./ui/page.gen.ts";
 
 const MIME: Record<string, string> = {
@@ -19,8 +26,12 @@ const MIME: Record<string, string> = {
   ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
   ".fcpxml": "application/xml", ".otio": "application/json",
 };
-const STATUS: Record<string, number> = { conflict: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const STATUS: Record<string, number> = { conflict: 409, busy: 409, bad_revision: 400, missing_revision: 400, forbidden: 403, not_found: 404, bad_json: 400, bad_request: 400 };
+const PEAK_RATE = 50;
+const EXPORT_FORMATS = [".mp4", ".mov", ".webm", ".mkv", ".gif", ".wav", ".mp3", ".m4a", ".flac", ".png", ".webp"];
 const SERVED_DIRS = ["renders", "previews"]; // besides project assets, only outputs are served
+/** what a file dropped on the page may be: the media import_media takes */
+const UPLOAD_EXT = new Set([...IMAGE_EXT, ...AUDIO_EXT, ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".gif", ".json"]);
 
 export async function startUi(project: string | undefined, o: { port?: number } = {}) {
   if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
@@ -32,7 +43,9 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   let preparing: Dict | null = null; // the running prepare job: a second request joins it
   const running = new Map<string, { ctl: AbortController; settled: Promise<unknown> }>(); // job id -> its abort and its end, while it runs
   const thumbs = new Map<string, Promise<Buffer>>();
+  const waves = new Map<string, Promise<number[]>>();
   const cacheDir = join(root, "previews", "ui");
+  const chat: { ctl?: AbortController; session?: string } = {}; // the chat panel's agent run (one at a time) and the conversation it continues
   let assetsKey: string | undefined;
   let assets: Record<string, Asset> | undefined;
 
@@ -41,29 +54,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
   const broadcast = (event: string, data: unknown) => { for (const c of clients) send(c, event, data); };
   const fileUrl = (abs: string) => "/files/" + relative(root, abs).split(sep).map(encodeURIComponent).join("/");
 
-  const server = createServer(async (req, res) => {
-    res.setHeader("x-content-type-options", "nosniff");
-    res.setHeader("x-frame-options", "DENY");
-    res.setHeader("content-security-policy", "frame-ancestors 'none'");
-    try { await route(req, res); }
-    catch (e: any) {
-      const status = e instanceof EditError ? (STATUS[e.code] ?? 422) : 500;
-      if (!res.headersSent) json(res, status, { ok: false, error: errJson(e) }); else res.end();
-    }
-  });
+  const server = serve(route);
 
   async function route(req: IncomingMessage, res: ServerResponse) {
-    let url: URL, path: string;
-    try { url = new URL(req.url ?? "/", "http://x"); path = decodeURIComponent(url.pathname); }
-    catch { throw new EditError("the request target is not a valid URL path", "bad_request"); }
-    // DNS-rebinding / cross-site guards: only our own host, same-origin JSON writes
-    const port = (server.address() as any).port;
-    if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
-    if (path.split("/").includes("..") || path.includes("\0")) return json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
-    if (req.method === "POST") {
-      if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
-      if (!String(req.headers["content-type"]).startsWith("application/json")) return json(res, 415, { ok: false, error: { code: "bad_request", message: "POST bodies must be application/json" } });
-    }
+    const g = guard(req, res, server);
+    if (!g) return;
+    const { url, path } = g;
+    if (req.method === "POST" && path === "/api/upload") return json(res, 200, { ok: true, path: await upload(req, url.searchParams.get("name")) });
 
     if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE); }
     if (req.method === "GET" && path === "/api/state") return json(res, 200, { ok: true, ...(await state()) });
@@ -101,6 +98,17 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-cache" });
       return res.end(jpg);
     }
+    if (req.method === "GET" && path.startsWith("/api/peaks/")) { // a clip's waveform: PEAK_RATE peaks per second of the asset's sound, computed once per file version
+      const a = asset(path.slice("/api/peaks/".length)), st = statSync(a.abs, { throwIfNoEntry: false }), key = `${a.abs}|${st?.mtimeMs}|${st?.size}`;
+      if (!waves.has(key)) { if (waves.size > 100) waves.clear(); waves.set(key, peaks(a.abs, PEAK_RATE).catch((e) => { waves.delete(key); throw e; })); }
+      return json(res, 200, { ok: true, rate: PEAK_RATE, peaks: await waves.get(key) });
+    }
+    if (req.method === "GET" && path.startsWith("/api/library/")) { // a look, effect, transition or text preset as a still (library.ts)
+      const [kind, name, ...rest] = path.slice("/api/library/".length).split("/");
+      if (rest.length) throw new EditError(`no library item ${path}`, "not_found");
+      return sendFile(req, res, await libraryStill(p, kind, name));
+    }
+    if (req.method === "GET" && path === "/api/chat") return json(res, 200, { ok: true, ...chatEngine(), busy: !!chat.ctl, session: chat.session ?? null });
     if (req.method === "GET" && path.startsWith("/media/")) return sendFile(req, res, asset(path.slice("/media/".length)).abs);
     if (req.method === "GET" && path.startsWith("/files/")) return sendFile(req, res, servedFile(path.slice("/files/".length)));
     if (req.method === "GET" && path.startsWith("/api/jobs/")) {
@@ -115,8 +123,13 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       const rev = body.revision; // as sent: no revision is missing_revision, and anything but a whole number >= 0 is bad_revision that echoes it
       // the page is one person at one browser: its author is the server's own constant, whatever the request body says
       if (path === "/api/ops") return json(res, 200, await api.apply(root, body.ops, { revision: rev, label: body.label, author: UI_AUTHOR, signal: gone.signal }));
-      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, 1, rev, UI_AUTHOR) });
-      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, 1, rev, UI_AUTHOR) });
+      if (path === "/api/undo") return json(res, 200, { ok: true, ...api.undo(root, body.steps ?? 1, rev, UI_AUTHOR) }); // steps: the history panel undoes back to an entry
+      if (path === "/api/redo") return json(res, 200, { ok: true, ...api.redo(root, body.steps ?? 1, rev, UI_AUTHOR) });
+      if (path === "/api/chat") return json(res, 200, { ok: true, ...startChat(body.message) });
+      if (path === "/api/chat/stop") { chat.ctl?.abort(); return json(res, 200, { ok: true, stopping: !!chat.ctl }); }
+      if (path === "/api/chat/reset") { if (chat.ctl) throw new EditError("the agent is still answering", "busy", "stop it first"); chat.session = undefined; return json(res, 200, { ok: true }); }
+      if (path === "/api/transcript") return json(res, 200, { ok: true, ...(await transcript(body.asset, body.language, gone.signal)) });
+      if (path === "/api/review") return json(res, 200, { ok: true, revision: p.load().revision, ...(await api.review(root, { signal: gone.signal })) });
       if (path === "/api/sheet") {
         const r = await api.sheet(root, { count: Number(body.count ?? 12), cols: 4, tileWidth: 320, out: join(cacheDir, `sheet-${Date.now()}.jpg`) });
         return json(res, 200, { ok: true, ...r, url: fileUrl(r.image) });
@@ -149,20 +162,25 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       start = first / fps; end = last / fps;
       out = join(cacheDir, `play-r${tl.revision}-f${first}-${last}.mp4`);
     }
+    if (!body.play && body.format !== undefined) { // the export dialog names a format; the file goes in renders/ under the project's name, never a path from the page
+      if (!EXPORT_FORMATS.includes(body.format)) throw new EditError(`unknown export format ${JSON.stringify(body.format)}`, "bad_value", `one of ${EXPORT_FORMATS.join(" ")}`);
+      out = p.defaultOutput(body.format, body.draft ? "draft" : "");
+    }
     const finish = (r: Dict) => { Object.assign(job, { status: "done", progress: 1, result: r, url: fileUrl(r.output ?? out), sheet_url: r.contact_sheet ? fileUrl(r.contact_sheet) : undefined });  broadcast("job", job); };
-    if (out && existsSync(out)) { const now = new Date(); utimesSync(out, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
-    const live = out ? playing.get(out) : undefined;
+    if (body.play && existsSync(out!)) { const now = new Date(); utimesSync(out!, now, now); finish({ output: out }); endJob(jobs, id, job); return job; }
+    const live = body.play ? playing.get(out!) : undefined;
     if (live && !running.get(live.id)?.ctl.signal.aborted) return live; // same range already rendering: share that job, unless it is being cancelled
     // api.render writes to a .part-<pid>- file and renames to `out` only when complete, so the cache check above never serves a half-written file
     jobs.set(id, job); // every call that can throw is above; from here to the promise chain nothing throws, so a job in `jobs` always reaches its end
-    if (out) playing.set(out, job);
+    if (body.play) playing.set(out!, job);
     let last = 0;
     const ctl = new AbortController();
     running.set(id, { ctl, settled: api.render(root, {
       out, start, end, draft: !!body.draft || !!body.play, sheet: !body.play, workers: body.play ? 1 : undefined, signal: ctl.signal,
+      ...(body.play ? {} : { codec: body.codec, quality: body.quality, subtitles: body.subtitles === true }),
       progress: (d, n) => { job.progress = +(d / n).toFixed(3); const now = Date.now(); if (now - last > 200) { last = now; broadcast("job", job); } },
     }).then(finish)
-      .catch((e) => { Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); })
+      .catch((e) => { if (!body.play && out) p.releaseOutput(out); Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }); broadcast("job", job); }) // an export that wrote nothing gives back the name it reserved
       .finally(() => { if (out && playing.get(out) === job) playing.delete(out); running.delete(id); endJob(jobs, id, job); }) });
     return job;
   }
@@ -180,6 +198,52 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       .catch((e) => Object.assign(job, { status: endedAs(ctl, e), error: errJson(e) }))
       .finally(() => { delete job.download; preparing = null; running.delete(job.id); endJob(jobs, job.id, job); broadcast("job", job); }) });
     return job;
+  }
+
+  /** a file dropped on the page, into <project>/media/ under its own name (name-1, name-2... when taken; never overwrites). Returns its path for import_media. */
+  async function upload(req: IncomingMessage, name: string | null): Promise<string> {
+    if (!name || name !== basename(name) || name.startsWith(".") || name.length > 200) throw new EditError("upload name must be a plain file name", "bad_value", "e.g. ?name=clip.mp4");
+    const ext = extname(name).toLowerCase();
+    if (!UPLOAD_EXT.has(ext)) throw new EditError(`${name}: not a media file import_media takes`, "bad_type", `accepted: ${[...UPLOAD_EXT].join(" ")}`);
+    // written in a scratch dir that cache.ts sweepStale removes after a crash, then linked into media/: a half-written file is never there
+    const scratch = mkdtempSync(join(ensureDir(root, join(root, ".agentcut", "tmp")), `upload-${process.pid}-`)), part = join(scratch, "part");
+    try {
+      await pipeline(req, createWriteStream(part, { flags: "wx" }));
+      const dir = ensureDir(root, join(root, "media")), stem = name.slice(0, -ext.length);
+      for (let i = 0; ; i++) {
+        const dest = join(dir, i ? `${stem}-${i}${ext}` : name);
+        try { linkSync(part, dest); return dest; } catch (e: any) { if (e.code !== "EEXIST") throw e; }
+      }
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+
+  /** The words of an asset's sound (media seconds), kept in previews/ui/transcripts per file version and language: whisper takes a while, the page asks again on every open. */
+  async function transcript(id: unknown, language: unknown, signal: AbortSignal) {
+    if (typeof id !== "string" || (language !== undefined && typeof language !== "string")) throw new EditError("transcript takes {asset: id, language?: code}", "bad_request");
+    const a = asset(id), st = statSync(a.abs, { throwIfNoEntry: false });
+    const file = join(cacheDir, "transcripts", createHash("sha1").update(`${a.abs}|${st?.mtimeMs}|${st?.size}|${language ?? ""}`).digest("hex").slice(0, 24) + ".json");
+    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+    const r = await api.analyze.transcribe(a.abs, language, undefined, undefined, undefined, signal);
+    const out = { language: r.language, words: r.words };
+    ensureDir(root, join(cacheDir, "transcripts"));
+    writeFile(file, JSON.stringify(out), root);
+    capPreviews(p, file);
+    return out;
+  }
+
+  /** one message to the chat agent: its events go to every page as "chat"; the conversation goes on from the session it reports */
+  function startChat(message: unknown) {
+    if (typeof message !== "string" || !message.trim() || message.length > 20_000) throw new EditError("a chat message is text of 1 to 20000 characters", "bad_request");
+    if (chat.ctl) throw new EditError("the agent is still answering", "busy", "wait for it, or stop it");
+    const ctl = new AbortController();
+    const run = runChat(root, message, chat.session, (e) => {
+      if ((e.kind === "session" || e.kind === "done") && e.session) chat.session = e.session;
+      broadcast("chat", e);
+    }, ctl.signal); // throws missing_dependency before anything starts
+    chat.ctl = ctl;
+    broadcast("chat", { kind: "user", text: message });
+    run.finally(() => { chat.ctl = undefined; });
+    return { started: true };
   }
 
   function asset(id: string): Asset & { abs: string } {
@@ -204,10 +268,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     throw new EditError("only files in renders/ and previews/ are served", "forbidden");
   }
 
-  await new Promise<void>((ok, fail) => {
-    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${o.port ?? 4810} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
-    server.listen(o.port ?? 4810, "127.0.0.1", ok);
-  });
+  await listen(server, o.port);
   // live sync: stat-poll survives the atomic rename used by Project.save (fs.watch on the file does not). Started only once the port is held, so a failed listen leaves nothing running.
   let lastRev = -1;
   // one push at a time, in the order the changes were seen: state() waits for Skia on the first text project, and two quick saves must not end with the older state sent last
@@ -218,9 +279,108 @@ export async function startUi(project: string | undefined, o: { port?: number } 
       catch (e: any) { broadcast("error", errJson(e)); }
     });
   });
-  server.on("close", () => { unwatchFile(p.file); void api.closeFrameCache(root); });
+  server.on("close", () => { unwatchFile(p.file); chat.ctl?.abort(); void api.closeFrameCache(root); });
   const port = (server.address() as any).port;
   return { url: `http://127.0.0.1:${port}/`, port, project: root, revision: p.load().revision, server };
+}
+
+/** The checks every request passes first (DNS-rebinding / cross-site guards: only our own host, same-origin writes, no path traversal); the URL and its path, or
+ *  undefined once it has answered. An upload is the file's bytes; every other POST is JSON. Neither type can be sent cross-site without a preflight, which these servers never answer. */
+function guard(req: IncomingMessage, res: ServerResponse, server: ReturnType<typeof createServer>): { url: URL; path: string } | undefined {
+  let url: URL, path: string;
+  try { url = new URL(req.url ?? "/", "http://x"); path = decodeURIComponent(url.pathname); }
+  catch { throw new EditError("the request target is not a valid URL path", "bad_request"); }
+  const port = (server.address() as any).port;
+  if (!new Set([`127.0.0.1:${port}`, `localhost:${port}`]).has(req.headers.host ?? "")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "bad host" } });
+  if (path.split("/").includes("..") || path.includes("\0")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "path traversal rejected" } });
+  // another site's page may not make this one compute or read anything (an <img> or fetch to the loopback port); opening the page from a link is fine
+  if (req.headers["sec-fetch-site"] === "cross-site" && !(path === "/" && req.headers["sec-fetch-mode"] === "navigate")) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-site request" } });
+  if (req.method === "POST") {
+    if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return void json(res, 403, { ok: false, error: { code: "forbidden", message: "cross-origin request" } });
+    const want = path === "/api/upload" ? "application/octet-stream" : "application/json";
+    if (!String(req.headers["content-type"]).startsWith(want)) return void json(res, 415, { ok: false, error: { code: "bad_request", message: `POST ${path === "/api/upload" ? "/api/upload takes the file as" : "bodies must be"} ${want}` } });
+  }
+  return { url, path };
+}
+
+/** A server's answers: an EditError as its status (STATUS, else 422) with the error JSON; anything else 500. */
+function serve(route: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>) {
+  return createServer(async (req, res) => {
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("content-security-policy", "frame-ancestors 'none'");
+    try { await route(req, res); }
+    catch (e: any) {
+      const status = e instanceof EditError ? (STATUS[e.code] ?? 422) : 500;
+      if (!res.headersSent) json(res, status, { ok: false, error: errJson(e) }); else res.end();
+    }
+  });
+}
+
+/** `agentcut ui` on a folder that holds no project: the projects in its subfolders, each with a picture, to open, duplicate or create. Opening one starts its editor
+ *  (startUi, on a free port, once per project) and the page goes there. */
+export async function startDashboard(dir: string, o: { port?: number } = {}) {
+  if (o.port !== undefined && !(Number.isInteger(o.port) && o.port >= 0 && o.port <= 65535)) throw new EditError(`port must be a whole number from 0 to 65535, got ${JSON.stringify(o.port)}`, "bad_value", "e.g. 4810; 0 picks a free port");
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) throw new EditError(`${dir} is not a folder`, "not_found", "pass a project folder, or a folder of projects");
+  const root = realpathSync(dir);
+  const editors = new Map<string, Promise<Awaited<ReturnType<typeof startUi>>>>();
+  /** a project folder of this dashboard by its name: one path segment, an existing project unless `fresh` (then free) */
+  const folder = (name: unknown, fresh = false) => {
+    if (typeof name !== "string" || !/^[^/\\\0]+$/.test(name) || name.startsWith(".")) throw new EditError(`'${String(name)}' is not a project folder name`, "bad_value", "one folder name, not starting with a dot");
+    const d = join(root, name), has = existsSync(join(d, "project.json"));
+    if (fresh ? existsSync(d) : !has) throw new EditError(fresh ? `${name} already exists` : `no project ${name}`, fresh ? "exists" : "not_found");
+    return d;
+  };
+  const projects = () => readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".") && existsSync(join(root, e.name, "project.json"))).map((e) => {
+    const file = join(root, e.name, "project.json"), modified = statSync(file).mtimeMs;
+    try {
+      const tl = JSON.parse(readFileSync(file, "utf8"));
+      return { name: e.name, modified, revision: tl.revision, width: tl.settings.width, height: tl.settings.height, duration: +totalDuration(resolveTimeline(tl)).toFixed(2) };
+    } catch (err: any) { return { name: e.name, modified, error: String(err?.message ?? err) }; }
+  }).sort((a, b) => b.modified - a.modified);
+  const server = serve(async (req, res) => {
+    const g = guard(req, res, server);
+    if (!g) return;
+    const { path } = g;
+    if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE.replace('<div id="app">', '<div id="app" data-dashboard>')); }
+    if (req.method === "GET" && path === "/api/projects") return json(res, 200, { ok: true, dir: root, presets: Object.keys(PRESETS), projects: projects() });
+    const thumb = /^\/api\/projects\/([^/]+)\/thumb$/.exec(path);
+    if (req.method === "GET" && thumb) {
+      const d = folder(thumb[1]), tl = JSON.parse(readFileSync(join(d, "project.json"), "utf8"));
+      const r = await api.frameImage(d, +(totalDuration(resolveTimeline(tl)) * 0.25).toFixed(3), { scale: 240 / Math.max(tl.settings.width, tl.settings.height), reuse: true });
+      res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
+      return res.end(r.data);
+    }
+    if (req.method !== "POST") return json(res, 404, { ok: false, error: { code: "not_found", message: "no such route" } });
+    const body = await readJson(req);
+    if (path === "/api/create") { const d = folder(body.name, true); api.create(d, { preset: body.preset }); return json(res, 200, { ok: true, name: body.name }); }
+    if (path === "/api/duplicate") {
+      const from = folder(body.name), to = folder(body.as, true);
+      api.create(to, { empty: true }); // the folders and history of a project; then its timeline and every file beside it (media under it may sit anywhere, linked by a relative path)
+      const own = new Set(["project.json", ".agentcut", "previews", "renders"].map((n) => join(from, n)));
+      cpSync(from, to, { recursive: true, filter: (f) => !own.has(f) });
+      writeFile(join(to, "project.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(from, "project.json"), "utf8")), name: body.as }, null, 2), to);
+      return json(res, 200, { ok: true, name: body.as });
+    }
+    if (path === "/api/open") {
+      const d = folder(body.name);
+      if (!editors.has(d)) editors.set(d, startUi(d, { port: 0 }).catch((e) => { editors.delete(d); throw e; }));
+      return json(res, 200, { ok: true, url: (await editors.get(d)!).url });
+    }
+    return json(res, 404, { ok: false, error: { code: "not_found", message: "no such route" } });
+  });
+  await listen(server, o.port);
+  server.on("close", () => { for (const e of editors.values()) e.then((u) => { u.server.closeAllConnections?.(); u.server.close(); }, () => {}); });
+  const port = (server.address() as any).port;
+  return { url: `http://127.0.0.1:${port}/`, port, dashboard: root, projects: projects().length, server };
+}
+
+/** listen on 127.0.0.1 only; a port in use is port_in_use */
+function listen(server: ReturnType<typeof createServer>, port = 4810) {
+  return new Promise<void>((ok, fail) => {
+    server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${port} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
+    server.listen(port, "127.0.0.1", ok);
+  });
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {

@@ -1,9 +1,9 @@
 import { hist } from "./history.ts";
-import { select } from "./inspector.ts";
+import { select } from "./inspector.tsx";
 import { $, S, st, V } from "./state.ts";
-import { clipNodes } from "./timeline.ts";
+import { clipNode } from "./timeline.tsx";
 import { clipOrder } from "./view.ts";
-import { seek } from "./viewer.ts";
+import { seek } from "./viewer.tsx";
 
 /** the control holds focus from the keyboard: :focus-visible, and no mouse press since the last Tab (a key press after a click makes the clicked control :focus-visible too) */
 let mouseFocus = false; // which came last: a mouse press (true) or Tab (false)
@@ -16,7 +16,7 @@ function clipKey(e: KeyboardEvent, n: HTMLElement) {
   e.preventDefault();
   if (!next) return;
   n.tabIndex = -1;
-  const m = clipNodes.get(next.id)!;
+  const m = clipNode(next.id)!;
   m.tabIndex = 0; m.focus();
 }
 
@@ -25,7 +25,7 @@ export function initKeyboard() {
   document.addEventListener("keydown", (e) => { if (e.key === "Tab") mouseFocus = false; }, true);
   document.addEventListener("keydown", (e) => {
     const g = e.target as HTMLElement;
-    if ($<HTMLDialogElement>("consent").open || g.tagName === "TEXTAREA" || g.tagName === "INPUT") return; // the dialog owns the keys while open
+    if (document.querySelector("dialog[open]") || g.tagName === "TEXTAREA" || g.tagName === "INPUT") return; // an open dialog owns the keys
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); return; }
     if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === " ") && kbFocus(g)) return clipKey(e, g);
     // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays

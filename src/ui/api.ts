@@ -1,4 +1,5 @@
 import { fail, NO_STATE, show } from "./messages.ts";
+import { t } from "./i18n.ts";
 import { st } from "./state.ts";
 import type { Dict, Op } from "./types.ts";
 
@@ -16,7 +17,7 @@ export function stamped(path: string, body: Dict): Promise<Dict> {
 /** every edit goes out stamped. Resolves undefined when the edit failed (the error is shown). */
 export function ops(list: Op[], label?: string): Promise<Dict | undefined> {
   return stamped("/api/ops", { ops: list, label }).then((r): Dict | undefined => {
-    show("ok", "applied (revision " + r.revision + ")" + (r.errors ? ", " + r.errors + " error(s) remain" : ""));
+    show("ok", t("applied", r.revision) + (r.errors ? t("errorsRemain", r.errors) : ""));
     return r;
   }, (e) => { fail(e); return undefined; });
 }

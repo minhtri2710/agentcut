@@ -1,13 +1,12 @@
 import { api } from "./api.ts";
+import { t } from "./i18n.ts";
 import { fail, show } from "./messages.ts";
-import { $, el, st } from "./state.ts";
-import { prepareText } from "./text.ts";
-import type { ApiError, Job } from "./types.ts";
-import { requestFrame } from "./viewer.ts";
+import { $, changed, st } from "./state.ts";
+import type { Dict, Job } from "./types.ts";
+import { requestFrame } from "./viewer.tsx";
 
 /** newest SSE event per job id: a job can settle before its POST response resolves, and the POST body is only the snapshot at start */
 const lastJob: Record<string, Job> = {};
-let consentErr: ApiError | null = null;
 
 /** a "job" event from the server */
 export function onJobEvent(j: Job) {
@@ -20,70 +19,47 @@ export function onJobEvent(j: Job) {
 export function settle(j: Job) { const k = lastJob[j.id] || j; delete lastJob[j.id]; onJob(k); }
 
 /** run prepare (mattes, vision analyses, pending requests) as a server job; the viewer redraws when it is done */
-function startPrepare(allowDownload: boolean) {
-  const b = $<HTMLButtonElement>("prepare");
-  b.disabled = true; b.textContent = "Preparing…";
-  api("/api/prepare", allowDownload ? { allow_download: true } : {}).then((j) => { st.prepJob = j.id; settle(j as Job); }, (e) => { b.disabled = false; b.textContent = "Prepare"; fail(e); });
+export function startPrepare(allowDownload: boolean) {
+  st.prep = "starting"; changed();
+  api("/api/prepare", allowDownload ? { allow_download: true } : {}).then((j) => { st.prepJob = j.id; settle(j as Job); }, (e) => { st.prep = null; changed(); fail(e); });
 }
 
-/** a missing model is downloaded only after a click here: Cancel and Escape show the failure instead, and nothing retries by itself */
-function askDownload(err: ApiError) {
-  consentErr = err;
-  const d = $<HTMLDialogElement>("consent"), l = $("clist");
-  l.innerHTML = "";
-  err.models!.forEach((m) => { l.appendChild(el("li", { textContent: m.model + " (~" + m.approx_mb + " MB)" })); });
-  d.returnValue = ""; d.showModal(); $("cgo").focus();
+/** a render into renders/: the header's quick Render (draft or not, .mp4), or the export dialog's choice (format, codec, quality, range, subtitles) */
+export function startRender(opts: Dict = { draft: $<HTMLInputElement>("draft").checked }) {
+  st.rendering = true; st.out = { progress: 0 }; changed();
+  api("/api/render", opts).then((j) => { st.renderJob = j.id; settle(j as Job); }, (e) => { st.rendering = false; st.out = null; changed(); fail(e); });
+}
+
+export function startSheet() {
+  st.sheeting = true; changed();
+  api("/api/sheet", { count: 12 }).then((r) => { st.out = { sheet: r.url }; }, fail).then(() => { st.sheeting = false; changed(); });
 }
 
 function onJob(j: Job) {
   if (j.id === st.prepJob) {
-    const b = $<HTMLButtonElement>("prepare");
-    if (j.status === "running") { b.textContent = prepareText(j); return; }
-    st.prepJob = null; b.disabled = false; b.textContent = "Prepare";
-    if (j.status === "failed" || j.status === "cancelled") { if (j.error!.code === "model_not_cached" && j.error!.models) askDownload(j.error!); else fail(j.error!); }
-    else { b.style.display = "none"; show("ok", "prepared"); requestFrame(); }
+    if (j.status === "running") { st.prep = j; changed(); return; }
+    st.prepJob = null; st.prep = null;
+    // a missing model is downloaded only after a click in the dialog (st.consent): Cancel and Escape show the failure instead, and nothing retries by itself
+    if (j.status === "failed" || j.status === "cancelled") { if (j.error!.code === "model_not_cached" && j.error!.models) st.consent = j.error!; else fail(j.error!); }
+    else { st.needPrepare = false; show("ok", t("prepared")); requestFrame(); }
+    changed();
   } else if (j.id === st.playJob) {
-    if (j.status === "running") $("play").textContent = "Preparing " + Math.round(j.progress * 100) + "%";
-    else if (j.status === "failed" || j.status === "cancelled") { st.playJob = null; $("play").textContent = "Play"; fail(j.error!); }
+    if (j.status === "running") st.play = { pct: Math.round(j.progress * 100) };
+    else if (j.status === "failed" || j.status === "cancelled") { st.playJob = null; st.play = null; fail(j.error!); }
     else {
-      st.playJob = null;
+      st.playJob = null; st.play = null; st.playing = true;
       const v = $<HTMLVideoElement>("video");
-      v.src = j.url!; v.style.display = ""; $("frame").style.display = "none"; $("play").textContent = "Stop";
+      v.src = j.url!;
       v.play().catch((e) => { if (e.name !== "AbortError") fail(e); }); // a stop right after the start interrupts play()
     }
+    changed();
   } else if (j.id === st.renderJob) {
-    const p = $<HTMLProgressElement>("prog");
-    if (p) p.value = j.progress;
-    const render = $<HTMLButtonElement>("render");
-    if (j.status === "failed" || j.status === "cancelled") { st.renderJob = null; render.disabled = false; $("out").innerHTML = ""; fail(j.error!); }
-    if (j.status === "done") {
-      st.renderJob = null; render.disabled = false;
-      const o = $("out"), r = j.result!;
-      o.innerHTML = "";
-      o.appendChild(el("a", { href: j.url!, target: "_blank", textContent: "output: " + r.output.split("/").pop() }));
-      o.appendChild(el("div", { className: "mut", textContent: r.duration + " s, " + r.width + "x" + r.height + (r.loudness ? ", " + r.loudness.integrated_lufs + " LUFS" : "") + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "") }));
-      if (j.sheet_url) sheetImg(j.sheet_url);
+    if (j.status === "running") st.out = { progress: j.progress };
+    else if (j.status === "failed" || j.status === "cancelled") { st.renderJob = null; st.rendering = false; st.out = null; fail(j.error!); }
+    else {
+      st.renderJob = null; st.rendering = false;
+      st.out = { result: j.result!, url: j.url!, sheet: j.sheet_url };
     }
+    changed();
   }
-}
-
-function sheetImg(url: string) {
-  $("out").appendChild(el("img", { src: url, title: "open full size", onclick: () => { window.open(url); } }));
-}
-
-export function initJobs() {
-  $("prepare").addEventListener("click", () => { startPrepare(false); });
-  $("cgo").addEventListener("click", () => { $<HTMLDialogElement>("consent").close("go"); });
-  $("cno").addEventListener("click", () => { $<HTMLDialogElement>("consent").close("no"); });
-  $("consent").addEventListener("close", () => { if ($<HTMLDialogElement>("consent").returnValue === "go") startPrepare(true); else fail(consentErr!); });
-  $("render").addEventListener("click", () => {
-    const b = $<HTMLButtonElement>("render");
-    b.disabled = true; $("out").innerHTML = "<progress id=prog max=1 value=0></progress>";
-    api("/api/render", { draft: $<HTMLInputElement>("draft").checked }).then((j) => { st.renderJob = j.id; settle(j as Job); }, (e) => { b.disabled = false; $("out").innerHTML = ""; fail(e); });
-  });
-  $("sheet").addEventListener("click", () => {
-    const b = $<HTMLButtonElement>("sheet");
-    b.disabled = true;
-    api("/api/sheet", { count: 12 }).then((r) => { $("out").innerHTML = ""; sheetImg(r.url); }, fail).then(() => { b.disabled = false; });
-  });
 }

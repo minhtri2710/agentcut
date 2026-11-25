@@ -134,19 +134,35 @@ def track(j):
                     "w": round(bw2 / w, 4), "h": round(bh2 / h, 4), "ok": ok})
     return {"samples": out, "init_index": i0}
 
+def _rvm(path, w, h):  # Robust Video Matting: the four recurrent states carry over from frame to frame, in reading order
+    import numpy as np, onnxruntime as ort
+    sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    rec = [np.zeros((1, 1, 1, 1), np.float32)] * 4
+    ratio = np.array([min(1.0, 512.0 / max(w, h))], np.float32)  # the model works at 256..512 px on the long side
+    def mask(f):
+        nonlocal rec
+        out = sess.run(None, {"src": (f.astype(np.float32) / 255).transpose(2, 0, 1)[None], "r1i": rec[0], "r2i": rec[1], "r3i": rec[2], "r4i": rec[3], "downsample_ratio": ratio})
+        rec = out[2:]
+        return (np.clip(out[1][0, 0], 0, 1) * 255 + 0.5).astype(np.uint8)
+    return mask
+
 def matte(j):
-    # AgentCut fetches and verifies every model first, and rembg 2.0.86 neither re-checks nor fetches a file that is present: the helper never fetches, so a missing or corrupt file fails
-    for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
-    for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
+    rvm = j.get("model") == "rvm_mobilenetv3"
+    if not rvm:
+        # AgentCut fetches and verifies every model first, and rembg 2.0.86 neither re-checks nor fetches a file that is present: the helper never fetches, so a missing or corrupt file fails
+        for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"): os.environ[k] = "http://127.0.0.1:9"
+        for k in ("NO_PROXY", "no_proxy"): os.environ.pop(k, None)
+        from rembg import new_session, remove
     import numpy as np
-    from rembg import new_session, remove
     from PIL import Image
     _verify(j["model_file"], j.get("model_sha256"))
-    sess = new_session(j.get("model", "u2netp"))
     w, h = j["w"], j["h"]
+    if rvm: mask = _rvm(j["model_file"], w, h)
+    else:
+        sess = new_session(j.get("model", "u2netp"))
+        mask = lambda f: np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
     def rgba(f):
-        m = np.asarray(remove(Image.fromarray(f), session=sess, only_mask=True).convert("L").resize((w, h)))
-        return np.dstack([f, m])
+        return np.dstack([f, mask(f)])
     if j["kind"] == "image":
         f = next(frames(j["path"], None, None, None, w, h, "rgb24", j.get("matrix"), j.get("convert")))
         Image.fromarray(rgba(f), "RGBA").save(j["out"], format="PNG")  # audio stays on the original asset
@@ -165,7 +181,46 @@ def matte(j):
     if n == 0: raise SystemExit("no frames decoded from the source")
     return {"out": j["out"], "frames": n}
 
+def separate(j):
+    # Spleeter 2 stems: STFT 4096 / hop 1024 (Hann), the models take the magnitude of the lowest 1024 bins in blocks of 512 frames and give
+    # each stem's magnitude; the voice mask is the ratio of the squares (above 1024 bins: the mask's mean in that frame). Music = source - voice,
+    # so the stems add up to the decoded sound. shortcut: the whole decoded sound is held in memory (~2 x 21 MB per minute), stream it if hour-long sources matter
+    import numpy as np, onnxruntime as ort
+    for f, sha in zip(j["model_files"], j.get("model_sha256") or [None] * 2): _verify(f, sha)
+    SR, N, HOP, T, B = 44100, 4096, 1024, 512, 1024
+    errf = tempfile.TemporaryFile()
+    p = _spawn(["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", j["path"], "-map", "0:a:0", "-vn", "-sn",
+                "-af", "aresample=%d:first_pts=0" % SR, "-ac", "2", "-f", "f32le", "-"], stdout=subprocess.PIPE, stderr=errf)
+    raw = p.stdout.read(); p.stdout.close(); p.wait(); errf.seek(0)
+    if p.returncode != 0: raise SystemExit("ffmpeg exited %s: %s" % (p.returncode, errf.read().decode("utf8", "replace").strip()[:400]))
+    x = np.frombuffer(raw, np.float32).reshape(-1, 2).T.copy(); del raw
+    L = x.shape[1]
+    if L == 0: return {"samples": 0}
+    xp = np.pad(x, ((0, 0), (N, N + HOP)))
+    w = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N) / N)).astype(np.float32)
+    F = (xp.shape[1] - N) // HOP + 1
+    so = ort.SessionOptions()
+    sv, sa = (ort.InferenceSession(f, so, providers=["CPUExecutionProvider"]) for f in j["model_files"])
+    voice = np.zeros_like(xp)
+    for k, b0 in enumerate(range(0, F, T)):
+        n = min(T, F - b0)
+        S = np.fft.rfft(xp[:, (b0 + np.arange(n))[:, None] * HOP + np.arange(N)[None, :]] * w, axis=-1)
+        mag = np.zeros((2, 1, T, B), np.float32); mag[:, 0, :n] = np.abs(S[:, :, :B])
+        v = sv.run(None, {"x": mag})[0][:, 0, :n]; a = sa.run(None, {"x": mag})[0][:, 0, :n]
+        m = (v * v + 5e-11) / (v * v + a * a + 1e-10)
+        m = np.concatenate([m, np.repeat(m.mean(-1, keepdims=True), S.shape[-1] - B, -1)], -1)
+        y = np.fft.irfft(S * m, n=N, axis=-1) * w
+        for i in range(n): voice[:, (b0 + i) * HOP:(b0 + i) * HOP + N] += y[:, i]
+        sys.stderr.write("AGENTCUT_PROGRESS %d\n" % (k + 1)); sys.stderr.flush()
+    voice = voice[:, N:N + L] / 1.5  # the Hann^2 overlap at a quarter hop sums to 1.5
+    for arr, out in ((voice, j["out"]), (x - voice, j["out_music"])):
+        e = _spawn(["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", "pipe:0", "-c:a", "flac", "-sample_fmt", "s32",
+                    "-map_metadata", "-1", "-fflags", "+bitexact", "-f", "flac", out], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        e.stdin.write(np.ascontiguousarray(arr.T).astype(np.float32).tobytes()); e.stdin.close(); e.wait()
+        if e.returncode != 0: raise SystemExit("ffmpeg could not write a stem (exit %s)" % e.returncode)
+    return {"samples": L, "sample_rate": SR}
+
 job = json.loads(sys.argv[1])
-res = {"subject": subject, "track": track, "matte": matte}[job["cmd"]](job)
+res = {"subject": subject, "track": track, "matte": matte, "separate": separate}[job["cmd"]](job)
 sys.stdout.write(json.dumps(res))
 `;

@@ -1138,6 +1138,92 @@ console.log("pieces of an attached clip keep their place and length");
     try { (await applyOps(null as any, t1, [{ op: "remove_silence", id: "pv" }])); return "no error"; } catch (e: any) { return e.code; }
   })());
   check("remove_silence refuses a picture whose detached audio plays reversed", rv === "reversed_audio", rv);
+
+  { // remove_range: a stretch of timeline time out of a clip (the page's text-based cut); the same segment cut as remove_silence
+    const rr = () => {
+      const t = newTimeline(640, 360, 30);
+      t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
+      t.assets.i = { path: "/none.png", kind: "image" };
+      return t;
+    };
+    const clipsOf = (t: any) => t.tracks.flatMap((tr: any) => tr.clips);
+    const [m1, r1] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "sp", in: 0.5, speed: 2, duration: 2 }, { op: "add_clip", track: "main", asset: "i", id: "nx", duration: 1 },
+      { op: "remove_range", id: "sp", start: 0.5, end: 1 }]);
+    const [a1, b1] = r1[2].segments.map((id: string) => clipsOf(m1).find((c: any) => c.id === id)), nx = clipsOf(m1).find((c: any) => c.id === "nx");
+    check("remove_range at speed 2 on the magnetic track: the source before and after the stretch, back to back, and the next clip moves up",
+      a1?.id === "sp" && near(a1.in, 0.5) && near(a1.duration, 0.5) && near(b1?.in, 2.5) && near(b1?.duration, 1) && near(b1?.start, 0.5) && near(nx.start, 1.5) && near(r1[2].removed_seconds, 0.5), { a1, b1, nx });
+    const [m2, r2] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "overlay", asset: "v", id: "dv", at: 1, duration: 4 }, { op: "detach_audio", id: "dv" }, { op: "remove_range", id: "dv", start: 2, end: 3 }]);
+    const pieces = clipsOf(m2).filter((c: any) => c.type === "audio");
+    check("remove_range with detached audio: one audio piece per picture segment, attached to it, with its source",
+      r2[2].segments.length === 2 && pieces.length === 2 && r2[2].segments.every((id: string, k: number) => pieces[k].attach_to === id && near(pieces[k].in, clipsOf(m2).find((c: any) => c.id === id).in)), { r2: r2[2], pieces });
+    const [m3, r3] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "hd", duration: 3 }, { op: "remove_range", id: "hd", start: 0, end: 1 }]);
+    check("remove_range at the clip's head leaves one segment that starts later in the source", r3[1].segments.length === 1 && near(clipsOf(m3)[0].in, 1) && near(clipsOf(m3)[0].duration, 2), clipsOf(m3));
+    const [m4, r4] = await applyOps(null as any, rr(), [{ op: "add_clip", track: "main", asset: "v", id: "kf", duration: 3, keyframes: { opacity: [[0, 0], [3, 1]], focus_x: [[0, 0.2], [3, 0.8]] } },
+      { op: "remove_range", id: "kf", start: 1, end: 2 }]);
+    const [k1, k2] = r4[1].segments.map((id: string) => clipsOf(m4).find((c: any) => c.id === id));
+    check("remove_range keeps the keyframes on their content: the first piece as it was, the second shifted by the source it skips",
+      JSON.stringify(k1?.keyframes) === JSON.stringify({ opacity: [[0, 0], [3, 1]], focus_x: [[0, 0.2], [3, 0.8]] }) && JSON.stringify(k2?.keyframes) === JSON.stringify({ opacity: [[-2, 0], [1, 1]], focus_x: [[-2, 0.2], [1, 0.8]] }), [k1?.keyframes, k2?.keyframes]);
+    const rrCode = async (ops: any[]) => { try { await applyOps(null as any, rr(), ops); return "no error"; } catch (e: any) { return e.code; } };
+    const base = { op: "add_clip", track: "main", asset: "v", id: "c", duration: 3 };
+    const codes = [await rrCode([base, { op: "remove_range", id: "c", start: 0, end: 3 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 4 }]), await rrCode([base, { op: "remove_range", id: "c", start: 2, end: 1 }]),
+      await rrCode([{ ...base, reverse: true }, { op: "remove_range", id: "c", start: 1, end: 2 }]), await rrCode([{ op: "add_clip", track: "main", asset: "i", id: "c", duration: 3 }, { op: "remove_range", id: "c", start: 1, end: 2 }])];
+    check("remove_range refuses the whole clip, a stretch outside it or backwards (bad_value), a reversed clip (unsupported), a picture (bad_type)",
+      JSON.stringify(codes) === JSON.stringify(["bad_value", "bad_value", "bad_value", "unsupported", "bad_type"]), codes);
+  }
+}
+
+console.log("track lock");
+{
+  const mk = async () => {
+    const t = newTimeline(640, 360, 30);
+    t.assets.v = { path: "/none.mp4", kind: "video", duration: 20, has_audio: true, ...VF };
+    t.assets.a = { path: "/none.wav", kind: "audio", duration: 60 };
+    const [t1] = await applyOps(null as any, t, [
+      { op: "add_clip", track: "main", asset: "v", id: "m1", duration: 2 }, { op: "add_clip", track: "main", asset: "v", id: "m2", duration: 2 },
+      { op: "add_clip", track: "overlay", asset: "v", id: "ov", at: 1, duration: 1 },
+      { op: "add_clip", track: "text", text: "T", id: "tt", attach_to: "m2", offset: 0.5, duration: 1 },
+      { op: "add_clip", track: "music", asset: "a", id: "bed", until_end: true },
+      { op: "update_track", id: "overlay", set: { locked: true } }, { op: "update_track", id: "text", set: { locked: true } }, { op: "update_track", id: "music", set: { locked: true } }]);
+    return t1;
+  };
+  const codeOf = async (ops: any[]) => { try { await applyOps(null as any, await mk(), ops); return "ok"; } catch (e: any) { return e.code; } };
+  const families: [string, any][] = [
+    ["add_clip", { op: "add_clip", track: "overlay", asset: "v", at: 3, duration: 1 }], ["update_clip", { op: "update_clip", id: "ov", set: { opacity: 0.5 } }],
+    ["remove_clip", { op: "remove_clip", id: "ov" }], ["move_clip onto it", { op: "move_clip", id: "m1", track: "overlay", at: 5 }], ["move_clip off it", { op: "move_clip", id: "ov", track: "main", index: 0 }],
+    ["trim_clip", { op: "trim_clip", id: "ov", trim_start: 0.2 }], ["split_clip", { op: "split_clip", id: "ov", at: 1.5 }], ["add_effect", { op: "add_effect", id: "ov", type: "bw" }],
+    ["set_keyframes", { op: "set_keyframes", id: "ov", prop: "opacity", keyframes: [[0, 1], [1, 0]] }], ["duplicate_clip into it", { op: "duplicate_clip", id: "m1", track: "overlay", at: 6 }],
+    ["freeze_frame", { op: "freeze_frame", id: "ov", at: 1.5, duration: 0.5 }], ["remove_clip of a clip it attaches to", { op: "remove_clip", id: "m2" }],
+  ];
+  const refused = await Promise.all(families.map(async ([, o]) => codeOf([o])));
+  check("a locked track refuses every op family that changes, adds or removes its clips (code locked)", refused.every((c) => c === "locked"), Object.fromEntries(families.map(([n], i) => [n, refused[i]])));
+  let err: any;
+  try { await applyOps(null as any, await mk(), [{ op: "update_clip", id: "ov", set: { opacity: 0.5 } }]); } catch (e) { err = e; }
+  check("  the error names the track and how to unlock it", /track 'overlay' is locked/.test(err?.message) && /update_track id=overlay set=\{locked: false\}/.test(err?.hint), err && [err.message, err.hint]);
+  const [t2] = await applyOps(null as any, await mk(), [{ op: "trim_clip", id: "m1", duration: 1 }, { op: "add_clip", track: "main", asset: "v", id: "m3", duration: 5 }]);
+  const by = (t: any, id: string) => t.tracks.flatMap((tr: any) => tr.clips).find((c: any) => c.id === id);
+  check("  edits elsewhere still pass, and the locked clips' computed start and length follow them (attached title, music bed)",
+    near(by(t2, "tt").start, 1.5) && near(by(t2, "bed").duration, 8), [by(t2, "tt"), by(t2, "bed")]);
+  check("  update_track (volume, or locked false) and remove_track pass; after unlocking the clip can be edited",
+    await codeOf([{ op: "update_track", id: "overlay", set: { volume: 0.5 } }]) === "ok" && await codeOf([{ op: "update_track", id: "overlay", set: { locked: false } }, { op: "update_clip", id: "ov", set: { opacity: 0.5 } }]) === "ok"
+    && await codeOf([{ op: "remove_track", id: "overlay" }]) === "ok");
+  { // replace_timeline that keeps the track but drops its lock cannot change its clips in the same call
+    const t0 = await mk(), alt: any = structuredClone(t0), ov = alt.tracks.find((tr: any) => tr.id === "overlay");
+    delete ov.locked; ov.clips[0].opacity = 0.5;
+    let code = "ok";
+    try { await applyOps(null as any, t0, [{ op: "replace_timeline", timeline: alt }]); } catch (e: any) { code = e.code; }
+    check("  replace_timeline that drops a lock and changes that track's clips is refused (locked)", code === "locked", code);
+    const both = await codeOf([{ op: "update_track", id: "main", set: { locked: true } }, { op: "update_track", id: "main", set: { locked: false, magnetic: false } }]);
+    check("  one update_track that unlocks a magnetic track and makes it plain passes (no clip moves)", both === "ok", both);
+    const plain: any = structuredClone(t0), pm = plain.tracks.find((tr: any) => tr.id === "main");
+    pm.locked = true; pm.magnetic = false; pm.clips[0].start = 3;
+    let moved = "ok";
+    try { await applyOps(null as any, t0, [{ op: "update_track", id: "main", set: { locked: true } }, { op: "replace_timeline", timeline: plain }]); } catch (e: any) { moved = e.code; }
+    check("  replace_timeline that makes a locked magnetic track plain and moves a clip is refused (locked)", moved === "locked", moved);
+    const back = await codeOf([{ op: "update_track", id: "main", set: { locked: false, magnetic: false } }, { op: "update_clip", id: "m2", set: { start: 9 } },
+      { op: "update_track", id: "main", set: { locked: true } }, { op: "update_track", id: "main", set: { magnetic: true } }]);
+    check("  update_track that turns a locked plain track magnetic and so moves its clips is refused (locked)", back === "locked", back);
+  }
+  check("  locked must be a boolean (validate)", validate({ ...(await mk()), tracks: (await mk()).tracks.map((tr: any) => (tr.id === "overlay" ? { ...tr, locked: "yes" } : tr)) }).some((i: any) => i.level === "error" && /locked/.test(i.path + i.message)));
 }
 
 console.log("clip copies: split, duplicate, freeze, remove");

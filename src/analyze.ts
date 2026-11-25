@@ -20,6 +20,13 @@ async function decodeMono(path: string, sr: number, signal?: AbortSignal): Promi
   return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 4)));
 }
 
+/** The loudest sample per 1/rate s of a file's sound (mono mix), 0..255: the waveform the page draws on a clip. */
+export async function peaks(path: string, rate = 50, signal?: AbortSignal): Promise<number[]> {
+  const sr = 4000, y = await decodeMono(path, sr, signal), out = new Array<number>(Math.ceil((y.length * rate) / sr)).fill(0);
+  for (let i = 0; i < y.length; i++) { const k = Math.floor((i * rate) / sr), v = Math.abs(y[i]); if (v > out[k]) out[k] = v; }
+  return out.map((v) => Math.min(255, Math.round(v * 255)));
+}
+
 /** Where the samples of a 16-bit PCM WAV (what our ffmpeg calls write) open on fd lie: the data chunk's offset and byte length (bounded by the file), rate, channels, bits. */
 export function wavData(fd: number, path: string) {
   const size = fstatSync(fd).size, h = Buffer.alloc(24);
@@ -198,6 +205,31 @@ export async function loudness(path: string, signal?: AbortSignal) {
   const txt = stderr.slice(stderr.lastIndexOf("Summary:"));
   const grab = (l: string) => { const m = new RegExp(`${l}:\\s+(-?[\\d.]+|-inf)`).exec(txt); return m && m[1] !== "-inf" ? +m[1] : null; };
   return { source: path, integrated_lufs: grab("I"), range_lu: grab("LRA"), true_peak_dbfs: grab("Peak") };
+}
+
+export interface QaIssue { type: string; message: string; t?: number; end?: number; ids?: string[] }
+/** Seconds a picture must hold still to count as frozen. */
+const FREEZE_MIN = 1;
+
+/** QA of a written video render against what was asked: the streams (picture, size, frame rate, length, sound) and pictures that hold still while a
+ *  video clip plays (`moving`: timeline spans of the video clips that play footage; times are the output's plus `offset`, the range start).
+ *  One probe and one low-resolution decode of the picture. */
+export async function outputQa(path: string, want: { duration: number; width: number; height: number; fps: number; has_audio: boolean }, moving: { id: string; start: number; end: number }[], offset: number, signal?: AbortSignal) {
+  const info = await probe(path), issues: QaIssue[] = [];
+  if (!info.width) return { ok: false, issues: [{ type: "missing_video", message: `${path} has no picture stream` }] };
+  if (info.width !== want.width || info.height !== want.height) issues.push({ type: "size_mismatch", message: `the file is ${info.width}x${info.height}, the render asked for ${want.width}x${want.height}` });
+  if (Math.abs(Number(info.fps) - want.fps) > 0.01) issues.push({ type: "fps_mismatch", message: `the file plays at ${info.fps} fps, the render asked for ${want.fps}` });
+  const len = Number(info.video_duration ?? info.duration ?? 0);
+  if (Math.abs(len - want.duration) > Math.max(2 / want.fps, 0.05)) issues.push({ type: "duration_mismatch", message: `the picture lasts ${len.toFixed(3)} s, the render asked for ${want.duration.toFixed(3)} s` });
+  if (info.has_audio !== want.has_audio) issues.push({ type: want.has_audio ? "missing_audio" : "unexpected_audio", message: want.has_audio ? "the timeline has audible clips but the file has no sound" : "the file has sound but the timeline has no audible clip" });
+  const r = await run("ffmpeg", ["-v", "info", "-nostdin", ...inp(path), ...VIDEO_MAP, "-an", "-sn", "-vf", `scale=160:-2,freezedetect=n=-60dB:d=${FREEZE_MIN}`, "-f", "null", "-"], { signal, maxBuffer: 1 << 28 });
+  if (r.status !== 0) issues.push({ type: "decode_failed", message: `the file's picture does not decode to its end: ${r.stderr.trim().split("\n").slice(-2).join(" ").slice(0, 300)}` });
+  const starts = [...r.stderr.matchAll(/freeze_start: ([\d.]+)/g)].map((m) => +m[1] + offset), ends = [...r.stderr.matchAll(/freeze_end: ([\d.]+)/g)].map((m) => +m[1] + offset);
+  starts.forEach((s, i) => {
+    const e = ends[i] ?? offset + len, ids = [...new Set(moving.filter((c) => c.start < e - 1e-6 && c.end > s + 1e-6).map((c) => c.id))];
+    if (ids.length) issues.push({ type: "frozen_picture", t: +s.toFixed(3), end: +e.toFixed(3), ids, message: `the picture holds still ${s.toFixed(2)}-${e.toFixed(2)} s while ${ids.join(", ")} ${ids.length > 1 ? "play" : "plays"}: still footage, or frames the decode repeated` });
+  });
+  return { ok: !issues.length, issues };
 }
 
 // ------------------------------------------------------------------ TTS
@@ -400,6 +432,32 @@ function asrError(name: string, r: { status: number | null; stderr: string }, la
   return new EditError(line ?? (r.status ? `${name} exited ${r.status}` : `${name} wrote no output`), "asr_failed", `check the model and the language, or run ${name} by hand on the audio for its full output`);
 }
 
+/** The level (dBFS) below which the extracted 16-bit wav is taken as silence: GATE_MARGIN dB over its noise floor (the window at the 10th percentile of
+ *  the peak level of its 50 ms windows: silencedetect compares samples, not RMS), never below -35 dB (analyze_silence's default). A steady hiss or
+ *  room tone above -35 dB otherwise leaves no silence, and whisper times words into it. A floor that is a steady tone (peak under 4 dB over its RMS, a sine is 3 dB, noise 5 to 10:
+ *  hum, a held note, a test tone) is not taken as noise: the gate stays at -35 dB. */
+export function speechGate(wav: string): number {
+  const fd = openSync(wav, "r");
+  try {
+    const { offset, bytes, rate, channels } = wavData(fd, wav), win = Math.max(1, Math.round(rate * 0.05)) * channels, buf = Buffer.alloc(bytes - (bytes % 2));
+    readSync(fd, buf, 0, buf.length, offset);
+    const wins: { peak: number; rms: number }[] = [];
+    for (let i = 0; i + win * 2 <= buf.length; i += win * 2) {
+      let p = 0, sq = 0;
+      for (let j = i; j < i + win * 2; j += 2) { const v = buf.readInt16LE(j); p = Math.max(p, Math.abs(v)); sq += v * v; }
+      wins.push({ peak: p, rms: Math.sqrt(sq / win) });
+    }
+    if (!wins.length) return -35;
+    wins.sort((a, b) => a.peak - b.peak);
+    const floor = wins[Math.floor(wins.length * 0.1)];
+    if (floor.rms <= 0 || 20 * Math.log10(floor.peak / floor.rms) < 4) return -35;
+    return Math.max(-35, +(20 * Math.log10(floor.peak / 32768) + GATE_MARGIN).toFixed(1));
+  } finally { closeSync(fd); }
+}
+const GATE_MARGIN = 6;
+/** Seconds of silence put between the speech pieces joined for the engine: a word it times early lands there, not at the end of the piece before. */
+const JOIN_GAP = 0.25;
+
 /** What is kept of a silence on each side of the speech sent to the engine. */
 const LEAD_PAD = 0.1;
 
@@ -437,9 +495,9 @@ function spoken(words: { text: string; start: number; end: number }[]) {
  * Word-level transcription via whisper.cpp (`whisper-cli`) or OpenAI whisper (`whisper`) if installed.
  * range = [start, end] seconds of the media (end open: to the media's end): only that stretch is transcribed and the word times stay in media seconds, within [start, end].
  * Checks run cheapest first: the media (not_found, bad_media, no_audio), the range, the engine (missing_dependency, not_found for a model file), then the extraction.
- * The engine hears the speech only: every silence (silence()'s default threshold) is left out but LEAD_PAD on each side of the speech, the pieces are
- * joined into one stretch and the engine's times are mapped back piece by piece (a word's end stays in the piece that holds its start); whisper times
- * words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
+ * The engine hears the speech only: every silence (below speechGate's level) is left out but LEAD_PAD on each side of the speech, the pieces are
+ * joined with JOIN_GAP of silence between them and the engine's times are mapped back piece by piece (a word started in a gap starts at the next piece;
+ * a word's end stays in the piece that holds its start); whisper times words into a silence it is given. `skipped_leading` is the seconds left out at the start. A music lead-in or bed is not silence; give a range.
  * Whisper may invent text over a long music-only stretch and times words early after a music lead-in; no engine option prevents it.
  * Its sound notes are not words (spoken()): a spoken aside it puts in brackets or parentheses goes with them.
  */
@@ -459,33 +517,44 @@ export async function transcribe(path: string, language?: string, model?: string
   try {
     const raw = join(tmp, "raw.wav"), wav = join(tmp, "a.wav"); // python whisper names its output after the wav it is given
     const ss = seekArgs(from, info.kind === "video" ? info : undefined, info.fps);
-    const cut = await run("ffmpeg", ["-v", "error", "-y", ...ss.input, ...inp(path), ...ss.output, ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", raw], { signal });
+    const cut = await run("ffmpeg", ["-v", "error", "-y", ...ss.input, ...inp(path), ...ss.output, ...(to !== undefined ? ["-t", String(to - from)] : []), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", raw], { signal });
     if (cut.status !== 0) throw new EditError(`cannot extract audio from ${path}: ${cut.stderr.trim().slice(0, 300)}`, "decode_failed");
-    const { speech, duration: heard } = await silence(raw, undefined, undefined, signal);
+    const { speech, duration: heard } = await silence(raw, speechGate(raw), undefined, signal);
     const pieces = speech.map(([a, b]) => [Math.max(0, +(a - LEAD_PAD).toFixed(3)), Math.min(heard, +(b + LEAD_PAD).toFixed(3))]);
     if (!pieces.length) pieces.push([0, heard]);
+    let joinGap = 0;
     if (pieces.length > 1 || pieces[0][0] || pieces[0][1] < heard) {
       // the pieces' samples are copied into one wav in process, so nothing grows with their count; edges are whole samples, so the time map below is exact
       let src = -1, out = -1;
       try {
         src = openSync(raw, "r"); out = openSync(wav, "w");
         const { offset, bytes, rate, channels, bits } = wavData(src, raw), frame = (channels * bits) / 8, frames = Math.floor(bytes / frame), block = 65536;
-        const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]);
+        const spans = pieces.map(([a, b]) => [Math.min(frames, Math.round(a * rate)), Math.min(frames, Math.round(b * rate))]), gap = Math.round(JOIN_GAP * rate);
         spans.forEach(([a, b], k) => { pieces[k] = [a / rate, b / rate]; });
-        const size = spans.reduce((n, [a, b]) => n + (b - a) * frame, 0), h = Buffer.alloc(44);
+        joinGap = gap / rate;
+        const size = spans.reduce((n, [a, b]) => n + (b - a) * frame, 0) + (spans.length - 1) * gap * frame, h = Buffer.alloc(44);
         h.write("RIFF", 0, "ascii"); h.writeUInt32LE(36 + size, 4); h.write("WAVEfmt ", 8, "ascii"); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(channels, 22);
         h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * frame, 28); h.writeUInt16LE(frame, 32); h.writeUInt16LE(bits, 34); h.write("data", 36, "ascii"); h.writeUInt32LE(size, 40);
         writeSync(out, h);
         const buf = Buffer.allocUnsafe(block * frame);
-        for (const [a, b] of spans) for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
+        const zeros = Buffer.alloc(gap * frame);
+        spans.forEach(([a, b], k) => {
+          if (k) writeSync(out, zeros);
+          for (let f = a; f < b; f += block) writeSync(out, buf, 0, readSync(src, buf, 0, Math.min(b - f, block) * frame, offset + f * frame));
+        });
       } catch (e: any) { throw e instanceof EditError ? e : new EditError(`cannot prepare the audio extracted from ${path}: ${e.message}`, "decode_failed"); }
       finally { if (src >= 0) closeSync(src); if (out >= 0) closeSync(out); }
     } else renameSync(raw, wav);
     const skipped = +pieces[0][0].toFixed(3);
-    const starts: number[] = []; // where each piece begins in what the engine hears
-    pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a), 0);
-    const holder = (x: number) => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; } return lo; };
-    const media = (x: number) => { const k = holder(x); return x - starts[k] + pieces[k][0] + from; };
+    const starts: number[] = []; // where each piece begins in what the engine hears (JOIN_GAP of silence between pieces)
+    pieces.reduce((t, [a, b]) => (starts.push(t), t + b - a + joinGap), 0);
+    // the piece a time belongs to: one in the gap after a piece belongs to the next (whisper times a word early, into the silence before it)
+    const holder = (x: number) => {
+      let lo = 0, hi = starts.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= x) lo = m; else hi = m - 1; }
+      return lo + 1 < starts.length && x > starts[lo] + pieces[lo][1] - pieces[lo][0] ? lo + 1 : lo;
+    };
+    const media = (x: number) => { const k = holder(x); return Math.max(0, x - starts[k]) + pieces[k][0] + from; };
     const last = Math.min(to ?? Infinity, from + pieces[pieces.length - 1][1]); // no word time past the range or the last thing the engine heard
     const at = (x: number) => +Math.min(Math.max(media(x), from), last).toFixed(3); // engine time -> media time, inside the range
     const till = (x: number, start: number) => Math.min(at(x), +(pieces[holder(start)][1] + from).toFixed(3)); // a word's end stays in the piece that holds its start

@@ -9,7 +9,7 @@ export const HSL_RANGES: Record<string, string> = { reds: "r", yellows: "y", gre
 
 /** Same shape as the model.ts field tables: [allowed json types, doc]. */
 export const GRADE_FIELDS: Record<string, [string[], string]> = {
-  look: [["string"], "preset grade as a base (explicit fields override it): cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel"],
+  look: [["string"], "preset grade as a base (explicit fields override it): cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel, film stocks kodak_gold|portra|velvia|cinestill|bleach_bypass|kodachrome"],
   exposure: [["number"], "stops -3..3 (0)"],
   contrast: [["number"], "0..3 (1)"],
   saturation: [["number"], "0..3 (1; 0 = black & white)"],
@@ -38,6 +38,14 @@ export const LOOKS: Record<string, Grade> = {
   fade: { curves: { master: [[0, 0.08], [1, 0.92]] }, saturation: 0.85 },
   moody: { contrast: 1.15, exposure: -0.15, saturation: 0.75, lift: [0, 0, 0.05], gamma: [0, 0, 0.03] },
   pastel: { saturation: 0.7, curves: { master: [[0, 0.15], [1, 1]] } },
+  // film stocks, as grades of their look (not measured emulations): warm golden consumer film, soft portrait film, saturated slide film,
+  // tungsten cinema film under daylight, the silver-retaining bleach bypass, rich-red slide film
+  kodak_gold: { temperature: 0.25, lift: [0.03, 0.02, 0], gain: [0.06, 0.03, -0.06], saturation: 1.12, curves: { master: [[0, 0.04], [0.5, 0.53], [1, 0.98]] } },
+  portra: { contrast: 0.92, saturation: 0.85, gamma: [0.03, 0.01, -0.02], curves: { master: [[0, 0.05], [0.5, 0.52], [1, 0.97]] }, hsl: { greens: { hue: -8, saturation: -0.15 } } },
+  velvia: { contrast: 1.15, saturation: 1.45, lift: [-0.02, 0, 0.03], hsl: { greens: { saturation: 0.2 }, blues: { saturation: 0.2 } } },
+  cinestill: { temperature: -0.35, contrast: 1.08, lift: [-0.04, 0.02, 0.1], gain: [0.02, 0.01, 0], hsl: { reds: { saturation: 0.15 } } },
+  bleach_bypass: { contrast: 1.35, saturation: 0.45, curves: { master: [[0, 0], [0.25, 0.2], [0.75, 0.82], [1, 1]] } },
+  kodachrome: { contrast: 1.18, saturation: 1.2, gamma: [0.02, 0, -0.02], hsl: { reds: { saturation: 0.2 }, blues: { saturation: 0.1, lightness: -0.05 } } },
 };
 
 const RANGES: Record<string, [number, number]> = {

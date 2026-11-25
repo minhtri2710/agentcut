@@ -47,6 +47,7 @@ export const MOTIONS = ["ken_burns", "ken_burns_out", "pan_left", "pan_right", "
   "shake", "zoom_slow", "sway"];
 export const EASINGS = ["linear", "ease_in", "ease_out", "ease_in_out", "back_out", "bounce_out", "elastic_out", "hold"];
 export const FITS = ["cover", "contain", "fill", "none", "blur"];
+export const STEMS = ["voice", "music"];
 export const BLENDS = ["normal", "multiply", "screen", "add", "overlay", "darken", "lighten", "color_dodge", "soft_light", "difference"];
 export const POSITIONS = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
 export const CAPTION_STYLES = ["karaoke", "word", "reveal", "line"];
@@ -223,9 +224,9 @@ export function matrixFor(colorSpace: string, w: number, h: number, convert: str
   return Math.min(w, h) >= 720 || Math.max(w, h) >= 1280 ? "bt709" : undefined;
 }
 /** A model file AgentCut fetches and verifies itself: where it comes from, and the sha256 and byte size the fetched file must have. */
-export interface ModelPin { name: string; url: string; sha256: string; bytes: number }
+export interface ModelPin { name: string; url: string; sha256: string; bytes: number; licence?: string }
 const rembgAsset = (name: string, sha256: string, bytes: number): ModelPin => ({ name, url: `https://github.com/danielgatis/rembg/releases/download/v0.0.0/${name}.onnx`, sha256, bytes });
-/** The matte models, one source for the names, the sizes and the checks: rembg 2.0.86's release assets, each fetched once and matched to
+/** The matte models, one source for the names, the sizes and the checks: rembg 2.0.86's release assets (and RVM, last), each fetched once and matched to
  *  that release's md5 pin (u2netp 8e83ca70e441ab06c318d82300c84806, u2net 60024c5c889badc19c04ad937298a77b, u2net_human_seg c09ddc2e0104f800e3e1bb4652583d1f,
  *  isnet-general-use fc16ebd8b0c10d971d3513d564d01e29, silueta 55e59e0d8062d2f5d013f4725ee84782); sha256 and bytes are what that fetch measured.
  *  `downloadModel` verifies every one, and the vision helper hashes the file again where it loads it. */
@@ -235,6 +236,8 @@ export const MATTE_PINS: Record<string, ModelPin> = Object.fromEntries([
   rembgAsset("u2net_human_seg", "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c", 175997641),
   rembgAsset("isnet-general-use", "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a", 178648008),
   rembgAsset("silueta", "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb", 44173029),
+  // Robust Video Matting (people in video): recurrent, so the matte stays steady from frame to frame; its weights are GPL-3.0, fetched on request and never bundled
+  { name: "rvm_mobilenetv3", url: "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx", sha256: "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828", bytes: 14975696, licence: "GPL-3.0 (weights; downloaded on request, never bundled)" },
 ].map((p) => [p.name, p]));
 export const MATTE_MODELS = Object.keys(MATTE_PINS);
 /** Download size of each matte model in whole MB, rounded. */
@@ -329,6 +332,7 @@ export const MEDIA_FIELDS: F = {
   speed: [T("number"), `playback speed ${SPEED_MIN}..${SPEED_MAX} (keyframes.speed for ramps on video; not together with speed != 1); ${SPEED_LENGTH}`],
   volume: ranged("volume", "linear gain"), muted: [T("boolean"), "drop audio"],
   fade_in: ranged("fade_in", "audio fade-in s"), fade_out: ranged("fade_out", "audio fade-out s"),
+  stem: [T("string"), `${STEMS.join("|")}: play only that part of the sound, separated by AI (Spleeter 2 stems, cached; needs uv; prepare computes it, the two models, 39 MB each, are downloaded only with allow_download; see op separate_audio)`],
   fit: [T("string"), FITS.join("|") + " (blur = contain over a blurred cover background, CapCut style)"],
   size: [T("array"), "[w, h] box px or % (default canvas)"],
   focus: [T("array"), "[fx, fy] the source point (0..1 of the picture after crop) that cover keeps at the centre of the view, clamped at the picture edges; [0.5, 0.5] = centre (reframe 16:9 -> 9:16); keyframes.focus_x/focus_y pan it (op auto_reframe)"],
@@ -406,7 +410,7 @@ export function fieldsFor(t: string): F {
     for (const k of ["fit", "size", "focus", "crop", "filters", "color", "freeze", "remove_background"]) delete f[k];
     f.keyframes = [T("object"), "{volume: [[t, gain]]}"];
   }
-  if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "loop", "reverse", "freeze"]) delete f[k];
+  if (t === "image") for (const k of ["in", "speed", "volume", "muted", "fade_in", "fade_out", "stem", "loop", "reverse", "freeze"]) delete f[k];
   if (t === "text" || t === "captions") Object.assign(f, TEXT_FIELDS);
   if (t === "captions") Object.assign(f, CAPTION_FIELDS);
   if (t === "shape") Object.assign(f, SHAPE_FIELDS);
@@ -423,6 +427,7 @@ export const TRACK_FIELDS: F = {
   role: [T("string"), "dialogue|voice|music|sfx|titles|other (ducking/mixing)"],
   duck: [T("number"), "dB to lower this track while voice/dialogue plays (e.g. -20)"],
   volume: ranged("volume", "track gain"), muted: [T("boolean"), "mute"], hidden: [T("boolean"), "do not draw"],
+  locked: [T("boolean"), "no op may change, add or remove its clips (code locked) until update_track sets it false; computed starts and lengths still follow other edits"],
   clips: [T("array"), "clips (later ones draw on top within the track)"],
   ...Object.fromEntries(Object.entries(AUDIO_FX_FIELDS).map(([k, [t, d]]) => [k, [t, `${d} (${(PER_CLIP_KEYS as readonly string[]).includes(k) ? "applied to each clip without its own" : "applied to the track mix"})`]])),
 };
@@ -1053,6 +1058,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
         checkFields(c.remove_background, { model: [T("string"), MATTE_MODELS.join("|")] }, `${p}.remove_background`, issues, "remove_background");
         checkName(c.remove_background.model, MATTE_MODELS, `${p}.remove_background.model`, issues, "matte model");
       }
+      if (c.type === "video" || c.type === "audio") checkName(c.stem, STEMS, `${p}.stem`, issues, "stem");
       if ((c.type === "video" || c.type === "image") && c.color && typeof c.color === "object") {
         checkFields(c.color, GRADE_FIELDS, `${p}.color`, issues, "color grade");
         if ("look" in c.color) checkName(c.color.look, Object.keys(LOOKS), `${p}.color.look`, issues, "look");
@@ -1166,7 +1172,7 @@ export function schemaDoc() {
     clip_types: Object.fromEntries(CLIP_TYPES.map((t) => [t, f(Object.fromEntries(Object.entries(fieldsFor(t)).filter(([k]) => !(k in COMMON_FIELDS))))])),
     common_clip_fields: f(COMMON_FIELDS),
     units: { time: "seconds (2.5, '2.5s', '1500ms', '00:02.5')", length: "px or '10%' of canvas", color: "#RRGGBB / #RRGGBBAA / rgba() / basic names" },
-    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, color_grade: f(GRADE_FIELDS), looks: Object.keys(LOOKS), presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
+    enums: { enter_exit: ENTER_EXIT, transitions: TRANSITIONS, motions: MOTIONS, easings: EASINGS, fit: FITS, blend: BLENDS, stem: STEMS, position: POSITIONS, caption_styles: CAPTION_STYLES, shapes: SHAPES, masks: MASKS, effects: EFFECTS, filters: FILTERS, color_grade: f(GRADE_FIELDS), looks: Object.keys(LOOKS), presets: Object.fromEntries(Object.entries(PRESETS).map(([k, [w, h]]) => [k, `${w}x${h}`])) },
   };
 }
 

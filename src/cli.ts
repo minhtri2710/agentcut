@@ -23,8 +23,8 @@ Edit:        apply FILE|- [--ops JSON] [--dry-run] · op NAME key=value... · ad
 Look:        frame T [-o out.jpg|.png] [--scale 0.5] [--guides] · sheet [--every 1|--times a,b|--count 12] [--guides] · scopes T [-o out.jpg] (waveform/vectorscope/histogram + stats)
 Check:       review [--beats music|a,b,..] [--min-shot 0.4] [--max-shot 6] [--cps 15] [--no-black] [--quiet]
              audio [--source F] [--spectrogram] [--start S --end S] [-o a.png] · motion [--start S --end S] [--frames 10] [-o m.jpg]
-Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / vision tracks that remove_background, auto_reframe, track_to need;
-             preview and video render fail with code not_prepared until it ran)
+Prepare:     prepare [--status] [--quiet] [--allow-download]  (compute mattes / vision tracks / stems that remove_background, auto_reframe, track_to,
+             separate_audio need; preview and render fail with code not_prepared until it ran, audio-only renders only for missing stems)
              cache [info] · cache prune [--max-mb N] [--older-than 7d]  (.agentcut/cache + previews/; unreferenced files first)
 Export:      render [-o out.mp4|.mov|.webm|.gif|.mp3|.wav|.png|.webp] [--start S --end S] [--draft] [--fast] [--quality draft|standard|high]
                     [--codec auto|h264|hevc|prores|prores_4444|vp9] [--alpha] [--subtitles] [--workers N] [--no-sheet]
@@ -35,7 +35,7 @@ Analyze:     probe F · beats F [--markers] [--full] (--full: every beat, else t
              (subject: a face found by YuNet, with a confidence score, else the most salient region; its 0.23 MB model is fetched only with --allow-download;
              cached in the project when one is found, so auto_reframe on a clip covering the same range at the same fps reuses it)
 Voice/fonts: tts "text" -o out.wav [--voice Linh] · voices [--lang vi] · fonts [query]
-Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits)
+Watch:       ui [DIR] [--port 4810]  (local web UI on 127.0.0.1: timeline, viewer, inspector, live sync with agent edits; a folder with no project: a dashboard of the projects in it)
 Reference:   guide · schema · ops · capabilities · mcp (start the MCP server on stdio)
 Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|idea title="..." [details=... suggestion=... area=... severity=...]
              feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
@@ -218,8 +218,11 @@ export async function main(argv = process.argv.slice(2)) {
       case "undo": res = api.undo(P, num(pos[0], "steps") ?? 1, based(true), who()); break; // its revision is checked under the project lock: a project.json that cannot be read needs none
       case "redo": res = api.redo(P, num(pos[0], "steps") ?? 1, based(true), who()); break;
       case "ui": {
-        const { startUi } = await import("./ui.ts");
-        const { server: _, ...r } = await startUi(pos[0] ?? P, { port: num(f.port, "--port") });
+        const { startDashboard, startUi } = await import("./ui.ts");
+        const port = num(f.port, "--port"), dir = pos[0] ?? P;
+        // a folder with no project (in it or above it) gets the dashboard of the projects inside it; a project named by -p or $AGENTCUT_PROJECT that is not one stays no_project
+        const browse = pos[0] !== undefined || (P === undefined && !process.env.AGENTCUT_PROJECT);
+        const { server: _, ...r } = await startUi(dir, { port }).catch((e) => { if (e?.code === "no_project" && browse) return startDashboard(pos[0] ?? process.cwd(), { port }); throw e; });
         process.stdout.write(JSON.stringify({ ok: true, ...r }) + "\n"); // server keeps running; Ctrl-C to stop
         return;
       }

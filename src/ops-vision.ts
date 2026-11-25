@@ -1,12 +1,13 @@
 // AI vision ops: auto_reframe (subject-following focus keyframes), remove_background (cached alpha matte),
-// track_to (an overlay/text follows a tracked box or the subject). The heavy lifting runs in vision.ts (uv + Python), and
-// never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background just
-// sets its field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
+// track_to (an overlay/text follows a tracked box or the subject), and separate_audio (cached voice/music stems). The heavy lifting runs in vision.ts (uv + Python), and
+// never inside apply_ops: an op whose analysis is not cached records its request in clip.pending (remove_background and
+// separate_audio just set their field), and `prepare` (prepare.ts) computes the missing assets and re-runs the pending ops.
 import { coverOffset, fitBox, preRoll } from "./media.ts";
-import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, MATTE_MODELS, MATTE_SIZES, missingFacts, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
+import { allClips, type Clip, clipDur, clipStart, type Dict, EditError, findClip, hasSound, linkedAudio, MATTE_MODELS, MATTE_SIZES, missingFacts, parseLen, parseTime, resolve, round6, type Timeline, type VideoFacts } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import type { Project } from "./project.ts";
 import * as V from "./vision.ts";
+import { audioSources } from "./audio.ts";
 import { kfValue } from "./anim.ts";
 
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
@@ -64,6 +65,40 @@ function canvasToSrc(tl: Timeline, c: Clip, L: ReturnType<typeof layout>, t: num
   return [(X - ox) / (x1 - ox), (Y - oy) / (y1 - oy)];
 }
 
+export type FaceBox = [number, number, number, number];
+/** The largest face (canvas px [x, y, w, h]) of a picture clip at timeline time T, read from a subject analysis that is already cached
+ *  (auto_reframe's, track_to's or analyze_subject's of the whole file); never computes. `step` is the analysis sample spacing in seconds.
+ *  `unchecked` says why there is nothing to read: no cached analysis, or a layout the vision ops cannot map. Paths must be absolute. */
+export function cachedFaces(root: string, tl: Timeline, c: Clip): { at: (T: number) => FaceBox | null; step: number } | { unchecked: string } {
+  let d: V.Derived | undefined, a: VAsset;
+  try {
+    a = asset(tl, c);
+    plainTarget(c);
+    // the jobs auto_reframe (6/s) and track_to without box (10/s) run on the clip's range, and analyze_subject's of the whole file
+    d = (a.kind === "image" ? [subjectJob(null, tl, c, 0, root)] : [subjectJob(null, tl, c, 6, root), subjectJob(null, tl, c, 10, root),
+      V.subjectJob(a.path, { start: 0, duration: a.duration, fps: 6, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root })]).find(V.isReady);
+  } catch (e) { if (e instanceof EditError) return { unchecked: e.message }; throw e; }
+  if (!d) return { unchecked: `no cached subject analysis of ${c.id} (run analyze_subject or auto_reframe)` };
+  let raw: V.Sample[];
+  try { raw = V.subjectSamples(d); } // an analysis that decoded no frames, or a damaged file, leaves the clip unchecked instead of failing the review
+  catch (e) { if (e instanceof EditError || e instanceof SyntaxError) return { unchecked: `the cached subject analysis of ${c.id} cannot be read: ${e.message}` }; throw e; }
+  const L = layout(tl, c), s0 = clipStart(c), { in0, speed } = srcRange(c), fps = Number(d.job.fps) || 0;
+  const samples = raw.map((s) => ({ T: s0 + (s.t - in0) / speed, s }));
+  const box = (T: number, s: V.Sample): FaceBox => {
+    const [x0, y0] = srcToCanvas(tl, c, L, T - s0, s.x! - s.w! / 2, s.y! - s.h! / 2), [x1, y1] = srcToCanvas(tl, c, L, T - s0, s.x! + s.w! / 2, s.y! + s.h! / 2);
+    return [x0, y0, x1 - x0, y1 - y0];
+  };
+  const step = fps ? 1 / fps : 0.5;
+  return {
+    step,
+    at: (T) => {
+      // a still has one sample for all of the clip; a video the nearest sample, at most one sample step away
+      const q = a.kind === "image" ? samples[0] : samples.reduce((b, x) => (Math.abs(x.T - T) < Math.abs(b.T - T) ? x : b), samples[0]);
+      return q && q.s.kind === "face" && (a.kind === "image" || Math.abs(q.T - T) <= step) ? box(T, q.s) : null;
+    },
+  };
+}
+
 const root = (p: Project | null) => p?.root;
 const absPath = (p: Project | null, path: string) => (p ? p.abs(path) : path);
 const num = (v: unknown, d: number, name: string, lo = 0) => {
@@ -86,10 +121,10 @@ function preOf(a: VAsset) { // how far before its in-point a read of this video 
   return preRoll(a as Dict as VideoFacts, a.fps);
 }
 /** Subject analysis job for a clip's source range. */
-function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number) {
+function subjectJob(p: Project | null, tl: Timeline, c: Clip, fps: number, dir = root(p)) {
   const a = asset(tl, c), { in0, len } = srcRange(c);
-  return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: root(p) }
-    : { start: in0, duration: len, fps, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root: root(p) });
+  return V.subjectJob(absPath(p, a.path), a.kind === "image" ? { still: true, srcW: a.width, srcH: a.height, root: dir }
+    : { start: in0, duration: len, fps, container_start: a.container_start, pre: preOf(a), video_start: a.video_start, srcW: a.width, srcH: a.height, root: dir });
 }
 /** Cached subject samples as [clip-local t, source fraction x, y | undefined]. `within` = [from, to] clip-local seconds keeps only the samples
  *  in that span; the counts and the summary describe exactly the samples kept. */
@@ -176,7 +211,7 @@ export function registerVisionOps(h: OpHelpers) {
     });
 
   h.op("remove_background", `AI background removal on a video/image clip (sets field remove_background; fast). The alpha matte is computed by prepare into the project cache (.agentcut/cache, keyed by file hash + model) and composited through the normal alpha path; preview/render fail with code not_prepared until it exists. Needs uv (downloads rembg + onnxruntime on first use). A model is never downloaded without consent: prepare fails with code model_not_cached until the model file is in <user cache>/models (~/.cache/agentcut/models, or AGENTCUT_CACHE) or prepare is run with allow_download=true (CLI: prepare --allow-download); sizes: ${MATTE_SIZES}. AgentCut runs onnxruntime children (the vision helper and piper) with ORT_DISABLE_TELEMETRY=1 (onnxruntime may otherwise send usage telemetry). off=true removes it.`,
-    { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people)", off: "true to turn it off" },
+    { id: "video/image clip", model: MATTE_MODELS.join("|") + " (u2netp: fast; u2net_human_seg: people; rvm_mobilenetv3: people in video, steady from frame to frame, weights GPL-3.0)", off: "true to turn it off" },
     (p, tl, a) => {
       const c = get(tl, a.id);
       if (c.type !== "video" && c.type !== "image") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or image clip`, "bad_type", "pass the id of a video/image clip (see the project info)");
@@ -184,6 +219,21 @@ export function registerVisionOps(h: OpHelpers) {
       c.remove_background = a.model ? { model: a.model } : true;
       const m = matteFor(p?.root, tl, c, absPath(p, tl.assets[c.asset].path));
       return V.isReady(m) ? { id: c.id, remove_background: c.remove_background, matte: m.file } : { remove_background: c.remove_background, ...pendingResult(c.id) };
+    });
+
+  h.op("separate_audio", "Play only the voice or only the music of a clip's sound (sets field stem; fast): AI source separation (Spleeter 2 stems) computed by prepare into the project cache (.agentcut/cache, keyed by file hash; both stems at once, 44.1 kHz) and mixed in place of the source sound; the two stems add up to the original. Preview, render and audio_check fail with code not_prepared until it exists. Needs uv (downloads onnxruntime on first use); the two models (39 MB each) are downloaded only by prepare with allow_download=true. For both parts: duplicate_clip the audio clip (or detach_audio the video first), then stem voice on one and music on the other, and lower or duck the music. A video with detached audio sets it on its audio clips. off=true removes it.",
+    { id: "video/audio clip", stem: "voice|music", off: "true to turn it off" },
+    (p, tl, a) => {
+      const c = get(tl, a.id);
+      if (c.type !== "video" && c.type !== "audio") throw new EditError(`'${c.id}' is a ${c.type} clip; needs a video or audio clip`, "bad_type", "pass the id of a video/audio clip with sound");
+      const targets = c.type === "video" && linkedAudio(tl, c).length ? linkedAudio(tl, c).map(([, x]) => x) : [c];
+      if (a.off) { for (const x of targets) delete x.stem; return { ids: targets.map((x) => x.id), stem: false }; }
+      if (a.stem !== "voice" && a.stem !== "music") throw new EditError(`stem must be voice or music, got ${JSON.stringify(a.stem)}`, "bad_value", "stem=voice keeps the speech, stem=music the rest");
+      const at = tl.assets[c.asset];
+      if (!at?.has_audio && at?.kind !== "audio") throw new EditError(`'${c.id}' (asset '${c.asset}') has no audio stream`, "no_audio", "pick a clip whose source has sound");
+      for (const x of targets) x.stem = a.stem;
+      const d = V.stemsJob(absPath(p, at.path), { duration: at.duration, root: p?.root });
+      return V.isReady(d) ? { ids: targets.map((x) => x.id), stem: a.stem, file: V.stemFile(d, a.stem) } : { ids: targets.map((x) => x.id), stem: a.stem, ...pendingResult(c.id) };
     });
 
   h.op("track_to", "Make an overlay/text clip follow an object in a video clip (motion tracking): box [x, y, w, h] in canvas px (or %) around the object at timeline time 'at' is tracked (OpenCV CSRT) through the target's source; writes keyframes x/y on the clip and attaches it to the target. Without box it follows the subject (a YuNet face with a confidence score, else the most salient region) and the result carries subject/warnings as auto_reframe does; that needs the face model, downloaded only by prepare with allow_download=true. Needs uv (downloads opencv on first use). Cached; when not cached yet the request is recorded (pending=true) and prepare tracks and writes the keyframes.",
@@ -250,6 +300,33 @@ export function mattesFor(tl: Timeline, root: string) {
     .map((c) => ({ clip: c, job: matteFor(root, tl, c, tl.assets[c.asset].path) }));
 }
 
+/** Stem jobs of every enabled clip with a stem whose sound is heard (compounds included) of an absolutized timeline. */
+export function stemsFor(tl: Timeline, root: string) {
+  return [...allClips(tl.tracks)].filter((c) => c.stem && c.enabled !== false && hasSound(c, tl.assets))
+    .map((c) => ({ clip: c, job: V.stemsJob(tl.assets[c.asset].path, { duration: tl.assets[c.asset].duration, root }) }));
+}
+
+/** Sound prep on an absolutized copy: point every clip with a stem at its stem file (`_stem`, never saved; any other `_stem` is dropped). Returns the ids still missing one
+ *  that the mix plays (a muted track or compound, or a gain of 0, needs none). */
+function linkStems(tl: Timeline, root: string) {
+  for (const c of allClips(tl.tracks)) delete c._stem; // this is the only source of `_stem`
+  const jobs = stemsFor(tl, root);
+  const heard = new Set(jobs.length ? audioSources(resolve(structuredClone(tl))).map((s) => s.clip.id) : []);
+  return jobs.filter(({ clip, job }) => {
+    if (!V.isReady(job)) return heard.has(clip.id);
+    clip._stem = V.stemFile(job, clip.stem);
+    return false;
+  }).map(({ clip }) => clip.id);
+}
+const stemsMissing = (ids: string[]) => ids.map((id) => `separate_audio ${id} (stems missing)`);
+
+/** For outputs that mix sound only (audio renders, audio_check): stems linked, not_prepared while one is missing; mattes and vision requests are not needed. */
+export function attachStems(tl: Timeline, root: string) {
+  const stems = linkStems(tl, root);
+  if (stems.length) throw new EditError(`not prepared: ${stemsMissing(stems).join(", ")}`, "not_prepared", PREPARE_HINT, undefined, { mattes: [], stems, pending: [] });
+  return tl;
+}
+
 /** Render prep on an absolutized copy: point every remove_background clip at its matte (`_matte`, never saved; any other `_matte` is dropped). Fails fast
  *  with not_prepared while a matte is missing or a vision request is pending, instead of computing inside a preview. */
 export function attachPrepared(tl: Timeline, root: string) {
@@ -259,9 +336,10 @@ export function attachPrepared(tl: Timeline, root: string) {
     clip._matte = { path: job.file, w: job.w, h: job.h };
     return false;
   }).map(({ clip }) => clip.id);
+  const stems = linkStems(tl, root);
   const pending = [...allClips(tl.tracks)].flatMap((c) => Object.keys(c.pending ?? {}).map((op) => `${op} ${c.id}`));
-  if (mattes.length || pending.length)
-    throw new EditError(`not prepared: ${[...mattes.map((id) => `remove_background ${id} (matte missing)`), ...pending.map((x) => `${x} (pending)`)].join(", ")}`,
-      "not_prepared", PREPARE_HINT, undefined, { mattes, pending });
+  if (mattes.length || stems.length || pending.length)
+    throw new EditError(`not prepared: ${[...mattes.map((id) => `remove_background ${id} (matte missing)`), ...stemsMissing(stems), ...pending.map((x) => `${x} (pending)`)].join(", ")}`,
+      "not_prepared", PREPARE_HINT, undefined, { mattes, stems, pending });
   return tl;
 }

@@ -62,6 +62,13 @@ else if (job.cmd === "subject") // subject walks 0.1 -> 0.9 with jitter, one out
     : { t, x: i === 6 ? 0.02 : 0.1 + (0.8 * i) / (n - 1) + (i % 2 ? 0.02 : -0.02), y: 0.5, kind: "saliency", score: 0.5 }) };
 else if (job.cmd === "track") // box centre moves linearly from x 0.25 to 0.75 over the range, y fixed 0.5
   out = { samples: ts.map((t, i) => ({ t, x: 0.25 + (0.5 * i) / (n - 1), y: 0.5, w: job.box[2], h: job.box[3], ok: i !== 2 })) };
+else if (job.cmd === "separate") { // stems: voice is silence, music is the source, so a mix shows which stem it read
+  for (const [out, gain] of [[job.out, 0], [job.out_music, 1]]) {
+    const r = spawnSync("ffmpeg", ["-v", "error", "-y", "-i", job.path, "-map", "0:a:0", "-af", "aresample=44100,volume=" + gain, "-ac", "2", "-c:a", "flac", "-f", "flac", out], { encoding: "utf8" });
+    if (r.status) { process.stderr.write(r.stderr); process.exit(1); }
+  }
+  out = { samples: 1 };
+}
 else { // matte: source with its LEFT half transparent
   const vf = "scale=" + job.w + ":" + job.h + ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,W/2),0,255)'";
   const enc = job.kind === "image" ? ["-frames:v", "1", "-f", "image2", "-c:v", "png"] : ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-f", "mov"];
@@ -77,7 +84,7 @@ process.env.AGENTCUT_UV = fake;
 const modelFile = (name: string) => join(process.env.AGENTCUT_CACHE!, "models", name, `${name}.onnx`);
 const seedModel = (name: string) => { mkdirSync(join(process.env.AGENTCUT_CACHE!, "models", name), { recursive: true }); writeFileSync(modelFile(name), ""); };
 const FACE = "face_detection_yunet_2023mar";
-for (const name of ["u2netp", "u2net", FACE]) seedModel(name); // the models the suite's mattes and subject analyses use are cached
+for (const name of ["u2netp", "u2net", FACE, ...V.STEM_MODELS.map((x) => x.name)]) seedModel(name); // the models the suite's mattes and subject analyses use are cached
 /** the face model in another user cache dir (an empty file: the fake uv never reads it) */
 const seedFaceIn = (cache: string) => { mkdirSync(join(cache, "models", FACE), { recursive: true }); writeFileSync(join(cache, "models", FACE, `${FACE}.onnx`), ""); };
 const nCalls =(cmd?: string) => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((l) => l && (!cmd || l === cmd)).length : 0);
@@ -425,6 +432,61 @@ await api.prepare(EP);
 const eDone: any = await api.exportTimeline(EP, { out: join(tmp, "prepared.fcpxml") });
 check("export-pending: nothing pending after prepare", !JSON.stringify(eDone.skipped).includes("pending"), eDone.skipped);
 
+// ---------------------------------------------------------------- separate_audio
+console.log("separate_audio");
+{
+  ff("-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30:d=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(m, "av.mp4"));
+  const S = join(tmp, "stems");
+  api.create(S, { preset: "reels" });
+  await apply(S, [{ op: "add_clip", track: "music", src: join(m, "tone.wav"), duration: 2 }, { op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 2 }]);
+  const peak = async (out: string) => { const r: any = await api.render(S, { out: join(tmp, out) }); return { r, max: Math.max(...pcmAbs(r.output)) }; };
+  const pcmAbs = (f: string) => { const b = spawnSync("ffmpeg", ["-v", "error", "-i", f, "-f", "f32le", "-"]).stdout; return [...new Float32Array(b.buffer, b.byteOffset, b.length / 4)].map(Math.abs); };
+  const sp = (await apply(S, [{ op: "separate_audio", id: "aud1", stem: "voice" }]))[0];
+  check("separate_audio sets the field and records nothing else (pending, no helper run)", sp.pending === true && (await clip(S, "aud1")).stem === "voice" && nCalls("separate") === 0, sp);
+  const np: any = await api.render(S, { out: join(tmp, "stem0.wav") }).catch((e) => e);
+  check("audio-only render before prepare -> not_prepared naming the stems, no file", np.code === "not_prepared" && np.details?.stems?.[0] === "aud1" && !existsSync(join(tmp, "stem0.wav")), np);
+  await apply(S, [{ op: "update_track", id: "music", set: { muted: true } }]);
+  const mutedR: any = await api.render(S, { out: join(tmp, "stem-muted.wav") }).catch((e) => e);
+  check("a stem the mix does not play (its track muted) does not block the render", mutedR.audio_only === true, mutedR.code ?? mutedR);
+  await apply(S, [{ op: "update_track", id: "music", set: { muted: false } }]);
+  const ac: any = await api.audioCheck(S).catch((e) => e);
+  check("audio_check before prepare -> not_prepared", ac.code === "not_prepared" && ac.details?.stems?.[0] === "aud1", ac);
+  const ps: any = api.prepareStatus(S);
+  check("prepare status lists the stems job", ps.ready === false && ps.missing[0]?.kind === "stems" && ps.models_to_download.length === 0, ps);
+  const keep = process.env.AGENTCUT_CACHE;
+  process.env.AGENTCUT_CACHE = join(tmp, "no-models");
+  try {
+    const nm: any = api.prepareStatus(S), gate: any = await api.prepare(S).catch((e) => e);
+    check("with no models cached: status lists both stem models (39 MB each) and prepare refuses with model_not_cached, running nothing",
+      nm.models_to_download.map((x: any) => `${x.model}:${x.approx_mb}`).join() === "spleeter_2stems_vocals:39.32,spleeter_2stems_accompaniment:39.32" && gate.code === "model_not_cached" && nCalls("separate") === 0, { nm, gate: gate.code });
+  } finally { process.env.AGENTCUT_CACHE = keep; }
+  const pr: any = await api.prepare(S);
+  const files = readdirSync(join(S, ".agentcut", "cache")).filter((f) => f.startsWith("stems-")).sort();
+  check("prepare writes both stems into the project cache in one helper run", pr.computed[0]?.kind === "stems" && nCalls("separate") === 1 && files.length === 2 && files[0].endsWith(".music.flac") && files[1].endsWith(".voice.flac"), { pr, files });
+  const v = await peak("stem-voice.wav");
+  check("the mix plays the voice stem (the fake's voice is silence)", v.r.audio_only === true && v.max < 1e-4, v.max);
+  await apply(S, [{ op: "separate_audio", id: "aud1", stem: "music" }]);
+  const mu = await peak("stem-music.wav");
+  check("stem music plays the music stem, from the same cached run", mu.max > 0.1 && nCalls("separate") === 1, mu.max);
+  api.cache.prune(S);
+  check("cache prune keeps both stems of a clip that uses one", readdirSync(join(S, ".agentcut", "cache")).filter((f) => f.startsWith("stems-")).length === 2);
+  await fails(S, [{ op: "separate_audio", id: "aud1", stem: "vocals" }], "bad_value", "separate_audio: an unknown stem -> bad_value");
+  await fails(S, [{ op: "separate_audio", id: "vid1", stem: "voice" }], "no_audio", "separate_audio on a video with no sound -> no_audio");
+  await fails(S, [{ op: "update_clip", id: "aud1", set: { stem: "vocals" } }], "validation_failed", "update_clip stem: an unknown stem is a validation error");
+  const off = (await apply(S, [{ op: "separate_audio", id: "aud1", off: true }]))[0];
+  check("off=true removes the field", off.stem === false && (await clip(S, "aud1")).stem === undefined, off);
+  // a video's stem moves with its sound: detach_audio carries it to the audio clip, separate_audio on the video then sets the audio clip, attach_audio brings it back
+  await apply(S, [{ op: "add_clip", track: "main", src: join(m, "av.mp4"), duration: 2 }, { op: "update_clip", id: "vid2", set: { stem: "voice" } }, { op: "detach_audio", id: "vid2" }]);
+  const det = (await api.info(S, "json")).timeline.tracks.flatMap((t: any) => t.clips).find((c: any) => c.type === "audio" && c.attach_to === "vid2");
+  check("detach_audio moves stem to the audio clip", det?.stem === "voice" && (await clip(S, "vid2")).stem === undefined, det);
+  const via = (await apply(S, [{ op: "separate_audio", id: "vid2", stem: "music" }]))[0];
+  check("separate_audio on a video with detached audio sets its audio clip", via.ids?.[0] === det.id && (await clip(S, det.id)).stem === "music" && (await clip(S, "vid2")).stem === undefined, via);
+  await apply(S, [{ op: "attach_audio", id: "vid2" }]);
+  check("attach_audio brings stem back to the video", (await clip(S, "vid2")).stem === "music");
+  const ex: any = await api.exportTimeline(S, { out: join(tmp, "stems.fcpxml") });
+  check("interchange export reports the stem as skipped", JSON.stringify(ex.skipped).includes("voice/music separation"), ex.skipped);
+}
+
 // ---------------------------------------------------------------- helper location
 // A recording uv: logs where the helper script lives (and its hash), the spawn's cwd and argv, then hands over to the fake above.
 console.log("the vision helper always runs from a private per-user dir");
@@ -720,8 +782,9 @@ process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.s
   process.env.AGENTCUT_UV = gateUv;
   try {
     const caps = () => (api.capabilities() as any).matte_models as { name: string; approx_mb: number; cached: boolean }[];
-    check("capabilities lists the 5 matte models with their size in whole MB and cached flags", caps()?.map((x) => `${x.name}:${x.approx_mb}`).join() === "u2netp:5,u2net:176,u2net_human_seg:176,isnet-general-use:179,silueta:44"
-      && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false, caps());
+    check("capabilities lists the 6 matte models with their size in whole MB and cached flags, and RVM's licence", caps()?.map((x) => `${x.name}:${x.approx_mb}`).join() === "u2netp:5,u2net:176,u2net_human_seg:176,isnet-general-use:179,silueta:44,rvm_mobilenetv3:15"
+      && caps().find((x) => x.name === "u2netp")?.cached === true && caps().find((x) => x.name === MODEL)?.cached === false
+      && caps().filter((x: any) => x.licence).map((x: any) => `${x.name}:${x.licence}`).join() === "rvm_mobilenetv3:GPL-3.0 (weights; downloaded on request, never bundled)", caps());
     const st: any = api.prepareStatus(G);
     check("prepare status lists the model that would be downloaded", st.models_to_download?.length === 1 && st.models_to_download[0].model === MODEL && st.models_to_download[0].approx_mb === 176
       && st.models_to_download[0].path === modelFile(MODEL), st);
@@ -1184,7 +1247,7 @@ console.log("the face model: descriptor, job, gate, download");
     const caps = (cache: string) => inCache(cache, () => (api.capabilities() as any));
     const cOff = await caps(fresh("caps-off")), cOn = await caps(G);
     check("capabilities: engines.vision.face_model is not cached in an empty cache", JSON.stringify(cOff.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: false }), cOff.engines.vision);
-    check("capabilities: engines.vision.face_model is cached once the file is there, and matte_models stays", JSON.stringify(cOn.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: true }) && cOn.matte_models.length === 5 && cOn.engines.vision.matte_models === "see matte_models", cOn.engines.vision);
+    check("capabilities: engines.vision.face_model is cached once the file is there, and matte_models stays", JSON.stringify(cOn.engines.vision.face_model) === JSON.stringify({ name: FACE, approx_mb: 0.23, cached: true }) && cOn.matte_models.length === 6 && cOn.engines.vision.matte_models === "see matte_models", cOn.engines.vision);
 
     // 4. downloadModel against a local server (never the product URL)
     const good = Buffer.from("not a real model: some bytes for a local download test"), other = Buffer.from(good.toString().replace("some", "SOME"));
@@ -1326,9 +1389,9 @@ process.stderr.write((process.env.FAKE_PY_ERR ?? "boom") + "\\n"); process.exit(
       const u2netp = jobOf((await go(jobs.matte(), false)).run), face = jobOf((await go(jobs.subject(), false)).run);
       check("the matte job reaching the helper carries the model's sha256 and file, and no allow_download", u2netp.model_sha256 === M.MATTE_PINS.u2netp.sha256 && u2netp.model_file === V.modelFile("u2netp") && !("allow_download" in u2netp), u2netp);
       check("every matte model's job carries that model's sha256 and file", M.MATTE_MODELS.every((name) => { const j = V.matteJob(rb, { kind: "video", colorSpace: "unknown", colorPrimaries: "unknown", colorTransfer: "unknown", fps: 10, duration: 1, container_start: 0, srcW: 640, srcH: 360, model: name, root: root() }).job; return j.model_sha256 === M.MATTE_PINS[name].sha256 && j.model_file === V.modelFile(name); }));
-      check("every matte model has a pin: its own name, an https url ending /<name>.onnx, 64 hex sha256, bytes > 0, and a size in whole MB",
-        M.MATTE_MODELS.length === 5 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(`/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
-        && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 5);
+      check("every matte model has a pin: its own name, an https url ending /<name>.onnx (RVM: /rvm_mobilenetv3_fp32.onnx), 64 hex sha256, bytes > 0, and a size in whole MB",
+        M.MATTE_MODELS.length === 6 && M.MATTE_MODELS.every((name) => { const p = M.MATTE_PINS[name]; return p.name === name && p.url.startsWith("https://") && p.url.endsWith(name === "rvm_mobilenetv3" ? "/rvm_mobilenetv3_fp32.onnx" : `/${name}.onnx`) && /^[0-9a-f]{64}$/.test(p.sha256) && p.bytes > 0 && M.MATTE_MB[name] === Math.round(p.bytes / 1e6) && M.matteSize(name) === `~${M.MATTE_MB[name]} MB`; })
+        && new Set(M.MATTE_MODELS.map((n) => M.MATTE_PINS[n].url)).size === 6);
       check("the subject job carries the face model's sha256", face.model_sha256 === V.FACE_MODEL.sha256 && face.face_model === V.modelFile(V.FACE_MODEL.name), face);
       process.env.FAKE_PY_ERR = "model file does not match its pinned sha256: " + V.modelFile("u2netp");
       const mm = await go(jobs.matte(), false);
@@ -1401,7 +1464,12 @@ check("core edits still work without uv", (await apply(B, [{ op: "update_clip", 
 
 // ---------------------------------------------------------------- real helper (opt-in: downloads opencv/rembg via uv)
 // Each row is named here so a run without AGENTCUT_TEST_VISION=1 can list what it skips. The rows share the projects built in `setup`.
-const real = { R: "", Q: "", K: "", I: "", mainCache: "" };
+const real = { R: "", Q: "", K: "", I: "", S: "", mainCache: "" };
+let speech = false;
+/** mono samples (the mean of the channels) of an audio file, at its own rate */
+const pcm = (f: string) => { const r = spawnSync("ffmpeg", ["-v", "error", "-i", f, "-af", "pan=mono|c0=0.5*c0+0.5*c1", "-f", "f32le", "-"], { maxBuffer: 1 << 28 }); return [...new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.length / 4)]; };
+const rms = (x: number[]) => Math.sqrt(x.reduce((s, v) => s + v * v, 0) / Math.max(1, x.length));
+const db = (x: number) => 20 * Math.log10(x + 1e-12);
 const realRows: [string, () => Promise<[unknown, unknown]>][] = [
   // the YuNet branch: the helper loads the face model from <cache>/models/<name>/<name>.onnx (the layout the downloader writes and src/vision.ts documents),
   // and the picture holds no face, so every sample falls back to saliency
@@ -1429,7 +1497,51 @@ const realRows: [string, () => Promise<[unknown, unknown]>][] = [
     const again = await V.compute(V.matteJob(join(m, "still.png"), { kind: "image", srcW: 640, srcH: 360, root: real.I }));
     return [file.endsWith(".png") && pix === "rgba" && again.cached === true, { file, pix }];
   }],
+  // the acceptance of separate_audio: the two stems, mixed, give back the plain clip's mix; with `say` (macOS) the voice stem also holds the speech
+  ["real: separate_audio stems mixed together match the source's mix (residual under -50 dB); the voice stem holds the speech", async () => {
+    const S = real.S, { attachStems } = await import("../src/ops-vision.ts"), { buildAudio } = await import("../src/audio.ts");
+    await apply(S, [{ op: "add_clip", track: "music", src: join(m, "sep.wav"), at: 0, duration: 6 }, { op: "add_clip", track: "music", src: join(m, "sep.wav"), at: 0, duration: 6 },
+      { op: "separate_audio", id: "aud1", stem: "voice" }, { op: "separate_audio", id: "aud2", stem: "music" }]);
+    const pr: any = await api.prepare(S, { allowDownload: true }), p = api.openProject(S);
+    const both: any = attachStems(p.absolutized(p.load()), S), plain: any = structuredClone(both);
+    both.settings.loudness = plain.settings.loudness = null;
+    plain.tracks.find((t: any) => t.id === "music").clips.splice(1, 1);
+    for (const k of ["stem", "_stem"]) delete plain.tracks.find((t: any) => t.id === "music").clips[0][k];
+    const a = pcm(await buildAudio(both, join(tmp, "stems-sum.wav"))), b = pcm(await buildAudio(plain, join(tmp, "stems-plain.wav")));
+    const resid = db(rms(a.map((x, i) => x - b[i]))) - db(rms(b));
+    const voice = pcm(both.tracks.find((t: any) => t.id === "music").clips[0]._stem), sr = 44100;
+    const share = speech ? db(rms(voice.slice(3 * sr, 6 * sr))) - db(rms(voice.slice(0, 3 * sr))) : null; // voice stem: speech part over music-only part
+    return [pr.computed[0]?.kind === "stems" && a.length === b.length && resid < -50 && (share === null || share > 20), { resid, share, speech, computed: pr.computed }];
+  }],
 ];
+/** an RVM or rembg matte job for a probed video, in project `root` */
+const matteOf = async (f: string, model: string, root: string) => {
+  const a: any = await api.probe(f);
+  return V.matteJob(f, { kind: "video", fps: a.fps, duration: a.duration, container_start: a.container_start, srcW: a.width, srcH: a.height, pixFmt: a.pix_fmt, colorSpace: a.color_space, colorPrimaries: a.color_primaries, colorTransfer: a.color_transfer, model, root });
+};
+/** mean absolute change of the alpha (0..1) between consecutive frames of a matte .mov */
+const flicker = (mov: string) => {
+  const p = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", mov], { encoding: "utf8" }).stdout.trim().split(",").map(Number);
+  const b = spawnSync("ffmpeg", ["-v", "error", "-i", mov, "-vf", "alphaextract,format=gray", "-f", "rawvideo", "-"], { maxBuffer: 1 << 30 }).stdout, n = p[0] * p[1], frames = b.length / n;
+  let sum = 0;
+  for (let k = 1; k < frames; k++) for (let i = 0; i < n; i++) sum += Math.abs(b[k * n + i] - b[(k - 1) * n + i]);
+  return { frames, value: sum / Math.max(1, (frames - 1) * n) / 255 };
+};
+realRows.push(["real: RVM video matte is computed through the recurrent path, cached, and the same bytes when computed again", async () => {
+  const d = await matteOf(join(m, "mover.mp4"), "rvm_mobilenetv3", real.Q), sha = (f: string) => spawnSync("shasum", ["-a", "256", f], { encoding: "utf8" }).stdout.split(" ")[0];
+  const first = await V.compute(d, undefined, undefined, true), h1 = sha(d.file), again = await V.compute(d);
+  rmSync(d.file);
+  await V.compute(d);
+  const fl = flicker(d.file);
+  return [first.cached === false && again.cached === true && sha(d.file) === h1 && fl.frames === 90, { h1, h2: sha(d.file), fl }];
+}]);
+// footage of a person is not made offline: name a short clip of one (static subject) to compare frame-to-frame alpha change against u2net_human_seg (downloads 176 MB)
+const person = process.env.AGENTCUT_TEST_VISION_PERSON;
+if (person) realRows.push(["real: on AGENTCUT_TEST_VISION_PERSON the RVM matte changes less from frame to frame than u2net_human_seg", async () => {
+  const fl: Record<string, any> = {};
+  for (const model of ["rvm_mobilenetv3", "u2net_human_seg"]) { const d = await matteOf(person, model, real.Q); await V.compute(d, undefined, undefined, true); fl[model] = flicker(d.file); }
+  return [fl.rvm_mobilenetv3.value < fl.u2net_human_seg.value, fl];
+}]);
 // a picture of one real face is not made offline: name one to also assert the face branch finds it
 const faceFixture = process.env.AGENTCUT_TEST_VISION_FACE;
 if (faceFixture) realRows.push(["real: a face in AGENTCUT_TEST_VISION_FACE is found (subject face)", async () => {
@@ -1459,6 +1571,14 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
     }
     real.I = join(tmp, "real-image");
     api.create(real.I, { preset: "youtube" });
+    real.S = join(tmp, "real-stems");
+    api.create(real.S, { preset: "reels" });
+    // 6 s at 44.1 kHz: a chord bed with pink noise, and from 3 s speech when macOS `say` is there
+    ff("-f", "lavfi", "-i", "sine=f=220:d=6", "-f", "lavfi", "-i", "sine=f=330:d=6", "-f", "lavfi", "-i", "anoisesrc=d=6:c=pink:a=0.03",
+      "-filter_complex", "[0][1][2]amix=inputs=3:normalize=0,volume=0.3", "-ac", "2", "-ar", "44100", join(m, "bed.wav"));
+    speech = spawnSync("say", ["-o", join(m, "speech.aiff"), "This is the voice part of the test."]).status === 0;
+    if (speech) ff("-i", join(m, "bed.wav"), "-i", join(m, "speech.aiff"), "-filter_complex", "[1]aresample=44100,adelay=3000:all=1[s];[0][s]amix=inputs=2:normalize=0:duration=first", "-ac", "2", "-ar", "44100", join(m, "sep.wav"));
+    else cpSync(join(m, "bed.wav"), join(m, "sep.wav"));
     // a helper failure is a ✗ row, so the suite still reports and removes its tmp dir
     for (const [name, f] of realRows) {
       try { const [ok, info] = await f(); check(name, ok, info); } catch (e: any) { check(name, false, { code: e.code, message: e.message }); }
@@ -1468,6 +1588,7 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   console.log(`SKIPPED: ${realRows.length} real-helper rows (AGENTCUT_TEST_VISION=1 runs them through uv and downloads packages and models): ${realRows.map(([n]) => n).join(" | ")}`);
   if (!faceFixture) console.log("SKIPPED: real face row (set AGENTCUT_TEST_VISION_FACE=<image or video with one face> together with AGENTCUT_TEST_VISION=1)");
 }
+if (!person) console.log("SKIPPED: real RVM flicker row (set AGENTCUT_TEST_VISION_PERSON=<short video of a person standing still> together with AGENTCUT_TEST_VISION=1)");
 
 // ---------------------------------------------------------------- a matte with no frames; a missing source; pending analyses and prune
 console.log("matte frame count, missing source, prune");
@@ -1516,6 +1637,32 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 0 }));
   check("prune keeps the computed analysis of a pending request", subjFiles().length === 1, subjFiles());
   const pr: any = await api.prepare(R);
   check("prepare then applies the pending request from that analysis without running the helper", pr.computed.length === 0 && !(await clip(R, "vid1")).pending, pr);
+}
+
+// review: text over a face, read from the cached subject analysis only (the fake detector puts a 0.2 x 0.3 face at the source centre)
+console.log("review text_over_face");
+{
+  const F = join(tmp, "reel-faces");
+  api.create(F, { preset: "reels" });
+  const ids = (await apply(F, [{ op: "add_clip", track: "main", src: join(m, "rb.mp4"), duration: 4 },
+    { op: "add_clip", track: "text", text: "OVER", at: 0.5, duration: 2, y: "50%" }, { op: "add_clip", track: "text", text: "TOP", at: 0.5, duration: 2, y: "15%" }])).map((r: any) => r.id);
+  const [, over, top] = ids, c0 = nCalls("subject");
+  const before: any = await api.review(F, { black: false });
+  check("review without a cached analysis: no finding, the clip is listed unchecked and no analysis runs",
+    !before.findings.some((f: any) => f.type === "text_over_face") && before.checked.faces.clips === 0 && before.checked.faces.unchecked?.[0]?.id === "vid1" && nCalls("subject") === c0, before.checked);
+  process.env.FAKE_SUBJECT = "faces";
+  try { await api.analyze.subject(join(m, "rb.mp4"), 6, false, F); } finally { delete process.env.FAKE_SUBJECT; }
+  const rv: any = await api.review(F, { black: false }), hits = rv.findings.filter((f: any) => f.type === "text_over_face");
+  check("review reports the text over the face with its time range, and not the text above it",
+    hits.length === 1 && hits[0].id === over && hits[0].t >= 0.5 && hits[0].end <= 2.5 && hits[0].end > hits[0].t && /vid1/.test(hits[0].message) && !!hits[0].hint
+      && !hits.some((f: any) => f.id === top) && rv.checked.faces.clips === 1 && !rv.checked.faces.unchecked && nCalls("subject") === c0 + 1, { hits, checked: rv.checked });
+  // a cached analysis that decoded no frames: the clip is unchecked, the review itself still runs
+  const E = join(tmp, "reel-empty-faces");
+  api.create(E, { preset: "reels" });
+  await apply(E, [{ op: "add_clip", track: "main", src: join(m, "empty.mp4"), duration: 2 }, { op: "add_clip", track: "text", text: "OVER", at: 0.2, duration: 1, y: "50%" }]);
+  await api.analyze.subject(join(m, "empty.mp4"), 6, false, E).catch(() => null);
+  const er: any = await api.review(E, { black: false }).catch((e: any) => e);
+  check("review with an empty cached subject analysis does not fail: that clip is listed unchecked", Array.isArray(er.findings) && er.checked?.faces?.unchecked?.[0]?.id === "vid1", er.checked ?? er);
 }
 
 console.log(`\n${failures() ? `✗ ${failures()} failure(s)` : "✓ all vision checks passed"} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);

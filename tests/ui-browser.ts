@@ -97,9 +97,9 @@ const untilFile = async (fn: (tl: any) => unknown, ms = 8000) => {
   while (Date.now() - t0 < ms) { if (fn(load())) return true; await sleep(80); }
   return false;
 };
-/** real mouse input at the centre of the element (or of a point inside it) */
+/** real mouse input at the centre of the element (or of a point inside it), scrolled into view first as a person would (focusable lane headers let Tab scroll the timeline) */
 const click = async (sel: string, o: { dx?: number; shift?: boolean; count?: number } = {}) => {
-  const b = await js(`(function(){var r=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  const b = await js(`(function(){var n=document.querySelector(${JSON.stringify(sel)}); n.scrollIntoView({block:"nearest"}); var r=n.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   const x = b.x + (o.dx ?? 0), modifiers = o.shift ? 8 : 0;
   for (let n = 1; n <= (o.count ?? 1); n++) {
     await page("Input.dispatchMouseEvent", { type: "mousePressed", x, y: b.y, button: "left", clickCount: n, modifiers });
@@ -182,7 +182,16 @@ try {
     await js(`document.querySelectorAll("#lanes .clip").length`).catch(() => null));
   check("lanes follow the tracks (top track drawn first)", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
     JSON.stringify(load().tracks.map((t: any) => t.id).reverse()));
+  const stripTimes = await js(`(${node("vid1")}.style.backgroundImage.match(/\\?t=[0-9.]+/g) || []).join()`);
+  check("a video clip shows a thumbnail strip: one frame per tile, at the source time each tile plays", stripTimes === "?t=0.50,?t=1.50,?t=2.00", stripTimes);
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
+  const lang = (l: string) => js(`(function(){var s=$("lang"); s.value=${JSON.stringify(l)}; s.dispatchEvent(new Event("change"));})()`);
+  await lang("vi");
+  check("the language switch shows the page in Vietnamese", await until("vi", `$("play").textContent === "Phát" && $("selinfo").textContent === "Chọn một clip trên timeline." && document.documentElement.lang === "vi"`), await js(`[$("play").textContent, $("selinfo").textContent]`));
+  await js(`location.reload()`);
+  check("  the choice outlives a reload", await until("vi reloaded", `${atRev(load().revision)} && $("play").textContent === "Phát" && $("lang").value === "vi"`), await js(`[$("play").textContent, $("lang").value]`));
+  await lang("en");
+  check("  and switching back shows English again", await until("en", `$("play").textContent === "Play" && $("rev").textContent.indexOf("rev ") === 0`), await js(`$("play").textContent`));
 
   console.log("inspector");
   await click(`[data-id="txt1"]`);
@@ -456,9 +465,11 @@ try {
   console.log("keyboard");
   await js(`document.activeElement.blur()`);
   // a render is under way while the Render button is disabled; a play while the Play button no longer reads "Play"
+  await js(`(function(){ var f = window.fetch; window.renderBodies = []; window.fetch = function (u, o) { if (String(u) === "/api/render") window.renderBodies.push(JSON.parse(o.body)); return f.apply(this, arguments); }; return true; })()`);
   check("Tab reaches Render, and Space on it starts a render, not play", await tabTo(`e.id === "render"`)
     && (await SPACE(), await until("render started", `$("render").disabled || !!document.querySelector("#out a")`)) && await js(`$("play").textContent === "Play" && $("video").style.display === "none"`),
     await js(`[document.activeElement.id, $("render").disabled, $("play").textContent]`));
+  check("  it sends the Draft checkbox (ticked by default) as draft", await js(`window.renderBodies.length === 1 && window.renderBodies[0].draft === true && $("draft").checked`), await js(`window.renderBodies`));
   check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !$("render").disabled`, 120_000), await js(`[$("msg").textContent, $("render").disabled]`));
   await applyLatest(dir, [{ op: "add_marker", t: 0.5 }]);
   await until("marker seen", `${atRev(load().revision)} && !$("undo").disabled`);
@@ -507,9 +518,9 @@ try {
   await SPACE();
   check("Space on a keyboard-focused clip selects it, as Enter does", await until("space selection", selected(order[0])), await js(`[$("selinfo").textContent, document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
-  await js(`window.oldClip = document.activeElement; $("scroll").scrollLeft = 0`);
+  await js(`$("scroll").scrollLeft = 0`);
   await applyLatest(dir, [{ op: "add_marker", t: 0.7 }]);
-  check("the focus stays on that clip, by id, after an apply rebuilds the timeline", await until("rebuilt", `${atRev(load().revision)} && document.activeElement !== window.oldClip && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
+  check("the focus stays on that clip, by id, after an apply redraws the timeline", await until("rebuilt", `${atRev(load().revision)} && document.activeElement.dataset.id === ${JSON.stringify(order[1])}`), await js(`[document.activeElement.className, document.activeElement.dataset && document.activeElement.dataset.id]`));
   await press("ArrowRight", "ArrowRight", 39);
   check("  and it is still keyboard focus: Right walks on to the next clip", await js(`document.activeElement.dataset.id`) === order[2], await js(`document.activeElement.dataset.id`));
   const tt = await nowT();
@@ -687,6 +698,256 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       empty.server.closeAllConnections?.();
       await new Promise((ok) => empty.server.close(ok));
     }
+  }
+  // The media pool: the project's assets, an import by path, a file dropped from the desktop (uploaded into media/, then imported), an asset dragged onto a lane
+  console.log("media pool");
+  {
+    const names = () => js(`[].map.call(document.querySelectorAll("#mlist .asset"), function (n) { return n.dataset.asset; }).sort().join()`);
+    check("the Media tab lists every asset of the project", await until("assets", `${atRev(load().revision)} && document.querySelectorAll("#mlist .asset").length === ${Object.keys(load().assets).length}`)
+      && await names() === Object.keys(load().assets).sort().join(), await names());
+    const jpgId = Object.entries(load().assets).find(([, a]: any) => a.path.endsWith(".jpg"))![0];
+    await js(`(function(){var s=$("msearch"); s.value=".JPG"; s.dispatchEvent(new Event("input"));})()`);
+    check("  the search box keeps the assets whose id or file name has the text (any case)", await until("filtered", `document.querySelectorAll("#mlist .asset").length >= 1`) && (await names()).split(",").every((id: string) => (load().assets[id].path as string).toLowerCase().includes(".jpg")) && (await names()).includes(jpgId), await names());
+    await js(`(function(){var s=$("msearch"); s.value=""; s.dispatchEvent(new Event("input"));})()`);
+    const png = join(media, "imported.png");
+    ff("-f", "lavfi", "-i", "color=c=orange:size=64x64", "-frames:v", "1", png);
+    await js(`(function(){var i=document.querySelector("#mimport input"); i.value=${JSON.stringify(png)}; document.querySelector("#mimport button").click();})()`);
+    check("Import with a path -> import_media of that file", await untilFile((tl) => Object.values(tl.assets).some((a: any) => a.path.endsWith("imported.png"))), Object.values(load().assets).map((a: any) => a.path));
+    await until("import seen", atRev(load().revision));
+    const before = Object.keys(load().assets).length;
+    await js(`(async function(){
+      var b = await fetch("/media/" + encodeURIComponent(${JSON.stringify(jpgId)})).then(function (r) { return r.blob(); }), dt = new DataTransfer();
+      dt.items.add(new File([b], "dropped.jpg", { type: "image/jpeg" }));
+      var m = $("media"); m.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true })); m.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    })()`);
+    check("a file dropped on the Media tab is copied into the project's media/ and imported", await untilFile((tl) => Object.keys(tl.assets).length === before + 1 && Object.values(tl.assets).some((a: any) => /media[\\/]dropped\.jpg$/.test(a.path)))
+      && existsSync(join(dir, "media", "dropped.jpg")), { paths: Object.values(load().assets).map((a: any) => a.path), msg: await js(`$("msg").textContent`) });
+    await until("dropped listed", `${atRev(load().revision)} && document.querySelectorAll("#mlist .asset").length === ${before + 1}`);
+    await js(`(function(){
+      var item = [].filter.call(document.querySelectorAll("#mlist .asset"), function (n) { return n.dataset.asset === ${JSON.stringify(jpgId)}; })[0], dt = new DataTransfer();
+      item.dispatchEvent(new DragEvent("dragstart", { dataTransfer: dt, bubbles: true }));
+      var lane = [].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "overlay"; })[0], r = lane.querySelector(".lclips").getBoundingClientRect(), x = r.left + 1.5 * ${zoomPps};
+      lane.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+      lane.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+    })()`);
+    const onOverlay = (tl: any) => tl.tracks.find((t: any) => t.id === "overlay").clips.find((c: any) => c.asset === jpgId);
+    check("an asset dragged onto a lane is added to that track at the drop time", await untilFile((tl) => !!onOverlay(tl) && Math.abs(Number(onOverlay(tl).start) - 1.5) < 0.02), load().tracks.find((t: any) => t.id === "overlay").clips);
+  }
+  console.log("track headers and waveforms");
+  {
+    const tone = join(media, "tone.wav");
+    ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", tone);
+    await applyLatest(dir, [{ op: "add_clip", track: "music", src: tone, duration: 2, id: "tone1" }]);
+    check("an audio clip shows its waveform: one bar per 2 px of the clip", await until("wave", `(function(){var n=${node("tone1")}, p=n && n.querySelector(".wave path"); return !!p && (p.getAttribute("d").match(/M/g) || []).length === Math.floor(parseFloat(n.style.width) / 2);})()`),
+      await js(`(function(){var n=${node("tone1")}; return n && [n.style.width, n.querySelector(".wave path") && n.querySelector(".wave path").getAttribute("d").slice(0, 80)];})()`));
+    const toggle = (track: string, f: string) => js(`[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === ${JSON.stringify(track)}; })[0].querySelector('[data-toggle="${f}"]').click()`);
+    const trackOf = (tl: any, id: string) => tl.tracks.find((t: any) => t.id === id);
+    await until("tone seen", atRev(load().revision));
+    await toggle("overlay", "hidden");
+    check("the eye toggle in a track header hides the track (update_track)", await untilFile((tl) => trackOf(tl, "overlay").hidden === true), trackOf(load(), "overlay"));
+    await until("hidden seen", `${atRev(load().revision)} && [].some.call(document.querySelectorAll('[data-toggle="hidden"][aria-pressed="true"]'), function (b) { return b.closest(".lane").dataset.track === "overlay"; })`);
+    await toggle("overlay", "hidden");
+    check("  and shows it again", await untilFile((tl) => trackOf(tl, "overlay").hidden === false), trackOf(load(), "overlay"));
+    await until("shown seen", atRev(load().revision));
+    await toggle("music", "muted");
+    check("the mute toggle mutes the track; an audio track has no eye toggle", await untilFile((tl) => trackOf(tl, "music").muted === true)
+      && await js(`![].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "music"; })[0].querySelector('[data-toggle="hidden"]')`), trackOf(load(), "music"));
+    await until("muted seen", atRev(load().revision));
+    await toggle("overlay", "locked");
+    check("the lock toggle locks the track and the lane shows it", await untilFile((tl) => trackOf(tl, "overlay").locked === true)
+      && await until("locked lane", `[].some.call(document.querySelectorAll(".lane.locked"), function (l) { return l.dataset.track === "overlay"; })`), trackOf(load(), "overlay"));
+    await until("lock seen", atRev(load().revision));
+    const ovId = trackOf(load(), "overlay").clips[0].id, beforeLock = readFileSync(join(dir, "project.json"), "utf8");
+    await clickClip(ovId);
+    await js(`$("msg").className = ""; $("delc").click()`);
+    check("  deleting a clip of the locked track is refused by name and changes nothing", await until("locked msg", `$("msg").className === "err" && $("msg").textContent.indexOf("locked") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === beforeLock, await js(`$("msg").textContent`));
+    await toggle("overlay", "locked");
+    check("  and the toggle unlocks it", await untilFile((tl) => trackOf(tl, "overlay").locked === false), trackOf(load(), "overlay"));
+    await until("unlock seen", atRev(load().revision));
+  }
+  console.log("export dialog");
+  {
+    await click("#exportb");
+    check("Export… opens the dialog", await until("export open", `$("export").open`));
+    await js(`(function(){var f=document.querySelector("#export form").elements; f.format.value=".webm"; f.quality.value="draft"; f.end.value="1";})()`);
+    await click("#ego");
+    check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
+      && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+  }
+  console.log("review and history panels");
+  {
+    await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Blink", at: 0.3, duration: 0.2, id: "blink" }]);
+    await until("blink seen", atRev(load().revision));
+    await click("#tab-review");
+    await click("#runreview");
+    const short = `[].filter.call(document.querySelectorAll("#findings li"), function (l) { return l.dataset.type === "text_too_short" && l.textContent.indexOf("blink") >= 0; })[0]`;
+    check("Run review lists the findings, a text too short to read among them", await until("findings", `!!${short}`, 60_000), await js(`$("review").textContent.slice(0, 300)`));
+    await js(`${short}.click()`);
+    check("  clicking a finding selects its clip and seeks to its time", await until("finding selected", `$("selinfo").textContent.indexOf("blink on ") === 0`) && Math.abs(await nowT() - 0.3) < 0.02, await js(`[$("selinfo").textContent, $("time").textContent]`));
+    await applyLatest(dir, [{ op: "add_marker", t: 0.41, label: "p1" }]);
+    await applyLatest(dir, [{ op: "add_marker", t: 0.42, label: "p2" }]);
+    await until("markers seen", atRev(load().revision));
+    await click("#tab-history");
+    check("the History tab lists the edits newest first, with their authors", await until("history", `document.querySelectorAll("#hundo li").length >= 2 && document.querySelector("#hundo li button").textContent === "add_marker"`)
+      && await js(`document.querySelector("#hundo li .mut").textContent`) === "by test", await js(`$("history").textContent.slice(0, 200)`));
+    const revH = load().revision;
+    await js(`document.querySelectorAll("#hundo li button")[1].click()`);
+    check("  clicking the second newest undoes it and the newest in one step", await untilFile((tl) => tl.revision === revH + 2 && !(tl.markers ?? []).some((m: any) => m.label === "p1" || m.label === "p2")), load().markers);
+    await until("redo listed", `${atRev(load().revision)} && document.querySelectorAll("#hredo li").length === 2`);
+    await js(`document.querySelectorAll("#hredo li button")[1].click()`);
+    check("  and the redo list brings both back", await untilFile((tl) => ["p1", "p2"].every((l) => (tl.markers ?? []).some((m: any) => m.label === l))), load().markers);
+    await click("#tab-media");
+  }
+  // The dashboard (`agentcut ui` on a folder of projects): cards for the projects; a click opens that project's editor in the same tab
+  console.log("dashboard");
+  {
+    const { startDashboard } = await import("../src/ui.ts");
+    const home = join(tmp, "projects");
+    api.create(join(home, "one"), { preset: "square" });
+    api.create(join(home, "two"), { preset: "reels" });
+    const db = await startDashboard(home, { port: 0 });
+    const { targetId: other } = await cdp("Target.createTarget", { url: "about:blank" });
+    const sid = (await cdp("Target.attachToTarget", { targetId: other, flatten: true })).sessionId;
+    const on = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sid)).result?.value;
+    const onUntil = async (expr: string, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await on(expr).catch(() => false)) return true; await sleep(80); } return false; };
+    try {
+      await cdp("Runtime.enable", {}, sid);
+      await cdp("Page.navigate", { url: db.url }, sid);
+      check("the dashboard page shows a card per project", await onUntil(`[].map.call(document.querySelectorAll(".pcard"), function (c) { return c.dataset.project; }).sort().join() === "one,two"`), await on(`document.body.textContent.slice(0, 200)`));
+      await on(`[].filter.call(document.querySelectorAll(".pcard"), function (c) { return c.dataset.project === "two"; })[0].querySelector(".popen").click()`);
+      check("  clicking a card goes to that project's editor", await onUntil(`location.port !== "${db.port}" && !!document.getElementById("rev") && document.getElementById("rev").textContent.indexOf("rev 0") === 0 && document.getElementById("name").textContent === "two"`, 15_000),
+        await on(`[location.href, document.getElementById("rev") && document.getElementById("rev").textContent, document.getElementById("name") && document.getElementById("name").textContent]`));
+    } finally {
+      await cdp("Target.closeTarget", { targetId: other }).catch(() => {});
+      db.server.closeAllConnections?.();
+      await new Promise((ok) => db.server.close(ok));
+    }
+  }
+  // The chat panel (a stand-in claude): a message shows as sent, then the agent's text and its tool calls as they stream in
+  console.log("chat panel");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "chat-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\necho '{"type":"system","subtype":"init","session_id":"s1"}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","name":"mcp__agentcut__project_info","input":{}}]}}'\n`
+      + `sleep 0.3\necho '{"type":"user","message":{"content":[{"type":"tool_result","content":"rev 1"}]}}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"It is at rev 1."}]}}'\necho '{"type":"result","subtype":"success","session_id":"s1","result":"ok"}'\n`, { mode: 0o755 });
+    const PATH = process.env.PATH;
+    process.env.PATH = `${bin}:${PATH}`;
+    try {
+      await click("#tab-chat");
+      await until("chat panel", `!!document.querySelector("#cform2 textarea")`);
+      await js(`(function(){var f=$("cform2"); f.elements.msg.value="what revision?"; f.requestSubmit();})()`);
+      const log = `[].map.call($("clog").children, function (n) { return n.className + ":" + n.textContent; }).join("|")`;
+      check("a chat message shows as sent, then the agent's text, tool call and result, and the end; Send is back", await until("chat done", `${log}.indexOf("Done.") >= 0 && !$("csend").disabled`, 10_000)
+        && /^cuser:what revision\?\|cbot:Looking\.\|ctool:→ project_info \{\}\|ctool:← rev 1\|cbot:It is at rev 1\.\|mut:Done\.$/.test(await js(log)), await js(log));
+    } finally { process.env.PATH = PATH; }
+    await click("#tab-media");
+  }
+  console.log("form inspector");
+  {
+    await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict
+    const setF = (id: string, v: string) => js(`(function(){var i=$(${JSON.stringify(id)}); i.value=${JSON.stringify(v)}; i.dispatchEvent(new Event("change", { bubbles: true }));})()`);
+    await clickClip("blink");
+    check("selecting a clip shows its fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
+    await setF("f-text", "Blinked");
+    check("a text field edit is update_clip of that field", await untilFile((tl) => clipOf(tl, "blink")?.text === "Blinked"), { clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
+    await until("text seen", `${atRev(load().revision)} && $("f-text").value === "Blinked"`);
+    const before = readFileSync(join(dir, "project.json"), "utf8");
+    await js(`$("msg").className = ""`);
+    await setF("f-opacity", "2");
+    check("an out-of-range value shows the validation message and changes nothing", await until("range error", `$("msg").className === "err" && $("msg").textContent.indexOf("opacity") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
+    await js(`$("f-uppercase").click()`);
+    check("a checkbox sets the boolean field", await untilFile((tl) => clipOf(tl, "blink")?.uppercase === true), clipOf(load(), "blink"));
+    await until("upper seen", atRev(load().revision));
+    check("enabled shows ticked when the field is absent", await js(`$("f-enabled").checked === true`));
+    await js(`$("f-enabled").click()`);
+    check("  unticking enabled disables the clip (enabled false)", await untilFile((tl) => clipOf(tl, "blink")?.enabled === false), clipOf(load(), "blink"));
+    await until("disabled seen", `${atRev(load().revision)} && $("f-enabled").checked === false`);
+    await js(`$("f-enabled").click()`);
+    check("  ticking it again enables it (the field is dropped)", await untilFile((tl) => clipOf(tl, "blink") && clipOf(tl, "blink").enabled === undefined), clipOf(load(), "blink"));
+    await until("enabled seen", atRev(load().revision));
+    await clickClip("rb1");
+    check("another clip's form shows its own values, not what was typed into the last one", await until("video form", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("f-exposure") && $("f-opacity").value === ""`), await js(`$("f-opacity") && $("f-opacity").value`));
+    await setF("f-exposure", "0.5");
+    check("a grade field is merged into the clip's colour grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1"));
+    await until("grade seen", atRev(load().revision));
+    await setF("f-look", "portra");
+    check("  and the look list sets the look beside it", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "portra" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
+  }
+  // The library: every look, effect, transition and text style with a rendered still; a click puts it on the selected clip, a drag on the clip under the pointer, a text style on a free lane is a new title
+  console.log("library");
+  {
+    const item = (k: string) => `document.querySelector('[data-lib="${k}"]')`;
+    const libDrop = (k: string, target: string, sec: number) => js(`(function(){
+      var dt = new DataTransfer(); ${item(k)}.dispatchEvent(new DragEvent("dragstart", { dataTransfer: dt, bubbles: true }));
+      var t = ${target}, lane = t.closest(".lane"), r = lane.querySelector(".lclips").getBoundingClientRect(), x = r.left + ${sec} * ${zoomPps};
+      t.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+      t.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
+    })()`);
+    await until("the page shows the project as it is", atRev(load().revision));
+    await click("#tab-library");
+    check("the Library tab shows each item with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
+      && await js(`document.querySelectorAll("#library .litem").length`) > 60, await js(`$("library") && $("library").textContent.slice(0, 120)`));
+    await js(`${item("look/bw")}.click()`); // rb1 is still selected from the form rows
+    check("clicking a look puts it on the selected clip's grade, keeping the rest of the grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "bw" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
+    await until("bw seen", atRev(load().revision));
+    await libDrop("effect/vhs", node("blink"), 0.4);
+    check("an effect dragged onto a clip is added to that clip", await untilFile((tl) => (clipOf(tl, "blink")?.effects ?? []).some((e: any) => e.type === "vhs")), clipOf(load(), "blink"));
+    await until("vhs seen", atRev(load().revision));
+    const titles = (tl: any) => tl.tracks.find((t: any) => t.id === "text").clips.filter((c: any) => c.glow);
+    await libDrop("text/neon", `[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "text"; })[0]`, 2);
+    check("a text style dragged onto a free lane adds a title in that style at the drop time", await untilFile((tl) => titles(tl).length === 1 && Math.abs(Number(titles(tl)[0].start) - 2) < 0.02), load().tracks.find((t: any) => t.id === "text").clips);
+    await until("title seen", atRev(load().revision));
+    const before = readFileSync(join(dir, "project.json"), "utf8");
+    await clickClip("blink");
+    await until("blink selected", `$("selinfo").textContent.indexOf("blink on ") === 0`);
+    await js(`$("msg").className = ""; ${item("look/warm")}.click()`);
+    check("  a look on a text clip is refused by name and changes nothing", await until("refused", `$("msg").className === "err" && $("msg").textContent.indexOf("warm") >= 0`)
+      && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
+    await click("#tab-media");
+  }
+  // The transcript: a clip's words from the engine (a stand-in here); a click seeks, shift-click picks a run, Cut removes their stretch with one remove_range, undo puts it back
+  console.log("transcript");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "asr-bin"), model = join(tmp, "asr.bin"), talk = join(media, "talk.mp4");
+    mkdirSync(bin, { recursive: true }); writeFileSync(model, "");
+    writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"transcription":[{"text":" one","offsets":{"from":200,"to":600}},{"text":" two","offsets":{"from":1000,"to":1400}},{"text":" three","offsets":{"from":2000,"to":2400}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+    const env = { PATH: process.env.PATH, model: process.env.AGENTCUT_WHISPER_MODEL };
+    process.env.PATH = `${bin}:${env.PATH}`; process.env.AGENTCUT_WHISPER_MODEL = model;
+    try {
+      ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=300:duration=3", "-shortest", "-pix_fmt", "yuv420p", talk);
+      await applyLatest(dir, [{ op: "add_clip", track: "overlay", src: talk, id: "talk", at: 20, duration: 3 }]);
+      await until("talk seen", atRev(load().revision));
+      const talkAsset = clipOf(load(), "talk").asset;
+      await clickClip("talk");
+      await click("#tab-transcript");
+      await click("#txgo");
+      const words = `[].map.call(document.querySelectorAll("#words .word"), function (w) { return w.textContent; }).join()`;
+      check("Transcribe shows the selected clip's words", await until("words", `${words} === "one,two,three"`, 30_000), await js(`$("transcript").textContent`));
+      await js(`document.querySelectorAll("#words .word")[1].click()`);
+      await until("seek", `$("time").textContent.indexOf("21.0") >= 0`);
+      check("  clicking a word seeks to it on the timeline", Math.abs(await nowT() - 21) < 0.02, await nowT());
+      await js(`document.querySelectorAll("#words .word")[2].dispatchEvent(new MouseEvent("click", { shiftKey: true, bubbles: true }))`);
+      const revCut = load().revision;
+      await click("#txcut");
+      const parts = (tl: any) => tl.tracks.find((t: any) => t.id === "overlay").clips.filter((c: any) => c.asset === talkAsset);
+      check("  shift-click picks the run and Cut removes exactly its stretch: the clip plays 0..1 s and 2.4..3 s of its media, back to back", await untilFile((tl) => tl.revision === revCut + 1)
+        && JSON.stringify(parts(load()).map((c: any) => [c.in ?? 0, c.duration, c.start])) === JSON.stringify([[0, 1, 20], [2.4, 0.6, 21]]), parts(load()));
+      await until("cut seen", atRev(load().revision));
+      await click("#undo");
+      check("  and undo restores the whole clip", await untilFile((tl) => tl.revision === revCut + 2 && parts(tl).length === 1 && parts(tl)[0].duration === 3), parts(load()));
+      await until("undo seen", atRev(load().revision));
+      // the source is replaced in place (another recording, other words): a cut with the words loaded before is refused and the words are refreshed
+      writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"transcription":[{"text":" four","offsets":{"from":300,"to":700}},{"text":" five","offsets":{"from":1500,"to":1900}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+      ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=500:duration=3", "-shortest", "-pix_fmt", "yuv420p", talk);
+      const revStale = load().revision;
+      await js(`document.querySelectorAll("#words .word")[0].click()`);
+      await click("#txcut");
+      check("  after the source was replaced, Cut changes nothing: it says so and shows the new words", await until("stale", `${words} === "four,five" && $("msg").className === "err"`, 30_000)
+        && load().revision === revStale, [await js(words), await js(`$("msg").textContent`), load().revision, revStale]);
+    } finally { process.env.PATH = env.PATH; if (env.model === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = env.model; }
+    await click("#tab-media");
   }
   // The page over a history entry that cannot be read: the stream's error event reaches the message box (not a blank page), and once the entry is removed the page's own reconnect fills it in
   // and takes the no-state messages away. Before that state the page's writes, keys and zoom refuse by name instead of throwing.

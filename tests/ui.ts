@@ -2,7 +2,7 @@
 // SSE live sync for edits made by another process, path-traversal / host guards.
 // Run: bun tests/ui.ts            (needs ffmpeg on PATH)
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -69,10 +69,10 @@ for (const port of [99999, -1, 4810.5]) { // a port is a whole number from 0 to 
 const ui = await startUi(dir, { port: 0 });
 const base = ui.url.replace(/\/$/, "");
 // `text` is a raw JSON body (possibly empty or malformed); `port` aims at another ui server
-const raw = (path: string, o: { method?: string; host?: string; body?: unknown; text?: string; port?: number; origin?: string } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
+const raw = (path: string, o: { method?: string; host?: string; body?: unknown; text?: string; port?: number; origin?: string; headers?: Record<string, string> } = {}) => new Promise<{ status: number; body: Buffer; type: string; headers: Record<string, unknown> }>((ok, fail) => {
   const port = o.port ?? ui.port;
   const rq = request({ host: "127.0.0.1", port, path, method: o.method ?? "GET",
-    headers: { host: o.host ?? `127.0.0.1:${port}`, ...(o.origin ? { origin: o.origin } : {}), ...(o.body || o.text !== undefined ? { "content-type": "application/json" } : {}) } }, (res) => {
+    headers: { host: o.host ?? `127.0.0.1:${port}`, ...o.headers, ...(o.origin ? { origin: o.origin } : {}), ...(o.body || o.text !== undefined ? { "content-type": "application/json" } : {}) } }, (res) => {
     const ch: Buffer[] = [];
     res.on("data", (c) => ch.push(c));
     res.on("end", () => ok({ status: res.statusCode!, body: Buffer.concat(ch), type: String(res.headers["content-type"]), headers: res.headers }));
@@ -370,6 +370,69 @@ const split = await new Promise<string>((ok) => {
 });
 check("POST body keeps multi-byte text whole across chunks", split.includes("nope_ệ") && !split.includes("\uFFFD"), split.slice(0, 300));
 
+// a file dropped on the page: its bytes go to media/ under its own name, never over another file, and only as octet-stream
+const upload = (name: string, body: Buffer, o: { type?: string; origin?: string } = {}) => new Promise<{ status: number; j: any }>((ok, fail) => {
+  const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/upload?name=" + encodeURIComponent(name), method: "POST",
+    headers: { host: `127.0.0.1:${ui.port}`, "content-type": o.type ?? "application/octet-stream", ...(o.origin ? { origin: o.origin } : {}) } }, (res) => {
+    const ch: Buffer[] = []; res.on("data", (c) => ch.push(c)); res.on("end", () => ok({ status: res.statusCode!, j: JSON.parse(Buffer.concat(ch).toString()) }));
+  });
+  rq.on("error", fail);
+  rq.end(body);
+});
+const jpg = readFileSync(join(media, "p.jpg"));
+const up1 = await upload("drop.jpg", jpg), up2 = await upload("drop.jpg", jpg);
+check("an upload lands in media/ under its name, a second one with the same name beside it (never over it)", up1.j.ok && up1.j.path === join(dir, "media", "drop.jpg") && up2.j.path === join(dir, "media", "drop-1.jpg")
+  && readFileSync(up1.j.path).equals(jpg) && readFileSync(up2.j.path).equals(jpg), [up1, up2]);
+const scratchLeft = () => (existsSync(join(dir, ".agentcut", "tmp")) ? readdirSync(join(dir, ".agentcut", "tmp")).filter((f) => f.startsWith("upload-")) : []);
+const badUps = await Promise.all([upload("../x.jpg", jpg), upload(".hidden.jpg", jpg), upload("notes.txt", Buffer.from("x")), upload("drop.jpg", jpg, { type: "application/json" }), upload("x.jpg", jpg, { origin: "http://evil.example" })]);
+check("an upload whose name is a path or hidden is bad_value, a non-media file bad_type, JSON 415, another origin 403; nothing is written",
+  JSON.stringify(badUps.map((r) => [r.status, r.j.error?.code])) === '[[422,"bad_value"],[422,"bad_value"],[422,"bad_type"],[415,"bad_request"],[403,"forbidden"]]'
+  && ["x.jpg", ".hidden.jpg", "notes.txt", "drop-2.jpg"].every((f) => !existsSync(join(dir, "media", f))) && !existsSync(join(tmp, "x.jpg")) && scratchLeft().length === 0, badUps.map((r) => [r.status, r.j.error]));
+const opsOctet = await new Promise<number>((ok) => {
+  const rq = request({ host: "127.0.0.1", port: ui.port, path: "/api/ops", method: "POST", headers: { host: `127.0.0.1:${ui.port}`, "content-type": "application/octet-stream" } }, (res) => { res.resume(); ok(res.statusCode!); });
+  rq.end("{}");
+});
+check("  and /api/ops still takes JSON only", opsOctet === 415, opsOctet);
+for (const f of ["drop.jpg", "drop-1.jpg"]) rmSync(join(dir, "media", f));
+// a clip's waveform: 50 peaks per second of the asset's sound; a file with no sound is an error, not an empty wave
+ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", join(media, "tone.wav"));
+const toneId = (await applyLatest(dir, [{ op: "import_media", path: join(media, "tone.wav") }])).results[0].asset;
+const pk = await jget("/api/peaks/" + toneId), mute = await jget("/api/peaks/" + vid.asset);
+check("/api/peaks: 50 peaks per second of the sound, a steady tone steady inside, 0..255", pk.j.ok && pk.j.rate === 50 && Math.abs(pk.j.peaks.length - 100) <= 1
+  && pk.j.peaks.slice(2, -2).every((v: number) => v === pk.j.peaks[50] && v > 20 && v <= 255), { rate: pk.j.rate, n: pk.j.peaks?.length, some: pk.j.peaks?.slice(0, 5) });
+check("  and a video with no sound answers decode_failed", mute.status === 422 && mute.j.error?.code === "decode_failed", mute);
+// the library: each item a still from a scratch timeline, kept in previews/ui/library per AgentCut version; the scratch project is gone after
+{
+  const { VERSION } = await import("../src/version.ts");
+  const bw = await raw("/api/library/look/bw"), file = join(dir, "previews", "ui", "library", `look-bw-${VERSION}.jpg`);
+  const px = spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", "scale=1:1", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { input: bw.body }).stdout;
+  check("/api/library/look/bw: a JPEG of the test picture in that look (grey), saved in previews/ui/library", bw.status === 200 && bw.type === "image/jpeg" && existsSync(file)
+    && px.length === 3 && Math.max(...px) - Math.min(...px) <= 6, { status: bw.status, px: [...px] });
+  const xs = await raw("/api/library/look/warm", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" } }), nav = await raw("/", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" } });
+  check("a request another site's page makes is refused (403, nothing rendered); opening the page from a link is not", xs.status === 403 && !existsSync(join(dir, "previews", "ui", "library", `look-warm-${VERSION}.jpg`)) && nav.status === 200, [xs.status, nav.status]);
+  const m0 = statSync(file).mtimeMs, again = await raw("/api/library/look/bw");
+  check("  a second request is the saved file", again.status === 200 && statSync(file).mtimeMs === m0 && again.body.equals(bw.body));
+  const bad = await raw("/api/library/look/nope"), deep = await raw("/api/library/look/bw/x");
+  check("  an item not in the library, or a longer path, is not_found", [bad, deep].every((r) => r.status === 404 && JSON.parse(r.body.toString()).error.code === "not_found"), [bad.status, deep.status]);
+  check("  no scratch project is left in .agentcut/tmp", !readdirSync(join(dir, ".agentcut", "tmp")).some((n) => n.startsWith(`render-${process.pid}-`)));
+}
+// the transcript panel's words: the engine's words of an asset in media seconds, kept in previews/ui/transcripts so the engine runs once per file version
+if (process.platform !== "win32") { // the stand-in engine is a shell script
+  const bin = join(tmp, "asr-bin"), model = join(tmp, "asr.bin"), runs = join(tmp, "asr.runs");
+  mkdirSync(bin); writeFileSync(model, "");
+  writeFileSync(join(bin, "whisper-cli"), `#!/bin/sh\necho run >> "${runs}"\nwhile [ $# -gt 0 ]; do [ "$1" = "-of" ] && printf '%s' '{"result":{"language":"en"},"transcription":[{"text":" Hi","offsets":{"from":200,"to":500}},{"text":" there","offsets":{"from":600,"to":900}}]}' > "$2.json"; shift; done\n`, { mode: 0o755 });
+  const env = { PATH: process.env.PATH, model: process.env.AGENTCUT_WHISPER_MODEL };
+  process.env.PATH = `${bin}:${env.PATH}`; process.env.AGENTCUT_WHISPER_MODEL = model;
+  try {
+    const t1 = await jget("/api/transcript", { method: "POST", body: { asset: toneId } }), t2 = await jget("/api/transcript", { method: "POST", body: { asset: toneId } });
+    check("/api/transcript: the words of the asset in media seconds; asked again, the saved words without a second engine run",
+      t1.j.ok && JSON.stringify(t1.j.words) === '[{"text":"Hi","start":0.2,"end":0.5},{"text":"there","start":0.6,"end":0.9}]' && JSON.stringify(t2.j.words) === JSON.stringify(t1.j.words)
+      && readFileSync(runs, "utf8").trim().split("\n").length === 1 && readdirSync(join(dir, "previews", "ui", "transcripts")).length === 1, { t1: t1.j, runs: readFileSync(runs, "utf8") });
+    const bad = await jget("/api/transcript", { method: "POST", body: { asset: 5 } });
+    check("  a request without an asset id is bad_request", bad.status === 400 && bad.j.error.code === "bad_request", bad);
+  } finally { process.env.PATH = env.PATH; if (env.model === undefined) delete process.env.AGENTCUT_WHISPER_MODEL; else process.env.AGENTCUT_WHISPER_MODEL = env.model; }
+}
+
 // ---------------------------------------------------------------- render job
 console.log("render");
 const job = (await jget("/api/render", { method: "POST", body: { play: true, start: 0, end: 1 } })).j;
@@ -392,6 +455,28 @@ check("SSE reported the job", await waitJob(job.id));
   check("play ranges in different frame slots render exactly their normalized range", ended.status === "done" && ended.url !== done.url && ended.result.frames === fps + 1 && Math.abs(ended.result.range[1] - (1 + 1 / fps)) < 1e-6, ended);
   const empty = await play(0, 0.001), invalid = await play(-1, 1);
   check("play refuses empty normalized ranges and invalid starts before making jobs", empty.error?.code === "empty" && invalid.error?.code === "bad_value", { empty, invalid });
+}
+{ // the history panel undoes back to an entry: steps on /api/undo and /api/redo; the review panel runs review
+  await applyLatest(dir, [{ op: "add_marker", t: 0.11, label: "h1" }]);
+  await applyLatest(dir, [{ op: "add_marker", t: 0.12, label: "h2" }]);
+  const labels = () => (JSON.parse(readFileSync(join(dir, "project.json"), "utf8")).markers ?? []).map((m: any) => m.label);
+  const r1 = (await api.info(dir)).revision;
+  const bad = await jget("/api/undo", { method: "POST", body: { revision: r1, steps: 0 } });
+  const two = await jget("/api/undo", { method: "POST", body: { revision: r1, steps: 2 } });
+  check("undo with steps 2 undoes the two newest entries in one call (the revision moves once per entry); steps 0 is bad_value", bad.j.error?.code === "bad_value" && two.j.ok && two.j.done === 2 && two.j.revision === r1 + 2
+    && !labels().includes("h1") && !labels().includes("h2"), { bad: bad.j.error, two: two.j, labels: labels() });
+  const back = await jget("/api/redo", { method: "POST", body: { revision: two.j.revision, steps: 2 } });
+  check("  and redo with steps 2 brings both back", back.j.done === 2 && labels().includes("h1") && labels().includes("h2"), back.j);
+  const rv = await jget("/api/review", { method: "POST", body: {} });
+  check("/api/review answers review's findings and the revision it read", rv.j.ok && Array.isArray(rv.j.findings) && typeof rv.j.clean === "boolean" && rv.j.revision === (await api.info(dir)).revision, rv.j);
+}
+{ // the export dialog: a format from the list, the file named by the server in renders/, the result with its QA
+  const bad = await jget("/api/render", { method: "POST", body: { format: ".txt" } }), path = await jget("/api/render", { method: "POST", body: { format: "../x.mp4" } });
+  check("an export format outside the list is bad_value, before any job", bad.status === 422 && bad.j.error?.code === "bad_value" && path.j.error?.code === "bad_value", [bad.j, path.j]);
+  let ex = (await jget("/api/render", { method: "POST", body: { format: ".webm", quality: "draft", start: 0, end: 0.5 } })).j;
+  for (let i = 0; i < 600 && ex.status === "running"; i++) { await Bun.sleep(100); ex = (await jget(`/api/jobs/${ex.id}`)).j; }
+  check("an export writes the chosen format into renders/ and its result carries the QA of the written file", ex.status === "done" && /^\/files\/renders\/[^/]+\.webm$/.test(ex.url) && ex.result.qa?.ok === true
+    && (await raw(ex.url)).type === "video/webm", { status: ex.status, url: ex.url, qa: ex.result?.qa, error: ex.error });
 }
 
 // ---------------------------------------------------------------- not_prepared: hint + prepare job
@@ -801,13 +886,105 @@ hold.close();
   rmSync(join(dir, "renders", "big.bin"));
 }
 
+// ---------------------------------------------------------------- chat: the agent CLI (a stand-in claude here) on one message, its events to every page
+console.log("chat");
+{
+  const { chatArgs, chatEvents } = await import("../src/chat.ts");
+  const a = chatArgs("/p/root", "s0"), mcp = JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.agentcut;
+  check("chatArgs: streamed JSON, no built-in tools, only the agentcut MCP server for the project, its tools allowed, the session resumed",
+    a[0] === "-p" && a[1] === "--output-format" && a[a.indexOf("--output-format") + 1] === "stream-json" && a[a.indexOf("--tools") + 1] === "" && a.includes("--strict-mcp-config")
+    && a[a.indexOf("--allowedTools") + 1] === "mcp__agentcut" && a[a.indexOf("--permission-mode") + 1] === "dontAsk" && a[a.indexOf("--resume") + 1] === "s0"
+    && mcp.env.AGENTCUT_PROJECT === "/p/root" && existsSync(mcp.args[mcp.args.length - 1]) && mcp.args[mcp.args.length - 1].endsWith("mcp.ts"), a);
+  const ev = (o: unknown) => JSON.stringify(chatEvents(JSON.stringify(o)));
+  check("chatEvents: the session, text and tool calls (server prefix dropped), tool results, the end; anything else is no event",
+    ev({ type: "system", subtype: "init", session_id: "s1" }) === '[{"kind":"session","session":"s1"}]'
+    && ev({ type: "assistant", message: { content: [{ type: "text", text: "ok" }, { type: "tool_use", name: "mcp__agentcut__apply_ops", input: { revision: 0 } }] } }) === '[{"kind":"text","text":"ok"},{"kind":"tool","name":"apply_ops","input":{"revision":0}}]'
+    && ev({ type: "user", message: { content: [{ type: "tool_result", is_error: true, content: [{ type: "text", text: "conflict" }] }] } }) === '[{"kind":"tool_result","ok":false,"text":"conflict"}]'
+    && ev({ type: "result", subtype: "success", session_id: "s1", result: "done" }) === '[{"kind":"done","session":"s1"}]' && ev({ type: "rate_limit" }) === "[]" && JSON.stringify(chatEvents("not json")) === "[]");
+  if (process.platform !== "win32") {
+    const bin = join(tmp, "chat-bin"), argsFile = join(tmp, "chat.args"), slow = join(tmp, "chat.slow");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\ncat > "${argsFile}.msg"\npwd -P > "${argsFile}.cwd"\n[ -f "${slow}" ] && exec sleep 30\n`
+      + `echo '{"type":"system","subtype":"init","session_id":"s1"}'\necho '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","name":"mcp__agentcut__project_info","input":{}}]}}'\n`
+      + `echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"rev 3"}]}}'\necho '{"type":"result","subtype":"success","session_id":"s1","result":"Hello"}'\n`, { mode: 0o755 });
+    const PATH = process.env.PATH;
+    process.env.PATH = `${bin}:${PATH}`;
+    try {
+      const idle = async () => { for (let i = 0; i < 100; i++) { if (!(await jget("/api/chat")).j.busy) return true; await Bun.sleep(50); } return false; };
+      const first = await jget("/api/chat", { method: "POST", body: { message: "- hi there" } });
+      const got = (k: string) => waitEvent((e) => e.event === "chat" && e.data.kind === k);
+      check("POST /api/chat runs the agent: the message, its text, tool call, tool result and end reach every page as chat events", first.j.ok && await got("user") && await got("text") && await got("tool") && await got("tool_result") && await got("done")
+        && events.some((e) => e.event === "chat" && e.data.kind === "tool" && e.data.name === "project_info"), events.filter((e) => e.event === "chat").map((e) => e.data));
+      check("  in the project folder, with the message on stdin (a leading '-' is not an option), and the next message resumes its session", await idle() && (await jget("/api/chat")).j.session === "s1"
+        && readFileSync(argsFile + ".msg", "utf8") === "- hi there" && !readFileSync(argsFile, "utf8").includes("hi there") && readFileSync(argsFile + ".cwd", "utf8").trim() === realpathSync(dir) && (await jget("/api/chat", { method: "POST", body: { message: "more" } })).j.ok && await idle()
+        && readFileSync(argsFile, "utf8").includes("--resume\ns1\n"), readFileSync(argsFile, "utf8"));
+      writeFileSync(slow, "");
+      const run = await jget("/api/chat", { method: "POST", body: { message: "slow" } }), again = await jget("/api/chat", { method: "POST", body: { message: "x" } });
+      check("  one run at a time: a second message while it answers is busy (409)", run.j.ok && again.status === 409 && again.j.error.code === "busy", again);
+      const t0 = Date.now(), stop = await jget("/api/chat/stop", { method: "POST", body: {} });
+      check("  stop ends the run at once and says so", stop.j.stopping === true && await idle() && Date.now() - t0 < 3000 && await waitEvent((e) => e.event === "chat" && e.data.kind === "done" && e.data.stopped === true));
+      rmSync(slow);
+      const reset = await jget("/api/chat/reset", { method: "POST", body: {} }), empty = await jget("/api/chat", { method: "POST", body: { message: "  " } });
+      check("  New chat forgets the session; an empty message is bad_request", reset.j.ok && (await jget("/api/chat")).j.session === null && empty.status === 400, empty.j);
+      process.env.PATH = "/usr/bin:/bin";
+      const none = await jget("/api/chat"), refused = await jget("/api/chat", { method: "POST", body: { message: "hi" } });
+      check("with no claude on PATH the panel is told how to install it, and a message is missing_dependency", none.j.available === false && /install Claude Code/.test(none.j.hint) && refused.j.error?.code === "missing_dependency", [none.j, refused.j]);
+    } finally { process.env.PATH = PATH; }
+  }
+}
+
+// ---------------------------------------------------------------- dashboard: `agentcut ui` on a folder of projects
+console.log("dashboard");
+{
+  const { startDashboard } = await import("../src/ui.ts");
+  const home = join(tmp, "projects");
+  mkdirSync(home);
+  api.create(join(home, "alpha"), { preset: "square" });
+  ff("-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", join(home, "alpha", "media", "red.png"));
+  await applyLatest(join(home, "alpha"), [{ op: "add_clip", track: "main", src: join(home, "alpha", "media", "red.png"), duration: 2 }]);
+  mkdirSync(join(home, "not-a-project"));
+  const db = await startDashboard(home, { port: 0 }), at = { port: db.port };
+  try {
+    const list = await jget("/api/projects", at);
+    check("the dashboard lists the project folders in it (not other folders), with size, length and revision", list.j.ok && JSON.stringify(list.j.projects.map((p: any) => [p.name, p.width, p.duration, p.revision])) === '[["alpha",1080,2,1]]', list.j);
+    const page = await raw("/", at);
+    check("  its page is the editor's page marked as the dashboard", page.status === 200 && page.body.toString().includes('<div id="app" data-dashboard>'));
+    const th = await raw("/api/projects/alpha/thumb", at);
+    check("  a project's picture is a JPEG frame of it", th.status === 200 && th.type === "image/jpeg" && th.body[0] === 0xff, th.status);
+    const made = await jget("/api/create", { ...at, method: "POST", body: { name: "beta", preset: "reels" } });
+    check("create makes a project with that preset", made.j.ok && api.openProject(join(home, "beta")).load().settings.height === 1920, made.j);
+    const codes = await Promise.all([{ name: "beta" }, { name: "../x" }, { name: ".hid" }, { name: 3 }].map(async (b) => (await jget("/api/create", { ...at, method: "POST", body: b })).j.error?.code));
+    check("  an existing name is exists; a path, a dot name or no text is bad_value", JSON.stringify(codes) === '["exists","bad_value","bad_value","bad_value"]', codes);
+    const dup = await jget("/api/duplicate", { ...at, method: "POST", body: { name: "alpha", as: "alpha2" } });
+    const copy = api.openProject(join(home, "alpha2")).load();
+    check("duplicate copies the timeline (renamed) and its media into a new project", dup.j.ok && copy.name === "alpha2" && copy.tracks[0].clips.length === 1 && existsSync(join(home, "alpha2", "media", "red.png")) && Object.values(copy.assets).every((a: any) => a.path === join("media", "red.png"))
+      && (await api.info(join(home, "alpha2"), "json")).errors === 0, copy);
+    // media beside project.json (linked by a relative path, not under media/) is copied too; the history, previews and renders are not
+    ff("-f", "lavfi", "-i", "color=c=blue:size=64x64", "-frames:v", "1", join(home, "alpha", "beside.png"));
+    mkdirSync(join(home, "alpha", "renders"), { recursive: true }); writeFileSync(join(home, "alpha", "renders", "old.mp4"), "x");
+    await applyLatest(join(home, "alpha"), [{ op: "add_clip", track: "overlay", src: join(home, "alpha", "beside.png"), at: 0, duration: 1 }]);
+    const dup3 = await jget("/api/duplicate", { ...at, method: "POST", body: { name: "alpha", as: "alpha3" } }), c3 = api.openProject(join(home, "alpha3"));
+    check("duplicate copies media beside the timeline, and starts with no renders and a fresh history", dup3.j.ok && existsSync(join(home, "alpha3", "beside.png")) && (await api.info(join(home, "alpha3"), "json")).errors === 0
+      && !existsSync(join(home, "alpha3", "renders", "old.mp4")) && api.history(join(home, "alpha3")).undo.length === 0 && c3.load().name === "alpha3", { dup: dup3.j, hist: api.history(join(home, "alpha3")) });
+    const o1 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } }), o2 = await jget("/api/open", { ...at, method: "POST", body: { name: "alpha" } });
+    const ed = o1.j.ok && await jget("/api/state", { port: Number(new URL(o1.j.url).port) });
+    check("open starts that project's editor once and answers its URL", o1.j.ok && o2.j.url === o1.j.url && ed && ed.j.project === realpathSync(join(home, "alpha")), { o1: o1.j, state: ed && Object.keys(ed.j) });
+    const gone = await jget("/api/open", { ...at, method: "POST", body: { name: "nope" } }), host = await raw("/api/projects", { ...at, host: "evil.test" });
+    check("  a name with no project is not_found; another host is refused", gone.j.error?.code === "not_found" && host.status === 403, [gone.j, host.status]);
+  } finally {
+    db.server.closeAllConnections?.();
+    await new Promise((ok) => db.server.close(ok));
+  }
+  check("a folder that does not exist is not_found", await startDashboard(join(tmp, "nowhere")).then(() => "started", (e) => e.code) === "not_found");
+}
+
 // ---------------------------------------------------------------- page modules (src/ui): the ones with no DOM, checked under bun
 console.log("page modules");
 {
   const { num } = await import("../src/ui/time.ts");
   const { viewOf, clipOrder, resolveRef } = await import("../src/ui/view.ts");
   const { pts, packKf, kfAt, kfBase, kfTimes } = await import("../src/ui/keyframes.ts");
-  const { dragEdit, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
+  const { dragEdit, dropEdit, fieldValue, libEdit, clipWords, cutWords, kfMoveBatch, clipPatch, regroupIds } = await import("../src/ui/edits.ts");
   const { errText, mbOf, frameScale, prepareText } = await import("../src/ui/text.ts");
   const clip = (id: string, o: Record<string, unknown> = {}) => ({ id, type: "color", start: 0, duration: 1, ...o });
   const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -866,6 +1043,27 @@ console.log("page modules");
     JSON.stringify(dragEdit("move", att, from, all, "free", 0.25, 0, 1)) === '{"ops":[{"op":"move_clip","id":"t","track":"free"},{"op":"update_clip","id":"t","set":{"offset":0.75}}],"label":"move t"}'
     && JSON.stringify(dragEdit("move", att, from, all, "v", -0.25, 0, 1).ops) === '[{"op":"update_clip","id":"t","set":{"offset":0.25}}]');
 
+  const a1 = { asset: "a1" };
+  check("dropEdit: a clip dropped on a free lane starts at the drop time (never below 0); on a magnetic lane it goes before the first clip whose middle is later",
+    JSON.stringify(dropEdit(loose, a1, 2.34567)) === '{"op":"add_clip","track":"free","asset":"a1","at":2.346}' && dropEdit(loose, a1, -1).at === 0
+    && dropEdit(mag, a1, 0.9).index === 0 && dropEdit(mag, a1, 1.1).index === 1 && dropEdit(mag, a1, 9).index === 2);
+  const lib = (kind: string, name: string, c: Record<string, unknown> | null) => JSON.stringify(libEdit(kind, name, c as any));
+  check("libEdit: an effect goes on the clip or the whole video; a look only on a picture; a transition into any clip; a preset only on its own clip type",
+    lib("effect", "vhs", null) === '{"op":"add_effect","type":"vhs"}' && lib("effect", "vhs", clip("c")) === '{"op":"add_effect","id":"c","type":"vhs"}'
+    && lib("look", "warm", clip("v", { type: "video" })) === '{"op":"update_clip","id":"v","set":{"color":{"look":"warm"}}}' && lib("look", "warm", clip("c")) === "null" && lib("look", "warm", null) === "null"
+    && lib("transition", "zoom", clip("c")) === '{"op":"add_transition","to":"c","type":"zoom"}'
+    && lib("text", "neon", clip("t", { type: "text" })) === '{"op":"update_clip","id":"t","set":{"preset":"neon"}}' && lib("text", "neon", clip("k", { type: "captions" })) === "null"
+    && lib("caption", "pill", clip("k", { type: "captions" })) === '{"op":"update_clip","id":"k","set":{"preset":"pill"}}');
+  const tc = clip("tv", { type: "video", start: 10, in: 1, speed: 2, duration: 2 }); // plays media 1..5
+  const tw = clipWords(tc, [{ text: "a", start: 0.2, end: 0.8 }, { text: "b", start: 1.6, end: 2.4 }, { text: "c", start: 4.6, end: 5.4 }]);
+  check("clipWords: media times through in and speed onto the timeline; a word the clip does not play is off",
+    !tw[0].on && tw[1].on && near(tw[1].t0, 10.3) && near(tw[1].t1, 10.7) && tw[2].on && near(tw[2].t1, 12.2), tw);
+  check("cutWords: one remove_range over the picked words in either order, kept inside the clip",
+    JSON.stringify(cutWords(tc, tw, 2, 1)) === '{"op":"remove_range","id":"tv","start":10.3,"end":12}', cutWords(tc, tw, 2, 1));
+  const thrown = (f: () => unknown) => { try { f(); return null; } catch (e: any) { return e.code; } };
+  check("fieldValue: empty removes the field, numbers and booleans where the field takes them, text where it takes strings, else bad_value",
+    fieldValue(["number"], " ") === null && fieldValue(["number", "string"], "2.5") === 2.5 && fieldValue(["number", "string"], "50%") === "50%" && fieldValue(["boolean", "number"], "true") === true
+    && fieldValue(["string"], "12") === "12" && thrown(() => fieldValue(["number"], "abc")) === "bad_value" && thrown(() => fieldValue(["boolean"], "yes")) === "bad_value");
   const kc = clip("k", { duration: 3, keyframes: { opacity: [[0, 1], [1, 0.5]], scale: [[0.5, 1]] } });
   check("kfMoveBatch: moves the points at the dragged time on every prop that has one, clamped to the clip",
     JSON.stringify(kfMoveBatch(kc, 1, 0.5)) === '[{"op":"set_keyframes","id":"k","prop":"opacity","keyframes":[[0,1],[1.5,0.5]]}]'

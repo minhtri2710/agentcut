@@ -5,7 +5,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ANIMATABLE, EASINGS } from "../src/model.ts";
+import { COMPRESSORS, EQ_PRESETS } from "../src/audiofx.ts";
+import { GRADE_FIELDS, LOOKS } from "../src/color.ts";
+import { LIBRARY } from "../src/library.ts";
+import * as M from "../src/model.ts";
+
+/** The inspector form's tables, from the model's own: each section's fields once ([json types, doc]), the sections and keys each clip type has (fieldsFor), and the value lists of the fields that name one. */
+const SECTIONS: [string, Record<string, [string[], string]>][] = [["clip", M.COMMON_FIELDS], ["layer", M.VISUAL_FIELDS], ["media", M.MEDIA_FIELDS], ["audio", M.AUDIO_FX_FIELDS],
+  ["text", M.TEXT_FIELDS], ["captions", M.CAPTION_FIELDS], ["shape", M.SHAPE_FIELDS], ["color", M.COLOR_FIELDS], ["lottie", M.LOTTIE_FIELDS], ["compound", M.COMPOUND_FIELDS]];
+const FORM = {
+  fields: Object.fromEntries(SECTIONS),
+  types: Object.fromEntries(M.CLIP_TYPES.map((t) => { const has = M.fieldsFor(t), seen = new Set<string>(); return [t, SECTIONS.map(([n, f]) => [n, Object.keys(f).filter((k) => k in has && !seen.has(k) && seen.add(k))]).filter(([, ks]) => ks.length)]; })),
+  enums: { position: M.POSITIONS, blend: M.BLENDS, fit: M.FITS, stem: M.STEMS, align: ["left", "center", "right"], style: M.CAPTION_STYLES, shape: M.SHAPES, enter: M.ENTER_EXIT, exit: M.ENTER_EXIT,
+    transition: M.TRANSITIONS, motion: M.MOTIONS, eq: Object.keys(EQ_PRESETS), compressor: Object.keys(COMPRESSORS), look: Object.keys(LOOKS) },
+  grade: Object.entries(GRADE_FIELDS).filter(([, [t]]) => t.length === 1 && (t[0] === "number" || t[0] === "string")).map(([k, [, doc]]) => [k, doc]),
+};
 
 export const PINNED_BUN = "1.4.5";
 const ui = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "ui");
@@ -30,8 +44,8 @@ export async function buildPage(): Promise<string> {
   const from = process.cwd();
   process.chdir(join(ui, "..", ".."));
   const res = await Bun.build({
-    entrypoints: [join(ui, "main.ts")], target: "browser", format: "iife", minify: false, sourcemap: "none",
-    define: { ENUM: JSON.stringify({ animatable: ANIMATABLE, easings: EASINGS }) },
+    entrypoints: [join(ui, "main.tsx")], target: "browser", format: "iife", minify: false, sourcemap: "none",
+    define: { ENUM: JSON.stringify({ animatable: M.ANIMATABLE, easings: M.EASINGS }), FORM: JSON.stringify(FORM), LIB: JSON.stringify(LIBRARY) },
   }).finally(() => process.chdir(from));
   if (!res.success) throw new Error(res.logs.map(String).join("\n"));
   return assemble(readFileSync(join(ui, "shell.html"), "utf8"), readFileSync(join(ui, "style.css"), "utf8"), await res.outputs[0].text());

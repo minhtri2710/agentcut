@@ -107,7 +107,7 @@ export function audioSources(tl: Timeline) {
   for (const { track, clip: c, gain } of flatClips(tl.tracks)) {
     if (!hasSound(c, tl.assets)) continue;
     const a = tl.assets[c.asset], vol = Number(c.volume ?? 1) * gain;
-    if (vol > 0) out.push({ track, clip: c, path: a.path, volume: vol });
+    if (vol > 0) out.push({ track, clip: c, path: c._stem ?? a.path, volume: vol }); // _stem: the separated stem (ops-vision attachPrepared/attachStems)
   }
   return out;
 }
@@ -176,7 +176,8 @@ export async function buildAudio(tl: Timeline, outWav: string, t0 = 0, t1?: numb
     // one period cut or padded to N samples, then looped in source time (before atempo); a clip that never wraps skips it. Memory follows the period, not the clip (10 min is ~130 MB)
     const per = period === null ? 0 : Math.round(period * sr);
     const wrap = per > 0 && cin + span > period! + 1e-6 ? [`aresample=${sr}`, `atrim=end_sample=${per}`, `apad=whole_len=${per}`, `aloop=loop=-1:size=${per}`, "asetpts=PTS-STARTPTS"] : [];
-    const base = [...wrap, `atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
+    // first_pts=0: a sound that starts after 0 s in its file keeps that lead-in as silence (atrim + the rebase below would play it early); the separated stems are made the same way
+    const base = ["aresample=first_pts=0", ...wrap, `atrim=start=${cin}:duration=${span}`, "asetpts=PTS-STARTPTS", ...(c.reverse ? ["areverse"] : [])];
     const head = [...base, ...(runs ? [] : atempo(speed)), `aresample=${sr}`, STEREO]; // the plain source span: what denoise and normalize measure (a ramp changes neither level nor noise floor)
     const ch = [...head];
     if (fx("pitch")) ch.push("apad=pad_dur=0.1", ...FX.pitchFilters(fx("pitch"), sr), `atrim=duration=${dur}`); // padding lets atempo flush the clip's last samples

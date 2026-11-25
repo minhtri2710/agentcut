@@ -8,6 +8,7 @@ import {
   type Clip, clipDur, clipEnd, clipStart, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
 } from "./model.ts";
 import { type Layer, refuseJpegSize, Renderer, renderTiles, reviewScale, tileSize } from "./render.ts";
+import { cachedFaces } from "./ops-vision.ts";
 import { safeZones } from "./safe.ts";
 
 const r3 = (x: number) => +x.toFixed(3);
@@ -121,6 +122,7 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
   // text: reading time + safe area (boxes measured by the renderer's own layout at a small scale)
   const cps = o.cps ?? 15;
   const r = new Renderer(structuredClone(tl), root, reviewScale(W));
+  let faceChecks: { clips: number; unchecked?: { id: string; reason: string }[] } = { clips: 0 };
   try {
     const z = safeZones(W, H), [sx, sy, sw, sh] = z.title, tol = Math.max(0.5, 1 / r.k); // the preview is drawn at scale k with its height rounded to an even size: a box edge is known to one preview pixel
     const texts = r.layers.filter((L) => TEXTY.has(L.type));
@@ -150,6 +152,7 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
         }
       }
     }
+    faceChecks = await textOverFaces(tl, root, r, texts, out, o.signal);
   } finally { r.close(); }
 
   // black frames: sample the composite at low resolution
@@ -158,7 +161,54 @@ export async function review(tl: Timeline, root: string, o: ReviewOpts = {}) {
   out.sort((a, b) => a.t - b.t);
   const counts: Record<string, number> = {};
   for (const f of out) counts[f.type] = (counts[f.type] ?? 0) + 1;
-  return { clean: !out.length, findings: out, counts, checked: { duration: r3(T), shots: shots.length, beats: beats.length ? `${beats.length} (${from})` : "none known", black_frames: o.black !== false } };
+  return { clean: !out.length, findings: out, counts, checked: { duration: r3(T), shots: shots.length, beats: beats.length ? `${beats.length} (${from})` : "none known", black_frames: o.black !== false, faces: faceChecks } };
+}
+
+/** A text box is reported over a face when their overlap is at least this share of the smaller box (a small label inside the face counts,
+ *  and so does a wide band across its chin). */
+const FACE_COVER = 0.25;
+
+/** text_over_face: text and captions boxes over the largest face of a picture clip drawn below them (on a lower track), read from cached subject
+ *  analyses only. Returns how many picture clips were checked and which could not be (no cached analysis, or a layout vision ops cannot map). */
+async function textOverFaces(tl: Timeline, root: string, r: Renderer, texts: Layer[], out: Finding[], signal?: AbortSignal) {
+  const trackOf = new Map<string, number>();
+  tl.tracks.forEach((tr, i) => { for (const c of tr.clips) trackOf.set(c.id, i); });
+  const faces = new Map<string, ReturnType<typeof cachedFaces>>(), unchecked: { id: string; reason: string }[] = [];
+  for (const L of texts) {
+    const ti = trackOf.get(L.c.id);
+    if (ti === undefined) continue; // inside a compound
+    for (const tr of visual({ ...tl, tracks: tl.tracks.slice(0, ti) })) {
+      for (const u of tr.clips) {
+        if ((u.type !== "video" && u.type !== "image") || u.enabled === false) continue;
+        const a = Math.max(L.start, clipStart(u)), b = Math.min(L.end, clipEnd(u));
+        if (b - a <= 0) continue;
+        if (!faces.has(u.id)) {
+          const f = cachedFaces(root, tl, u);
+          faces.set(u.id, f);
+          if ("unchecked" in f) unchecked.push({ id: u.id, reason: f.unchecked });
+        }
+        const f = faces.get(u.id)!;
+        if ("unchecked" in f) continue;
+        const hits: { T: number; share: number }[] = [];
+        for (let T = a + f.step / 2; T < b; T += f.step) {
+          signal?.throwIfAborted();
+          const fb = f.at(T);
+            if (!fb) continue;
+          const tb = await r.layoutBox(L, T - L.start);
+          if (!tb) continue;
+          const [x, y, w, h] = tb.map((v) => v / r.k);
+          const ix = Math.min(x + w, fb[0] + fb[2]) - Math.max(x, fb[0]), iy = Math.min(y + h, fb[1] + fb[3]) - Math.max(y, fb[1]);
+          const inter = ix > 0 && iy > 0 ? ix * iy : 0;
+          if (inter >= FACE_COVER * Math.min(w * h, fb[2] * fb[3])) hits.push({ T, share: inter / (fb[2] * fb[3]) });
+        }
+        if (!hits.length) continue;
+        const t0 = hits[0].T, t1 = hits[hits.length - 1].T, most = Math.max(...hits.map((h) => h.share));
+        out.push({ type: "text_over_face", t: r3(t0), end: r3(t1), id: L.c.id, message: `${L.c.id} covers up to ${Math.round(most * 100)}% of the face in ${u.id} (${t0.toFixed(2)}-${t1.toFixed(2)}s)`,
+          hint: `move ${L.c.id} off the face (y / position / margin), or shorten it; check with preview_frame at ${t0.toFixed(2)}` });
+      }
+    }
+  }
+  return { clips: [...faces.values()].filter((f) => !("unchecked" in f)).length, ...(unchecked.length && { unchecked }) };
 }
 
 /** clip-local times at which a text layer's box is measured: middle (text), each caption page start */

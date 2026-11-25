@@ -7,7 +7,7 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 
 ## Mental model
 - Canvas: settings.width x height @ fps. Presets: reels/tiktok/shorts 1080x1920, youtube 1920x1080, square, portrait 1080x1350, 4k.
-- Tracks are layers: tracks[0] is drawn first (BOTTOM); later tracks draw ON TOP. Audio tracks are not drawn.
+- Tracks are layers: tracks[0] is drawn first (BOTTOM); later tracks draw ON TOP. Audio tracks are not drawn. A track with locked: true (a human locks it in the UI) refuses every op that would change, add or remove its clips (code locked); its computed starts and lengths still follow other edits. Leave it alone unless asked: update_track set={locked: false} unlocks it.
 - Default tracks: main (magnetic) · overlay · text · voice (audio, role=voice) · music (audio, ducks -20 dB under voice).
 - Magnetic track (Final Cut primary storyline): clips play back-to-back in list order, start is computed; a clip's
   transition overlaps it with the previous clip. Reorder with move_clip index. gap clips = pauses.
@@ -43,11 +43,13 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    CHECK what stills can't show (CLI: agentcut review | audio | motion):
    review        editorial lint with times: text outside the safe area / under 9:16 app UI, text too short to read,
                  shots too short/long, cuts off the beat (beats='music' or a list), validation warnings,
-                 black frames (judged on the picture below text and captions: footage that is black under them is reported, a title card on black too, with text_ids)
+                 black frames (judged on the picture below text and captions: footage that is black under them is reported, a title card on black too, with text_ids),
+                 text or captions covering a face in the picture below (text_over_face; read only from a subject analysis already cached by
+                 analyze_subject, auto_reframe or track_to: checked.faces.unchecked lists the clips without one, or with a moved/animated layout)
    audio_check   image of every track's waveform + the rendered mix (+ spectrogram) with clip boundaries and markers;
                  findings: clipping/overs, true peak, long silences, audio cut off without fade, music not ducked under voice
    motion_strip  10 consecutive frames per transition (or start/end for any animation) to judge motion
-5. render draft=true first, then final. The result has has_audio, a contact sheet (previews/render-<name>-<time>.sheet.jpg) + loudness (~ -14 LUFS). A timeline with no audible clip renders without an audio track (has_audio false, a warning, no loudness). Re-render a section with start/end.
+5. render draft=true first, then final. The result has has_audio, a contact sheet (previews/render-<name>-<time>.sheet.jpg) + loudness (~ -14 LUFS) + qa: the written file checked against what was asked (size, fps, length, sound: missing_audio, size_mismatch, fps_mismatch, duration_mismatch) and frozen_picture (the picture holds still 1 s or more while a video clip plays: still footage, or frames the decode repeated; ids name the clips). Not for .gif. A timeline with no audible clip renders without an audio track (has_audio false, a warning, no loudness). Re-render a section with start/end.
    Output by extension: .mp4 (codec h264|hevc), .mov (ProRes; transparent background "#00000000" -> ProRes 4444 with alpha),
    .webm (VP9, alpha ok), .gif, or audio only .wav/.mp3/.m4a/.flac,
    or one still frame at start as .png/.webp (alpha kept with a transparent background; webp lossless at quality=high; no end, sheet or loudness). Check result.warnings.
@@ -91,8 +93,9 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    asset changed; move the captions clip back, or remove it and run add_captions again, which loses any hand-corrected words. A transcript's captions go on a
    track that is not magnetic.
    "transcribe_range":[start,end] (seconds of the media) transcribes only that stretch, and the words stay within it. Silences (0.4 s or more below
-   -35 dB, analyze_silence's defaults) are left out before whisper (the result's 'skipped_leading' is the seconds left out at the start; whisper times words into
-   a silence it hears), but a music lead-in is not silence: pass the speech only, since whisper may invent text over a long music-only stretch and times words
+   -35 dB, analyze_silence's defaults, or 6 dB over a steady hiss or room tone above that) are left out before whisper (the result's 'skipped_leading' is the seconds
+   left out at the start; whisper times words into a silence it hears, and a word it starts in the 0.25 s put between two speech pieces starts at the next one), but a
+   steady tone or hum is never taken for the noise floor, and a music lead-in is not silence: pass the speech only, since whisper may invent text over a long music-only stretch and times words
    early after a music lead-in; analyze_silence or the voiceover's length gives the span
 {"op":"add_voiceover","text":"Xin chào các bạn","voice":"Linh","captions":"tiktok"}
    voice picks the TTS provider: "Linh" (OS voice) | "piper" / "piper:/abs/vi.onnx" (env AGENTCUT_PIPER_MODEL) |
@@ -114,6 +117,7 @@ capabilities.engines says which transcription, TTS and vision engines are usable
    The beats that every and offset pick must each be 0 s or more and later than the one before, else bad_beats. Each retimed clip (not a kept_computed one) must span more than 0.05 s between its two cuts (the first clip from 0 s), else bad_beats; for close beats, a larger every skips them, and in a typed list you can leave one out.
    Every clip the list reaches is named in retimed or kept_computed; a clip of the track named in neither was not reached (the list ran out, or it is the last clip).
 {"op":"remove_silence","id":"vid1"}      {"op":"freeze_frame","id":"vid1","at":3.2,"duration":1.5}
+{"op":"remove_range","id":"vid1","start":2.1,"end":3.4}      cut a stretch (timeline seconds, e.g. the words of a transcript) out of a video/audio clip; detached audio follows
 {"op":"update_clip","id":"vid2","set":{"reverse":true}}     {"op":"update_clip","id":"vid2","set":{"speed":2}}   half as long, same source
 {"op":"set_keyframes","id":"vid3","prop":"speed","keyframes":[[0,1],[1,0.25,"ease_in_out"],[2,3]]}   speed ramp
 {"op":"set_keyframes","id":"img2","prop":"scale","keyframes":[[0,1],[3,1.2,"ease_in_out"]]}
@@ -146,6 +150,9 @@ low_pass, low_shelf, high_shelf, de_ess] · compressor "voice"|"music"|"gentle" 
 (settings.loudness, -14) after all of this.
 {"op":"enhance_voice","track":"voice"}             denoise + high-pass + voice EQ + de-ess + compressor + normalize for every clip on the track
 {"op":"enhance_voice","id":"main#0","strength":0.8}  one clip (a video with detached audio enhances its audio clip, or every piece of it)
+{"op":"separate_audio","id":"vid1","stem":"voice"}   only the speech of a clip's sound (stem music: the rest); AI separation (Spleeter 2 stems) computed by prepare,
+  cached, like remove_background (models 2 x 39 MB, allow_download); the stems add up to the source. Both parts: duplicate_clip the audio clip (detach_audio a video first),
+  stem voice on one and music on the other, then lower or duck the music. A video with detached audio sets it on its audio clips; detach/attach move stem with the sound.
 {"op":"update_track","id":"music","set":{"eq":"low_cut","compressor":"music","pan":-0.2}}   track = bus: eq/compressor/pan process the
   track mix once; denoise/normalize/pitch on a track apply to each of its clips that does not set its own.
 Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) writes the captions clips in timeline time;
@@ -153,7 +160,8 @@ Subtitles: export_captions (CLI: agentcut captions -o subs.srt | subs.vtt) write
 
 ## AI vision (optional: needs uv, packages download on first use; results cached in .agentcut/cache)
 {"op":"auto_reframe","id":"vid1","smooth":0.8}     16:9 shot in 9:16: smoothed keyframes.focus_x/focus_y (the source point kept at the view centre) follow the face (YuNet, with a confidence score), else the most salient region
-{"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it
+{"op":"remove_background","id":"vid2","model":"u2net_human_seg"}   alpha matte (cached, deterministic); off=true removes it; model rvm_mobilenetv3 (15 MB, weights GPL-3.0,
+  listed with its licence in capabilities.matte_models) keeps a person's matte steady from frame to frame in video
 {"op":"track_to","id":"txt1","target":"vid1","box":[400,600,200,200],"at":2}   overlay follows the object in the box
   (canvas px at timeline time 'at'; read it off preview_frame); no box = follow the subject. Writes keyframes x/y + attach_to.
   -> targets must have a static layout (no position/rotation/motion/speed ramp); without uv you get code missing_dependency.
@@ -174,7 +182,7 @@ These ops are instant: they record the request (clip.pending; result pending=tru
   prepare (CLI: agentcut prepare --author NAME, or agentcut prepare --status; MCP: prepare -> job_id, poll render_status for progress, cancel_job to stop it): it computes the mattes /
   tracks (seconds per clip; cached by file hash + params) and writes the keyframes. While a model downloads, the running job (MCP, UI) and the
   CLI's stderr progress lines (not with --quiet) carry download {model, bytes, total_bytes}; the field is gone once the job settles. Until then preview/video render fail fast with
-  code not_prepared (details list what is missing; audio-only renders skip it) - they never compute. A repeated op on cached analysis applies at once.
+  code not_prepared (details list what is missing; audio-only renders and audio_check need only separate_audio's stems) - they never compute. A repeated op on cached analysis applies at once.
 Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: cache) covers .agentcut/cache + previews/;
   prune deletes unreferenced files first (max_mb also referenced ones: prepare rebuilds them). previews/ is capped
   automatically at AGENTCUT_PREVIEWS_MAX_MB (200; 0 = off), oldest first. info also counts .agentcut/tmp (render scratch, listed as tmp and not in total);
@@ -185,7 +193,7 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - enter/exit: fade, pop, bounce, flip, slide_*, zoom_in, zoom_out, wipe_*, blur, drop, spin, typewriter (text), words (text)
 - motion: ken_burns, ken_burns_out, zoom_slow, pan_left/right/up/down, pulse, float, sway, shake
 - effects (clip or whole video, optional start/duration window; flash: at + duration): glitch, rgb_split, flash, grain, zoom_blur, vignette, vhs, letterbox, strobe, blur, bw, invert, hue, brightness, contrast, saturate
-- color (grade, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel) as a base, exposure (stops),
+- color (grade, video/image): look (cinematic|warm|cool|vintage|bw|vivid|fade|teal_orange|moody|pastel; film stocks kodak_gold|portra|velvia|cinestill|bleach_bypass|kodachrome) as a base, exposure (stops),
   contrast, saturation, vibrance, temperature/tint (-1..1), lift/gamma/gain [r,g,b] -1..1, curves {master|r|g|b: [[x,y],..]},
   hsl {reds|yellows|greens|cyans|blues|magentas|all: {hue, saturation, lightness}}
 - filters (decode-time, video/image, before color): eq, lut (.cube), chromakey, stabilize, denoise, sharpen, vignette, blur, grayscale, hflip, vflip
@@ -204,8 +212,9 @@ Cache: agentcut cache [info] | cache prune [--max-mb N] [--older-than 7d] (MCP: 
 - The project folder must be on a volume with hard links (APFS, NTFS, ext4; not exFAT or FAT): project.json and the lock need them, and error unsupported_fs says so. Media files may stay on any volume. A folder you cannot write to (permissions, read-only volume) is error not_writable, and its hint names the folder.
 
 ## Working alongside a human (agentcut ui)
-- \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (timeline, viewer, inspector, keyframe
-  editor, compound open/expand/regroup, prepare, render). The human's edits land in the same project.json, so re-read (info /
+- \`agentcut ui [DIR] [--port 4810]\` (0..65535) serves a local web UI on 127.0.0.1 (on a folder with no project: a dashboard of the projects in its subfolders, to open, create or duplicate; timeline, viewer, inspector (a form of the clip's fields, or its JSON), keyframe
+  editor, compound open/expand/regroup, prepare, render, an export dialog showing the render's qa, a media pool, a library of looks, effects, transitions and text styles with rendered previews (click or drag onto a clip), a transcript panel (click a word to seek, cut a run of words with remove_range), a chat panel (a local Claude Code run per message with only the agentcut MCP tools of this project; its edits are authored by its MCP client name), review and undo-history panels, English or Vietnamese). Files the human drops on the media pool are
+  copied into the project's media/ (never over a file there) and imported. The human's edits land in the same project.json, so re-read (info /
   project_info) before planning more edits. UI previews (sheets, play drafts) live in previews/ui/, capped (oldest dropped).
   The UI's Prepare downloads a missing vision model only after the human confirms it in a dialog.
 - project.json has a "revision" that goes up by 1 on every save. Every call that writes history needs the revision you last read, so an edit never lands on a state you did not see

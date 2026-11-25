@@ -498,6 +498,7 @@ export function summarize(tl: Timeline): string {
       for (const k of ["reverse", "freeze", "loop", "until_end"]) if (c[k]) x.push(k);
       if (c.pending) x.push(`pending=${Object.keys(c.pending).join(",")}`);
       if (c.remove_background) x.push("remove_background");
+      if (c.stem) x.push(`stem=${c.stem}`);
       if (c.attach_to) x.push(`attached→${c.attach_to}${c.offset ? `+${c.offset}` : ""}`);
       if (typeof c.match_duration === "string") { const eo = round6(parseTime(c.end_offset ?? 0)); x.push(`length→${c.match_duration}${eo ? `${eo > 0 ? "-" : "+"}${Math.abs(eo)}` : ""}`); }
       if (c.enabled === false) x.push("DISABLED");

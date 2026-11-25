@@ -13,7 +13,7 @@ import { scopes as frameScopes } from "./scopes.ts";
 import * as M from "./model.ts";
 import * as SUB from "./subtitles.ts";
 import { applyOps, opsDoc as opsDocs, OPS } from "./ops.ts";
-import { attachPrepared } from "./ops-vision.ts";
+import { attachPrepared, attachStems } from "./ops-vision.ts";
 import * as CACHE from "./cache.ts";
 import * as PREP from "./prepare.ts";
 import { analyzeSubject, modelCached, visionEngine } from "./vision.ts";
@@ -94,6 +94,50 @@ const loadForText = async (tl: M.Timeline) => {
   } catch { /* fall through: validate reports what is wrong, and a font check may still run */ }
   await loadCanvas();
 };
+/** A layer that hides everything under it while it lasts: a full-canvas, fully opaque picture placed plainly (nothing that moves, shrinks, fades or blends it). */
+function hidesBelow(tl: M.Timeline, c: M.Clip) {
+  if (c.enabled === false || Number(c.opacity ?? 1) < 1 || (c.blend ?? "normal") !== "normal"
+    || ["size", "x", "y", "position", "scale", "scale_x", "scale_y", "rotation", "motion", "enter", "exit", "mask", "keyframes", "radius", "transition", "remove_background"].some((k) => c[k] != null)) return false;
+  if (c.type === "color") return c.gradient ? (c.gradient.colors || []).every((x: unknown) => M.parseColor(x)[3] === 255) : M.parseColor(c.color ?? "black")[3] === 255;
+  if (c.type !== "video" && c.type !== "image") return false;
+  const keyed = (c.filters || []).some((f: any) => (typeof f === "string" ? f : f?.type) === "chromakey");
+  return !tl.assets[c.asset]?.alpha && !keyed && ["cover", "fill", "blur"].includes(c.fit ?? "cover");
+}
+/** Clip-relative windows in which an effect lets the layer below show: strobe drops the layer's opacity and blur fades its edges (effects.ts, same window rule); the others draw over an opaque layer. */
+const seeThrough = (c: M.Clip): [number, number][] => (c.effects || []).map((f: any) => typeof f === "string" ? { type: f } : f)
+  .filter((f: any) => f?.type === "strobe" || f?.type === "blur")
+  .map((f: any) => { const s = f.start !== undefined ? M.parseTime(f.start) : 0; return [s, f.duration !== undefined ? s + M.parseTime(f.duration) : Infinity]; });
+const minus = (spans: [number, number][], cuts: [number, number][]) =>
+  cuts.reduce((acc, [a, b]) => acc.flatMap(([x, y]): [number, number][] => [[x, Math.min(y, a)], [Math.max(x, b), y]]).filter(([x, y]) => y - x > 1e-6), spans);
+/** The spans in which each enabled video clip plays and can be seen (compounds included, in timeline time), for the render's frozen_picture check: a layer above that hides it takes its span out. */
+function seenVideo(tl: M.Timeline) {
+  const out: { id: string; start: number; end: number }[] = [];
+  const walk = (tracks: M.Track[], at: (t: number) => number, win: [number, number], above: [number, number][]) => {
+    const shown = tracks.filter((t) => !t.hidden && t.kind !== "audio");
+    shown.forEach((tr, i) => {
+      const cover = (k: M.Clip): [number, number][] => {
+        if (!hidesBelow(tl, k)) return [];
+        const s = M.clipStart(k);
+        return minus([[s, M.clipEnd(k)]], seeThrough(k).map(([a, b]) => [s + a, s + b])).map(([a, b]) => [at(a), at(b)]);
+      };
+      const upper = [...above, ...shown.slice(i + 1).flatMap((u) => u.clips.flatMap(cover))];
+      tr.clips.forEach((c, ci) => {
+        const covers = [...upper, ...tr.clips.slice(ci + 1).flatMap(cover)]; // a later clip of the same track is drawn over it where they overlap
+        if (c.enabled === false || Number(c.opacity ?? 1) === 0 && !c.keyframes?.opacity) return; // a layer drawn at opacity 0 shows nothing of itself or what it nests
+        const span: [number, number] = [Math.max(win[0], at(M.clipStart(c))), Math.min(win[1], at(M.clipEnd(c)))];
+        if (span[1] - span[0] <= 1e-6) return;
+        if (c.type === "compound" && Array.isArray(c.tracks)) {
+          const s = M.clipStart(c), cin = M.parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1;
+          walk(c.tracks, (t) => at(s + (t - cin) / sp), span, covers);
+        } else if (c.type === "video" && !c.freeze)
+          out.push(...minus([span], covers).map(([x, y]) => ({ id: c.id, start: x, end: y })));
+      });
+    });
+  };
+  walk(tl.tracks, (t) => t, [-Infinity, Infinity], []);
+  return out;
+}
+
 /** timeline ready to draw: absolute paths + prepared background mattes (EditError not_prepared if prepare is needed) */
 export const drawable = (p: Project, tl: M.Timeline) => attachPrepared(p.absolutized(tl), p.root);
 /** write an output file; files in previews/ keep that folder under its automatic size cap */
@@ -392,7 +436,7 @@ export async function audioCheck(project: string | undefined, o: { source?: stri
   if (p && tl) p.requireValid(tl);
   await loadCanvas();
   const { inspectAudio } = await import("./inspect-audio.ts");
-  const res = await inspectAudio(p && tl ? p.absolutized(tl) : null, {
+  const res = await inspectAudio(p && tl ? attachStems(p.absolutized(tl), p.root) : null, {
     source: o.source ? presolve(o.source) : undefined, spectrogram: o.spectrogram, width: o.width, minSilence: o.minSilence, signal: o.signal,
     start: o.start !== undefined ? M.parseTime(o.start) : undefined, end: o.end !== undefined ? M.parseTime(o.end) : undefined });
   const out = o.out ? (isAbsolute(o.out) ? o.out : presolve(o.out)) : p ? join(p.root, `previews/audio-${Date.now()}.png`) : presolve(`${o.source}.audio.png`);
@@ -424,7 +468,7 @@ export async function motion(project: string | undefined, o: { start?: number | 
   return { images, strips: r.strips };
 }
 
-/** Editorial lint with times: unsafe/short text, shot lengths, off-beat cuts, black frames + validation warnings. */
+/** Editorial lint with times: unsafe/short text, text over faces, shot lengths, off-beat cuts, black frames + validation warnings. */
 export async function review(project: string | undefined, o: { beats?: number[] | string; minShot?: number; maxShot?: number; cps?: number; black?: boolean; signal?: AbortSignal; progress?: (done: number, total: number) => void } = {}) {
   inRange("min_shot", o.minShot, 0);
   inRange("max_shot", o.maxShot, 0, Infinity, { open: true });
@@ -531,8 +575,8 @@ export async function render(project: string | undefined, o: {
     }
     const { contactSheet } = await renderMod();
     const { renderVideo, AUDIO_FORMATS } = await import("./encode.ts");
-    // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, so no not_prepared gate
-    const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? p.absolutized(tl) : drawable(p, tl), p.root, out, {
+    // audio-only outputs mix sound only: no mattes or reframe/track keyframes needed, only the stems of separate_audio clips
+    const res: M.Dict = await renderVideo(AUDIO_FORMATS[extname(out).toLowerCase()] ? attachStems(p.absolutized(tl), p.root) : drawable(p, tl), p.root, out, {
       start, end: o.end !== undefined ? M.parseTime(o.end) : undefined, scale, quality, workers: o.workers,
       hwEncode: o.fast ?? !!o.draft, fontDirs: [join(p.root, "fonts")], progress: o.progress, codec: o.codec as any, alpha: o.alpha, signal: o.signal,
     });
@@ -545,6 +589,12 @@ export async function render(project: string | undefined, o: {
       try { await SUB.embedSubtitles(out, inRange, p.root, o.signal); }
       catch (e) { throw e instanceof M.EditError && e.code === "aborted" ? new M.EditError(e.message, "aborted", `the output was written without its subtitle stream: ${out}`) : e; }
       res.subtitles = { cues: inRange.length, codec: SUB.embedCodec(out) };
+    }
+    if (!out.endsWith(".gif")) { // a gif is resampled to 15 fps and 540 px on purpose: nothing to compare
+      try {
+        o.signal?.throwIfAborted();
+        res.qa = await AN.outputQa(out, { duration: res.duration, width: res.width, height: res.height, fps: res.fps, has_audio: res.has_audio }, seenVideo(M.resolve(M.clone(tl))), start, o.signal);
+      } catch (e: any) { res.qa_error = o.signal?.aborted ? "skipped: cancelled after the output was written" : `skipped: ${e?.message ?? e}`; } // the output is written: a QA failure never fails the render
     }
     FB.recordEvent({ type: "render", speed_x: res.speed_x, frames: res.frames, width: res.width, height: res.height, workers: res.workers,
       encoder: res.encoder, seconds: res.render_seconds, layers: tl.tracks.reduce((n, t) => n + t.clips.length, 0),
@@ -595,7 +645,7 @@ export function capabilities() {
     render_codecs: ["auto", "h264", "hevc", "prores", "prores_4444", "vp9"],
     subtitle_formats: [".srt", ".vtt (export_captions)", "render subtitles=true: soft track in .mp4/.mov (mov_text), .mkv (srt), .webm (webvtt)"],
     audio_fx: { ...AFX.AUDIO_FX_DOC, eq_presets: AFX.EQ_PRESETS, eq_bands: Object.fromEntries(Object.entries(AFX.EQ_BANDS).map(([k, v]) => [k, v.doc])), compressor_presets: AFX.COMPRESSORS },
-    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name) })),
+    matte_models: M.MATTE_MODELS.map((name) => ({ name, approx_mb: M.MATTE_MB[name], cached: modelCached(name), ...(M.MATTE_PINS[name].licence && { licence: M.MATTE_PINS[name].licence }) })),
     engines: { transcribe: AN.transcribeEngine(), tts: AN.ttsProviders(), vision: visionEngine() },
     ops: Object.keys(OPS),
   };
