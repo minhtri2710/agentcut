@@ -306,6 +306,7 @@ function followTarget(tl: Timeline, c: Clip | null, ref: string): string {
   const bad = (why: string, fix: string) => new EditError(`match_duration '${ref}': ${why}`, "bad_ref", fix);
   if (t === c) throw bad("a clip cannot follow its own duration", "name another clip");
   if (t.until_end) throw bad(`'${t.id}' has until_end, so its length follows the timeline end`, "follow a clip with its own duration");
+  if (t.end_at !== undefined) throw bad(`'${t.id}' ends where '${t.end_at}' starts (end_at), so its length is settled last`, "follow a clip with its own duration");
   const clips = tl.tracks.flatMap((x) => x.clips);
   for (let x: Clip | undefined = t, seen = new Set<Clip>(); x && lengthTarget(x) !== undefined && !seen.has(x); x = clips.find((y) => y.id === lengthTarget(x!))) {
     seen.add(x);
@@ -322,8 +323,8 @@ function lengthOnce(c: Clip) {
     throw new EditError("until_end and match_duration both set the length; keep one", "bad_value", `update_clip id=${c.id} until_end=null, or match_duration=null`);
 }
 
-/** a clip whose length was computed (it followed a clip, or its attach_to target) or stretched (until_end) becomes a plain-duration clip (its resolved length stays) */
-function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } delete c.until_end; }
+/** a clip whose length was computed (it followed a clip, or its attach_to target, or ended at one) or stretched (until_end) becomes a plain-duration clip (its resolved length stays) */
+function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } delete c.until_end; delete c.end_at; }
 
 /** Put a piece cut from a clip at timeline time `start`. An attached piece keeps its target and moves by offset (resolve() recomputes its start from the target); others set start on non-magnetic tracks. */
 function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
@@ -414,11 +415,11 @@ op("add_sequence", "Append many clips to a (magnetic) track: the fastest way to 
 function retime(tl: Timeline, c: Clip, s0: number, d0: number, patch: Dict) {
   const r = s0 / (Number(c.speed ?? 1) || 1);
   if (r === 1 || c.keyframes?.speed) return;
-  const scaled = !("duration" in patch) && !c.freeze && !c.until_end && !computedDuration(c);
+  const scaled = !("duration" in patch) && !c.freeze && !c.until_end && c.end_at === undefined && !computedDuration(c);
   if (scaled) { c.duration = round6(clipDur(c) * r); scaleKfs(c, r, patch); }
   const d1 = clipDur(c);
   for (const [, au] of linkedAudio(tl, c)) {
-    if (Math.abs((Number(au.speed ?? 1) || 1) - s0) > 1e-6 || au.until_end || computedDuration(au)) continue;
+    if (Math.abs((Number(au.speed ?? 1) || 1) - s0) > 1e-6 || au.until_end || au.end_at !== undefined || computedDuration(au)) continue;
     const off = parseTime(au.offset ?? 0), ad = clipDur(au), tail = off + ad - d0;
     if (c.speed === undefined) delete au.speed; else au.speed = c.speed;
     au.offset = round6(off * r);
@@ -542,7 +543,7 @@ function renameNested(tl: Timeline, c: Clip) {
     if (x.type === "compound") walk(x.tracks ?? []);
   } };
   walk(c.tracks ?? []);
-  const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (typeof x.match_duration === "string" && map.has(x.match_duration)) x.match_duration = map.get(x.match_duration); if (x.type === "compound") fix(x.tracks ?? []); } };
+  const fix = (tracks: Track[]) => { for (const t of tracks) for (const x of t.clips) { if (x.attach_to && map.has(x.attach_to)) x.attach_to = map.get(x.attach_to); if (typeof x.match_duration === "string" && map.has(x.match_duration)) x.match_duration = map.get(x.match_duration); if (typeof x.end_at === "string" && map.has(x.end_at)) x.end_at = map.get(x.end_at); if (x.type === "compound") fix(x.tracks ?? []); } };
   fix(c.tracks ?? []);
 }
 
@@ -826,7 +827,7 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
     const starts = [0, ...cuts.slice(1, clips.length)]; // the first clip starts at 0, so its span ends at the second cut
     starts.forEach((t, i) => { if (i && t - starts[i - 1] <= MIN_SPAN && !computedDuration(clips[i - 1])) throw new EditError(`the cut at ${t} s is ${+(t - starts[i - 1]).toFixed(6)} s after ${starts[i - 1]} s: a clip needs more than ${MIN_SPAN} s`, "bad_beats", rise); });
     resolve(tl);
-    const origin = clipStart(clips[0]); // beat time 0
+    const origin = clips.length ? clipStart(clips[0]) : 0; // beat time 0
     const changed: Clip[] = [], kept: string[] = [];
     clips.forEach((c, i) => {
       if (i + 1 >= starts.length) return;
@@ -836,7 +837,7 @@ op("snap_to_beats", "Retime a magnetic track so every cut lands on a beat. beats
       c.duration = round6(starts[i + 1] - starts[i] + td); delete c.until_end; changed.push(c);
     });
     resolve(tl);
-    if (Math.abs(clipStart(clips[0]) - origin) > 1e-6) // a transition into it is capped by its length: a new length moves its start, and every beat after it
+    if (clips.length && Math.abs(clipStart(clips[0]) - origin) > 1e-6) // a transition into it is capped by its length: a new length moves its start, and every beat after it
       throw new EditError(`retiming '${clips[0].id}' moves its start from ${round6(origin)} s to ${round6(clipStart(clips[0]))} s: the transition into it is longer than it can overlap`, "bad_beats", `shorten or remove that transition (update_clip id=${clips[0].id} set={transition: null}), or snap from another clip`);
     return { retimed: changed.map((c) => ({ id: c.id, duration: c.duration })), kept_computed: kept, beats_used: changed.length, track_end: +trackEnd(tr).toFixed(3) };
   });
@@ -947,12 +948,8 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
     const file = (v: unknown) => (typeof v === "string" && own(tl.assets, v) ? p.abs(tl.assets[v].path) : v); // an asset id names the project's file, not one relative to the current directory
     const args: Dict = { ...a };
     for (const [k, s] of Object.entries(t.args)) if (s.kind === "audio" || s.kind === "visual") args[k] = file(a[k]); else if (s.kind === "media" && Array.isArray(a[k])) args[k] = a[k].map(file);
-    const main = tl.tracks.find((x) => x.id === "main"), first = main?.clips.length ?? 0;
-    if (first && Object.entries(t.args).some(([k, s]) => s.kind === "audio" && args[k])) { // a new section's music takes over: a bed that ran to the end now ends where the section starts
-      resolve(tl);
-      const at = trackEnd(main!);
-      for (const c of tl.tracks.find((x) => x.id === "music")?.clips ?? []) if (c.until_end && clipStart(c) < at) { c.duration = round6(at - clipStart(c)); delete c.until_end; }
-    }
+    const first = tl.tracks.find((x) => x.id === "main")?.clips.length ?? 0;
+    const beds = first && Object.entries(t.args).some(([k, s]) => s.kind === "audio" && args[k]) ? (tl.tracks.find((x) => x.id === "music")?.clips ?? []).filter((c) => c.until_end) : [];
     const ops = t.build(args, { width: tl.settings.width, height: tl.settings.height, first });
     const results: Dict[] = [];
     for (const [i, o] of ops.entries()) {
@@ -960,6 +957,9 @@ op("apply_template", "Build a whole video from a template (expands into ordinary
       try { results.push({ op: name, ...await OPS[name].fn(p, tl, args) }); }
       catch (e: any) { if (e instanceof EditError) e.path = `template ${a.name} step ${i} (${name})`; throw e; }
     }
+    const opening = findTrack(tl, "main").clips[first]; // a new section's music takes over: a bed that ran to the end now ends where the section starts, and keeps ending there
+    resolve(tl);
+    for (const c of beds) if (clipStart(c) < clipStart(opening)) { delete c.until_end; c.end_at = opening.id; }
     return { template: a.name, steps: results.length, results, duration: totalDuration(resolve(tl)) };
   });
 
@@ -996,7 +996,7 @@ const ALIASES: Record<string, string> = { ripple_delete: "remove_clip" };
 function lockedClips(tl: Timeline, all = false, magnetic?: Map<string, boolean>): Map<string, string> {
   return new Map(tl.tracks.filter((tr) => all || tr.locked === true).map((tr) => [tr.id, JSON.stringify(tr.clips.map((c) => {
     const { start, duration, ...rest } = c;
-    return { ...rest, ...((magnetic?.get(tr.id) ?? tr.magnetic) || c.attach_to ? {} : { start }), ...(c.until_end || c.match_duration ? {} : { duration }) };
+    return { ...rest, ...((magnetic?.get(tr.id) ?? tr.magnetic) || c.attach_to ? {} : { start }), ...(c.until_end || c.match_duration || c.end_at !== undefined ? {} : { duration }) };
   }))]));
 }
 

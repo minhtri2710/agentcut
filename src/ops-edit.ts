@@ -208,6 +208,7 @@ export function registerEditOps(h: OpHelpers) {
       for (const x of allClips(tl)) { // aud lines up with v exactly, so what followed aud keeps its place and length
         if (x.attach_to === aud.id) x.attach_to = v.id;
         if (x.match_duration === aud.id) x.match_duration = v.id;
+        if (x.end_at === aud.id) x.end_at = v.id;
       }
       atr.clips = atr.clips.filter((x) => x !== aud);
       resolve(tl);

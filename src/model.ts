@@ -291,6 +291,7 @@ export const COMMON_FIELDS: F = {
   group: [T("object"), "{id, name?, track, parent?}: written by expand_compound on every clip and gap it places (parent = the stamp the expanded compound carried); make_compound from=<id> regroups them (split_clip keeps it, duplicate_clip drops it)"],
   preset: [T("string"), "style preset expanded when the clip is added (see capabilities.presets)"],
   until_end: [T("boolean"), "duration follows the end of the rest of the timeline (e.g. music bed, watermark); an explicit length edit ends it"],
+  end_at: [T("string"), "the id of a clip: this one ends where that one starts and follows it (e.g. a music bed handing over to the next section's song); not on a magnetic track, not followed by another clip's length; an explicit length edit ends it"],
   attach_to: [T("string"), "connected clip (Final Cut): start = that clip's start + offset, follows it when it moves/retimes"],
   offset: [T("number", "string"), "seconds after the attach_to clip's start (default 0)"],
   match_duration: [T("boolean", "string"), "true with attach_to: duration = target duration - offset - end_offset; or a clip reference (\"<id>\" or \"track#n\"): duration = that clip's duration - end_offset, the start is untouched (works on magnetic tracks) and follows later changes to that clip"],
@@ -680,13 +681,19 @@ export function resolve(tl: Timeline): Timeline {
   let end = 0, any = false;
   for (const [, , , c] of iterClips(tl)) {
     if (c.until_end) any = true;
-    else if (c.enabled !== false && !pos.has(c)) end = Math.max(end, len.has(c) ? clipStart(c) + 0.1 : clipEnd(c));
+    else if (c.enabled !== false && !pos.has(c) && !c.end_at) end = Math.max(end, len.has(c) ? clipStart(c) + 0.1 : clipEnd(c)); // an end_at clip ends inside the timeline
   }
   if (any) { // an until_end clip is stretched where its start is final: on a magnetic track as the track is laid out, elsewhere once the attached starts are set; the lengths that follow it come last
     resolveMagnetic(tl, end);
     resolveAttached(tl);
     for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips) if (c.until_end) c.duration = round6(Math.max(0.1, end - clipStart(c)));
     resolveLengths(tl);
+  }
+  // end_at comes last: its length reads a final start, and no start or followed length reads it (validate refuses both)
+  const top = new Map(tl.tracks.flatMap((tr) => tr.clips).map((c) => [c.id, c]));
+  for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips) {
+    const t = c.end_at === undefined ? undefined : top.get(c.end_at);
+    if (t && t !== c) c.duration = round6(Math.max(0.1, clipStart(t) - clipStart(c)));
   }
   return tl;
 }
@@ -752,13 +759,16 @@ export const hasSourceTime = (c: Clip) => "in" in fieldsFor(c.type);
 export function ownDuration(c: Clip) {
   if (typeof c.match_duration === "string") throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows '${c.match_duration}': change end_offset, or update_clip id=${c.id} match_duration=null first`);
   if (c.match_duration === true && c.attach_to) throw new EditError(`'${c.id}' has a computed duration`, "computed_duration", `its length follows its attach_to target '${c.attach_to}': change offset or end_offset, or update_clip id=${c.id} match_duration=null first`);
-  delete c.until_end;
+  delete c.until_end; delete c.end_at;
 }
 
-/** Stop following: clips whose match_duration names a clip for which gone(id) is true keep the length they last resolved to. Returns their ids. */
+/** Stop following: clips whose match_duration or end_at names a clip for which gone(id) is true keep the length they last resolved to. Returns their ids. */
 export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): string[] {
   const out: string[] = [];
-  for (const c of clips) if (typeof c.match_duration === "string" && gone(c.match_duration)) { delete c.match_duration; delete c.end_offset; out.push(c.id); }
+  for (const c of clips) {
+    if (typeof c.match_duration === "string" && gone(c.match_duration)) { delete c.match_duration; delete c.end_offset; out.push(c.id); }
+    if (typeof c.end_at === "string" && gone(c.end_at)) { delete c.end_at; out.push(c.id); }
+  }
   return out;
 }
 
@@ -1122,6 +1132,15 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           if (x?.until_end) issues.push({ level: "error", path: `${p}.match_duration`, message: `on a magnetic track this length follows '${x.id}', which has until_end, and its length is settled only after the track is laid out`, hint: "give the clip its own duration, or put it on a track that is not magnetic" });
         }
       }
+      if (c.end_at !== undefined) {
+        const t = byId(c.end_at), bad = (message: string, hint: string) => issues.push({ level: "error", path: `${p}.end_at`, message, hint });
+        if (tr.magnetic) bad("a clip on a magnetic track ends where the next one starts, so end_at cannot end it", "remove end_at, or put the clip on a track that is not magnetic");
+        if (c.until_end || lengthTarget(c) !== undefined) bad("end_at and until_end or match_duration both set the length", "keep one");
+        if (!t) bad(`ends at missing clip '${c.end_at}'`, "name an existing clip id, or remove end_at");
+        else if (t === c) bad("a clip cannot end where it starts", "name another clip");
+      }
+      if (lengthTarget(c) !== undefined && byId(lengthTarget(c)!)?.end_at !== undefined)
+        issues.push({ level: "error", path: `${p}.match_duration`, message: `follows '${lengthTarget(c)}', whose length comes from end_at and is settled after the lengths that follow clips`, hint: "follow a clip with its own duration" });
       if (typeof c.match_duration === "string") {
         const at = `${p}.match_duration`;
         if (c.until_end) issues.push({ level: "error", path: at, message: "until_end and match_duration both set the length", hint: "keep one" });

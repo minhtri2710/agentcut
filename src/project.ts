@@ -496,6 +496,7 @@ export function summarize(tl: Timeline): string {
       if ((c.speed ?? 1) !== 1) x.push(`speed=${c.speed}`);
       if ((c.volume ?? 1) !== 1) x.push(`vol=${c.volume}`);
       for (const k of ["reverse", "freeze", "loop", "until_end"]) if (c[k]) x.push(k);
+      if (c.end_at) x.push(`end_at=${c.end_at}`);
       if (c.pending) x.push(`pending=${Object.keys(c.pending).join(",")}`);
       if (c.remove_background) x.push("remove_background");
       if (c.stem) x.push(`stem=${c.stem}`);

@@ -1476,12 +1476,26 @@ console.log("templates and beats");
     main3.length === 5 && main3[0].duration === 4 && main3[1].duration === 4 && main3[2].start === 8 && JSON.stringify(main3.slice(2).map((c: any) => c.duration)) === JSON.stringify(alone) && alone[0] !== 1 && bed.asset === "song" && bed.start === 8
       && Object.keys(t3.assets).length === 2 && go?.attach_to === main3[2].id && Math.abs(go.start - 8.1) < 1e-6,
     { main: main3.map((c: any) => [c.id, c.start, c.duration]), alone, bed, go, assets: Object.keys(t3.assets) });
+  check("snap_to_beats on an empty magnetic track retimes nothing", await (async () => { const E = join(tmp, "proj-snap-empty"); api.create(E, { preset: "720p" }); const r = (await applyLatest(E, [{ op: "add_track", id: "main2", kind: "video", magnetic: true }, { op: "snap_to_beats", track: "main2", beats: [0, 1, 2] }])).results[1]; return r.beats_used === 0 && r.retimed.length === 0; })());
   check("snap_to_beats from a clip not on the track is refused by name", await code([{ op: "snap_to_beats", track: "main", from: "nope", beats: [0, 1, 2] }]) === "bad_value");
   // a second section with music: the first section's bed ends where it starts, so two songs never overlap
   await applyLatest(P4, [{ op: "apply_template", name: "beat_montage", media: [png, png], music: song }]);
   const t4 = resolve((await api.info(P4, "json")).timeline), beds = t4.tracks.find((t: any) => t.id === "music")!.clips as any[], sec2: any = t4.tracks.find((t: any) => t.id === "main")!.clips[3];
-  check("a second template with music: the earlier bed now ends where the new section starts, the new bed runs from there to the end",
-    beds.length === 2 && !beds[0].until_end && Math.abs(beds[0].start + beds[0].duration - sec2.start) < 1e-6 && beds[1].until_end === true && beds[1].start === sec2.start, { beds, sec2 });
+  check("a second template with music: the earlier bed now ends where the new section starts (end_at its first clip), the new bed runs from there to the end",
+    beds.length === 2 && !beds[0].until_end && beds[0].end_at === sec2.id && Math.abs(beds[0].start + beds[0].duration - sec2.start) < 1e-6 && beds[1].until_end === true && beds[1].start === sec2.start, { beds, sec2 });
+  const handoff = async (d: number) => {
+    await applyLatest(P4, [{ op: "update_clip", id: t4.tracks.find((t: any) => t.id === "main")!.clips[0].id, duration: d }]);
+    const x = resolve((await api.info(P4, "json")).timeline), b = x.tracks.find((t: any) => t.id === "music")!.clips as any[], s2: any = x.tracks.find((t: any) => t.id === "main")!.clips[3];
+    return Math.abs(b[0].start + b[0].duration - s2.start) < 1e-6 && Math.abs(b[1].start - s2.start) < 1e-6;
+  };
+  check("  trimming the first section shorter or longer moves the handoff with it: the old bed still ends where the new song starts", await handoff(0.3) && await handoff(3));
+  const ref = async (ops: any[]) => { try { await applyLatest(P4, ops); return "ok"; } catch (e: any) { return e.code; } };
+  check("end_at is refused on a magnetic track and as a length to follow; removing its target leaves the length it had",
+    await ref([{ op: "update_clip", id: sec2.id, end_at: beds[1].id }]) !== "ok" && await ref([{ op: "add_clip", track: "music", src: song, at: 0, match_duration: beds[0].id }]) === "bad_ref"
+      && await (async () => { const len = resolve((await api.info(P4, "json")).timeline).tracks.find((t: any) => t.id === "music")!.clips[0].duration;
+        const r = (await applyLatest(P4, [{ op: "remove_clip", id: sec2.id, keep_attached: true }])).results[0];
+        const b0: any = (await api.info(P4, "json")).timeline.tracks.find((t: any) => t.id === "music")!.clips[0];
+        return r.unlinked_durations?.includes(b0.id) && b0.end_at === undefined && b0.duration === len; })());
   // a quote after a clip stretched to the end (until_end) by a voice: its text and music move with its background, so they do not stretch that clip
   const P5 = join(tmp, "proj-section-stretch");
   api.create(P5, { preset: "720p" });
