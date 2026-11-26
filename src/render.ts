@@ -7,6 +7,7 @@ import * as A from "./anim.ts";
 import { ease } from "./ease.ts";
 import { applyEffects, applyMask, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
+import { playsFrom } from "./pair.ts";
 import { edgesOf, safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
@@ -46,7 +47,8 @@ class LRU<V> extends Map<string, V> {
 // ------------------------------------------------------------------ per-clip layer
 export class Layer {
   type: string; start: number; dur: number; end: number;
-  prev: Layer | null = null; next: Layer | null = null;
+  /** prev: the layer its transition plays from; next: the layers whose transitions play from it (on a free track, more than one can) */
+  prev: Layer | null = null; next: Layer[] = [];
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
@@ -365,16 +367,14 @@ export class Renderer {
     this.duration = totalDuration(tl);
     this.canvas = createCanvas(this.W, this.H);
     this.ctx = this.canvas.getContext("2d");
+    const drawn = (c: Clip) => c.enabled !== false && c.type !== "gap" && VISUAL_TYPES.has(c.type) && !(skipText && TEXTY.has(c.type));
+    const at = { start: (c: Clip) => parseTime(c.start ?? 0), end: (c: Clip) => parseTime(c.start ?? 0) + parseTime(c.duration ?? 0), drawn };
     for (const tr of tl.tracks) {
       if (tr.hidden || (tr.kind ?? "video") === "audio") continue;
-      let prev: Layer | null = null;
-      for (const c of tr.clips) {
-        if (c.enabled === false || c.type === "gap" || !VISUAL_TYPES.has(c.type) || skipText && TEXTY.has(c.type)) { prev = null; continue; }
-        const L = new Layer(this, tr, c);
-        if (prev) { L.prev = prev; prev.next = L; }
-        this.layers.push(L);
-        prev = L;
-      }
+      const of = new Map<Clip, Layer>();
+      for (const c of tr.clips) if (drawn(c)) { const L = new Layer(this, tr, c); of.set(c, L); this.layers.push(L); }
+      // a transition plays from the clip pair.ts names: on a free track by time, not by the list's (draw) order
+      tr.clips.forEach((c, i) => { const L = of.get(c), P = L && c.transition ? of.get(playsFrom(tr, i, at)!) : undefined; if (L && P) { L.prev = P; P.next.push(L); } }); // a layer blends only from a layer
     }
   }
 
@@ -437,9 +437,9 @@ export class Renderer {
       let overlay: ReturnType<typeof A.transitionMods> = null;
       const tr = this.trans(L);
       if (tr && tl < tr[1]) overlay = A.transitionMods(tr[0], ease(tr[2], tl / tr[1]), m, null, W, H);
-      if (L.next) {
-        const tn = this.trans(L.next);
-        if (tn && L.next.start - 1e-9 <= t && t < L.next.start + tn[1]) A.transitionMods(tn[0], ease(tn[2], (t - L.next.start) / tn[1]), new A.Mods(), m, W, H);
+      for (const N of L.next) {
+        const tn = this.trans(N);
+        if (tn && N.start - 1e-9 <= t && t < N.start + tn[1]) A.transitionMods(tn[0], ease(tn[2], (t - N.start) / tn[1]), new A.Mods(), m, W, H);
       }
       let opacity = P("opacity", 1) * m.opacity;
       if (opacity <= 0.001) { if (overlay) this.overlay(overlay); continue; }

@@ -14,6 +14,7 @@ const api = await import("./author-api.ts");
 // most rows here are about ops, not concurrency: a write reads the project's revision (info) and applies at it. The rows about revisions, conflicts and the history
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
 const { applyOps } = await import("../src/ops.ts");
+const { PAIR, playsFrom } = await import("../src/model.ts");
 const { newTimeline, validate, resolve, canLoop, totalDuration } = await import("../src/model.ts");
 
 const t0 = performance.now();
@@ -717,66 +718,67 @@ console.log("match_duration by clip reference");
     check("  freeze_frame at the end of a ramped clip holds the ramp's last source frame", Math.abs(at(xe, re[2].id).in - (1 + speedIntegral(ramp, 4))) < 1e-3, at(xe, re[2].id));
     const bad = validate({ ...structuredClone(t0), tracks: t0.tracks.map((tr: any) => tr.id === "text" ? { ...tr, clips: [{ id: "tq", type: "text", text: "q", start: 0, duration: 1, x: "%", y: "50%" }] } : tr) });
     check("validate: an x that is not a length is an error naming it; a percent is fine", bad.some((i: any) => i.level === "error" && /\.x$/.test(i.path)) && !bad.some((i: any) => /\.y$/.test(i.path)), bad.filter((i: any) => i.level === "error"));
-    // add_transition with the transition's own length changes only its type: the clip keeps its start and its place in the track (update_clip would sort a track that is not magnetic)
+    {
+      // pair.ts on its own: by time on a free track, by list on a magnetic one
+      const { blendsFrom } = await import("../src/pair.ts");
+      const o = { start: (c: any) => c.s, end: (c: any) => c.s + c.d, drawn: (c: any) => c.on !== false };
+      const free = (cl: any[]) => ({ clips: cl.map(([id, s, d, on]) => ({ id, s, d, on })) });
+      const pf = (tr: any, i: number) => playsFrom(tr, i, o)?.id ?? null, bf = (tr: any, i: number) => blendsFrom(tr, i, o)?.id ?? null;
+      const t1 = free([["A", 0, 5], ["B", 1, 8], ["C", 8, 2]]);
+      check("playsFrom on a free track: the clip still playing where it starts that started last (C over B, not A that ended)", pf(t1, 2) === "B" && pf(t1, 1) === "A" && pf(t1, 0) === null);
+      const t2 = free([["C", 8, 2], ["A", 0, 5], ["B", 1, 8]]);
+      check("  whatever the list order", pf(t2, 0) === "B");
+      const t3 = free([["A", 0, 2], ["X", 1, 1, false], ["B", 1.5, 2]]);
+      check("  a clip that is not drawn plays nothing", pf(t3, 2) === "A");
+      const t4 = free([["A", 2, 1], ["B", 2, 1]]);
+      check("  same start: the one below plays into the one above, not the other way", pf(t4, 1) === "A" && pf(t4, 0) === null);
+      const t5 = free([["A", 0, 2], ["B", 3, 1]]);
+      check("blendsFrom: with no overlap, the clip that ended last before it ends (add_transition moves it back over it)", bf(t5, 1) === "A" && pf(t5, 1) === null && bf(t5, 0) === null);
+      check("  magnetic: the clip before in the list, a gap that is not drawn too (the storyline overlaps them)", playsFrom({ magnetic: true, clips: [{ s: 0, d: 1, on: false }, { s: 1, d: 1 }] } as any, 1, o) !== null && playsFrom({ magnetic: true, clips: [{ s: 0, d: 1 }] } as any, 0, o) === null);
+    }
+    // On a free track the list is the draw order (later on top) and a transition plays from the clip pair.ts finds by time: an edit that moves a clip
+    // keeps its layer, and every transition keeps its partner.
+    const ovl = (x: any) => x.tracks.find((tr: any) => tr.id === "overlay")!;
+    const ids = (x: any) => ovl(x).clips.map((c: any) => c.id).join();
+    const from = (x: any, id: string) => { const tr = ovl(x), i = tr.clips.findIndex((c: any) => c.id === id); return playsFrom(tr, i, PAIR)?.id ?? null; };
+    // add_transition into a clip after a short one: it moves back over it by the transition's length (not before its start) and is drawn over it
     const [xt] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "o1", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "o2", at: 3, duration: 1 },
-      { op: "add_transition", to: "o2", type: "crossfade", duration: 0.5 }, { op: "add_transition", to: "o2", type: "dip_black", duration: 0.5 }]);
-    const ov = xt.tracks.find((tr: any) => tr.id === "overlay")!.clips;
-    check("add_transition of another type with the same length: same start, same track order, the new type", ov.map((c: any) => c.id).join() === "o1,o2" && at(xt, "o2").start === 1.9 && at(xt, "o2").transition.type === "dip_black", ov);
-    // a type-only update_clip after the outgoing clip was trimmed: the incoming clip keeps its start, the track its order, the transition its length and easing
+      { op: "add_transition", to: "o2", type: "crossfade", duration: 0.5 }]);
+    check("add_transition after a shorter clip: the incoming clip starts at that clip's start, plays from it, and is drawn over it",
+      at(xt, "o2").start === 2 && from(xt, "o2") === "o1" && ids(xt) === "o1,o2", ovl(xt).clips);
+    const [xt2] = await run(xt, [{ op: "add_transition", to: "o2", type: "dip_black", duration: 0.5 }]);
+    check("  add_transition of another type again: same start, same pair, the new type", at(xt2, "o2").start === 2 && from(xt2, "o2") === "o1" && at(xt2, "o2").transition.type === "dip_black", ovl(xt2).clips);
     const [xu] = await run(xt, [{ op: "update_clip", id: "o2", set: { transition: { ease: "linear" } } }, { op: "trim_clip", id: "o1", trim_end: 0.1 }, { op: "update_clip", id: "o2", set: { transition: { type: "wipe_left" } } }]);
-    const ou = xu.tracks.find((tr: any) => tr.id === "overlay")!.clips;
-    check("update_clip of a transition's type keeps the clip's start, the track's order and the transition's length and easing (only a placing field re-sorts)",
-      ou.map((c: any) => c.id).join() === "o1,o2" && at(xu, "o2").start === 1.9 && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ou);
-    // B overlaps a short A by more than A's length (it starts before A, after it in the list): an edit of a third clip keeps that pair
-    const [xb] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "pa", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "pb", at: 3, duration: 1 },
-      { op: "add_transition", to: "pb", type: "crossfade", duration: 0.5 }, { op: "add_clip", track: "overlay", asset: "v", id: "pc", at: 6, duration: 2 },
-      { op: "trim_clip", id: "pc", trim_start: 0.5 }, { op: "update_clip", id: "pc", set: { start: 7 } }]);
-    check("  trim_start or a start edit of a third clip leaves an earlier-starting incoming clip after its transition partner",
-      xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "pa,pb,pc" && at(xb, "pb").start === 1.9, xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
-    const [xs] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "r0", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "g1", at: 1, duration: 1 },
-      { op: "add_clip", track: "overlay", asset: "v", id: "b2", at: 2, duration: 1 }, { op: "update_clip", id: "r0", set: { start: 2 } }]);
-    check("  a start edit that lands on another clip's start goes below it, as a stable sort by time would place it (the later in the list is on top)",
-      xs.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "g1,r0,b2", xs.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
-    const [xa] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "qa", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "qb", at: 3, duration: 1 },
-      { op: "add_transition", to: "qb", type: "crossfade", duration: 0.5 }, { op: "add_clip", track: "text", text: "t", id: "tq", at: 5, duration: 1 },
-      { op: "add_clip", track: "overlay", asset: "v", id: "qc", attach_to: "tq", offset: 0, duration: 1 }, { op: "update_clip", id: "tq", set: { start: 6 } }]);
-    check("  a connected clip on a free track moves in its order alone: an earlier-starting incoming clip stays after its transition partner",
-      xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "qa,qb,qc" && at(xa, "qc").start === 6, xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
-    // two connected clips carried past a still clip in one batch: the track is in time order before the next op reads overlay#0
+    check("  update_clip of the transition's type keeps the clip's start, its pair and the transition's length and easing",
+      at(xu, "o2").start === 2 && from(xu, "o2") === "o1" && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ovl(xu).clips);
+    // moving clips keeps their layers: a start edit, a trim_start and a target that carries a connected clip, past other clips
+    const [xs] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "r0", at: 0, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "b1", at: 1, duration: 8 },
+      { op: "update_clip", id: "r0", set: { start: 3 } }]);
+    check("a start edit that moves a clip past another keeps its layer (b1 stays over r0)", ids(xs) === "r0,b1", ovl(xs).clips.map((c: any) => [c.id, c.start]));
+    const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
+      { op: "trim_clip", id: "h1", trim_start: 2 }]);
+    check("  so does trim_start", ids(xh) === "h1,h2" && at(xh, "h1").start === 2, ovl(xh).clips.map((c: any) => [c.id, c.start]));
     {
       const tb = structuredClone(t0); tb.assets.p = { path: "/none.png", kind: "image", width: 10, height: 10 };
-      const [xg] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }, { op: "add_clip", track: "main", asset: "p", id: "m2", duration: 2 },
-        { op: "add_clip", track: "overlay", asset: "v", id: "ga", attach_to: "m1", duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "gb", attach_to: "m1", duration: 1 },
-        { op: "add_clip", track: "overlay", asset: "v", id: "gc", at: 0, duration: 1 }, { op: "move_clip", id: "m1", index: 1 },
-        { op: "add_clip", track: "text", text: "t", id: "gt", attach_to: "overlay#0", duration: 1 }]);
-      // the same as a stored timeline that resolve lays out: ga and gb follow m1 to 2 s past gc, which stays at 0 s between them in the list
-      const tr2 = structuredClone(tb);
-      tr2.tracks.find((tr: any) => tr.id === "main")!.clips = [{ id: "m2", type: "image", asset: "p", duration: 2 }, { id: "m1", type: "image", asset: "p", duration: 1 }];
-      tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips = ["ga", "gb", "gc"].map((id) => ({ id, type: "video", asset: "v", start: 0, duration: 1, ...(id === "gc" ? {} : { attach_to: "m1", offset: 0 }) }));
-      resolve(tr2);
-      check("  resolve: two connected clips carried past a still clip between them are put in time order as a group (each alone would leave one ahead)",
-        tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
-      // two connected clips whose targets swap places: the next op's overlay#0 is the one that now starts first
-      const [xw] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "w1", duration: 1 }, { op: "add_clip", track: "main", asset: "p", id: "w2", duration: 1 },
-        { op: "add_clip", track: "overlay", asset: "v", id: "wa", attach_to: "w1", duration: 0.5 }, { op: "add_clip", track: "overlay", asset: "v", id: "wb", attach_to: "w2", duration: 0.5 },
-        { op: "move_clip", id: "w2", index: 0 }, { op: "add_clip", track: "text", text: "t", id: "wt", attach_to: "overlay#0", duration: 1 }]);
-      check("  connected clips whose targets swap: they swap in the track's order, and the next op's overlay#0 is the one that starts first",
-        xw.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "wb,wa" && at(xw, "wt").attach_to === "wb", { wt: at(xw, "wt"), order: xw.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]) });
-      // a split inside a transition: connected B overlaps A's tail; the cut is in the overlap, so the right half starts after B and B stays paired with the left half
+      // ga follows the last main clip, gc is added after it at 0 s (so above it); moving that clip to the front carries ga past gc, and ga stays below
+      const [xg] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "ga", attach_to: "m1", duration: 1 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "gc", at: at((await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }]))[0], "m1").start, duration: 1 },
+        { op: "move_clip", id: "m1", index: 0 }]);
+      check("  and a connected clip its target carries past another clip (ga stays below gc, as added)", ids(xg) === "ga,gc" && at(xg, "ga").start === 0 && at(xg, "gc").start > 0, ovl(xg).clips.map((c: any) => [c.id, c.start]));
+      // a split under a transition: connected B starts over A's tail; the cut is in that overlap. B still plays from the left half (pair by time), and the right
+      // half is drawn just above the left one, below B, as A was
       const [xq] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "pm1", duration: 4.5 }, { op: "add_clip", track: "main", asset: "p", id: "pm2", duration: 3 }]);
-      const s2 = at(xq, "pm2").start; // where the main storyline puts pm2: A plays up to 0.5 s after it
+      const s2 = at(xq, "pm2").start;
       const [xp, rp] = await run(xq, [{ op: "add_clip", track: "overlay", asset: "v", id: "pA", at: s2 - 4.5, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "pB", attach_to: "pm2", offset: 0, duration: 2 },
         { op: "update_clip", id: "pB", set: { transition: { type: "crossfade", duration: 0.5 } } }, { op: "split_clip", id: "pA", at: s2 + 0.25 }]);
-      const po = xp.tracks.find((tr: any) => tr.id === "overlay")!.clips;
-      check("  split_clip inside a transition on a free track: the right half goes after the incoming clip that starts before the cut, which stays paired with the left half",
-        po.map((c: any) => c.id).join() === `pA,pB,${rp[3].right}` && at(xp, "pB").start === s2, po.map((c: any) => [c.id, c.start, c.duration]));
-      check("  connected clips carried past a still clip in one batch: the track is in time order at once, so overlay#0 in the next op is the still clip",
-        at(xg, "gt").attach_to === "gc" && xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", { gt: at(xg, "gt"), order: xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]) });
+      check("split_clip inside a transition on a free track: the incoming clip still plays from the left half, and both halves stay below it",
+        ids(xp) === `pA,${rp[3].right},pB` && from(xp, "pB") === "pA", ovl(xp).clips.map((c: any) => [c.id, c.start, c.duration]));
+      // splitting a lower clip under an overlay that started before the cut: the overlay stays on top, and a transition from it keeps its partner
+      const [xl, rl] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "red", at: 0, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "blue", at: 1, duration: 8 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "fin", at: 8, duration: 2, transition: { type: "crossfade", duration: 0.5 } }, { op: "split_clip", id: "red", at: 3 }]);
+      check("  splitting a lower clip keeps the overlay above both halves, and a later transition still plays from the overlay",
+        ids(xl) === `red,${rl[3].right},blue,fin` && from(xl, "fin") === "blue", ovl(xl).clips.map((c: any) => [c.id, c.start]));
     }
-    const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
-      { op: "trim_clip", id: "h1", trim_start: 2 }, { op: "update_clip", id: "h2", set: { opacity: 0.5 } }]);
-    check("  trim_start that moves a clip past its neighbour keeps the free track in time order (roll_edit and transitions pair by it)",
-      xh.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "h2,h1", xh.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
     const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
     check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));
     const fz2 = rs2[2];

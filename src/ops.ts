@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
+  normAnim, PAIR, blendsFrom, playsFrom, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -456,9 +456,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
       placeAt(tl, tr, c, clipStart(c));
     }
-    // only a field that places the clip moves it in the track's order, and only it: the order pairs a transition with the clip before it
-    if (["start", "attach_to", "offset"].some((k) => k in patch)) { resolve(tl); reposition(tr, c); }
-    resolve(tl);
+    resolve(tl); // a new start keeps the clip's place in the draw order (a free track's list); transitions pair by time (pair.ts)
     return { id: c.id, start: c.start, duration: c.duration };
   });
 
@@ -509,7 +507,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
       if (hasSourceTime(c) && !c.reverse && !c.freeze) c.in = round6(parseTime(c.in ?? 0) + d * speed);
       shiftKfs(c, -d);
       c.duration = round6(clipDur(c) - d);
-      if (!tr.magnetic) { placeAt(tl, tr, c, clipStart(c) + d); resolve(tl); reposition(tr, c); } // a later start can pass a neighbour
+      if (!tr.magnetic) placeAt(tl, tr, c, clipStart(c) + d);
     }
     if (a.trim_end) {
       const e = parseTime(a.trim_end);
@@ -588,8 +586,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   if (c.type === "captions" && c.words) c.words = c.words.map(normWord).filter((w: any) => w.start < left);
   placeAt(tl, tr, right, t);
   tr.clips.splice(ci + 1, 0, right);
-  // on a free track the right half starts at the cut: after the clips that start before it (an incoming clip overlapping the left half stays paired with it)
-  if (!tr.magnetic) { resolve(tl); reposition(tr, right); }
+  // the right half stays where the clip was in the draw order; a transition that starts over the left half plays from it (pair.ts pairs by time)
   renameNested(tl, right);
   // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
   for (const [atr, au] of linkedAudio(tl, c)) {
@@ -671,16 +668,26 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
     return { id: c.id, keyframes: c.keyframes ?? {} };
   });
 
-op("add_transition", "Set the transition into a clip from the previous clip on its track. An attached clip moves by its offset and stays attached.",
+op("add_transition", "Set the transition into a clip from the clip it follows: on a magnetic track the previous clip; on another track the clip that started before it " +
+  "and ends last by its end, and the clip moves to start the transition's length before that one ends. An attached clip moves by its offset and stays attached.",
   { to: "incoming clip id", type: TRANSITIONS.join("|"), duration: "s (0.5)" }, (p, tl, a) => {
     const [tr, ci, c] = findClip(tl, a.to);
     const t = a.type ?? "crossfade";
-    if (ci === 0 && t !== "none") throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead"); // none still clears one left by a removed clip
+    resolve(tl);
+    const from = blendsFrom(tr, ci, PAIR);
+    if (!from && t !== "none") throw new EditError(`'${c.id}' has no clip before it on '${tr.id}' to blend from`, "no_previous", "use update_clip enter: 'fade' instead"); // none still clears one left by a removed clip
     if (t === "none") delete c.transition;
     else {
       if (!TRANSITIONS.includes(t)) { const s = suggest(t, TRANSITIONS); throw new EditError(`unknown transition '${t}'`, "bad_transition", s ? `did you mean '${s}'?` : TRANSITIONS.join(", ")); }
       c.transition = { type: t, duration: parseTime(a.duration ?? 0.5) };
-      if (!tr.magnetic) placeAt(tl, tr, c, Math.max(0, clipEnd(tr.clips[ci - 1]) - c.transition.duration));
+      // on a free track the clip starts the transition's length before the end of the clip it blends from, not before its start (pair.ts then pairs them by
+      // time; the renderer shortens a transition longer than a clip, as on a magnetic track)
+      if (!tr.magnetic) {
+        placeAt(tl, tr, c, Math.max(clipStart(from!), clipEnd(from!) - c.transition.duration));
+        // the incoming clip is drawn over the one it blends from: one below it in the list goes just above it
+        const fi = tr.clips.indexOf(from!);
+        if (ci < fi) { tr.clips.splice(ci, 1); tr.clips.splice(fi, 0, c); }
+      }
     }
     resolve(tl);
     return { id: c.id, transition: c.transition ?? null, start: c.start };

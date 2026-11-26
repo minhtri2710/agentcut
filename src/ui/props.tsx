@@ -7,6 +7,7 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { Diamond } from "lucide-react";
 import { LOOKS } from "../color.ts";
+import { blendsFrom } from "../pair.ts";
 import { api, ops } from "./api.ts";
 import { fail } from "./messages.ts";
 import { t, type Key } from "./i18n.ts";
@@ -102,12 +103,12 @@ function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: st
 }
 
 const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]); // model.ts VISUAL_TYPES
-/** a transition plays into a clip from the clip just before it, when the renderer draws both (render.ts pairs layers in a run that a gap, a disabled
- *  or a clip it does not draw breaks); a transition already there can always be cleared */
+const PAIR = { start, end: (c: Clip) => start(c) + dur(c), drawn: (c: Clip) => c.enabled !== false && DRAWN.has(c.type) };
+/** a transition plays into a clip from the clip pair.ts names, on a track the renderer draws (model.ts PAIR, with the page's clip times);
+ *  a transition already there can always be cleared */
 const pairsWithPrevious = (c: Clip) => {
-  const tr = trackOf(c.id), i = tr ? tr.clips.indexOf(c) : -1, p = i > 0 ? tr!.clips[i - 1] : null;
-  const drawn = !!tr && !tr.hidden && (tr.kind ?? "video") !== "audio";
-  return drawn && !!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false;
+  const tr = trackOf(c.id), i = tr ? tr.clips.indexOf(c) : -1;
+  return !!tr && !tr.hidden && (tr.kind ?? "video") !== "audio" && i >= 0 && !!blendsFrom(tr, i, PAIR);
 };
 const hasPrevious = (c: Clip) => !!c.transition || pairsWithPrevious(c);
 
