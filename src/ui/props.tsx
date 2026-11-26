@@ -101,16 +101,24 @@ function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: st
   return <div className="prop"><label>{label}</label><div className="pval one"><Switch label={label} isLabelHidden size="sm" value={v} isDisabled={ro} onChange={(x) => set(c, { [k]: on ? (x ? null : false) : x || null })} /></div><span /></div>;
 }
 
-/** a transition plays into a clip from the one before it on its track: the first clip has none (add_transition refuses it) */
-const hasPrevious = (c: Clip) => { const tr = trackOf(c.id); return !!tr && tr.clips.indexOf(c) > 0; };
+const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]); // model.ts VISUAL_TYPES
+/** a transition plays into a clip from the clip just before it, when the renderer draws both (render.ts pairs layers in a run that a gap, a disabled
+ *  or a clip it does not draw breaks); a transition already there can always be cleared */
+const hasPrevious = (c: Clip) => {
+  const tr = trackOf(c.id), i = tr ? tr.clips.indexOf(c) : -1, p = i > 0 ? tr!.clips[i - 1] : null;
+  return !!c.transition || (!!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false);
+};
 
 /** the transition into the clip, set with add_transition: on a track that is not magnetic it also moves the clip to overlap the one before by its length */
 function TransitionPick({ c, ro }: { c: Clip; ro: boolean }) {
   const v = named(c.transition);
   return (
-    <div className="prop"><label>{t("pTransition")}</label>
+    <div className="prop" data-prop="transition"><label>{t("pTransition")}</label>
       <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={FORM.enums.transition} hasSearch isDisabled={ro}
-        onChange={(x) => ops([{ op: "add_transition", to: c.id, type: x ?? "none" }], "transition " + c.id)} width="100%" /></div><span />
+        onChange={(x) => ops([x && c.transition
+          // another type keeps the transition's length and the clip's place (add_transition would reset the overlap to its default and move the clip)
+          ? { op: "update_clip", id: c.id, set: { transition: { ...(typeof c.transition === "object" ? c.transition : {}), type: x } } }
+          : { op: "add_transition", to: c.id, type: x ?? "none" }], "transition " + c.id)} width="100%" /></div><span />
     </div>
   );
 }

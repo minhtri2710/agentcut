@@ -1108,7 +1108,7 @@ console.log("page modules");
   check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt reads the curve as the renderer does (ease_out, hold), kfBase defaults and reads a % position",
     JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === +kfValue([[0, 1], [0.5, 2, "ease_out"]], 0.25).toFixed(4) && kfAt(ks, 0.25) === 1.875
     && kfAt(pts([[0, 1], [2, 0, "hold"]]), 1) === 1 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
-    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "25%" }), "x", { width: 1080, height: 1920 }) === 270 && kfBase(clip("c", { x: "%" }), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
+    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "25%" }), "x", { width: 1080, height: 1920 }) === 270 && kfBase(clip("c", { x: "%" }), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "120px" }), "x", { width: 1080, height: 1920 }) === 120 && kfBase(clip("c", { y: "300" }), "y", { width: 1080, height: 1920 }) === 300 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
     && JSON.stringify(kfTimes(clip("c", { keyframes: { x: [[0, 1], [1, 2]], y: [[1, 5], [2, 6]] } }))) === "[0,1,2]", JSON.stringify(packKf(ks)));
 
   const trk = (id: string, magnetic: boolean, clips: any[]): any => ({ id, magnetic, clips });

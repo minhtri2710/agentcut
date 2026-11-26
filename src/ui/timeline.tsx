@@ -157,8 +157,8 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
       <span className="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
       {c.effects && c.effects.length ? <span className="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
       {trn && <div className="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
-      {!v.nested && <div className="h l" data-edge="l" />}
-      {!v.nested && <div className="h r" data-edge="r" />}
+      {!v.nested && width >= 24 && <div className="h l" data-edge="l" />}
+      {!v.nested && width >= 24 && <div className="h r" data-edge="r" />}{/* a clip narrower than its two handles and a grab is moved, not trimmed: zoom in to trim */}
       {kfTimes(c).filter((kt) => kt >= -1e-6 && kt <= dur(c) + 1e-6).map((kt) => ( // a split's right half keeps the curve's keys before its head
         <div key={kt} className="kf" data-t={String(kt)} style={{ left: v.k * kt * pps + (kd && near(kd.kt, kt) ? kd.dx : 0) + "px" }}
           title={t("keyframeAt", kt, Object.keys(c.keyframes).filter((p) => pts(c.keyframes[p]).some((q) => near(q[0], kt))).join(", "))} />

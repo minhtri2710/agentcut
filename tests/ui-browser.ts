@@ -315,8 +315,19 @@ try {
   const sb = await js(`(function(){var r=$("scroll").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
   check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `(function(){var p = parseFloat(${node("gm")}.style.left) / ${gmStart}; return p > 200 && Math.abs(${zoomPps} - p) < 1})()`), await js(`[${node("gm")}.style.left, $("zoom").value]`));
+  {
+    // zoomed far out a clip is a few px wide: its middle moves it (the trim handles are hidden there), 4 px at 10 px/s = 0.4 s
+    await zoomTo(10);
+    await settled();
+    const s0 = Number(clipOf(load(), "gm").start), d0 = clipOf(load(), "gm").duration;
+    check("  zoomed out, a clip too narrow for its trim handles shows none", await js(`!${node("gm")}.querySelector(".h")`), await js(`${node("gm")}.innerHTML.slice(0, 200)`));
+    await dragBy(`[data-id="gm"]`, 4);
+    check("  and a drag of its middle moves it, keeping its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.4)) < 0.02 && clipOf(tl, "gm")?.duration === d0), clipOf(load(), "gm"));
+    await settled();
+  }
+  const revZoom = load().revision, gmNow = Number(clipOf(load(), "gm").start); // the drag above was an edit; the zoom after it is not
   await zoomTo(80);
-  check("zooming changes the view only, not the project", await leftOf("gm") === 80 * gmStart && load().revision === revView, { rev: load().revision, revView });
+  check("zooming changes the view only, not the project", await leftOf("gm") === 80 * gmNow && load().revision === revZoom && revView <= revZoom, { rev: load().revision, revZoom });
 
   // seek: a click on the ruler puts the playhead at the clicked time; the playhead before is elsewhere
   await seekTo(0);
@@ -964,6 +975,23 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       }
       await applyLatest(dir, [{ op: "set_keyframes", id: "blink", prop: "x", keyframes: null }, { op: "update_clip", id: "blink", set: { position: null, margin: null } }]);
       await until("x key gone", atRev(load().revision));
+    }
+    {
+      // the transition picker: another type keeps the transition's length and the clip's place (a crossfade of 0.1 s into blink, on a track that is not magnetic)
+      await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Before", at: 0, duration: 0.35, id: "tpre" }, { op: "add_transition", to: "blink", type: "crossfade", duration: 0.1 }]);
+      {
+        await until("transition seen", atRev(load().revision));
+        const s0 = clipOf(load(), "blink").start;
+        await click("#itab-anim");
+        // with a search box the Selector's trigger is the [aria-haspopup] button (Astryx moves the combobox role to the search input)
+        await until("anim tab", `!!document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]')`);
+        const picked = await pick(`document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]')`, "dip_black");
+        check("  changing the transition's type keeps its length and the clip's start", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.transition) === '{"type":"dip_black","duration":0.1}' && clipOf(tl, "blink").start === s0),
+          { picked, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
+        await until("type seen", atRev(load().revision));
+        await applyLatest(dir, [{ op: "add_transition", to: "blink", type: "none" }, { op: "remove_clip", id: "tpre" }, { op: "update_clip", id: "blink", set: { start: 0.3 } }]);
+        await until("transition gone", atRev(load().revision));
+      }
     }
     await click("#itab-more");
     check("the More tab shows the clip's fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));

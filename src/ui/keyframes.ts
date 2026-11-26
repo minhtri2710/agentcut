@@ -33,8 +33,10 @@ export function packKf(list: Kf[]): (number | string | undefined)[][] | null {
 export function kfBase(c: Clip, prop: string, set: { width: number; height: number }): number {
   const d: Record<string, number> = { x: set.width / 2, y: set.height / 2, scale: 1, scale_x: 1, scale_y: 1, opacity: 1, volume: 1, speed: 1, focus_x: 0.5, focus_y: 0.5 };
   const v = c[prop];
-  const pct = (prop === "x" || prop === "y") && typeof v === "string" && v.trim().endsWith("%") ? (parseFloat(v) / 100) * (prop === "x" ? set.width : set.height) : NaN;
-  if (Number.isFinite(pct)) return +pct.toFixed(2);
+  if ((prop === "x" || prop === "y") && typeof v === "string") { // model.ts parseLen: px ("120", "120px") or percent of the canvas side
+    const s = v.trim(), n = parseFloat(s), px = s.endsWith("%") ? (n / 100) * (prop === "x" ? set.width : set.height) : n;
+    if (Number.isFinite(px)) return +px.toFixed(2);
+  }
   return typeof v === "number" && Number.isFinite(v) ? v : d[prop] !== undefined ? d[prop] : 0; // an unreadable value (validate names it) shows the default
 }
 
