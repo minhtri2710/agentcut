@@ -278,7 +278,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
     else if (a.after) c.start = round6(clipEnd(findClip(tl, a.after)[2]));
     else c.start = round6(c.until_end ? Math.max(0, ...clips.filter((x) => !x.until_end).map(clipEnd)) : trackEnd(tr)); // an until_end clip's end is the timeline end: a new one starts at the end of the track's other clips
     clips.push(c);
-    clips.sort((x, y) => clipStart(x) - clipStart(y));
+    reposition(tr, c); // the new clip in time order; the others keep theirs
   }
 }
 
@@ -327,6 +327,17 @@ function lengthOnce(c: Clip) {
 function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } delete c.until_end; delete c.end_at; }
 
 /** Put a piece cut from a clip at timeline time `start`. An attached piece keeps its target and moves by offset (resolve() recomputes its start from the target); others set start on non-magnetic tracks. */
+/** A clip placed anew on a track that is not magnetic takes its place in time order among the others, which keep their order: the order pairs a
+ *  transition with the clip before it, and an incoming clip that overlaps a short outgoing clip can start before it. */
+function reposition(tr: Track, c: Clip) {
+  if (tr.magnetic) return;
+  const i = tr.clips.indexOf(c), s = clipStart(c), prev = tr.clips[i - 1], next = tr.clips[i + 1];
+  if ((!prev || clipStart(prev) <= s) && (!next || s <= clipStart(next))) return; // still between its neighbours
+  tr.clips.splice(i, 1);
+  const j = tr.clips.findIndex((x) => clipStart(x) > s);
+  tr.clips.splice(j < 0 ? tr.clips.length : j, 0, c);
+}
+
 function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
   if (piece.attach_to) { piece.offset = round6(start - clipStart(findClip(tl, piece.attach_to)[2])); }
   else if (!tr.magnetic) piece.start = round6(start);
@@ -456,8 +467,8 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
       placeAt(tl, tr, c, clipStart(c));
     }
-    // only a field that places the clip re-sorts the track: the order pairs a transition with the clip before it, so another edit keeps it
-    if (!tr.magnetic && ["start", "attach_to", "offset"].some((k) => k in patch)) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+    // only a field that places the clip moves it in the track's order, and only it: the order pairs a transition with the clip before it
+    if (["start", "attach_to", "offset"].some((k) => k in patch)) { resolve(tl); reposition(tr, c); }
     resolve(tl);
     return { id: c.id, start: c.start, duration: c.duration };
   });
@@ -509,7 +520,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
       if (hasSourceTime(c) && !c.reverse && !c.freeze) c.in = round6(parseTime(c.in ?? 0) + d * speed);
       shiftKfs(c, -d);
       c.duration = round6(clipDur(c) - d);
-      if (!tr.magnetic) { placeAt(tl, tr, c, clipStart(c) + d); tr.clips.sort((x, y) => clipStart(x) - clipStart(y)); } // a later start can pass a neighbour: the order stays time order
+      if (!tr.magnetic) { placeAt(tl, tr, c, clipStart(c) + d); resolve(tl); reposition(tr, c); } // a later start can pass a neighbour
     }
     if (a.trim_end) {
       const e = parseTime(a.trim_end);

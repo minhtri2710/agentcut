@@ -727,6 +727,12 @@ console.log("match_duration by clip reference");
     const ou = xu.tracks.find((tr: any) => tr.id === "overlay")!.clips;
     check("update_clip of a transition's type keeps the clip's start, the track's order and the transition's length and easing (only a placing field re-sorts)",
       ou.map((c: any) => c.id).join() === "o1,o2" && at(xu, "o2").start === 1.9 && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ou);
+    // B overlaps a short A by more than A's length (it starts before A, after it in the list): an edit of a third clip keeps that pair
+    const [xb] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "pa", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "pb", at: 3, duration: 1 },
+      { op: "add_transition", to: "pb", type: "crossfade", duration: 0.5 }, { op: "add_clip", track: "overlay", asset: "v", id: "pc", at: 6, duration: 2 },
+      { op: "trim_clip", id: "pc", trim_start: 0.5 }, { op: "update_clip", id: "pc", set: { start: 7 } }]);
+    check("  trim_start or a start edit of a third clip leaves an earlier-starting incoming clip after its transition partner",
+      xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "pa,pb,pc" && at(xb, "pb").start === 1.9, xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
     const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
       { op: "trim_clip", id: "h1", trim_start: 2 }, { op: "update_clip", id: "h2", set: { opacity: 0.5 } }]);
     check("  trim_start that moves a clip past its neighbour keeps the free track in time order (roll_edit and transitions pair by it)",
