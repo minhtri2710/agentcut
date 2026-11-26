@@ -6,11 +6,14 @@ import { Slider } from "@astryxdesign/core/Slider";
 import { Switch } from "@astryxdesign/core/Switch";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { Diamond } from "lucide-react";
-import { ops } from "./api.ts";
+import { LOOKS } from "../color.ts";
+import { api, ops } from "./api.ts";
+import { fail } from "./messages.ts";
 import { t, type Key } from "./i18n.ts";
 import { kfAt, kfBase, near, packKf, pts, type Kf } from "./keyframes.ts";
 import { blurOnEnter, ico, Num } from "./kit.tsx";
-import { S, st, V } from "./state.ts";
+import { own } from "../own.ts";
+import { S, st, trackOf, V } from "./state.ts";
 import { dur, start } from "./time.ts";
 import type { Clip, Dict } from "./types.ts";
 
@@ -23,8 +26,17 @@ const localT = (c: Clip) => { const v = V(); return +Math.max(0, Math.min(dur(c)
  *  (a new key takes the curve's value there, else the clip's own value: kfBase, as the More tab's "+ key" does) */
 function KeyDiamond({ c, prop, ro }: { c: Clip; prop: string; ro: boolean }) {
   const list = pts((c.keyframes || {})[prop]), lt = localT(c), here = list.findIndex((q) => near(q[0], lt));
-  const toggle = () => {
-    const next: Kf[] = here >= 0 ? list.filter((_, i) => i !== here) : list.concat([[lt, list.length ? kfAt(list, lt) : kfBase(c, prop, S().timeline.settings), undefined]]);
+  const toggle = async () => {
+    let first = list.length ? kfAt(list, lt) : kfBase(c, prop, S().timeline.settings);
+    // a first x/y key takes where the clip is drawn now (Premiere, Final Cut and CapCut start a key at the current value): a position preset hangs on the
+    // layer's rendered size, which only the server knows; the key and the x/y it sets travel in one edit, so the clip does not move
+    if (here < 0 && !list.length && (prop === "x" || prop === "y") && c.position) {
+      const at = await api("/api/placed", { id: c.id, t: lt }).catch((e) => { fail(e); return null; });
+      if (!at) return;
+      first = at[prop];
+      return ops([{ op: "update_clip", id: c.id, set: { x: at.x, y: at.y, position: null, margin: null } }, { op: "set_keyframes", id: c.id, prop, keyframes: packKf([[lt, first, undefined]]) }], "keyframes " + c.id + "." + prop);
+    }
+    const next: Kf[] = here >= 0 ? list.filter((_, i) => i !== here) : list.concat([[lt, first, undefined]]);
     ops([{ op: "set_keyframes", id: c.id, prop, keyframes: packKf(next) }], "keyframes " + c.id + "." + prop);
   };
   const label = here >= 0 ? t("kfRemoveHere", prop) : t("kfAddHere", prop);
@@ -37,7 +49,7 @@ function Prop({ c, k, label, min, max, step, def, ro, anim, read = (v) => v, wri
   c: Clip; k: string; label: string; min: number; max: number; step: number; def: number; ro: boolean; anim?: string;
   read?: (v: number) => number; write?: (v: number) => unknown; unit?: string;
 }) {
-  const stored = typeof c[k] === "number" ? read(c[k]) : def;
+  const stored = typeof c[k] === "number" ? read(c[k]) : k === "x" || k === "y" ? kfBase(c, k, S().timeline.settings) : def;
   const [v, setV] = useState(stored), [seen, setSeen] = useState(stored);
   if (stored !== seen) { setSeen(stored); setV(stored); } // a new value from the project replaces what the row shows
   const commit = (x: number) => { if (Number.isFinite(x) && x !== stored) set(c, { [k]: write(x) }); };
@@ -48,8 +60,7 @@ function Prop({ c, k, label, min, max, step, def, ro, anim, read = (v) => v, wri
       <div className="pval">
         <Slider label={label} isLabelHidden valueDisplay="none" min={min} max={max} step={step} value={Math.max(min, Math.min(max, v))} isDisabled={ro || animated}
           onChange={(x: number) => setV(x)} onChangeEnd={(x: number) => commit(x)} />
-        <Num aria-label={label} step={step} value={String(+v.toFixed(3))} disabled={ro || animated}
-          onChange={(e) => setV(+e.currentTarget.value)} onBlur={(e) => commit(+e.currentTarget.value)} onKeyDown={blurOnEnter} />
+        <NumEdit label={label} step={step} value={v} digits={3} disabled={ro || animated} onCommit={commit} />
       </div>
       {anim ? <KeyDiamond c={c} prop={anim} ro={ro} /> : <span>{unit}</span>}
     </div>
@@ -64,6 +75,25 @@ function Choice({ c, k, label, list, ro, read = (x) => x, write = (x) => x }: { 
       <div className="pval one"><Selector label={label} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={list} hasSearch={list.length > 12} isDisabled={ro} onChange={(x) => set(c, { [k]: write(x) })} width="100%" /></div><span />
     </div>
   );
+}
+
+/** The number beside a slider: the typed text is a draft committed on blur only when it was edited and reads as a number;
+ *  an empty or unreadable draft, or a field only passed through, puts the value back and saves nothing. */
+function NumEdit({ value, digits, step, label, disabled, onCommit }: { value: number; digits: number; step: number; label: string; disabled: boolean; onCommit: (x: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return <Num aria-label={label} step={step} value={draft ?? String(+value.toFixed(digits))} disabled={disabled} onKeyDown={blurOnEnter}
+    onChange={(e) => setDraft(e.currentTarget.value)}
+    onBlur={(e) => { const x = e.currentTarget.valueAsNumber, edited = draft !== null; setDraft(null); if (edited && Number.isFinite(x)) onCommit(x); }} />;
+}
+
+/** noise reduction as a switch: on with any strength, the clip's own or its track's; off over a track that sets it is an explicit false */
+/** audiofx.ts denoiseStrength > 0 (that module runs ffmpeg, so the page cannot import it) */
+const denoiseOn = (v: unknown) => v === true || (typeof v === "number" && v > 0);
+
+function Denoise({ c, label, ro }: { c: Clip; label: string; ro: boolean }) {
+  const inherited = denoiseOn(trackOf(c.id)?.denoise), v = c.denoise === undefined ? inherited : denoiseOn(c.denoise);
+  return <div className="prop" data-prop="denoise"><label>{label}</label><div className="pval one"><Switch label={label} isLabelHidden size="sm" value={v} isDisabled={ro}
+    onChange={(x) => set(c, { denoise: x ? (inherited ? null : true) : inherited ? false : null })} /></div><span /></div>;
 }
 
 function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: string; ro: boolean; on?: boolean }) {
@@ -91,7 +121,7 @@ export function PropTab({ c, tab, ro }: { c: Clip; tab: string; ro: boolean }) {
   const W = S().timeline.settings.width, H = S().timeline.settings.height, g = (c.color && typeof c.color === "object" ? c.color : {}) as Dict;
   const grade = (k: string, label: string, min: number, max: number, def: number) => (
     <div className="prop" key={k}><label>{label}</label>
-      <div className="pval"><GradeSlider c={c} k={k} min={min} max={max} def={def} value={typeof g[k] === "number" ? g[k] : def} ro={ro} label={label} /></div><span />
+      <div className="pval"><GradeSlider c={c} k={k} min={min} max={max} base={own(LOOKS, g.look)?.[k] ?? def} value={typeof g[k] === "number" ? g[k] : own(LOOKS, g.look)?.[k] ?? def} ro={ro} label={label} /></div><span />
     </div>
   );
   if (tab === "basic") return (
@@ -122,6 +152,12 @@ export function PropTab({ c, tab, ro }: { c: Clip; tab: string; ro: boolean }) {
       <Group title="grpClip"><Toggle c={c} k="enabled" label={t("pEnabled")} ro={ro} on /></Group>
     </>
   );
+  if (tab === "audio" && c.type === "compound") return ( // a compound mixes its clips at one static gain (no fades, effects or volume keys)
+    <Group title="tabAudio">
+      <Prop c={c} k="volume" label={t("pVolume")} min={0} max={400} step={1} def={100} ro={ro} read={(v) => v * 100} write={(v) => +(v / 100).toFixed(3)} unit="%" />
+      <Toggle c={c} k="muted" label={t("pMute")} ro={ro} />
+    </Group>
+  );
   if (tab === "audio") return (
     <Group title="tabAudio">
       <Prop c={c} k="volume" label={t("pVolume")} min={0} max={400} step={1} def={100} ro={ro} anim="volume" read={(v) => v * 100} write={(v) => +(v / 100).toFixed(3)} unit="%" />
@@ -130,7 +166,7 @@ export function PropTab({ c, tab, ro }: { c: Clip; tab: string; ro: boolean }) {
       <Prop c={c} k="pan" label={t("pPan")} min={-1} max={1} step={0.05} def={0} ro={ro} />
       <Prop c={c} k="pitch" label={t("pPitch")} min={-12} max={12} step={1} def={0} ro={ro} />
       <Toggle c={c} k="muted" label={t("pMute")} ro={ro} />
-      <Toggle c={c} k="denoise" label={t("pDenoise")} ro={ro} />
+      <Denoise c={c} label={t("pDenoise")} ro={ro} />
       <Choice c={c} k="eq" label="EQ" list={FORM.enums.eq} ro={ro} read={named} />
       <Choice c={c} k="compressor" label={t("pCompressor")} list={FORM.enums.compressor} ro={ro} read={named} />
     </Group>
@@ -170,16 +206,15 @@ export function PropTab({ c, tab, ro }: { c: Clip; tab: string; ro: boolean }) {
   );
 }
 
-/** a colour grade number: merged into the grade by update_clip */
-function GradeSlider({ c, k, min, max, def, value, ro, label }: { c: Clip; k: string; min: number; max: number; def: number; value: number; ro: boolean; label: string }) {
+/** a colour grade number: merged into the grade by update_clip; the look's value (else the neutral one) is the base, and setting it back clears the override */
+function GradeSlider({ c, k, min, max, base, value, ro, label }: { c: Clip; k: string; min: number; max: number; base: number; value: number; ro: boolean; label: string }) {
   const [v, setV] = useState(value), [seen, setSeen] = useState(value);
   if (value !== seen) { setSeen(value); setV(value); }
-  const commit = (x: number) => { if (Number.isFinite(x) && x !== value) set(c, { color: { [k]: x === def ? null : +x.toFixed(3) } }); };
+  const commit = (x: number) => { if (Number.isFinite(x) && x !== value) set(c, { color: { [k]: x === base ? null : +x.toFixed(3) } }); };
   return (
     <>
       <Slider label={label} isLabelHidden valueDisplay="none" min={min} max={max} step={0.01} value={Math.max(min, Math.min(max, v))} isDisabled={ro} onChange={(x: number) => setV(x)} onChangeEnd={commit} />
-      <Num aria-label={label} step={0.01} value={String(+v.toFixed(2))} disabled={ro}
-        onChange={(e) => setV(+e.currentTarget.value)} onBlur={(e) => commit(+e.currentTarget.value)} onKeyDown={blurOnEnter} />
+      <NumEdit label={label} step={0.01} value={v} digits={2} disabled={ro} onCommit={commit} />
     </>
   );
 }

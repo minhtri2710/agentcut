@@ -142,6 +142,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
         if (r) { r.ctl.abort(new EditError("the job was cancelled", "aborted")); await r.settled; }
         return json(res, 200, { ok: j.status !== "failed", ...j }); // the same rule as MCP cancel_job: only a job that ended failed is not ok
       }
+      if (path === "/api/placed") return json(res, 200, { ok: true, ...(await api.placedAt(root, String(body.id), Number(body.t))) });
       if (path === "/api/render") return json(res, 200, { ok: true, ...render(body) });
       if (path === "/api/prepare") return json(res, 200, { ok: true, ...prepare(body.allow_download === true) });
     }

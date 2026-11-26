@@ -48,7 +48,8 @@ function fitZoom() { const sc = $("scroll"); if (st.S && total() > 0) setZoom(Ma
 /** CapCut's edit tools over the timeline, on the selected clip at the playhead: split, delete, duplicate, freeze */
 function Tools() {
   const c = st.S && st.sel && !V().nested ? findClip(st.sel) : null, v = st.S ? V() : null;
-  const at = +st.t.toFixed(3), inside = !!c && !!v && at > v.off + v.k * start(c) + 1e-3 && at < v.off + v.k * (start(c) + dur(c)) - 1e-3;
+  const at = +st.t.toFixed(3), a0 = c && v ? v.off + v.k * start(c) : 0, a1 = c && v ? v.off + v.k * (start(c) + dur(c)) : 0;
+  const inside = !!c && at > a0 + 1e-3 && at < a1 - 1e-3, on = !!c && at >= a0 - 1e-3 && at <= a1 + 1e-3; // a freeze also takes the first or last frame
   const tool = (id: string, label: string, icon: Parameters<typeof ico>[0], ok: boolean, run: () => void) =>
     <IconButton id={id} size="sm" variant="ghost" label={label} tooltip={label} icon={ico(icon)} isDisabled={!ok} onClick={run} />;
   return (
@@ -56,7 +57,7 @@ function Tools() {
       {tool("tsplit", t("toolSplit"), Scissors, inside, () => ops([{ op: "split_clip", id: c!.id, at }], "split " + c!.id))}
       {tool("tdel", t("deleteClip"), Trash2, !!c, () => ops([{ op: "remove_clip", id: c!.id }], "remove " + c!.id))}
       {tool("tdup", t("toolDuplicate"), Copy, !!c, () => ops([{ op: "duplicate_clip", id: c!.id }], "duplicate " + c!.id))}
-      {tool("tfreeze", t("toolFreeze"), Snowflake, inside && c!.type === "video", () => ops([{ op: "freeze_frame", id: c!.id, at }], "freeze " + c!.id))}
+      {tool("tfreeze", t("toolFreeze"), Snowflake, on && c!.type === "video", () => ops([{ op: "freeze_frame", id: c!.id, at }], "freeze " + c!.id))}
     </span>
   );
 }
@@ -155,7 +156,7 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
       {trn && <div className="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
       {!v.nested && <div className="h l" data-edge="l" />}
       {!v.nested && <div className="h r" data-edge="r" />}
-      {kfTimes(c).map((kt) => (
+      {kfTimes(c).filter((kt) => kt >= -1e-6 && kt <= dur(c) + 1e-6).map((kt) => ( // a split's right half keeps the curve's keys before its head
         <div key={kt} className="kf" data-t={String(kt)} style={{ left: v.k * kt * pps + (kd && near(kd.kt, kt) ? kd.dx : 0) + "px" }}
           title={t("keyframeAt", kt, Object.keys(c.keyframes).filter((p) => pts(c.keyframes[p]).some((q) => near(q[0], kt))).join(", "))} />
       ))}

@@ -386,6 +386,18 @@ export async function frame(project: string | undefined, t: number | string, o: 
   return { image: out, t: tt, bytes: png.length };
 }
 
+/** Where a top-level clip is placed at clip-local time tl, in project px: the x/y a first position keyframe takes, so adding it moves nothing
+ *  (a clip placed by a position preset or a % has no px the page can compute: the box depends on the rendered size). */
+export async function placedAt(project: string | undefined, id: string, tl: number) {
+  const p = openProject(project), tl0 = p.load(), { Renderer } = await renderMod();
+  const r = new Renderer(p.absolutized(tl0), p.root, 1); // full scale: the centre is exact to the project pixel
+  try {
+    const at = await r.placedCentre(id, Math.max(0, tl));
+    if (!at) throw new M.EditError(`clip '${id}' is not drawn at ${tl} s of it`, "not_found", "pick a visual clip on a visible track, inside its length");
+    return { revision: tl0.revision, x: +at[0].toFixed(1), y: +at[1].toFixed(1) };
+  } finally { r.close(); }
+}
+
 /** Objective exposure/colour check of the composited frame at t: waveform + vectorscope + histogram image and luma/chroma stats. */
 export async function scopes(project: string | undefined, t: number | string, o: { out?: string; scale?: number; signal?: AbortSignal } = {}) {
   const p = openProject(project);

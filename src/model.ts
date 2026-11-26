@@ -1,6 +1,7 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
-import { ease, parseKfs, speedIntegral } from "./anim.ts";
+import { parseKfs, speedIntegral } from "./anim.ts";
+import { ease } from "./ease.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 import { own } from "./own.ts";

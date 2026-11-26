@@ -1006,7 +1006,7 @@ fi
 } finally { srv.kill(); }
 
 {
-  const { ease } = await import("../src/anim.ts");
+  const { ease } = await import("../src/ease.ts");
   check("an hsl range that only the prototype chain holds is refused", gradeIssues({ hsl: { toString: { hue: 10 } } }).some(([k]) => k === "hsl.toString"));
   check("an easing name that only the prototype chain holds eases linearly", ease("constructor", 0.3) === 0.3, ease("constructor", 0.3));
 }

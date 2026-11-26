@@ -1101,9 +1101,11 @@ console.log("page modules");
     && resolveRef(lanes, "a#-1") === "a1" && resolveRef(lanes, "a#0") === "a0" && resolveRef(lanes, "a#5") === null && resolveRef(lanes, "zz#0") === null && resolveRef(lanes, "plain") === "plain", order);
 
   const ks = pts([{ t: "500ms", v: 2, ease: "ease_out" }, [0, 1]]);
-  check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt interpolates, kfBase defaults",
-    JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === 1.5 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
-    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
+  const { kfValue } = await import("../src/anim.ts");
+  check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt reads the curve as the renderer does (ease_out, hold), kfBase defaults and reads a % position",
+    JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === +kfValue([[0, 1], [0.5, 2, "ease_out"]], 0.25).toFixed(4) && kfAt(ks, 0.25) === 1.875
+    && kfAt(pts([[0, 1], [2, 0, "hold"]]), 1) === 1 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
+    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "25%" }), "x", { width: 1080, height: 1920 }) === 270 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
     && JSON.stringify(kfTimes(clip("c", { keyframes: { x: [[0, 1], [1, 2]], y: [[1, 5], [2, 6]] } }))) === "[0,1,2]", JSON.stringify(packKf(ks)));
 
   const trk = (id: string, magnetic: boolean, clips: any[]): any => ({ id, magnetic, clips });

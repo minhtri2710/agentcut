@@ -695,6 +695,26 @@ console.log("match_duration by clip reference");
       try { (await run(t1, [{ op: "freeze_frame", id: "vid1", at: atT, duration: 1 }])); } catch (e) { err = e; }
       check(`freeze_frame at a time ${name} is refused with its range, and nothing changes`, err?.code === "bad_value" && /1s to 2s/.test(err.message) && !!err.hint && JSON.stringify(t1) === before, { code: err?.code, message: err?.message });
     }
+    // split and freeze on a clip whose source time is not in + t * speed: the halves and the freeze show what the renderer showed there
+    const { speedIntegral } = await import("../src/anim.ts");
+    const ramp = [[0, 2], [2, 2], [4, 1]];
+    const [xr] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: ramp },
+      { op: "split_clip", id: "rmp", at: 3 }]);
+    const [rl, rr] = xr.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("split_clip of a speed ramp: the right half starts at the source second the ramp reached and keeps the whole curve in its own time (keys before its head at negative times)",
+      Math.abs(rr.in - (1 + speedIntegral(ramp, 3))) < 1e-3 && JSON.stringify(rr.keyframes.speed) === "[[-3,2],[-1,2],[1,1]]" && JSON.stringify(rl.keyframes.speed) === JSON.stringify(ramp)
+      && !validate(xr).some((i: any) => i.level === "error"), { rl, rr });
+    const eased = [[0, 1], [4, 2, "ease_in"]];
+    const [xq] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: eased }, { op: "split_clip", id: "rmp", at: 2 }]);
+    const [, qr] = xq.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("  a cut inside an eased ramp segment keeps its shape: the right half plays the same source seconds the whole clip did, to its end",
+      [0.5, 1, 2].every((u) => Math.abs(qr.in + speedIntegral(qr.keyframes.speed, u) - (1 + speedIntegral(eased, 2 + u))) < 1e-3), qr);
+    const [xf, rf] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rv", at: 0, duration: 4, in: 1, reverse: true }, { op: "freeze_frame", id: "rv", at: 1, duration: 1 }]);
+    check("freeze_frame of a reversed clip holds the frame it showed: in + (duration - t) * speed", at(xf, rf[1].id).in === 4, at(xf, rf[1].id));
+    const [xz] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "fz", at: 0, duration: 4, in: 2, freeze: true }, { op: "split_clip", id: "fz", at: 1 }, { op: "freeze_frame", id: "fz", at: 0.5, duration: 1 }]);
+    check("  split and freeze of a freeze clip keep its frame", xz.tracks.find((tr: any) => tr.id === "overlay")!.clips.every((c: any) => c.in === 2), xz.tracks.find((tr: any) => tr.id === "overlay")!.clips);
+    const [xe, re] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: ramp }, { op: "freeze_frame", id: "rmp", at: 4, duration: 1 }]);
+    check("  freeze_frame at the end of a ramped clip holds the ramp's last source frame", Math.abs(at(xe, re[2].id).in - (1 + speedIntegral(ramp, 4))) < 1e-3, at(xe, re[2].id));
     const fz2 = rs2[2];
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }

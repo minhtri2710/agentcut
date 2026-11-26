@@ -908,6 +908,13 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await typeIn(`document.querySelector('#sidebody [data-prop="opacity"] .pnum')`, "40");
     check("the Basic tab's Opacity number (in %) sets the clip's opacity", await untilFile((tl) => clipOf(tl, "blink")?.opacity === 0.4), clipOf(load(), "blink"));
     await until("opacity seen", atRev(load().revision));
+    {
+      const before = readFileSync(join(dir, "project.json"), "utf8"), num = `document.querySelector('#sidebody [data-prop="opacity"] .pnum')`;
+      await typeIn(num, "");
+      await js(`(function(){var i=${num}; i.focus(); i.blur();})()`);
+      await sleep(400);
+      check("  a cleared number, or one only passed through, saves nothing and shows the value again", readFileSync(join(dir, "project.json"), "utf8") === before && await js(`${num}.value`) === "40", await js(`${num}.value`));
+    }
     await seekTo(0.4);
     await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
     check("  and the Scale diamond adds a scale keyframe at the playhead (clip time 0.1 s, the clip's own scale 1)", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.keyframes?.scale) === "[[0.1,1]]"), clipOf(load(), "blink")?.keyframes);
@@ -915,6 +922,20 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
     check("  the same diamond on that key removes it", await untilFile((tl) => !clipOf(tl, "blink")?.keyframes?.scale), clipOf(load(), "blink")?.keyframes);
     await until("key gone", atRev(load().revision));
+    {
+      // a first X key on a clip placed by a position preset takes where it is drawn (as Premiere, Final Cut and CapCut start a key at the current value)
+      await applyLatest(dir, [{ op: "update_clip", id: "blink", set: { position: "top_left", margin: "10%" } }]);
+      await until("preset seen", atRev(load().revision));
+      const was = await api.placedAt(dir, "blink", 0.1);
+      await js(`document.querySelector('#sidebody [data-prop="x"] .kfd').click()`);
+      const kx = (tl: any) => clipOf(tl, "blink")?.keyframes?.x;
+      check("  the X diamond on a clip placed by a position preset keys the x it is drawn at, and sets that x/y so it does not move",
+        await untilFile((tl) => !!kx(tl)) && JSON.stringify(kx(load())) === JSON.stringify([[0.1, was.x]]) && clipOf(load(), "blink").position === undefined
+        && clipOf(load(), "blink").y === was.y && JSON.stringify(await api.placedAt(dir, "blink", 0.1)) === JSON.stringify({ ...was, revision: load().revision }), { was, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`), kfd: await js(`!!document.querySelector('#sidebody [data-prop="x"] .kfd')`) });
+      await until("x key seen", atRev(load().revision));
+      await applyLatest(dir, [{ op: "set_keyframes", id: "blink", prop: "x", keyframes: null }, { op: "update_clip", id: "blink", set: { x: null, y: null } }]);
+      await until("x key gone", atRev(load().revision));
+    }
     await click("#itab-more");
     check("the More tab shows the clip's fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
     await setF("f-text", "Blinked");
@@ -1135,7 +1156,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       for (let t0 = Date.now(); !after.rev && Date.now() - t0 < 12000; await sleep(40)) {
         await hands.on(`if (!document.getElementById("rev").textContent) document.getElementById("undo").click()`);
         after = await hands.on(`({ msg: document.getElementById("msg").textContent, cls: document.getElementById("msg").className, rev: document.getElementById("rev").textContent })`);
-        if (!after.rev) before = after.msg;
+        // a state that has arrived clears the box before React draws its revision: an empty box with no revision yet is that moment, not a missing refusal
+        if (!after.rev && after.msg) before = after.msg;
       }
       check("  and after the entry is removed the page's reconnect fills it in", await watch.onUntil(filled, 12000), await watch.on(`document.getElementById("rev").textContent`));
       check("  the stream's error is gone from the box once the state is there", await watch.onUntil(`document.getElementById("msg").textContent === "" && document.getElementById("msg").className === ""`, 3000), await watch.on(`document.getElementById("msg").textContent`));

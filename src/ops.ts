@@ -14,6 +14,7 @@ import type { Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
 import { own } from "./own.ts";
+import { speedIntegral } from "./anim.ts";
 import { normWord, registerEditOps, scaleKfs, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
@@ -546,11 +547,21 @@ function renameNested(tl: Timeline, c: Clip) {
   fix(c.tracks ?? []);
 }
 
-/** right half of a split: the same curves (focus pan, volume, ...) in its own clip-local time; a speed ramp can't be cut this way */
+/** right half of a split: the same curves (focus pan, volume, speed, ...) in its own clip-local time. Keys before its head stay (at negative times),
+ *  so the curve between them plays as it did in the whole clip, an eased speed segment cut in two included (as Premiere's razor keeps a time-remap curve). */
 function rightKfs(c: Clip, left: number) {
-  delete c.keyframes?.speed;
+  if (c.keyframes?.speed) c.keyframes.speed = c.keyframes.speed.map((k: any) => (Array.isArray(k) ? [round6(parseTime(k[0]) - left), ...k.slice(1)] : { ...k, t: round6(parseTime(k.t) - left) }));
   shiftKfs(c, -left); // keyframes, effect windows and caption words; srt cues cannot be moved, so that split is refused
   if (c.keyframes && !Object.keys(c.keyframes).length) delete c.keyframes;
+}
+
+/** the source second a video clip shows at clip-local time `lt` (the renderer's mapping); a reversed speed ramp is refused */
+function sourceAt(c: Clip, lt: number, what: string): number {
+  const cin0 = parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1, ramp = c.keyframes?.speed;
+  if (c.freeze) return cin0;
+  if (ramp && c.reverse) throw new EditError(`${what}: '${c.id}' plays a speed ramp backwards`, "unsupported", `update_clip id=${c.id} to remove reverse or keyframes.speed first`);
+  if (ramp) return cin0 + speedIntegral(ramp, lt);
+  return c.reverse ? cin0 + (clipDur(c) - lt) * sp : cin0 + lt * sp;
 }
 
 function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, number] {
@@ -559,12 +570,15 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   const s = clipStart(c), d = clipDur(c);
   if (!(s < t && t < s + d)) throw new EditError(`split point ${t} is outside clip ${c.id} (${s.toFixed(3)}–${(s + d).toFixed(3)})`, "out_of_range");
   const left = t - s;
+  const ramp = c.type === "video" && !!c.keyframes?.speed && !c.freeze;
   const right: Clip = structuredClone(c);
   right.id = newId(tl, PREFIX[c.type]);
   c.duration = round6(left); right.duration = round6(d - left);
   dropFollow(c); dropFollow(right); // both halves keep their split lengths
   if (c.type === "compound") right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
-  if (c.type === "video" || c.type === "audio") {
+  if (c.freeze) right.in = c.in; // both halves hold the same frame
+  else if (ramp) right.in = round6(sourceAt(c, left, "split_clip"));
+  else if (c.type === "video" || c.type === "audio") {
     if (c.reverse) c.in = round6(parseTime(c.in ?? 0) + (d - left) * (Number(c.speed ?? 1) || 1)), right.in = round6(parseTime(right.in ?? 0));
     else right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
   }
@@ -606,7 +620,7 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const t = parseAt(tl, a.at), s = clipStart(c0), e = s + clipDur(c0);
     if (t < s - 1e-3 || t > e + 1e-3) throw new EditError(`at ${round6(t)}s is outside clip '${c0.id}' (${round6(s)}s to ${round6(e)}s)`, "bad_value", `freeze at a timeline time inside the clip: ${round6(s)} to ${round6(e)}`);
     const atStart = t <= s + 1e-3; // a freeze of the first frame plays before the clip
-    const srcT = parseTime(c0.in ?? 0) + Math.max(0, t - s) * (Number(c0.speed ?? 1) || 1);
+    const srcT = sourceAt(c0, Math.min(clipDur(c0), Math.max(0, t - s)), "freeze_frame");
     let insertAfter = c0;
     if (!atStart && t < e - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
     const [tr] = findClip(tl, insertAfter.id);
