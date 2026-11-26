@@ -588,6 +588,8 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   if (c.type === "captions" && c.words) c.words = c.words.map(normWord).filter((w: any) => w.start < left);
   placeAt(tl, tr, right, t);
   tr.clips.splice(ci + 1, 0, right);
+  // on a free track the right half starts at the cut: after the clips that start before it (an incoming clip overlapping the left half stays paired with it)
+  if (!tr.magnetic) { resolve(tl); reposition(tr, right); }
   renameNested(tl, right);
   // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
   for (const [atr, au] of linkedAudio(tl, c)) {

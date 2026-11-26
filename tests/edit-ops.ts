@@ -756,6 +756,20 @@ console.log("match_duration by clip reference");
       resolve(tr2);
       check("  resolve: two connected clips carried past a still clip between them are put in time order as a group (each alone would leave one ahead)",
         tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
+      // two connected clips whose targets swap places: the next op's overlay#0 is the one that now starts first
+      const [xw] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "w1", duration: 1 }, { op: "add_clip", track: "main", asset: "p", id: "w2", duration: 1 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "wa", attach_to: "w1", duration: 0.5 }, { op: "add_clip", track: "overlay", asset: "v", id: "wb", attach_to: "w2", duration: 0.5 },
+        { op: "move_clip", id: "w2", index: 0 }, { op: "add_clip", track: "text", text: "t", id: "wt", attach_to: "overlay#0", duration: 1 }]);
+      check("  connected clips whose targets swap: they swap in the track's order, and the next op's overlay#0 is the one that starts first",
+        xw.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "wb,wa" && at(xw, "wt").attach_to === "wb", { wt: at(xw, "wt"), order: xw.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]) });
+      // a split inside a transition: connected B overlaps A's tail; the cut is in the overlap, so the right half starts after B and B stays paired with the left half
+      const [xq] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "pm1", duration: 4.5 }, { op: "add_clip", track: "main", asset: "p", id: "pm2", duration: 3 }]);
+      const s2 = at(xq, "pm2").start; // where the main storyline puts pm2: A plays up to 0.5 s after it
+      const [xp, rp] = await run(xq, [{ op: "add_clip", track: "overlay", asset: "v", id: "pA", at: s2 - 4.5, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "pB", attach_to: "pm2", offset: 0, duration: 2 },
+        { op: "update_clip", id: "pB", set: { transition: { type: "crossfade", duration: 0.5 } } }, { op: "split_clip", id: "pA", at: s2 + 0.25 }]);
+      const po = xp.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+      check("  split_clip inside a transition on a free track: the right half goes after the incoming clip that starts before the cut, which stays paired with the left half",
+        po.map((c: any) => c.id).join() === `pA,pB,${rp[3].right}` && at(xp, "pB").start === s2, po.map((c: any) => [c.id, c.start, c.duration]));
       check("  connected clips carried past a still clip in one batch: the track is in time order at once, so overlay#0 in the next op is the still clip",
         at(xg, "gt").attach_to === "gc" && xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", { gt: at(xg, "gt"), order: xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]) });
     }
