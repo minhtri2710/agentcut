@@ -509,7 +509,7 @@ op("trim_clip", "Trim: trim_start cuts N s from the head (moves in-point of vide
       if (hasSourceTime(c) && !c.reverse && !c.freeze) c.in = round6(parseTime(c.in ?? 0) + d * speed);
       shiftKfs(c, -d);
       c.duration = round6(clipDur(c) - d);
-      if (!tr.magnetic) placeAt(tl, tr, c, clipStart(c) + d);
+      if (!tr.magnetic) { placeAt(tl, tr, c, clipStart(c) + d); tr.clips.sort((x, y) => clipStart(x) - clipStart(y)); } // a later start can pass a neighbour: the order stays time order
     }
     if (a.trim_end) {
       const e = parseTime(a.trim_end);

@@ -104,18 +104,19 @@ function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: st
 const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]); // model.ts VISUAL_TYPES
 /** a transition plays into a clip from the clip just before it, when the renderer draws both (render.ts pairs layers in a run that a gap, a disabled
  *  or a clip it does not draw breaks); a transition already there can always be cleared */
-const hasPrevious = (c: Clip) => {
+const pairsWithPrevious = (c: Clip) => {
   const tr = trackOf(c.id), i = tr ? tr.clips.indexOf(c) : -1, p = i > 0 ? tr!.clips[i - 1] : null;
   const drawn = !!tr && !tr.hidden && (tr.kind ?? "video") !== "audio";
-  return !!c.transition || (drawn && !!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false);
+  return drawn && !!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false;
 };
+const hasPrevious = (c: Clip) => !!c.transition || pairsWithPrevious(c);
 
 /** the transition into the clip, set with add_transition: on a track that is not magnetic it also moves the clip to overlap the one before by its length */
 function TransitionPick({ c, ro }: { c: Clip; ro: boolean }) {
-  const v = named(c.transition);
+  const v = named(c.transition), pairs = pairsWithPrevious(c); // with no clip to blend from, a transition left by a removed clip can only be cleared
   return (
     <div className="prop" data-prop="transition"><label>{t("pTransition")}</label>
-      <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={FORM.enums.transition} hasSearch isDisabled={ro}
+      <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={pairs ? FORM.enums.transition : typeof v === "string" ? [v] : []} hasSearch isDisabled={ro}
         // another type is a type-only edit (length, easing, the clip's place and the track's order stay); a new one is add_transition, which makes the overlap
         onChange={(x) => ops([x && c.transition
           ? { op: "update_clip", id: c.id, set: { transition: typeof c.transition === "object" ? { type: x } : x } }

@@ -727,6 +727,10 @@ console.log("match_duration by clip reference");
     const ou = xu.tracks.find((tr: any) => tr.id === "overlay")!.clips;
     check("update_clip of a transition's type keeps the clip's start, the track's order and the transition's length and easing (only a placing field re-sorts)",
       ou.map((c: any) => c.id).join() === "o1,o2" && at(xu, "o2").start === 1.9 && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ou);
+    const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
+      { op: "trim_clip", id: "h1", trim_start: 2 }, { op: "update_clip", id: "h2", set: { opacity: 0.5 } }]);
+    check("  trim_start that moves a clip past its neighbour keeps the free track in time order (roll_edit and transitions pair by it)",
+      xh.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "h2,h1", xh.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
     const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
     check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));
     const fz2 = rs2[2];

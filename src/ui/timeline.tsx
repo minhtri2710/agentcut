@@ -72,7 +72,11 @@ function rulerDown(ev: MouseEvent) {
   document.addEventListener("mousemove", at); document.addEventListener("mouseup", up);
 }
 
-const edgeAt = (ev: MouseEvent, box: HTMLElement) => { const r = box.getBoundingClientRect(); return edgeZone(ev.clientX, r.left, r.width); };
+/** the zone under a press: the trim zones are the painted handles (inside the border) plus the border itself */
+const edgeAt = (ev: MouseEvent, box: HTMLElement) => {
+  const r = box.getBoundingClientRect(), b = box.clientLeft; // the left border's width; the right one is the same
+  return edgeZone(ev.clientX, r.left, r.width, b);
+};
 
 function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   const target = ev.target as HTMLElement;

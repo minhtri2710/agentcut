@@ -294,6 +294,20 @@ try {
   await dragBy(`[data-id="gm"]`, 40);
   check("dragging a clip moves it by the dragged time and keeps its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - 1) < 0.02 && clipOf(tl, "gm")?.duration === 1), clipOf(load(), "gm"));
   await settled();
+  {
+    // the selected clip's handles are drawn inside its 2 px border: a press on the handle's inner pixel trims too
+    await click(`[data-id="gt"]`);
+    await settled();
+    const ib = await js(`(function(){var n=${node("gt")}, r=n.querySelector(".h.r").getBoundingClientRect();return {x:r.left+0.5,y:r.top+r.height/2,sel:n.classList.contains("sel")}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mousePressed", x: ib.x, y: ib.y, button: "left", clickCount: 1 });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: ib.x + 20, y: ib.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: ib.x + 40, y: ib.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: ib.x + 40, y: ib.y, button: "left", clickCount: 1 });
+    check("a drag from the inner pixel of a selected clip's right handle trims it, not moves it", ib.sel && await untilFile((tl) => Math.abs(clipOf(tl, "gt")?.duration - 2.5) < 0.02 && Math.abs(Number(clipOf(tl, "gt")?.start) - 2) < 0.02), clipOf(load(), "gt"));
+    await settled();
+    await applyLatest(dir, [{ op: "update_clip", id: "gt", set: { duration: 2 } }]);
+    await settled();
+  }
   await dragBy(`[data-id="gt"] .h.r`, 40);
   check("dragging a clip's right edge lengthens it and leaves its start", await untilFile((tl) => Math.abs(clipOf(tl, "gt")?.duration - 2.5) < 0.02 && Math.abs(Number(clipOf(tl, "gt")?.start) - 2) < 0.02), clipOf(load(), "gt"));
   await settled();
@@ -998,7 +1012,16 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
         check("  changing the transition's type keeps its length and the clip's start", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.transition) === '{"type":"dip_black","duration":0.1}' && clipOf(tl, "blink").start === s0),
           { picked, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
         await until("type seen", atRev(load().revision));
-        await applyLatest(dir, [{ op: "add_transition", to: "blink", type: "none" }, { op: "remove_clip", id: "tpre" }, { op: "update_clip", id: "blink", set: { start: 0.3 } }]);
+        // the clip before it removed, a transition left on what is now the first clip can only be cleared: the picker offers its own type and nothing else
+        await applyLatest(dir, [{ op: "remove_clip", id: "tpre" }]);
+        await until("pre gone", atRev(load().revision));
+        await js(`document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]').click()`);
+        await until("options", `[].some.call(document.querySelectorAll('[role="option"]'), function (o) { return o.getClientRects().length; })`);
+        const offered = await js(`[].filter.call(document.querySelectorAll('[role="option"]'), function (o) { return o.getClientRects().length; }).map(function (o) { return o.textContent.trim(); })`) as string[];
+        await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await page("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        check("  on what is now the first clip the picker offers only clearing the transition left there, no other type", JSON.stringify(offered) === '["dip_black"]', offered);
+        await applyLatest(dir, [{ op: "add_transition", to: "blink", type: "none" }, { op: "update_clip", id: "blink", set: { start: 0.3 } }]);
         await until("transition gone", atRev(load().revision));
       }
     }
