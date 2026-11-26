@@ -1,13 +1,11 @@
 // The page's entry point: draws the page with React and the Astryx design system from st, and follows the server's event stream.
 import { useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { IconButton } from "@astryxdesign/core/IconButton";
-import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { Clapperboard, Download, FileText, Film, History as HistoryIcon, LayoutGrid, Library as LibraryIcon, ListChecks, MessageSquare, Redo2, Undo2 } from "lucide-react";
+import { ArrowLeftRight, AudioLines, Bot, Captions, Clapperboard, Download, Film, History as HistoryIcon, Images, LayoutGrid, LayoutTemplate, ListChecks, Redo2, Sparkles, SwatchBook, Type, Undo2 } from "lucide-react";
 import { hist } from "./history.ts";
 import { getLang, setLang, t, type Lang } from "./i18n.ts";
 import { Frame, ico, LangSwitch } from "./kit.tsx";
@@ -45,8 +43,9 @@ function Header() {
   const errors = S ? S.errors || 0 : 0, warnings = S ? S.warnings || 0 : 0;
   return (
     <header id="top">
-      <span className="brand">{ico(Clapperboard)}<b id="name">{S ? S.timeline.name || t("untitled") : "AgentCut"}</b></span>
+      <span className="brand"><span className="logo">{ico(Clapperboard)}</span><b id="name">{S ? S.timeline.name || t("untitled") : "AgentCut"}</b></span>
       <span className="mut mono" id="rev">{S ? t("rev", S.revision, S.timeline.settings.width, S.timeline.settings.height, S.timeline.settings.fps) : ""}</span>
+      <span className="sep" />
       <span className="hgroup">
         <IconButton id="undo" size="sm" variant="ghost" label={t("undo")} tooltip={t("undoTitle", S ? last(S.history.undo) : "Cmd/Ctrl+Z")} icon={ico(Undo2)}
           isDisabled={!!S && !S.history.undo.length} onClick={() => hist("undo")} />
@@ -54,12 +53,13 @@ function Header() {
           isDisabled={!!S && !S.history.redo.length} onClick={() => hist("redo")} />
       </span>
       <span className="grow" />
-      <span id="issues">{S && <Badge variant={errors ? "error" : warnings ? "warning" : "success"} label={t("issues", errors, warnings)} />}</span>
+      <span id="issues" className="mut" title={t("issues", errors, warnings)}>{S && <><span className="dot" style={{ background: errors ? "#ff6b6b" : warnings ? "#ffd166" : "#3ddc97" }} />{t("issues", errors, warnings)}</>}</span>
       <LangSwitch onPick={switchLang} />
+      <span className="sep" />
+      <IconButton id="sheet" size="sm" variant="ghost" label={t("sheet")} tooltip={t("sheet")} icon={ico(LayoutGrid)} isDisabled={st.sheeting} onClick={startSheet} />
       <CheckboxInput id="draft" size="sm" label={t("draft")} value={st.draft} onChange={(v) => { st.draft = v; changed(); }} />
-      <Button id="sheet" size="sm" variant="ghost" icon={ico(LayoutGrid)} label={t("sheet")} isDisabled={st.sheeting} onClick={startSheet} />
-      <Button id="exportb" size="sm" icon={ico(Download)} label={t("exportBtn")} isDisabled={st.rendering} onClick={openExport} />
-      <Button id="render" size="sm" variant="primary" icon={ico(Film)} label={t("render")} isDisabled={st.rendering} onClick={() => startRender()} />
+      <Button id="render" size="sm" icon={ico(Film)} label={t("render")} isDisabled={st.rendering} onClick={() => startRender()} />
+      <Button id="exportb" size="sm" variant="primary" icon={ico(Download)} label={t("exportBtn")} isDisabled={st.rendering} onClick={openExport} />
     </header>
   );
 }
@@ -86,12 +86,18 @@ function Consent() {
   );
 }
 
-/** the left panel: one tab per tool */
+/** The left panel: CapCut's tool strip (an icon over its name) and the tool's panel. The library's kinds are tools of their own, as in CapCut
+ *  (Text, Effects, Transitions, Filters, Captions); `lib` is the library kind the panel shows. */
 const TABS = [
-  { id: "media", label: () => t("media"), icon: Film, body: Media },
-  { id: "library", label: () => t("library"), icon: LibraryIcon, body: Library },
-  { id: "transcript", label: () => t("transcript"), icon: FileText, body: Transcript },
-  { id: "chat", label: () => t("chat"), icon: MessageSquare, body: Chat },
+  { id: "media", label: () => t("media"), icon: Images, body: Media },
+  { id: "lib-text", label: () => t("railText"), icon: Type, body: () => <Library only={["text"]} /> },
+  { id: "lib-effect", label: () => t("railEffects"), icon: Sparkles, body: () => <Library only={["effect"]} /> },
+  { id: "lib-transition", label: () => t("railTransitions"), icon: ArrowLeftRight, body: () => <Library only={["transition"]} /> },
+  { id: "lib-look", label: () => t("railFilters"), icon: SwatchBook, body: () => <Library only={["look"]} /> },
+  { id: "lib-caption", label: () => t("railCaptions"), icon: Captions, body: () => <Library only={["caption"]} /> },
+  { id: "templates", label: () => t("railTemplates"), icon: LayoutTemplate, body: () => <Library only={[]} templates /> },
+  { id: "transcript", label: () => t("transcript"), icon: AudioLines, body: Transcript },
+  { id: "chat", label: () => t("railAgent"), icon: Bot, body: Chat },
   { id: "review", label: () => t("review"), icon: ListChecks, body: Review },
   { id: "history", label: () => t("history"), icon: HistoryIcon, body: History },
 ];
@@ -100,11 +106,17 @@ function Left() {
   const tab = TABS.find((x) => x.id === st.tab) || TABS[0];
   return (
     <aside id="left">
-      <TabList value={tab.id} size="sm" layout="fill" hasDivider onChange={(v) => { st.tab = v; changed(); }}>
-        {TABS.map((x) => <Tab key={x.id} id={"tab-" + x.id} value={x.id} label={x.label()} isLabelHidden icon={ico(x.icon)} />)}
-      </TabList>
-      <div className="phead">{tab.label()}</div>
-      <tab.body />
+      <nav id="rail" role="tablist" aria-orientation="vertical">
+        {TABS.map((x) => (
+          <button key={x.id} id={"tab-" + x.id} type="button" role="tab" className="rbtn" aria-selected={x === tab} title={x.label()} onClick={() => { st.tab = x.id; changed(); }}>
+            {ico(x.icon)}<span>{x.label()}</span>
+          </button>
+        ))}
+      </nav>
+      <div id="lpanel">
+        <div className="phead">{tab.label()}</div>
+        <tab.body />
+      </div>
     </aside>
   );
 }

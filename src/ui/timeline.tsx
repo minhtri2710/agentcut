@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Slider } from "@astryxdesign/core/Slider";
 import { ToggleButton } from "@astryxdesign/core/ToggleButton";
-import { Eye, EyeOff, Lock, LockOpen, Volume2, VolumeX, ZoomIn } from "lucide-react";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Copy, Eye, EyeOff, Film, Lock, LockOpen, Magnet, Music, Scissors, Snowflake, Trash2, Type as TypeIcon, Volume2, VolumeX, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 import { ico } from "./kit.tsx";
 import { ops } from "./api.ts";
 import { drag, kfDrag } from "./drag.ts";
@@ -11,10 +12,10 @@ import { select } from "./inspector.tsx";
 import { kfTimes, near, pts } from "./keyframes.ts";
 import { applyLib, LIB_DRAG } from "./library.tsx";
 import { ASSET_DRAG } from "./media.tsx";
-import { $, changed, findClip, LABEL, LANE, refreshView, S, st, total, V } from "./state.ts";
+import { $, changed, findClip, LABEL, LANE, MAIN_LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
-import { clipOrder, resolveRef, tickStep } from "./view.ts";
+import { clipOrder, laneRows, resolveRef, tickStep } from "./view.ts";
 import { seek } from "./viewer.tsx";
 
 /** a clip's colour by type: the theme's hue palette (background, border), so the lanes read like the rest of the page */
@@ -41,6 +42,24 @@ export function openPath(p: string[]) {
 }
 
 function setZoom(pps: number) { st.pps = pps; changed(); }
+/** the whole timeline fills the visible lanes */
+function fitZoom() { const sc = $("scroll"); if (st.S && total() > 0) setZoom(Math.max(10, Math.min(400, (sc.clientWidth - LABEL - 24) / total()))); }
+
+/** CapCut's edit tools over the timeline, on the selected clip at the playhead: split, delete, duplicate, freeze */
+function Tools() {
+  const c = st.S && st.sel && !V().nested ? findClip(st.sel) : null, v = st.S ? V() : null;
+  const at = +st.t.toFixed(3), inside = !!c && !!v && at > v.off + v.k * start(c) + 1e-3 && at < v.off + v.k * (start(c) + dur(c)) - 1e-3;
+  const tool = (id: string, label: string, icon: Parameters<typeof ico>[0], ok: boolean, run: () => void) =>
+    <IconButton id={id} size="sm" variant="ghost" label={label} tooltip={label} icon={ico(icon)} isDisabled={!ok} onClick={run} />;
+  return (
+    <span className="row" id="tools">
+      {tool("tsplit", t("toolSplit"), Scissors, inside, () => ops([{ op: "split_clip", id: c!.id, at }], "split " + c!.id))}
+      {tool("tdel", t("deleteClip"), Trash2, !!c, () => ops([{ op: "remove_clip", id: c!.id }], "remove " + c!.id))}
+      {tool("tdup", t("toolDuplicate"), Copy, !!c, () => ops([{ op: "duplicate_clip", id: c!.id }], "duplicate " + c!.id))}
+      {tool("tfreeze", t("toolFreeze"), Snowflake, inside && c!.type === "video", () => ops([{ op: "freeze_frame", id: c!.id, at }], "freeze " + c!.id))}
+    </span>
+  );
+}
 
 function rulerDown(ev: MouseEvent) {
   const at = (e: MouseEvent) => { const b = $("ruler").getBoundingClientRect(); seek((e.clientX - b.left) / st.pps); };
@@ -98,10 +117,10 @@ function Wave({ c, path, width }: { c: Clip; path: string; width: number }) {
   for (let b = 0; b < bars; b++) {
     let m = 0;
     for (let k = Math.floor((in0 + (span * b) / bars) * w.rate), end = Math.min(w.peaks.length, Math.ceil((in0 + (span * (b + 1)) / bars) * w.rate)); k < end; k++) m = Math.max(m, w.peaks[k]);
-    const h = Math.max(0.5, (m / 255) * 15);
-    d += "M" + (b * 2 + 1) + " " + (19 - h).toFixed(1) + "V" + (19 + h).toFixed(1);
+    const h = Math.max(0.5, (m / 255) * 13);
+    d += "M" + (b * 2 + 1) + " " + (14 - h).toFixed(1) + "V" + (14 + h).toFixed(1);
   }
-  return <svg className="wave" width={width} height="38"><path d={d} /></svg>;
+  return <svg className="wave" width={width} height="28"><path d={d} /></svg>;
 }
 
 const TILE = 68; // px: one thumbnail of the strip (16:9 at the clip's height)
@@ -167,22 +186,27 @@ function Toggle({ tr, field, on, off, label, ro }: { tr: Track; field: "hidden" 
   return <ToggleButton data-toggle={field} size="sm" isIconOnly label={label} isPressed={!!tr[field]} isDisabled={ro} icon={ico(off)} pressedIcon={ico(on)} onPressedChange={() => toggleTrack(tr, field)} />;
 }
 
+/** a lane's height: the main (magnetic) track is taller, as CapCut's main track and Final Cut's primary storyline are */
+const laneH = (tr: Track) => (tr.magnetic ? MAIN_LANE : LANE);
+const TRACK_ICON = (tr: Track) => (tr.kind === "audio" ? Music : tr.id === "text" ? TypeIcon : tr.magnetic ? Magnet : Film);
+
 function Lanes({ W }: { W: number }) {
   const tl = S().timeline, v = V(), pps = st.pps;
-  const rows = v.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
-  const laneOf: Record<string, number> = {};
-  rows.forEach((tr, i) => { tr.clips.forEach((c) => { laneOf[c.id] = i; }); });
-  const H = rows.length * LANE;
+  const rows = laneRows(v.tracks), firstAudio = rows.findIndex((t) => t.kind === "audio");
+  const laneOf: Record<string, number> = {}, top: number[] = [];
+  let H = 0;
+  rows.forEach((tr, i) => { top.push(H); H += laneH(tr); tr.clips.forEach((c) => { laneOf[c.id] = i; }); });
+  const mid = (i: number) => top[i] + laneH(rows[i]) / 2;
   return [
     <div key="ruler" id="ruler" style={{ width: W + "px", marginLeft: LABEL + "px" }} onMouseDown={(e) => rulerDown(e.nativeEvent)}>
       {Array.from({ length: Math.ceil(W / pps / tickStep(pps)) }, (_, n) => n * tickStep(pps)).map((x) => <div key={"t" + x} className="tick" style={{ left: x * pps + "px" }}>{x + "s"}</div>)}
       {(tl.markers || []).map((m, n) => <div key={"m" + n} className="marker" style={{ left: num(m.t) * pps + "px" }} title={m.t + "s " + (m.label || "")}>{m.label || ""}</div>)}
     </div>,
     <div key="lanes" id="lanes">
-      {rows.map((tr) => (
-        <div key={tr.id} className={"lane" + (tr.locked ? " locked" : "") + (tr.hidden ? " hidden" : "") + (tr.muted ? " muted" : "")} data-track={tr.id} onDragOver={(e) => laneOver(e.nativeEvent)} onDrop={(e) => laneDrop(e.nativeEvent, e.currentTarget, tr)}>
+      {rows.map((tr, i) => (
+        <div key={tr.id} className={"lane" + (tr.magnetic ? " main" : "") + (i === firstAudio && i > 0 ? " first-audio" : "") + (tr.locked ? " locked" : "") + (tr.hidden ? " hidden" : "") + (tr.muted ? " muted" : "")} data-track={tr.id} onDragOver={(e) => laneOver(e.nativeEvent)} onDrop={(e) => laneDrop(e.nativeEvent, e.currentTarget, tr)}>
           <div className="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
-            <b>{tr.id}</b>
+            <b>{ico(TRACK_ICON(tr))}{tr.id}</b>
             <div className="tbtns">
               {tr.kind !== "audio" && <Toggle tr={tr} field="hidden" on={EyeOff} off={Eye} label={t(tr.hidden ? "showTrack" : "hideTrack", tr.id)} ro={v.nested} />}
               <Toggle tr={tr} field="muted" on={VolumeX} off={Volume2} label={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)} ro={v.nested} />
@@ -198,7 +222,7 @@ function Lanes({ W }: { W: number }) {
         if (!c.attach_to) return null;
         const pid = resolveRef(v.tracks, c.attach_to);
         if (pid === null || laneOf[pid] === undefined) return null;
-        const x = (v.off + v.k * start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
+        const x = (v.off + v.k * start(c)) * pps, y1 = mid(i), y2 = mid(laneOf[pid]);
         return [<path key={c.id + "l"} d={"M" + x + " " + y1 + " L" + x + " " + y2} stroke="var(--color-text-warning)" strokeDasharray="3 3" />, <circle key={c.id + "c"} cx={x} cy={y2} r="3" fill="var(--color-text-warning)" />];
       }))}
     </svg>,
@@ -226,12 +250,15 @@ export function Timeline() {
   return (
     <section id="tl">
       <div id="tbar">
+        <Tools />
         <Crumbs />
-        <span className="mut tlhint">{t("tlHint")}</span>
         <span className="grow" />
-        <span className="mut mono" id="dur">{st.S ? total().toFixed(2) + " s" : ""}</span>
-        <span className="zoom">{ico(ZoomIn)}
-          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={10} max={400} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={140} />
+        <span className="mut mono" id="dur" title={t("tlHint")}>{st.S ? total().toFixed(2) + " s" : ""}</span>
+        <span className="zoom">
+          <IconButton size="sm" variant="ghost" label={t("zoomOut")} tooltip={t("zoomOut")} icon={ico(ZoomOut)} onClick={() => setZoom(Math.max(10, st.pps / 1.5))} />
+          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={10} max={400} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={120} />
+          <IconButton size="sm" variant="ghost" label={t("zoomIn")} tooltip={t("zoomIn")} icon={ico(ZoomIn)} onClick={() => setZoom(Math.min(400, st.pps * 1.5))} />
+          <IconButton size="sm" variant="ghost" label={t("zoomFit")} tooltip={t("zoomFit")} icon={ico(Maximize2)} onClick={fitZoom} />
         </span>
       </div>
       <div id="scroll" ref={scroll}>

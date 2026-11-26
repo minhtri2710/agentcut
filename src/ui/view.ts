@@ -28,10 +28,16 @@ export function viewOf(top: Track[], path: string[]): { view: View; path: string
   return { view: { tracks, off, k, lo, hi, nested: path.length > 0 }, path };
 }
 
+/** The lanes top to bottom, as CapCut and Final Cut lay them out: the picture tracks above, the top layer first (tracks[0] is drawn first, so it is the lowest
+ *  picture lane: the main storyline), then the audio tracks below in track order. */
+export function laneRows(tracks: Track[]): Track[] {
+  return tracks.filter((t) => t.kind !== "audio").reverse().concat(tracks.filter((t) => t.kind === "audio"));
+}
+
 /** every clip of the shown tracks in time order (ties: lane order), the order Left and Right walk */
 export function clipOrder(v: View): Clip[] {
   const r: Clip[] = [];
-  v.tracks.slice().reverse().forEach((tr) => tr.clips.forEach((c) => r.push(c)));
+  laneRows(v.tracks).forEach((tr) => tr.clips.forEach((c) => r.push(c)));
   return r.map((c, i) => [v.off + v.k * start(c), i, c] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((x) => x[2]);
 }
 

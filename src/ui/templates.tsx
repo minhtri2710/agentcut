@@ -3,14 +3,13 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Hammer, Plus } from "lucide-react";
 import { stamped } from "./api.ts";
 import { t } from "./i18n.ts";
-import { ico } from "./kit.tsx";
+import { ico, Num, numOf } from "./kit.tsx";
 import { fail, show } from "./messages.ts";
 import { errText } from "./text.ts";
 import { changed, st } from "./state.ts";
@@ -30,15 +29,15 @@ type Row = { text: string; media: string };
 function Field({ name, kind, label, val, set }: { name: string; kind: string; label: string; val: unknown; set: (v: unknown) => void }) {
   const pick = (opts: { value: string; label: string }[]) => <Selector htmlName={name} label={label} isLabelHidden size="sm" value={(val as string) || ""} options={[{ value: "", label: t("tplNoPick") }, ...opts]} onChange={(v) => set(v ?? "")} />;
   if (kind === "media") {
-    const ids = (val as string[]) || [];
-    return <div className="tplmedia">{assetsOf(...VISUAL).map((o) => (
-      <CheckboxInput key={o.value} data-asset={o.value} size="sm" label={o.label} value={ids.includes(o.value)} onChange={(on) => set(on ? ids.concat([o.value]) : ids.filter((x) => x !== o.value))} />
+    const ids = (val as string[]) || [], opts = assetsOf(...VISUAL);
+    return <div className="tplmedia">{opts.map((o) => ( // the picks in the list's order, not the order they were ticked
+      <CheckboxInput key={o.value} data-asset={o.value} size="sm" label={o.label} value={ids.includes(o.value)} onChange={(on) => set(opts.map((x) => x.value).filter((x) => (x === o.value ? on : ids.includes(x))))} />
     ))}</div>;
   }
   if (kind === "audio") return pick(assetsOf("audio"));
   if (kind === "visual") return pick(assetsOf(...VISUAL));
   if (kind === "lines") return <TextArea htmlName={name} label={label} isLabelHidden size="sm" rows={3} value={(val as string) || ""} onChange={set} />;
-  if (kind === "number") return <NumberInput htmlName={name} label={label} isLabelHidden size="sm" min={0} value={(val as number | null) ?? null} onChange={set} />;
+  if (kind === "number") return <Num name={name} aria-label={label} min={0} step="any" value={(val as number | null) ?? ""} onChange={(e) => set(numOf(e.currentTarget))} />;
   if (kind === "text_preset" || kind === "transition") return pick(LIB[kind === "text_preset" ? "text" : "transition"].map((n) => ({ value: n, label: n })));
   if (kind === "items") {
     const rows = (val as Row[]) || [];

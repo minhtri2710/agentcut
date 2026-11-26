@@ -45,11 +45,12 @@ export function Dashboard() {
     <Frame>
       <div id="dash">
         <header id="top">
-          <span className="brand">{ico(Clapperboard)}<b>AgentCut</b></span>
+          <span className="brand"><span className="logo">{ico(Clapperboard)}</span><b>AgentCut</b></span>
           <span className="mut mono grow">{d ? d.dir : ""}</span>
           <LangSwitch onPick={(l) => { setLang(l); document.documentElement.lang = l; redraw((n) => n + 1); }} />
         </header>
         <main className="dmain">
+          <div className="dhero"><span className="logo">{ico(Clapperboard)}</span><h1>{t("dashHero")}</h1></div>
           <form id="dcreate" className="row" onSubmit={(e) => { e.preventDefault(); const n = name.trim(); if (n) go("/api/create", { name: n, preset: preset ?? presets[0] }, () => open(n)); }}>
             <TextInput htmlName="name" size="sm" label={t("dashName")} isLabelHidden placeholder={t("dashName")} hasSpellCheck={false} value={name} onChange={setName} width={280} />
             <Selector htmlName="preset" size="sm" label="preset" isLabelHidden value={preset ?? presets[0] ?? null} options={presets} onChange={setPreset} width={160} />

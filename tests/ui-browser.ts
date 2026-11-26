@@ -200,8 +200,9 @@ try {
   await page("Page.navigate", { url: ui.url });
   check("timeline renders every top-level clip", await until("clips", `document.querySelectorAll("#lanes .clip").length === 3`),
     await js(`document.querySelectorAll("#lanes .clip").length`).catch(() => null));
-  check("lanes follow the tracks (top track drawn first)", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
-    JSON.stringify(load().tracks.map((t: any) => t.id).reverse()));
+  const tks = load().tracks as any[];
+  check("lanes follow the tracks as CapCut lays them out: picture tracks above, the top layer first, the audio tracks below", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
+    JSON.stringify(tks.filter((t) => t.kind !== "audio").reverse().concat(tks.filter((t) => t.kind === "audio")).map((t) => t.id)));
   const stripTimes = await js(`(${node("vid1")}.style.backgroundImage.match(/\\?t=[0-9.]+/g) || []).join()`);
   check("a video clip shows a thumbnail strip: one frame per tile, at the source time each tile plays", stripTimes === "?t=0.50,?t=1.50,?t=2.00", stripTimes);
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
@@ -216,6 +217,8 @@ try {
 
   console.log("inspector");
   await click(`[data-id="txt1"]`);
+  await until("inspector tabs", `!!$("itab-more")`);
+  await click("#itab-more"); // every field, the JSON and the keyframe list: the tab the rows below use
   check("click selects the clip", await until("selection", `$("selinfo").textContent.indexOf("txt1") === 0 && $("insp").value.indexOf('"Hello"') > 0`));
   await js(`(function(){var c=JSON.parse($("insp").value); c.text="Edited in Chrome"; c.color="#ffcc00"; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
   check("inspector edit lands in project.json", await untilFile((tl) => clipOf(tl, "txt1")?.text === "Edited in Chrome" && clipOf(tl, "txt1")?.color === "#ffcc00"), clipOf(load(), "txt1"));
@@ -248,6 +251,15 @@ try {
   await until("rerender", `${atRev(load().revision)} && document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]').value === "0"`);
   await pick(`document.querySelectorAll("#kfbox .kfrow")[1].querySelector('[data-col="ease"]')`, "ease_out");
   check("edit value + pick easing", await untilFile((tl) => JSON.stringify(clipOf(tl, "txt1")?.keyframes?.opacity) === `[[0,0],[0.8,1,"ease_out"]]`), clipOf(load(), "txt1").keyframes);
+  {
+    const before = JSON.stringify(clipOf(load(), "txt1").keyframes), f = `document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]')`;
+    await js(`${f}.focus()`);
+    const b = await js(`(function(){var r=${f}.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: b.x, y: b.y, deltaX: 0, deltaY: 100 });
+    await sleep(400);
+    check("  the wheel over a focused keyframe value does not change it", JSON.stringify(clipOf(load(), "txt1").keyframes) === before, clipOf(load(), "txt1").keyframes);
+    await js(`document.activeElement.blur()`);
+  }
   check("keyframe ticks on the timeline clip", await until("ticks", `${atRev(load().revision)} && document.querySelectorAll('[data-id="txt1"] .kf').length === 2`));
   // drag the 0.8 s tick right by 0.4 s (pps 80 -> 32 px)
   const kb = await js(`(function(){var k=document.querySelectorAll('[data-id="txt1"] .kf')[1].getBoundingClientRect();return {x:k.left+k.width/2,y:k.top+k.height/2}})()`);
@@ -289,6 +301,13 @@ try {
   check("dragging a clip's left edge cuts its head: later start, shorter by the same time", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gt")?.start) - 2.5) < 0.02 && Math.abs(clipOf(tl, "gt")?.duration - 2) < 0.02), clipOf(load(), "gt"));
   await settled();
 
+  await click(`[data-id="gt"]`);
+  await seekTo(3.5);
+  await click("#tsplit");
+  check("the toolbar's Split cuts the selected clip at the playhead", await untilFile((tl) => { const g = tl.tracks.find((t: any) => t.id === "g").clips; return g.length === 3 && g.some((c: any) => c.id === "gt" && Math.abs(c.duration - 1) < 0.02); }), load().tracks.find((t: any) => t.id === "g").clips);
+  await settled();
+  await click(`[data-id="gm"]`);
+  await click("#itab-more"); // the Apply-ops box below is on the More tab once a clip is selected
   const revView = load().revision, leftOf = (id: string) => js(`parseFloat(${node(id)}.style.left)`) as Promise<number>;
   const gmStart = Number(clipOf(load(), "gm").start); // the clip's left edge is its start times the scale, so the scale after a wheel zoom is read from it
   await zoomTo(200);
@@ -789,14 +808,27 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   }
   console.log("export dialog");
   {
+    await lang("vi"); // the range fields read a dot decimal in every language (vi-VN reads "0.500" as 500 with its own number format)
+    await until("vi", `$("play").textContent === "Phát"`);
     await click("#exportb");
     check("Export… opens the dialog", await until("export open", `$("export").open`));
     await pick(`$("eformat")`, "webm");
     await pick(`$("equality")`, "draft");
-    await typeIn(`$("eto")`, "1");
+    await js(`$("eto").focus(); $("eto").select()`);
+    await page("Input.insertText", { text: "1e" }); // Chrome takes this text in a number field but cannot read it (a second dot it refuses as typed)
     await click("#ego");
-    check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
-      && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+    await sleep(300);
+    check("  an end the field cannot read blocks Export", await js(`$("export").open && $("eto").validity.badInput && !$("out").textContent`), await js(`[$("export").open, $("out").textContent]`));
+    await typeIn(`$("eto")`, "5");
+    await typeIn(`$("eto")`, "");
+    check("  a cleared end field is empty again (the export runs to the end)", await js(`$("eto").value === ""`), await js(`$("eto").value`));
+    await typeIn(`$("eto")`, "0.500");
+    await click("#ego");
+    check("the dialog's export writes the chosen format, an end of 0.500 read as half a second in Vietnamese too, and the result shows its QA",
+      await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
+      && await js(`$("qa").className === "qaok"`) && Math.abs(parseFloat(await js(`$("out").querySelector(".mut").textContent`)) - 0.5) < 0.05,
+      await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+    await lang("en");
   }
   console.log("review and history panels");
   {
@@ -871,7 +903,20 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict
     const setF = (id: string, v: string) => typeIn(`$(${JSON.stringify(id)})`, v);
     await clickClip("blink");
-    check("selecting a clip shows its fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
+    // CapCut's Basic tab: a labelled number per property and a keyframe diamond beside each animatable one
+    await until("basic tab", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!document.querySelector('#sidebody [data-prop="opacity"] .pnum')`);
+    await typeIn(`document.querySelector('#sidebody [data-prop="opacity"] .pnum')`, "40");
+    check("the Basic tab's Opacity number (in %) sets the clip's opacity", await untilFile((tl) => clipOf(tl, "blink")?.opacity === 0.4), clipOf(load(), "blink"));
+    await until("opacity seen", atRev(load().revision));
+    await seekTo(0.4);
+    await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
+    check("  and the Scale diamond adds a scale keyframe at the playhead (clip time 0.1 s, the clip's own scale 1)", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.keyframes?.scale) === "[[0.1,1]]"), clipOf(load(), "blink")?.keyframes);
+    await until("key seen", `${atRev(load().revision)} && document.querySelector('#sidebody [data-prop="scale"] .kfd').classList.contains("at")`);
+    await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
+    check("  the same diamond on that key removes it", await untilFile((tl) => !clipOf(tl, "blink")?.keyframes?.scale), clipOf(load(), "blink")?.keyframes);
+    await until("key gone", atRev(load().revision));
+    await click("#itab-more");
+    check("the More tab shows the clip's fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
     await setF("f-text", "Blinked");
     check("a text field edit is update_clip of that field", await untilFile((tl) => clipOf(tl, "blink")?.text === "Blinked"), { clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
     await until("text seen", `${atRev(load().revision)} && $("f-text").value === "Blinked"`);
@@ -891,6 +936,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("  ticking it again enables it (the field is dropped)", await untilFile((tl) => clipOf(tl, "blink") && clipOf(tl, "blink").enabled === undefined), clipOf(load(), "blink"));
     await until("enabled seen", atRev(load().revision));
     await clickClip("rb1");
+    await until("rb1", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("itab-more")`);
+    await click("#itab-more");
     check("another clip's form shows its own values, not what was typed into the last one", await until("video form", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("f-exposure") && $("f-opacity").value === ""`), await js(`$("f-opacity") && $("f-opacity").value`));
     await setF("f-exposure", "0.5");
     check("a grade field is merged into the clip's colour grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1"));
@@ -909,22 +956,28 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       t.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
     })()`);
     await until("the page shows the project as it is", atRev(load().revision));
-    await click("#tab-library");
-    check("the Library tab shows each item with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
-      && await js(`document.querySelectorAll("#library .litem").length`) > 60, await js(`$("library") && $("library").textContent.slice(0, 120)`));
+    await click("#tab-lib-look");
+    check("the Filters tab shows each look with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
+      && await js(`document.querySelectorAll("#library .litem").length`) === 16, await js(`$("library") && $("library").textContent.slice(0, 120)`));
     await js(`${item("look/bw")}.click()`); // rb1 is still selected from the form rows
     check("clicking a look puts it on the selected clip's grade, keeping the rest of the grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "bw" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
     await until("bw seen", atRev(load().revision));
+    await click("#tab-lib-effect");
+    await until("effects", `!!${item("effect/vhs")}`);
     await libDrop("effect/vhs", node("blink"), 0.4);
     check("an effect dragged onto a clip is added to that clip", await untilFile((tl) => (clipOf(tl, "blink")?.effects ?? []).some((e: any) => e.type === "vhs")), clipOf(load(), "blink"));
     await until("vhs seen", atRev(load().revision));
     const titles = (tl: any) => tl.tracks.find((t: any) => t.id === "text").clips.filter((c: any) => c.glow);
+    await click("#tab-lib-text");
+    await until("text styles", `!!${item("text/neon")}`);
     await libDrop("text/neon", `[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "text"; })[0]`, 2);
     check("a text style dragged onto a free lane adds a title in that style at the drop time", await untilFile((tl) => titles(tl).length === 1 && Math.abs(Number(titles(tl)[0].start) - 2) < 0.02), load().tracks.find((t: any) => t.id === "text").clips);
     await until("title seen", atRev(load().revision));
     const before = readFileSync(join(dir, "project.json"), "utf8");
     await clickClip("blink");
     await until("blink selected", `$("selinfo").textContent.indexOf("blink on ") === 0`);
+    await click("#tab-lib-look");
+    await until("looks", `!!${item("look/warm")}`);
     await js(`$("msg").className = ""; ${item("look/warm")}.click()`);
     check("  a look on a text clip is refused by name and changes nothing", await until("refused", `$("msg").className === "err" && $("msg").textContent.indexOf("warm") >= 0`)
       && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
@@ -940,7 +993,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const beatId = Object.keys(load().assets).find((k) => String(load().assets[k].path).endsWith("tplbeat.wav"))!;
     const mainOf = (tl: any) => tl.tracks.find((t: any) => t.id === "main").clips as any[];
     const ends = (tl: any) => mainOf(tl).reduce((e: number, c: any) => Math.max(e, c.start + c.duration), 0);
-    await click("#tab-library");
+    await click("#tab-templates");
     await js(`document.querySelector('[data-template="quote"]').click()`);
     check("a template opens a dialog with its args", await until("quote dialog", `$("tpl").open && !!$("tpl").querySelector('[name="text"]') && !!$("tpl").querySelector('[data-arg="background"] [role="combobox"]')`));
     const revQ = load().revision;
@@ -965,12 +1018,14 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await until("slideshow dialog", `$("tpl").open && !!$("tpl").querySelector('input[data-asset="${pic}"]')`);
     await js(`$("tpl").querySelector('input[data-asset="${pic}"]').click()`);
     await pick(`$("tpl").querySelector('[data-arg="music"] [role="combobox"]')`, "tplbeat.wav");
+    await typeIn(`$("tpl").querySelector('[data-arg="seconds"] input')`, "4");
+    await typeIn(`$("tpl").querySelector('[data-arg="seconds"] input')`, ""); // cleared: the template's own 2.5 s
     await click("#tgo");
     check("  slideshow from a picked pool asset and pool music (by asset id): the music bed, no asset imported twice",
       await untilFile((tl) => tl.revision === revS + 1 && music(tl).length === 1) && Object.keys(load().assets).length === nAssets, { music: music(load()), assets: Object.keys(load().assets).length, nAssets });
     const after = resolved(load()), added = mainOf(after).slice(lens.length);
-    check("  it is a section after main's end: the clips already there keep their lengths, the music and the new clip start where main ended",
-      lens.every((d: number, i: number) => mainOf(after)[i].duration === d) && added.length === 1 && Math.abs(added[0].start - endS) < 1e-6 && Math.abs(music(after)[0].start - endS) < 1e-6,
+    check("  it is a section after main's end: the clips already there keep their lengths, the music and the new clip start where main ended, a cleared seconds field is the default 2.5 s",
+      lens.every((d: number, i: number) => mainOf(after)[i].duration === d) && added.length === 1 && added[0].duration === 2.5 && Math.abs(added[0].start - endS) < 1e-6 && Math.abs(music(after)[0].start - endS) < 1e-6,
       { lens, now: mainOf(after).map((c: any) => c.duration), added, endS, music: music(after) });
     await until("slideshow seen", atRev(load().revision));
     await click("#tab-media");

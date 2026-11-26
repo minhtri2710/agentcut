@@ -1,5 +1,5 @@
 // Builds src/ui/page.gen.ts: the page the server serves. PAGE is shell.html (a few hundred bytes); ASSETS are the stylesheet (the Astryx stylesheets, pruned to the
-// classes the bundle uses, and fonts + style.css) and the script (the src/ui modules bundled for the browser), each named by a hash of its text, so the browser
+// classes the bundle uses, + style.css) and the script (the src/ui modules bundled for the browser), each named by a hash of its text, so the browser
 // keeps them until a build changes them.
 //   bun run ui            write src/ui/page.gen.ts
 //   bun run ui --check    exit 1 when src/ui/page.gen.ts differs from a fresh build (tests/launchers.ts runs it)
@@ -29,18 +29,16 @@ export const PINNED_BUN = "1.4.5";
 const ui = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "ui");
 const nm = join(ui, "..", "..", "node_modules");
 
-/** The design system's stylesheets in their cascade order (fonts, reset, components, theme), then the page's own (unlayered, so it wins).
- *  The theme's font files are inlined as data URLs. astryx.css holds every component's atomic classes, one rule per line: a line whose classes the
+/** The design system's stylesheets in their cascade order (reset, components, theme), then the page's own (unlayered, so it wins: it sets the
+ *  CapCut-like palette, density and the system font on the theme's tokens, so the theme's own font files are not shipped). astryx.css holds every component's atomic classes, one rule per line: a line whose classes the
  *  bundle never names is dropped (StyleX writes each class name into the bundle as a literal; a line with no class, :root or an at-rule head is kept). */
 export function pageCss(js: string): string {
   const theme = join(nm, "@astryxdesign", "theme-neutral");
-  const fonts = readFileSync(join(theme, "fonts.css"), "utf8")
-    .replace(/url\('\.\/fonts\/([\w.-]+\.woff2)'\)/g, (_, f: string) => `url(data:font/woff2;base64,${readFileSync(join(theme, "fonts", f)).toString("base64")})`);
   const astryx = readFileSync(join(nm, "@astryxdesign", "core", "dist", "astryx.css"), "utf8").split("\n").filter((l) => {
     const cls = [...l.matchAll(/\.(x[a-z0-9]+)/g)].map((m) => m[1]);
     return !cls.length || l.includes(":root") || cls.some((c) => js.includes(c));
   }).join("\n");
-  return [fonts, readFileSync(join(nm, "@astryxdesign", "core", "src", "reset.css"), "utf8"), astryx, readFileSync(join(theme, "dist", "theme.css"), "utf8"), readFileSync(join(ui, "style.css"), "utf8")].join("\n");
+  return [readFileSync(join(nm, "@astryxdesign", "core", "src", "reset.css"), "utf8"), astryx, readFileSync(join(theme, "dist", "theme.css"), "utf8"), readFileSync(join(ui, "style.css"), "utf8")].join("\n");
 }
 
 /** an asset's name: its kind and a hash of its text, so a changed file is a new URL */

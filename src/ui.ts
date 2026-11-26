@@ -394,17 +394,24 @@ const gzipped = new Map<string, Buffer>();
 /** The page ("/", never cached: it names the assets of this build) or one of its assets (/assets/<name>: the name is a hash of the text, so the browser
  *  keeps it for good), gzipped when the browser accepts it. An unknown asset is 404. */
 function page(req: IncomingMessage, res: ServerResponse, path: string, html: string) {
-  const name = path.slice("/assets/".length), text = path === "/" ? html : ASSETS[name];
+  const name = path.slice("/assets/".length), text = path === "/" ? html : Object.hasOwn(ASSETS, name) ? ASSETS[name] : undefined;
   if (text === undefined) return json(res, 404, { ok: false, error: { code: "not_found", message: `no asset ${name}` } });
   const head: Record<string, string> = path === "/" ? { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
     : { "content-type": ASSET_TYPE[extname(name)] ?? "application/octet-stream", "cache-control": "public, max-age=31536000, immutable" };
   head.vary = "accept-encoding";
-  if (!/\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) { res.writeHead(200, head); return res.end(text); }
+  if (!acceptsGzip(String(req.headers["accept-encoding"] ?? ""))) { res.writeHead(200, head); return res.end(text); }
   let gz = gzipped.get(text);
   if (!gz) gzipped.set(text, (gz = gzipSync(text)));
   res.writeHead(200, { ...head, "content-encoding": "gzip" });
   res.end(gz);
 }
+
+/** gzip is named in Accept-Encoding with a q above 0 (gzip;q=0 refuses it) */
+export const acceptsGzip = (h: string) => h.split(",").some((part) => {
+  const [enc, ...params] = part.split(";").map((x) => x.trim());
+  const q = params.find((x) => x.startsWith("q="));
+  return enc.toLowerCase() === "gzip" && (q === undefined || parseFloat(q.slice(2)) > 0);
+});
 
 function json(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });

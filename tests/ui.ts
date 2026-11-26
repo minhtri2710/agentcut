@@ -92,7 +92,8 @@ check("page served: a shell naming its stylesheet and script, each served as its
   && [pageJs, pageCss].every((r) => r.headers["cache-control"] === "public, max-age=31536000, immutable"), { assetUrls, page: page.headers, js: pageJs.headers });
 const gz = await raw(assetUrls[0], { headers: { "accept-encoding": "gzip, br" } });
 check("  gzipped when the browser accepts it, and the same text unzipped", gz.headers["content-encoding"] === "gzip" && gunzipSync(gz.body).equals(assetUrls[0].endsWith(".js") ? pageJs.body : pageCss.body) && gz.body.length < pageJs.body.length / 2);
-check("  an asset of no build is 404", (await raw("/assets/app.000000000000.js")).status === 404);
+check("  not gzipped when the browser refuses it (gzip;q=0)", (await raw(assetUrls[0], { headers: { "accept-encoding": "gzip;q=0, br" } })).headers["content-encoding"] === undefined);
+check("  an asset of no build is 404, an Object property name too", (await raw("/assets/app.000000000000.js")).status === 404 && (await raw("/assets/constructor")).status === 404);
 const st0 = await raw("/api/state");
 const st = await jget("/api/state");
 check("state has timeline + revision + history", st.j.ok && st.j.revision === r0 + N && st.j.timeline.tracks.length > 0 && Array.isArray(st.j.history.undo), st.j);

@@ -47,6 +47,16 @@ const EN = {
   by: "by {0}", undoStack: "Edits (newest first): click to undo back to before one", redoStack: "Undone (click to redo up to one)",
   hide: "hide", mute: "mute", hideTrack: "hide track {0} (not drawn)", showTrack: "show track {0}", muteTrack: "mute track {0}", unmuteTrack: "unmute track {0}", lock: "lock", lockTrack: "lock track {0} (no edit may change its clips)", unlockTrack: "unlock track {0}",
   dropHint: "Drop files here to copy them into media/; drag an item onto a track to add it.", uploading: "Uploading {0}…", noAssets: "No media yet.",
+  dashHero: "Your projects", railText: "Text", railEffects: "Effects", railTransitions: "Transitions", railFilters: "Filters", railCaptions: "Captions", railTemplates: "Templates", railAgent: "Agent",
+  player: "Player", prevFrame: "Previous frame", nextFrame: "Next frame", fullScreen: "Full screen",
+  toolSplit: "Split at the playhead", toolDuplicate: "Duplicate", toolFreeze: "Freeze frame at the playhead", zoomIn: "Zoom in", zoomOut: "Zoom out", zoomFit: "Fit the timeline",
+  tabBasic: "Basic", tabAudio: "Audio", tabSpeed: "Speed", tabAnim: "Animation", tabColor: "Adjust", tabMore: "More",
+  grpText: "Text", grpTransform: "Transform", grpBlend: "Blend", grpClip: "Clip", grpIn: "In", grpOut: "Out", grpLoop: "Combo", grpTransition: "Transition in", grpLook: "Filter", grpAdjust: "Basic adjust",
+  pSize: "Size", pAlign: "Align", pScale: "Scale", pRotate: "Rotate", pOpacity: "Opacity", pBlend: "Mode", pFit: "Fit", pPosition: "Position", pEnabled: "Enabled",
+  pVolume: "Volume", pFadeIn: "Fade in", pFadeOut: "Fade out", pPan: "Pan", pPitch: "Pitch", pMute: "Mute", pDenoise: "Reduce noise", pCompressor: "Compressor",
+  pSpeed: "Speed", pReverse: "Reverse", pLoop: "Loop", speedRamp: "This clip has a speed curve: edit it in More.", pIn: "Animation", pOut: "Animation", pMotion: "Motion", pTransition: "Type", pLook: "Look",
+  cExposure: "Exposure", cContrast: "Contrast", cSaturation: "Saturation", cVibrance: "Vibrance", cTemperature: "Temperature", cTint: "Tint",
+  kfAddHere: "add a {0} keyframe at the playhead", kfRemoveHere: "remove the {0} keyframe at the playhead",
   inspector: "Inspector", inspectorHint: "Select a clip on the timeline to edit its fields, keyframes and grouping.", opsTitle: "Ops batch", emptyTitle: "Nothing on the timeline yet", emptyHint: "Import media on the left, drag it onto a track, or ask the agent in Chat.",
 };
 export type Key = keyof typeof EN;
@@ -97,6 +107,16 @@ const VI: Record<Key, string> = {
   by: "bởi {0}", undoStack: "Các bước sửa (mới nhất trước): bấm để hoàn tác về trước một bước", redoStack: "Đã hoàn tác (bấm để làm lại tới một bước)",
   hide: "ẩn", mute: "tắt", hideTrack: "ẩn track {0} (không vẽ)", showTrack: "hiện track {0}", muteTrack: "tắt tiếng track {0}", unmuteTrack: "bật tiếng track {0}", lock: "khóa", lockTrack: "khóa track {0} (không sửa được clip của nó)", unlockTrack: "mở khóa track {0}",
   dropHint: "Thả tệp vào đây để chép vào media/; kéo một mục lên track để thêm.", uploading: "Đang tải lên {0}…", noAssets: "Chưa có media.",
+  dashHero: "Dự án của bạn", railText: "Văn bản", railEffects: "Hiệu ứng", railTransitions: "Chuyển cảnh", railFilters: "Bộ lọc", railCaptions: "Phụ đề", railTemplates: "Mẫu", railAgent: "Agent",
+  player: "Trình phát", prevFrame: "Khung trước", nextFrame: "Khung sau", fullScreen: "Toàn màn hình",
+  toolSplit: "Tách tại đầu phát", toolDuplicate: "Nhân bản", toolFreeze: "Dừng hình tại đầu phát", zoomIn: "Phóng to", zoomOut: "Thu nhỏ", zoomFit: "Vừa timeline",
+  tabBasic: "Cơ bản", tabAudio: "Âm thanh", tabSpeed: "Tốc độ", tabAnim: "Hoạt ảnh", tabColor: "Điều chỉnh", tabMore: "Thêm",
+  grpText: "Chữ", grpTransform: "Biến đổi", grpBlend: "Hòa trộn", grpClip: "Clip", grpIn: "Vào", grpOut: "Ra", grpLoop: "Kết hợp", grpTransition: "Chuyển cảnh vào", grpLook: "Bộ lọc", grpAdjust: "Điều chỉnh cơ bản",
+  pSize: "Cỡ chữ", pAlign: "Căn lề", pScale: "Tỉ lệ", pRotate: "Xoay", pOpacity: "Độ mờ", pBlend: "Chế độ", pFit: "Khớp khung", pPosition: "Vị trí", pEnabled: "Bật",
+  pVolume: "Âm lượng", pFadeIn: "Tăng dần", pFadeOut: "Giảm dần", pPan: "Cân bằng", pPitch: "Cao độ", pMute: "Tắt tiếng", pDenoise: "Giảm ồn", pCompressor: "Nén tiếng",
+  pSpeed: "Tốc độ", pReverse: "Phát ngược", pLoop: "Lặp", speedRamp: "Clip này có đường cong tốc độ: sửa trong tab Thêm.", pIn: "Hoạt ảnh", pOut: "Hoạt ảnh", pMotion: "Chuyển động", pTransition: "Kiểu", pLook: "Màu",
+  cExposure: "Phơi sáng", cContrast: "Tương phản", cSaturation: "Bão hòa", cVibrance: "Độ rực", cTemperature: "Nhiệt độ", cTint: "Sắc thái",
+  kfAddHere: "thêm keyframe {0} tại đầu phát", kfRemoveHere: "bỏ keyframe {0} tại đầu phát",
   inspector: "Thuộc tính", inspectorHint: "Chọn một clip trên timeline để sửa thuộc tính, keyframe và nhóm của nó.", opsTitle: "Lô op", emptyTitle: "Timeline chưa có gì", emptyHint: "Nhập media ở bên trái, kéo nó lên một track, hoặc nhờ agent trong Trò chuyện.",
 };
 

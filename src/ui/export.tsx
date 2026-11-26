@@ -3,13 +3,12 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Download, ExternalLink } from "lucide-react";
 import { t } from "./i18n.ts";
 import { startRender } from "./jobs.ts";
-import { ico } from "./kit.tsx";
+import { ico, Num, numOf } from "./kit.tsx";
 import { changed, st } from "./state.ts";
 import type { Dict } from "./types.ts";
 import { seek } from "./viewer.tsx";
@@ -44,8 +43,8 @@ export function ExportDialog() {
           <Selector id="equality" label={t("quality")} value={quality} onChange={(x) => setQuality(x!)} options={["standard", "high", "draft"]} />
         </div>
         <div className="row2">
-          <NumberInput id="efrom" label={t("from")} min={0} step={0.1} placeholder="0" value={from} onChange={setFrom} units="s" />
-          <NumberInput id="eto" label={t("to")} min={0} step={0.1} placeholder={st.S ? st.S.duration.toFixed(2) : ""} value={to} onChange={setTo} units="s" />
+          <label className="nfield">{t("from")} (s)<Num id="efrom" min={0} step="any" placeholder="0" value={from ?? ""} onChange={(e) => setFrom(numOf(e.currentTarget))} /></label>
+          <label className="nfield">{t("to")} (s)<Num id="eto" min={0} step="any" placeholder={st.S ? st.S.duration.toFixed(2) : ""} value={to ?? ""} onChange={(e) => setTo(numOf(e.currentTarget))} /></label>
         </div>
         <CheckboxInput id="esubs" label={t("subtitles")} value={subs} isDisabled={!SUBTITLED.includes(format)} onChange={setSubs} />
         <div className="dactions">
