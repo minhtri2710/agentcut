@@ -1,6 +1,13 @@
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { Bot, MessageSquarePlus, Send, Square } from "lucide-react";
 import { api } from "./api.ts";
 import { t } from "./i18n.ts";
+import { ico } from "./kit.tsx";
 import { fail } from "./messages.ts";
 import { changed, st } from "./state.ts";
 import type { ApiError, Dict } from "./types.ts";
@@ -13,45 +20,43 @@ export function onChatEvent(e: Dict) {
   changed();
 }
 
-function send(ev: Event) {
-  ev.preventDefault();
-  const box = (ev.currentTarget as HTMLFormElement).elements.namedItem("msg") as HTMLTextAreaElement, message = box.value.trim();
-  if (message) api("/api/chat", { message, cli: st.chat.cli }).then(() => { box.value = ""; }, (e: ApiError) => fail(e));
-}
-
 function Entry({ e }: { e: Dict }) {
-  if (e.kind === "user") return <div class="cuser">{e.text}</div>;
-  if (e.kind === "text") return <div class="cbot">{e.text}</div>;
-  if (e.kind === "tool") return <div class="ctool">{"→ " + e.name + " " + JSON.stringify(e.input).slice(0, 200)}</div>;
-  if (e.kind === "tool_result") return <div class={"ctool" + (e.ok ? "" : " cerr")}>{(e.ok ? "← " : "✗ ") + e.text.slice(0, 200)}</div>;
-  return <div class={"mut" + (e.error ? " cerr" : "")}>{e.stopped ? t("chatStopped") : e.error ? e.error : t("chatDone")}</div>;
+  if (e.kind === "user") return <div className="cuser">{e.text}</div>;
+  if (e.kind === "text") return <div className="cbot">{e.text}</div>;
+  if (e.kind === "tool") return <div className="ctool">{"→ " + e.name + " " + JSON.stringify(e.input).slice(0, 200)}</div>;
+  if (e.kind === "tool_result") return <div className={"ctool" + (e.ok ? "" : " cerr")}>{(e.ok ? "← " : "✗ ") + e.text.slice(0, 200)}</div>;
+  return <div className={"mut" + (e.error ? " cerr" : "")}>{e.stopped ? t("chatStopped") : e.error ? e.error : t("chatDone")}</div>;
 }
 
 export function Chat() {
+  const [msg, setMsg] = useState("");
   useEffect(() => { fetch("/api/chat").then((r) => r.json()).then((j) => { st.chat.engine = j; st.chat.busy = j.busy; st.chat.cli = j.cli ?? j.clis[0] ?? null; changed(); }); }, []);
   const eng = st.chat.engine;
   const newChat = () => api("/api/chat/reset").then(() => { st.chat.log = []; changed(); }, (e: ApiError) => fail(e));
-  if (!eng) return <div id="chat" />; // no form before the CLI to send is known
-  if (!eng.available) return <div id="chat" class="mut">{t("chatMissing", eng.hint)}</div>;
+  if (!eng) return <div id="chat" className="pbody" />; // no form before the CLI to send is known
+  if (!eng.available) return <div id="chat" className="pbody"><EmptyState isCompact icon={ico(Bot)} title={t("chat")} description={t("chatMissing", eng.hint)} /></div>;
+  const send = (ev: React.FormEvent<HTMLFormElement>) => {
+    ev.preventDefault();
+    const message = msg.trim();
+    if (message) api("/api/chat", { message, cli: st.chat.cli }).then(() => setMsg(""), (e: ApiError) => fail(e));
+  };
   return (
-    <div id="chat">
+    <div id="chat" className="pbody">
       {eng.clis.length > 1 && (
-        <label class="row">{t("chatCli")}{" "}
-          <select id="ccli" value={st.chat.cli ?? ""} disabled={st.chat.busy} onChange={(e) => { st.chat.cli = e.currentTarget.value; newChat(); }}>
-            {eng.clis.map((c: string) => <option value={c}>{c}</option>)}
-          </select>
-        </label>
+        <Selector id="ccli" size="sm" label={t("chatCli")} value={st.chat.cli ?? ""} isDisabled={st.chat.busy} options={eng.clis} onChange={(v) => { st.chat.cli = v; newChat(); }} />
       )}
       <div id="clog">
-        {!st.chat.log.length && <div class="mut">{t("chatHint")}</div>}
+        {!st.chat.log.length && <EmptyState isCompact icon={ico(Bot)} title={t("chat")} description={t("chatHint")} />}
         {st.chat.log.map((e, i) => <Entry key={i} e={e} />)}
       </div>
       <form id="cform2" onSubmit={send}>
-        <textarea name="msg" rows={3} placeholder={t("chatPlaceholder")} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form!.requestSubmit(); } }} />
-        <div>
-          <button id="csend" class="primary" disabled={st.chat.busy}>{t("chatSend")}</button>{" "}
-          <button id="cstop" type="button" disabled={!st.chat.busy} onClick={() => api("/api/chat/stop").catch((e: ApiError) => fail(e))}>{t("chatStop")}</button>{" "}
-          <button id="cnew" type="button" disabled={st.chat.busy} onClick={newChat}>{t("chatNew")}</button>
+        <TextArea htmlName="msg" label={t("chat")} isLabelHidden rows={3} placeholder={t("chatPlaceholder")} value={msg} onChange={setMsg}
+          onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form!.requestSubmit(); } }} />
+        <div className="row">
+          <Button id="csend" type="submit" size="sm" variant="primary" icon={ico(Send)} label={t("chatSend")} isDisabled={st.chat.busy} />
+          <IconButton id="cstop" size="sm" label={t("chatStop")} tooltip={t("chatStop")} icon={ico(Square)} isDisabled={!st.chat.busy} onClick={() => api("/api/chat/stop").catch((e: ApiError) => fail(e))} />
+          <span className="grow" />
+          <IconButton id="cnew" size="sm" variant="ghost" label={t("chatNew")} tooltip={t("chatNew")} icon={ico(MessageSquarePlus)} isDisabled={st.chat.busy} onClick={newChat} />
         </div>
       </form>
     </div>

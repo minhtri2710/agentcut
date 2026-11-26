@@ -28,8 +28,9 @@ export function initKeyboard() {
     if (document.querySelector("dialog[open]") || g.tagName === "TEXTAREA" || g.tagName === "INPUT") return; // an open dialog owns the keys
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); hist(e.shiftKey ? "redo" : "undo"); return; }
     if (g.classList && g.classList.contains("clip") && (e.key === "Enter" || e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === " ") && kbFocus(g)) return clipKey(e, g);
-    // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays
-    if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || g.getAttribute("role") === "button") && kbFocus(g)) return;
+    // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays. A slider's arrows are its own either way.
+    if (g.getAttribute("role") === "slider") return;
+    if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || /^(button|combobox|tab|radio|option|checkbox|switch)$/.test(g.getAttribute("role") || "")) && kbFocus(g)) return;
     if (e.key === " ") { e.preventDefault(); $("play").click(); }
     else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && st.S) { const f = 1 / S().timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(st.t + (e.key === "ArrowLeft" ? -f : f)); }
   });

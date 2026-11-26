@@ -1,82 +1,113 @@
-import { useLayoutEffect, useState } from "preact/hooks";
+import { useEffect, useState } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Hammer, Plus } from "lucide-react";
 import { stamped } from "./api.ts";
 import { t } from "./i18n.ts";
+import { ico } from "./kit.tsx";
 import { fail, show } from "./messages.ts";
 import { errText } from "./text.ts";
-import { $, changed, st } from "./state.ts";
+import { changed, st } from "./state.ts";
 import type { ApiError, Dict } from "./types.ts";
 
 const fileName = (p?: string) => (p || "").split(/[\\/]/).pop() || "";
-/** the project's assets of these kinds, as [id, path]; a pick sends the id (a path would be read against the server's current directory first) */
-const assetsOf = (...kinds: string[]) => (st.S ? Object.entries(st.S.timeline.assets).filter(([, a]) => kinds.includes(a.kind)).map(([id, a]) => [id, a.path] as [string, string]) : []);
+/** the project's assets of these kinds as options; a pick sends the id (a path would be read against the server's current directory first) */
+const assetsOf = (...kinds: string[]) => (st.S ? Object.entries(st.S.timeline.assets).filter(([, a]) => kinds.includes(a.kind)).map(([id, a]) => ({ value: id, label: fileName(a.path) || id })) : []);
 const VISUAL = ["video", "image"];
+const NONE = { value: "", label: "—" };
 
-/** one arg's control; its name is the arg's (items: one text + one media per row) */
-function Field({ name, kind, rows }: { name: string; kind: string; rows: number }) {
-  const pick = (kinds: string[]) => <select name={name}><option value="">{t("tplNoPick")}</option>{assetsOf(...kinds).map(([id, path]) => <option value={id}>{fileName(path) || id}</option>)}</select>;
-  if (kind === "media") return <div class="tplmedia">{assetsOf(...VISUAL).map(([id, path]) => <label class="row"><input type="checkbox" name={name} value={id} /> {fileName(path) || id}</label>)}</div>;
-  if (kind === "audio") return pick(["audio"]);
-  if (kind === "visual") return pick(VISUAL);
-  if (kind === "lines") return <textarea name={name} rows={3} />;
-  if (kind === "number") return <input name={name} type="number" step="any" min="0" />;
-  if (kind === "text_preset" || kind === "transition") return <select name={name}><option value="" />{LIB[kind === "text_preset" ? "text" : "transition"].map((n) => <option value={n}>{n}</option>)}</select>;
-  if (kind === "items") return (
-    <div class="tplitems">{Array.from({ length: rows }, () => (
-      <div class="row"><input name={name + ".text"} /><select name={name + ".media"}><option value="" />{assetsOf(...VISUAL).map(([id, path]) => <option value={id}>{fileName(path) || id}</option>)}</select></div>
-    ))}</div>
-  );
-  return <input name={name} spellcheck={false} />; // text, color
+/** what the form holds per arg: text for most kinds, picked asset ids for media, rows of {text, media} for items */
+type Vals = Record<string, unknown>;
+type Row = { text: string; media: string };
+
+/** one arg's control */
+function Field({ name, kind, label, val, set }: { name: string; kind: string; label: string; val: unknown; set: (v: unknown) => void }) {
+  const pick = (opts: { value: string; label: string }[]) => <Selector htmlName={name} label={label} isLabelHidden size="sm" value={(val as string) || ""} options={[{ value: "", label: t("tplNoPick") }, ...opts]} onChange={(v) => set(v ?? "")} />;
+  if (kind === "media") {
+    const ids = (val as string[]) || [];
+    return <div className="tplmedia">{assetsOf(...VISUAL).map((o) => (
+      <CheckboxInput key={o.value} data-asset={o.value} size="sm" label={o.label} value={ids.includes(o.value)} onChange={(on) => set(on ? ids.concat([o.value]) : ids.filter((x) => x !== o.value))} />
+    ))}</div>;
+  }
+  if (kind === "audio") return pick(assetsOf("audio"));
+  if (kind === "visual") return pick(assetsOf(...VISUAL));
+  if (kind === "lines") return <TextArea htmlName={name} label={label} isLabelHidden size="sm" rows={3} value={(val as string) || ""} onChange={set} />;
+  if (kind === "number") return <NumberInput htmlName={name} label={label} isLabelHidden size="sm" min={0} value={(val as number | null) ?? null} onChange={set} />;
+  if (kind === "text_preset" || kind === "transition") return pick(LIB[kind === "text_preset" ? "text" : "transition"].map((n) => ({ value: n, label: n })));
+  if (kind === "items") {
+    const rows = (val as Row[]) || [];
+    const setRow = (i: number, r: Partial<Row>) => set(rows.map((x, j) => (j === i ? { ...x, ...r } : x)));
+    return (
+      <div className="tplitems">{rows.map((r, i) => (
+        <div key={i} className="row2">
+          <TextInput htmlName={name + ".text"} label={label} isLabelHidden size="sm" value={r.text} onChange={(v) => setRow(i, { text: v })} />
+          <Selector htmlName={name + ".media"} label={label} isLabelHidden size="sm" value={r.media} options={[NONE, ...assetsOf(...VISUAL)]} onChange={(v) => setRow(i, { media: v ?? "" })} />
+        </div>
+      ))}
+        <div><Button size="sm" variant="ghost" icon={ico(Plus)} label={t("tplItem")} onClick={() => set(rows.concat([{ text: "", media: "" }]))} /></div>
+      </div>
+    );
+  }
+  return <TextInput htmlName={name} label={label} isLabelHidden size="sm" hasSpellCheck={false} value={(val as string) || ""} onChange={set} />; // text, color
 }
 
 /** the form as apply_template args: only what was filled in (the op refuses a missing required arg with its message) */
-function argsOf(form: HTMLFormElement, args: Dict): Dict {
-  const fd = new FormData(form), out: Dict = {};
+function argsOf(vals: Vals, args: Dict): Dict {
+  const out: Dict = {};
   for (const [k, spec] of Object.entries(args)) {
-    if (spec.kind === "media") { const ids = fd.getAll(k).map(String); if (ids.length) out[k] = ids.map((asset) => ({ asset })); continue; }
+    const v = vals[k];
+    if (spec.kind === "media") { if ((v as string[] | undefined)?.length) out[k] = (v as string[]).map((asset) => ({ asset })); continue; }
     if (spec.kind === "items") {
-      const texts = fd.getAll(k + ".text").map((x) => String(x).trim()), media = fd.getAll(k + ".media").map(String);
-      const items = texts.map((text, i) => ({ text, media: media[i] })).filter((x) => x.text || x.media).map((x) => ({ text: x.text, ...(x.media ? { media: { asset: x.media } } : {}) }));
+      const items = ((v as Row[]) || []).map((x) => ({ text: x.text.trim(), media: x.media })).filter((x) => x.text || x.media).map((x) => ({ text: x.text, ...(x.media ? { media: { asset: x.media } } : {}) }));
       if (items.length) out[k] = items;
       continue;
     }
-    const v = String(fd.get(k) ?? "").trim();
-    if (!v) continue;
-    out[k] = spec.kind === "number" ? Number(v) : spec.kind === "lines" ? v.split("\n").map((x) => x.trim()).filter(Boolean) : v;
+    if (spec.kind === "number") { if (typeof v === "number") out[k] = v; continue; }
+    const s = String(v ?? "").trim();
+    if (s) out[k] = spec.kind === "lines" ? s.split("\n").map((x) => x.trim()).filter(Boolean) : s;
   }
   return out;
 }
 
+const fresh = (args: Dict): Vals => Object.fromEntries(Object.entries(args).filter(([, s]) => s.kind === "items").map(([k]) => [k, Array.from({ length: 3 }, () => ({ text: "", media: "" }))]));
+
 export function TemplateDialog() {
-  const [rows, setRows] = useState(3), [err, setErr] = useState("");
-  useLayoutEffect(() => { const d = $<HTMLDialogElement>("tpl"); if (st.template && !d.open) { setRows(3); setErr(""); d.showModal(); } }, [st.template]);
   const name = st.template, tp = name ? TPL[name] : null;
-  const submit = (e: Event) => {
+  const [vals, setVals] = useState<Vals>({}), [err, setErr] = useState("");
+  useEffect(() => { if (tp) { setVals(fresh(tp.args)); setErr(""); } }, [name]);
+  const close = () => { st.template = null; changed(); };
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !tp) return;
-    stamped("/api/ops", { ops: [{ op: "apply_template", name, ...argsOf(e.currentTarget as HTMLFormElement, tp.args) }], label: "template " + name }).then((r) => {
+    stamped("/api/ops", { ops: [{ op: "apply_template", name, ...argsOf(vals, tp.args) }], label: "template " + name }).then((r) => {
       show("ok", t("applied", r.revision) + (r.errors ? t("errorsRemain", r.errors) : ""));
-      $<HTMLDialogElement>("tpl").close();
+      close();
     }, (x: ApiError) => { fail(x); setErr(errText(x)); }); // the modal hides the status line: the error shows in the form too
   };
   return (
-    <dialog id="tpl" aria-labelledby="ttitle" onClose={() => { st.template = null; changed(); }}>
+    <Dialog id="tpl" isOpen={!!tp} onOpenChange={(o) => { if (!o) close(); }} purpose="form" width={560}>
+      {tp && <DialogHeader title={name} subtitle={tp.doc} onOpenChange={(o) => { if (!o) close(); }} />}
       {tp && (
-        <form class="eform" key={name} onSubmit={submit}>
-          <p id="ttitle"><b>{name}</b> <span class="mut">{tp.doc}</span></p>
-          {Object.entries(tp.args).map(([k, spec]) => {
-            const Box = spec.kind === "media" || spec.kind === "items" ? "div" : "label"; // a group of controls is not one label's
-            return (
-              <Box class="targ" data-arg={k}>
-                <span>{spec.required ? t("tplRequired", k) : k} <span class="mut">{spec.doc}</span></span>
-                <Field name={k} kind={spec.kind} rows={rows} />
-                {spec.kind === "items" && <button type="button" onClick={() => setRows(rows + 1)}>{t("tplItem")}</button>}
-              </Box>
-            );
-          })}
-          {err && <p id="terr" role="alert">{err}</p>}
-          <div><button id="tgo" class="primary">{t("tplApply")}</button> <button type="button" onClick={() => $<HTMLDialogElement>("tpl").close()}>{t("cancel")}</button></div>
+        <form className="eform" key={name} onSubmit={submit}>
+          {Object.entries(tp.args).map(([k, spec]) => (
+            <div key={k} className="targ" data-arg={k}>
+              <div className="tlabel"><b>{spec.required ? t("tplRequired", k) : k}</b> <span className="mut">{spec.doc}</span></div>
+              <Field name={k} kind={spec.kind} label={k} val={vals[k]} set={(v) => setVals((o) => ({ ...o, [k]: v }))} />
+            </div>
+          ))}
+          {err && <div id="terr" role="alert"><Banner status="error" title={err} collapsible={false} /></div>}
+          <div className="dactions">
+            <Button label={t("cancel")} onClick={close} />
+            <Button id="tgo" type="submit" variant="primary" icon={ico(Hammer)} label={t("tplApply")} />
+          </div>
         </form>
       )}
-    </dialog>
+    </Dialog>
   );
 }

@@ -1,3 +1,8 @@
+import { useState } from "react";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { ops } from "./api.ts";
 import { fieldValue } from "./edits.ts";
 import { t, type Key } from "./i18n.ts";
@@ -23,23 +28,29 @@ function commit(c: Clip, k: string, types: string[], raw: string, wrap = (v: unk
   setField(c, wrap(v));
 }
 
-/** One row: a list for a field with named values, a checkbox for a boolean, else a text box. Inputs are not controlled: their key carries the value, so a new value
- *  from the project replaces the input while a redraw for anything else (the playhead, another clip) leaves what is being typed. */
+/** a text field that commits when the edit is done (Enter or leaving it), and only when the text changed */
+function TextField({ id, label, value, ro, onSet }: { id: string; label: string; value: string; ro: boolean; onSet: (raw: string) => void }) {
+  const [text, setText] = useState(value);
+  const done = () => { if (text !== value) onSet(text); };
+  return <TextInput id={id} size="sm" label={label} isLabelHidden value={text} isDisabled={ro} hasSpellCheck={false} onChange={setText} onBlur={done} onEnter={done} />;
+}
+
+/** One row: a list for a field with named values, a checkbox for a boolean, else a text box. A row's key carries the value, so a new value
+ *  from the project replaces the control while a redraw for anything else (the playhead, another clip) leaves what is being typed. */
 function Field({ c, k, types, doc, ro, value, onSet }: { c: Clip; k: string; types: string[]; doc: string; ro: boolean; value: unknown; onSet: (raw: string) => void }) {
-  const list = F.enums[k], id = "f-" + k, key = c.id + "." + k + "=" + shown(value); // another clip, or a new value, is a new input
+  const list = F.enums[k], id = "f-" + k;
   let input;
   if (list && (value === undefined || value === null || typeof value === "string"))
-    input = <select key={key} id={id} disabled={ro} onChange={(e) => onSet(e.currentTarget.value)}>
-      <option value="" selected={value === undefined || value === null}>—</option>
-      {list.map((x) => <option value={x} selected={x === value}>{x}</option>)}
-    </select>;
-  else if (types.length === 1 && types[0] === "boolean")
-    { const on = k === "enabled" || (k === "loop" && c.type === "lottie"); // fields that are on unless set false: unchecking writes false, checking drops the field
-      input = <input key={key} id={id} type="checkbox" disabled={ro} defaultChecked={on ? value !== false : value === true} onChange={(e) => onSet(e.currentTarget.checked ? (on ? "" : "true") : (on ? "false" : ""))} />; }
+    input = <Selector id={id} size="sm" label={k} isLabelHidden isDisabled={ro} hasClear value={(value as string | undefined) ?? null} options={list} hasSearch={list.length > 12}
+      onChange={(v) => onSet(v ?? "")} width="100%" />;
+  else if (types.length === 1 && types[0] === "boolean") {
+    const on = k === "enabled" || (k === "loop" && c.type === "lottie"); // fields that are on unless set false: unchecking writes false, checking drops the field
+    input = <CheckboxInput id={id} size="sm" label={k} isLabelHidden isDisabled={ro} value={on ? value !== false : value === true} onChange={(x) => onSet(x ? (on ? "" : "true") : (on ? "false" : ""))} />;
+  }
   else if (types.some((x) => x === "number" || x === "string" || x === "boolean") && !(value !== null && typeof value === "object"))
-    input = <input key={key} id={id} type="text" disabled={ro} defaultValue={shown(value)} spellcheck={false} onChange={(e) => onSet(e.currentTarget.value)} />;
-  else input = <span class="mut">{value === undefined ? t("jsonOnly") : t("jsonEdit")}</span>; // an object or list: edited in the JSON tab
-  return <label class="frow" title={doc}><span>{k}</span>{input}</label>;
+    input = <TextField id={id} label={k} value={shown(value)} ro={ro} onSet={onSet} />;
+  else input = <span className="mut">{value === undefined ? t("jsonOnly") : t("jsonEdit")}</span>; // an object or list: edited in the JSON tab
+  return <div className="frow" title={doc}><label htmlFor={id}>{k}</label>{input}</div>;
 }
 
 export function ClipForm({ c, ro }: { c: Clip; ro: boolean }) {
@@ -47,20 +58,21 @@ export function ClipForm({ c, ro }: { c: Clip; ro: boolean }) {
   return (
     <div id="cform">
       {(F.types[c.type] || []).map(([sec, keys]) => (
-        <fieldset key={sec}>
-          <legend>{t(("sec_" + sec) as Key)}</legend>
-          {keys.filter((k) => !SKIP.has(k)).map((k) => {
-            const [types, doc] = F.fields[sec][k];
-            if (sec === "media" && k === "color") { // the colour grade: one row per numeric field, merged into the grade by update_clip
-              const g = (c.color && typeof c.color === "object" ? c.color : {}) as Record<string, unknown>;
-              return F.grade.map(([gk, gdoc]) => (
-                <Field key={"color." + gk} c={c} k={gk} types={gk === "look" ? ["string"] : ["number"]} doc={gdoc} ro={ro} value={g[gk]}
-                  onSet={(raw) => commit(c, gk, gk === "look" ? ["string"] : ["number"], raw, (v) => ({ color: { [gk]: v } }))} />
-              ));
-            }
-            return <Field key={k} c={c} k={k} types={types} doc={doc} ro={ro || (k === "start" && magnetic)} value={c[k]} onSet={(raw) => commit(c, k, types, raw)} />;
-          })}
-        </fieldset>
+        <Collapsible key={sec} trigger={<span className="ihead">{t(("sec_" + sec) as Key)}</span>}>
+          <div className="fsec">
+            {keys.filter((k) => !SKIP.has(k)).map((k) => {
+              const [types, doc] = F.fields[sec][k];
+              if (sec === "media" && k === "color") { // the colour grade: one row per numeric field, merged into the grade by update_clip
+                const g = (c.color && typeof c.color === "object" ? c.color : {}) as Record<string, unknown>;
+                return F.grade.map(([gk, gdoc]) => (
+                  <Field key={c.id + ".color." + gk + "=" + shown(g[gk])} c={c} k={gk} types={gk === "look" ? ["string"] : ["number"]} doc={gdoc} ro={ro} value={g[gk]}
+                    onSet={(raw) => commit(c, gk, gk === "look" ? ["string"] : ["number"], raw, (v) => ({ color: { [gk]: v } }))} />
+                ));
+              }
+              return <Field key={c.id + "." + k + "=" + shown(c[k])} c={c} k={k} types={types} doc={doc} ro={ro || (k === "start" && magnetic)} value={c[k]} onSet={(raw) => commit(c, k, types, raw)} />;
+            })}
+          </div>
+        </Collapsible>
       ))}
     </div>
   );
