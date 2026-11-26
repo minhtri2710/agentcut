@@ -110,7 +110,7 @@ const VI: Record<Key, string> = {
   dashHero: "Dự án của bạn", railText: "Văn bản", railEffects: "Hiệu ứng", railTransitions: "Chuyển cảnh", railFilters: "Bộ lọc", railCaptions: "Phụ đề", railTemplates: "Mẫu", railAgent: "Agent",
   player: "Trình phát", prevFrame: "Khung trước", nextFrame: "Khung sau", fullScreen: "Toàn màn hình",
   toolSplit: "Tách tại đầu phát", toolDuplicate: "Nhân bản", toolFreeze: "Dừng hình tại đầu phát", zoomIn: "Phóng to", zoomOut: "Thu nhỏ", zoomFit: "Vừa timeline",
-  tabBasic: "Cơ bản", tabAudio: "Âm thanh", tabSpeed: "Tốc độ", tabAnim: "Hoạt ảnh", tabColor: "Điều chỉnh", tabMore: "Thêm",
+  tabBasic: "Cơ bản", tabAudio: "Âm", tabSpeed: "Tốc độ", tabAnim: "Hiệu ứng", tabColor: "Màu", tabMore: "Thêm",
   grpText: "Chữ", grpTransform: "Biến đổi", grpBlend: "Hòa trộn", grpClip: "Clip", grpIn: "Vào", grpOut: "Ra", grpLoop: "Kết hợp", grpTransition: "Chuyển cảnh vào", grpLook: "Bộ lọc", grpAdjust: "Điều chỉnh cơ bản",
   pSize: "Cỡ chữ", pAlign: "Căn lề", pScale: "Tỉ lệ", pRotate: "Xoay", pOpacity: "Độ mờ", pBlend: "Chế độ", pFit: "Khớp khung", pPosition: "Vị trí", pEnabled: "Bật",
   pVolume: "Âm lượng", pFadeIn: "Tăng dần", pFadeOut: "Giảm dần", pPan: "Cân bằng", pPitch: "Cao độ", pMute: "Tắt tiếng", pDenoise: "Giảm ồn", pCompressor: "Nén tiếng",

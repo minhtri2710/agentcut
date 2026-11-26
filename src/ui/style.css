@@ -124,6 +124,7 @@ body{margin:0;background:var(--panel);color:var(--color-text-primary);font-famil
 .pnum::-webkit-inner-spin-button{display:none}.pnum:invalid{border-color:var(--color-text-error,#f87171)}
 .nfield{display:flex;flex-direction:column;gap:4px;font-size:12px}.nfield .pnum,.targ .pnum{height:30px;font-size:12px;text-align:left}
 #side>nav{padding:0 8px}
+#side .astryx-tab{padding-inline:6px;font-size:11px}#side .astryx-tab-strip{gap:0} /* six tabs fit the 300 px inspector, as CapCut's short tab row does */
 .pgroup{display:flex;flex-direction:column;gap:4px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .pgroup:last-child{border-bottom:0}
 .pgroup>.ihead{padding:6px 0 4px;color:var(--color-text-primary)}
