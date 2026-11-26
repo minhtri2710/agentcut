@@ -671,8 +671,8 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
 op("add_transition", "Set the transition into a clip from the previous clip on its track. An attached clip moves by its offset and stays attached.",
   { to: "incoming clip id", type: TRANSITIONS.join("|"), duration: "s (0.5)" }, (p, tl, a) => {
     const [tr, ci, c] = findClip(tl, a.to);
-    if (ci === 0) throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead");
     const t = a.type ?? "crossfade";
+    if (ci === 0 && t !== "none") throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead"); // none still clears one left by a removed clip
     if (t === "none") delete c.transition;
     else {
       if (!TRANSITIONS.includes(t)) { const s = suggest(t, TRANSITIONS); throw new EditError(`unknown transition '${t}'`, "bad_transition", s ? `did you mean '${s}'?` : TRANSITIONS.join(", ")); }

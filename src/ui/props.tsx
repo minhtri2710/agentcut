@@ -115,10 +115,8 @@ function TransitionPick({ c, ro }: { c: Clip; ro: boolean }) {
   return (
     <div className="prop" data-prop="transition"><label>{t("pTransition")}</label>
       <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={FORM.enums.transition} hasSearch isDisabled={ro}
-        onChange={(x) => ops([x && c.transition
-          // another type keeps the transition's length and the clip's place (add_transition would reset the overlap to its default and move the clip)
-          ? { op: "update_clip", id: c.id, set: { transition: { ...(typeof c.transition === "object" ? c.transition : {}), type: x } } }
-          : { op: "add_transition", to: c.id, type: x ?? "none" }], "transition " + c.id)} width="100%" /></div><span />
+        // another type keeps the transition's length, so add_transition puts the clip where it already overlaps (and keeps the track's order, which update_clip would sort)
+        onChange={(x) => ops([{ op: "add_transition", to: c.id, type: x ?? "none", ...(x && c.transition && typeof c.transition === "object" && c.transition.duration !== undefined ? { duration: c.transition.duration } : {}) }], "transition " + c.id)} width="100%" /></div><span />
     </div>
   );
 }

@@ -717,6 +717,13 @@ console.log("match_duration by clip reference");
     check("  freeze_frame at the end of a ramped clip holds the ramp's last source frame", Math.abs(at(xe, re[2].id).in - (1 + speedIntegral(ramp, 4))) < 1e-3, at(xe, re[2].id));
     const bad = validate({ ...structuredClone(t0), tracks: t0.tracks.map((tr: any) => tr.id === "text" ? { ...tr, clips: [{ id: "tq", type: "text", text: "q", start: 0, duration: 1, x: "%", y: "50%" }] } : tr) });
     check("validate: an x that is not a length is an error naming it; a percent is fine", bad.some((i: any) => i.level === "error" && /\.x$/.test(i.path)) && !bad.some((i: any) => /\.y$/.test(i.path)), bad.filter((i: any) => i.level === "error"));
+    // add_transition with the transition's own length changes only its type: the clip keeps its start and its place in the track (update_clip would sort a track that is not magnetic)
+    const [xt] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "o1", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "o2", at: 3, duration: 1 },
+      { op: "add_transition", to: "o2", type: "crossfade", duration: 0.5 }, { op: "add_transition", to: "o2", type: "dip_black", duration: 0.5 }]);
+    const ov = xt.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("add_transition of another type with the same length: same start, same track order, the new type", ov.map((c: any) => c.id).join() === "o1,o2" && at(xt, "o2").start === 1.9 && at(xt, "o2").transition.type === "dip_black", ov);
+    const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
+    check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));
     const fz2 = rs2[2];
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }

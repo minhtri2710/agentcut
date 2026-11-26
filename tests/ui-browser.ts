@@ -316,11 +316,12 @@ try {
   await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
   check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `(function(){var p = parseFloat(${node("gm")}.style.left) / ${gmStart}; return p > 200 && Math.abs(${zoomPps} - p) < 1})()`), await js(`[${node("gm")}.style.left, $("zoom").value]`));
   {
-    // zoomed far out a clip is a few px wide: its middle moves it (the trim handles are hidden there), 4 px at 10 px/s = 0.4 s
+    // zoomed far out a clip is a few px wide: its middle still moves it, 4 px at 10 px/s = 0.4 s
     await zoomTo(10);
     await settled();
     const s0 = Number(clipOf(load(), "gm").start), d0 = clipOf(load(), "gm").duration;
-    check("  zoomed out, a clip too narrow for its trim handles shows none", await js(`!${node("gm")}.querySelector(".h")`), await js(`${node("gm")}.innerHTML.slice(0, 200)`));
+    check("  zoomed out, the trim handles narrow to a quarter of the clip each", await until("narrow handles", `(function(){var n=${node("gm")}, h=n && n.querySelector(".h.r"); return !!h && parseFloat(h.style.width) === parseFloat(n.style.width) / 4})()`),
+      await js(`(function(){var n=${node("gm")}; return n ? n.outerHTML.slice(0, 300) : "no node"})()`));
     await dragBy(`[data-id="gm"]`, 4);
     check("  and a drag of its middle moves it, keeping its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.4)) < 0.02 && clipOf(tl, "gm")?.duration === d0), clipOf(load(), "gm"));
     await settled();
