@@ -149,11 +149,11 @@ const pick = async (combo: string, label: string) => {
 };
 /** type a value into a text or number field (a page expression) and leave it: the field commits on blur */
 const typeIn = (field: string, v: string) => js(`(function(){var i=${field}; i.focus(); __set(i, ${JSON.stringify(v)}); i.blur();})()`);
-/** the zoom slider to this many px per second (a multiple of 10): Home is 10, each PageUp adds 10 */
+/** the zoom slider to this many px per second (a multiple of 10): End is its maximum, 400, and each PageDown takes 10 off */
 const zoomTo = async (pps: number) => {
   await js(`$("zoom").focus()`);
-  await press("Home", "Home", 36);
-  for (let i = 10; i < pps; i += 10) await press("PageUp", "PageUp", 33);
+  await press("End", "End", 35);
+  for (let i = 400; i > pps; i -= 10) await press("PageDown", "PageDown", 34);
 };
 const shot = async (name: string) => {
   const { data } = await page("Page.captureScreenshot", { format: "png" });
@@ -200,8 +200,9 @@ try {
   await page("Page.navigate", { url: ui.url });
   check("timeline renders every top-level clip", await until("clips", `document.querySelectorAll("#lanes .clip").length === 3`),
     await js(`document.querySelectorAll("#lanes .clip").length`).catch(() => null));
-  check("lanes follow the tracks (top track drawn first)", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
-    JSON.stringify(load().tracks.map((t: any) => t.id).reverse()));
+  const tks = load().tracks as any[];
+  check("lanes follow the tracks as CapCut lays them out: picture tracks above, the top layer first, the audio tracks below", JSON.stringify(await js(`[].map.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track; })`)) ===
+    JSON.stringify(tks.filter((t) => t.kind !== "audio").reverse().concat(tks.filter((t) => t.kind === "audio")).map((t) => t.id)));
   const stripTimes = await js(`(${node("vid1")}.style.backgroundImage.match(/\\?t=[0-9.]+/g) || []).join()`);
   check("a video clip shows a thumbnail strip: one frame per tile, at the source time each tile plays", stripTimes === "?t=0.50,?t=1.50,?t=2.00", stripTimes);
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
@@ -216,6 +217,8 @@ try {
 
   console.log("inspector");
   await click(`[data-id="txt1"]`);
+  await until("inspector tabs", `!!$("itab-more")`);
+  await click("#itab-more"); // every field, the JSON and the keyframe list: the tab the rows below use
   check("click selects the clip", await until("selection", `$("selinfo").textContent.indexOf("txt1") === 0 && $("insp").value.indexOf('"Hello"') > 0`));
   await js(`(function(){var c=JSON.parse($("insp").value); c.text="Edited in Chrome"; c.color="#ffcc00"; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
   check("inspector edit lands in project.json", await untilFile((tl) => clipOf(tl, "txt1")?.text === "Edited in Chrome" && clipOf(tl, "txt1")?.color === "#ffcc00"), clipOf(load(), "txt1"));
@@ -248,6 +251,15 @@ try {
   await until("rerender", `${atRev(load().revision)} && document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]').value === "0"`);
   await pick(`document.querySelectorAll("#kfbox .kfrow")[1].querySelector('[data-col="ease"]')`, "ease_out");
   check("edit value + pick easing", await untilFile((tl) => JSON.stringify(clipOf(tl, "txt1")?.keyframes?.opacity) === `[[0,0],[0.8,1,"ease_out"]]`), clipOf(load(), "txt1").keyframes);
+  {
+    const before = JSON.stringify(clipOf(load(), "txt1").keyframes), f = `document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]')`;
+    await js(`${f}.focus()`);
+    const b = await js(`(function(){var r=${f}.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: b.x, y: b.y, deltaX: 0, deltaY: 100 });
+    await sleep(400);
+    check("  the wheel over a focused keyframe value does not change it", JSON.stringify(clipOf(load(), "txt1").keyframes) === before, clipOf(load(), "txt1").keyframes);
+    await js(`document.activeElement.blur()`);
+  }
   check("keyframe ticks on the timeline clip", await until("ticks", `${atRev(load().revision)} && document.querySelectorAll('[data-id="txt1"] .kf').length === 2`));
   // drag the 0.8 s tick right by 0.4 s (pps 80 -> 32 px)
   const kb = await js(`(function(){var k=document.querySelectorAll('[data-id="txt1"] .kf')[1].getBoundingClientRect();return {x:k.left+k.width/2,y:k.top+k.height/2}})()`);
@@ -282,6 +294,20 @@ try {
   await dragBy(`[data-id="gm"]`, 40);
   check("dragging a clip moves it by the dragged time and keeps its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - 1) < 0.02 && clipOf(tl, "gm")?.duration === 1), clipOf(load(), "gm"));
   await settled();
+  {
+    // the selected clip's handles are drawn inside its 2 px border: a press on the handle's inner pixel trims too
+    await click(`[data-id="gt"]`);
+    await settled();
+    const ib = await js(`(function(){var n=${node("gt")}, r=n.querySelector(".h.r").getBoundingClientRect();return {x:r.left+0.5,y:r.top+r.height/2,sel:n.classList.contains("sel")}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mousePressed", x: ib.x, y: ib.y, button: "left", clickCount: 1 });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: ib.x + 20, y: ib.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: ib.x + 40, y: ib.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: ib.x + 40, y: ib.y, button: "left", clickCount: 1 });
+    check("a drag from the inner pixel of a selected clip's right handle trims it, not moves it", ib.sel && await untilFile((tl) => Math.abs(clipOf(tl, "gt")?.duration - 2.5) < 0.02 && Math.abs(Number(clipOf(tl, "gt")?.start) - 2) < 0.02), clipOf(load(), "gt"));
+    await settled();
+    await applyLatest(dir, [{ op: "update_clip", id: "gt", set: { duration: 2 } }]);
+    await settled();
+  }
   await dragBy(`[data-id="gt"] .h.r`, 40);
   check("dragging a clip's right edge lengthens it and leaves its start", await untilFile((tl) => Math.abs(clipOf(tl, "gt")?.duration - 2.5) < 0.02 && Math.abs(Number(clipOf(tl, "gt")?.start) - 2) < 0.02), clipOf(load(), "gt"));
   await settled();
@@ -289,6 +315,13 @@ try {
   check("dragging a clip's left edge cuts its head: later start, shorter by the same time", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gt")?.start) - 2.5) < 0.02 && Math.abs(clipOf(tl, "gt")?.duration - 2) < 0.02), clipOf(load(), "gt"));
   await settled();
 
+  await click(`[data-id="gt"]`);
+  await seekTo(3.5);
+  await click("#tsplit");
+  check("the toolbar's Split cuts the selected clip at the playhead", await untilFile((tl) => { const g = tl.tracks.find((t: any) => t.id === "g").clips; return g.length === 3 && g.some((c: any) => c.id === "gt" && Math.abs(c.duration - 1) < 0.02); }), load().tracks.find((t: any) => t.id === "g").clips);
+  await settled();
+  await click(`[data-id="gm"]`);
+  await click("#itab-more"); // the Apply-ops box below is on the More tab once a clip is selected
   const revView = load().revision, leftOf = (id: string) => js(`parseFloat(${node(id)}.style.left)`) as Promise<number>;
   const gmStart = Number(clipOf(load(), "gm").start); // the clip's left edge is its start times the scale, so the scale after a wheel zoom is read from it
   await zoomTo(200);
@@ -296,8 +329,41 @@ try {
   const sb = await js(`(function(){var r=$("scroll").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
   check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `(function(){var p = parseFloat(${node("gm")}.style.left) / ${gmStart}; return p > 200 && Math.abs(${zoomPps} - p) < 1})()`), await js(`[${node("gm")}.style.left, $("zoom").value]`));
+  {
+    // zoomed far out a clip is a few px wide: its middle still moves it, 4 px at 10 px/s = 0.4 s
+    await zoomTo(10);
+    await settled();
+    const s0 = Number(clipOf(load(), "gm").start), d0 = clipOf(load(), "gm").duration;
+    check("  zoomed out, the trim handles narrow to a quarter of the clip each", await until("narrow handles", `(function(){var n=${node("gm")}, h=n && n.querySelector(".h.r"); return !!h && parseFloat(h.style.width) === parseFloat(n.style.width) / 4})()`),
+      await js(`(function(){var n=${node("gm")}; return n ? n.outerHTML.slice(0, 300) : "no node"})()`));
+    await dragBy(`[data-id="gm"]`, 4);
+    check("  and a drag of its middle moves it, keeping its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.4)) < 0.02 && clipOf(tl, "gm")?.duration === d0), clipOf(load(), "gm"));
+    await settled();
+    {
+      // selected and narrower than its CSS padding, the box is wider than the clip: a press just past the drawn left handle moves it, not trims it
+      await click(`[data-id="gm"]`, { dx: 0 });
+      await settled();
+      const g = await js(`(function(){var n=${node("gm")}, h=n.querySelector(".h.l").getBoundingClientRect(), r=n.getBoundingClientRect();return {x:h.right+1,y:r.top+r.height/2,sel:n.classList.contains("sel"),inside:h.right+1<r.right}})()`);
+      const m0 = Number(clipOf(load(), "gm").start), d1 = clipOf(load(), "gm").duration;
+      await page("Input.dispatchMouseEvent", { type: "mousePressed", x: g.x, y: g.y, button: "left", clickCount: 1 });
+      await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: g.x + 2, y: g.y, button: "left" });
+      await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: g.x + 4, y: g.y, button: "left" });
+      await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: g.x + 4, y: g.y, button: "left", clickCount: 1 });
+      check("  selected, a press just past its drawn left handle moves it (the trim zone is the handle as drawn)", g.sel && g.inside && await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - (m0 + 0.4)) < 0.02 && clipOf(tl, "gm")?.duration === d1), { g, clip: clipOf(load(), "gm") });
+      await settled();
+    }
+    // a real press 1 px inside the clip's right edge (its border included): the trim zone, which the page hit-tests by position
+    const eb = await js(`(function(){var r=${node("gm")}.getBoundingClientRect();return {x:r.right-1,y:r.top+r.height/2}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mousePressed", x: eb.x, y: eb.y, button: "left", clickCount: 1 });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: eb.x + 2, y: eb.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: eb.x + 4, y: eb.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: eb.x + 4, y: eb.y, button: "left", clickCount: 1 });
+    check("  and a drag from its last pixel lengthens it, keeping its start", await untilFile((tl) => Math.abs(clipOf(tl, "gm")?.duration - (d0 + 0.4)) < 0.02 && Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.8)) < 0.02), clipOf(load(), "gm"));
+    await settled();
+  }
+  const revZoom = load().revision, gmNow = Number(clipOf(load(), "gm").start); // the drag above was an edit; the zoom after it is not
   await zoomTo(80);
-  check("zooming changes the view only, not the project", await leftOf("gm") === 80 * gmStart && load().revision === revView, { rev: load().revision, revView });
+  check("zooming changes the view only, not the project", await leftOf("gm") === 80 * gmNow && load().revision === revZoom && revView <= revZoom, { rev: load().revision, revZoom });
 
   // seek: a click on the ruler puts the playhead at the clicked time; the playhead before is elsewhere
   await seekTo(0);
@@ -789,19 +855,46 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   }
   console.log("export dialog");
   {
+    await lang("vi"); // the range fields read a dot decimal in every language (vi-VN reads "0.500" as 500 with its own number format)
+    await until("vi", `$("play").textContent === "Phát"`);
     await click("#exportb");
     check("Export… opens the dialog", await until("export open", `$("export").open`));
     await pick(`$("eformat")`, "webm");
     await pick(`$("equality")`, "draft");
-    await typeIn(`$("eto")`, "1");
+    await js(`$("eto").focus(); $("eto").select()`);
+    await page("Input.insertText", { text: "1e" }); // Chrome takes this text in a number field but cannot read it (a second dot it refuses as typed)
     await click("#ego");
-    check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
-      && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+    await sleep(300);
+    check("  an end the field cannot read blocks Export", await js(`$("export").open && $("eto").validity.badInput && !$("out").textContent`), await js(`[$("export").open, $("out").textContent]`));
+    await typeIn(`$("eto")`, "5");
+    await typeIn(`$("eto")`, "");
+    check("  a cleared end field is empty again (the export runs to the end)", await js(`$("eto").value === ""`), await js(`$("eto").value`));
+    await typeIn(`$("eto")`, "0.500");
+    await click("#ego");
+    check("the dialog's export writes the chosen format, an end of 0.500 read as half a second in Vietnamese too, and the result shows its QA",
+      await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
+      && await js(`$("qa").className === "qaok"`) && Math.abs(parseFloat(await js(`$("out").querySelector(".mut").textContent`)) - 0.5) < 0.05,
+      await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
+    await lang("en");
   }
   console.log("review and history panels");
   {
     await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Blink", at: 0.3, duration: 0.2, id: "blink" }]);
     await until("blink seen", atRev(load().revision));
+    await click("#tab-media");
+    await js(`$("tab-media").focus()`);
+    await press("ArrowDown", "ArrowDown", 40);
+    const second = await js(`document.querySelectorAll("#rail [role=tab]")[1].id`);
+    check("the tool rail is a vertical tab list: Down opens the next tool and moves focus to it", await until("rail down", `document.activeElement.id === ${JSON.stringify(second)} && document.activeElement.getAttribute("aria-selected") === "true"`), await js(`document.activeElement.id`));
+    await press("End", "End", 35);
+    check("  End the last", await until("rail end", `document.activeElement === document.querySelector("#rail [role=tab]:last-child")`), await js(`document.activeElement.id`));
+    check("  the page is still drawn after the rail moved (no exception unmounted it)", await until("still drawn", `!!$("zfit")`), consoleErrors.slice(-5));
+    const ppsBefore = await js(zoomPps) as number;
+    await js(`$("scroll").scrollLeft = 500`);
+    await click("#zfit");
+    check("Fit timeline zooms so the whole timeline shows from its start", await until("fit", `$("scroll").scrollLeft === 0 && ${zoomPps} * parseFloat($("dur").textContent) <= $("scroll").clientWidth`),
+      await js(`[$("scroll").scrollLeft, ${zoomPps}, $("dur").textContent, $("scroll").clientWidth]`));
+    await zoomTo(ppsBefore); // the rows below seek by clicking the ruler at the scale they set up
     await click("#tab-review");
     await click("#runreview");
     const short = `[].filter.call(document.querySelectorAll("#findings li"), function (l) { return l.dataset.type === "text_too_short" && l.textContent.indexOf("blink") >= 0; })[0]`;
@@ -871,7 +964,82 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict
     const setF = (id: string, v: string) => typeIn(`$(${JSON.stringify(id)})`, v);
     await clickClip("blink");
-    check("selecting a clip shows its fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
+    // CapCut's Basic tab: a labelled number per property and a keyframe diamond beside each animatable one
+    await until("basic tab", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!document.querySelector('#sidebody [data-prop="opacity"] .pnum')`);
+    await typeIn(`document.querySelector('#sidebody [data-prop="opacity"] .pnum')`, "40");
+    check("the Basic tab's Opacity number (in %) sets the clip's opacity", await untilFile((tl) => clipOf(tl, "blink")?.opacity === 0.4), clipOf(load(), "blink"));
+    await until("opacity seen", atRev(load().revision));
+    {
+      const before = readFileSync(join(dir, "project.json"), "utf8"), num = `document.querySelector('#sidebody [data-prop="opacity"] .pnum')`;
+      await typeIn(num, "");
+      await js(`(function(){var i=${num}; i.focus(); i.blur();})()`);
+      await sleep(400);
+      check("  a cleared number, or one only passed through, saves nothing and shows the value again", readFileSync(join(dir, "project.json"), "utf8") === before && await js(`${num}.value`) === "40", await js(`${num}.value`));
+    }
+    await seekTo(0.4);
+    await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
+    check("  and the Scale diamond adds a scale keyframe at the playhead (clip time 0.1 s, the clip's own scale 1)", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.keyframes?.scale) === "[[0.1,1]]"), clipOf(load(), "blink")?.keyframes);
+    await until("key seen", `${atRev(load().revision)} && document.querySelector('#sidebody [data-prop="scale"] .kfd').classList.contains("at")`);
+    await js(`document.querySelector('#sidebody [data-prop="scale"] .kfd').click()`);
+    check("  the same diamond on that key removes it", await untilFile((tl) => !clipOf(tl, "blink")?.keyframes?.scale), clipOf(load(), "blink")?.keyframes);
+    await until("key gone", atRev(load().revision));
+    {
+      // a first X key on a clip placed by a position preset takes where it is drawn (as Premiere, Final Cut and CapCut start a key at the current value)
+      await applyLatest(dir, [{ op: "update_clip", id: "blink", set: { position: "top_left", margin: "10%" } }]);
+      await until("preset seen", atRev(load().revision));
+      const was = await api.placedAt(dir, "blink", 0.1);
+      await js(`document.querySelector('#sidebody [data-prop="x"] .kfd').click()`);
+      const kx = (tl: any) => clipOf(tl, "blink")?.keyframes?.x;
+      check("  the X diamond on a clip placed by a position preset keys the x it is drawn at; the preset still places y, and the clip does not move",
+        await untilFile((tl) => !!kx(tl)) && JSON.stringify(kx(load())) === JSON.stringify([[0.1, was.x]]) && clipOf(load(), "blink").position === "top_left"
+        && clipOf(load(), "blink").y === undefined && JSON.stringify(await api.placedAt(dir, "blink", 0.1)) === JSON.stringify({ ...was, revision: load().revision }),
+        { was, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
+      await until("x key seen", atRev(load().revision));
+      {
+        // an edit that lands while the page waits for the placement: the key goes out at the revision measured, so it is a conflict, not a stale overwrite
+        await js(`(function(){ var f = window.fetch; window.__hold = null; window.fetch = function (u) { var r = f.apply(this, arguments); if (String(u) !== "/api/placed") return r;
+          window.fetch = f; return r.then(function (x) { return new Promise(function (ok) { window.__hold = function () { ok(x); }; }); }); }; })()`);
+        await js(`document.querySelector('#sidebody [data-prop="y"] .kfd').click()`);
+        await until("placed asked", `!!window.__hold`);
+        await applyLatest(dir, [{ op: "update_clip", id: "blink", set: { margin: "12%" } }]);
+        await until("newer seen", atRev(load().revision));
+        const revN = load().revision;
+        await js(`$("msg").className = ""; window.__hold()`);
+        check("  a placement measured before a newer edit is sent at its own revision: a conflict, and the newer edit stays",
+          await until("conflict", `$("msg").className === "err" && $("msg").textContent.indexOf("conflict") >= 0`) && load().revision === revN && !clipOf(load(), "blink").keyframes?.y && clipOf(load(), "blink").margin === "12%",
+          { msg: await js(`$("msg").textContent`), clip: clipOf(load(), "blink") });
+      }
+      await applyLatest(dir, [{ op: "set_keyframes", id: "blink", prop: "x", keyframes: null }, { op: "update_clip", id: "blink", set: { position: null, margin: null } }]);
+      await until("x key gone", atRev(load().revision));
+    }
+    {
+      // the transition picker: another type keeps the transition's length and the clip's place (a crossfade of 0.1 s into blink, on a track that is not magnetic)
+      await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Before", at: 0, duration: 0.35, id: "tpre" }, { op: "add_transition", to: "blink", type: "crossfade", duration: 0.1 }]);
+      {
+        await until("transition seen", atRev(load().revision));
+        const s0 = clipOf(load(), "blink").start;
+        await click("#itab-anim");
+        // with a search box the Selector's trigger is the [aria-haspopup] button (Astryx moves the combobox role to the search input)
+        await until("anim tab", `!!document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]')`);
+        const picked = await pick(`document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]')`, "dip_black");
+        check("  changing the transition's type keeps its length and the clip's start", await untilFile((tl) => JSON.stringify(clipOf(tl, "blink")?.transition) === '{"type":"dip_black","duration":0.1}' && clipOf(tl, "blink").start === s0),
+          { picked, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
+        await until("type seen", atRev(load().revision));
+        // the clip before it removed, a transition left on what is now the first clip can only be cleared: the picker offers its own type and nothing else
+        await applyLatest(dir, [{ op: "remove_clip", id: "tpre" }]);
+        await until("pre gone", atRev(load().revision));
+        await js(`document.querySelector('#sidebody [data-prop="transition"] [aria-haspopup]').click()`);
+        await until("options", `[].some.call(document.querySelectorAll('[role="option"]'), function (o) { return o.getClientRects().length; })`);
+        const offered = await js(`[].filter.call(document.querySelectorAll('[role="option"]'), function (o) { return o.getClientRects().length; }).map(function (o) { return o.textContent.trim(); })`) as string[];
+        await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await page("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        check("  on what is now the first clip the picker offers only clearing the transition left there, no other type", JSON.stringify(offered) === '["dip_black"]', offered);
+        await applyLatest(dir, [{ op: "add_transition", to: "blink", type: "none" }, { op: "update_clip", id: "blink", set: { start: 0.3 } }]);
+        await until("transition gone", atRev(load().revision));
+      }
+    }
+    await click("#itab-more");
+    check("the More tab shows the clip's fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
     await setF("f-text", "Blinked");
     check("a text field edit is update_clip of that field", await untilFile((tl) => clipOf(tl, "blink")?.text === "Blinked"), { clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
     await until("text seen", `${atRev(load().revision)} && $("f-text").value === "Blinked"`);
@@ -891,6 +1059,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("  ticking it again enables it (the field is dropped)", await untilFile((tl) => clipOf(tl, "blink") && clipOf(tl, "blink").enabled === undefined), clipOf(load(), "blink"));
     await until("enabled seen", atRev(load().revision));
     await clickClip("rb1");
+    await until("rb1", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("itab-more")`);
+    await click("#itab-more");
     check("another clip's form shows its own values, not what was typed into the last one", await until("video form", `$("selinfo").textContent.indexOf("rb1 on ") === 0 && !!$("f-exposure") && $("f-opacity").value === ""`), await js(`$("f-opacity") && $("f-opacity").value`));
     await setF("f-exposure", "0.5");
     check("a grade field is merged into the clip's colour grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1"));
@@ -909,22 +1079,28 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       t.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, clientX: x, clientY: r.top + 5, bubbles: true, cancelable: true }));
     })()`);
     await until("the page shows the project as it is", atRev(load().revision));
-    await click("#tab-library");
-    check("the Library tab shows each item with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
-      && await js(`document.querySelectorAll("#library .litem").length`) > 60, await js(`$("library") && $("library").textContent.slice(0, 120)`));
+    await click("#tab-lib-look");
+    check("the Filters tab shows each look with its still", await until("still", `!!${item("look/warm")} && ${item("look/warm")}.querySelector("img").complete && ${item("look/warm")}.querySelector("img").naturalWidth === 320`, 30_000)
+      && await js(`document.querySelectorAll("#library .litem").length`) === 16, await js(`$("library") && $("library").textContent.slice(0, 120)`));
     await js(`${item("look/bw")}.click()`); // rb1 is still selected from the form rows
     check("clicking a look puts it on the selected clip's grade, keeping the rest of the grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "bw" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
     await until("bw seen", atRev(load().revision));
+    await click("#tab-lib-effect");
+    await until("effects", `!!${item("effect/vhs")}`);
     await libDrop("effect/vhs", node("blink"), 0.4);
     check("an effect dragged onto a clip is added to that clip", await untilFile((tl) => (clipOf(tl, "blink")?.effects ?? []).some((e: any) => e.type === "vhs")), clipOf(load(), "blink"));
     await until("vhs seen", atRev(load().revision));
     const titles = (tl: any) => tl.tracks.find((t: any) => t.id === "text").clips.filter((c: any) => c.glow);
+    await click("#tab-lib-text");
+    await until("text styles", `!!${item("text/neon")}`);
     await libDrop("text/neon", `[].filter.call(document.querySelectorAll(".lane"), function (l) { return l.dataset.track === "text"; })[0]`, 2);
     check("a text style dragged onto a free lane adds a title in that style at the drop time", await untilFile((tl) => titles(tl).length === 1 && Math.abs(Number(titles(tl)[0].start) - 2) < 0.02), load().tracks.find((t: any) => t.id === "text").clips);
     await until("title seen", atRev(load().revision));
     const before = readFileSync(join(dir, "project.json"), "utf8");
     await clickClip("blink");
     await until("blink selected", `$("selinfo").textContent.indexOf("blink on ") === 0`);
+    await click("#tab-lib-look");
+    await until("looks", `!!${item("look/warm")}`);
     await js(`$("msg").className = ""; ${item("look/warm")}.click()`);
     check("  a look on a text clip is refused by name and changes nothing", await until("refused", `$("msg").className === "err" && $("msg").textContent.indexOf("warm") >= 0`)
       && readFileSync(join(dir, "project.json"), "utf8") === before, await js(`$("msg").textContent`));
@@ -940,7 +1116,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const beatId = Object.keys(load().assets).find((k) => String(load().assets[k].path).endsWith("tplbeat.wav"))!;
     const mainOf = (tl: any) => tl.tracks.find((t: any) => t.id === "main").clips as any[];
     const ends = (tl: any) => mainOf(tl).reduce((e: number, c: any) => Math.max(e, c.start + c.duration), 0);
-    await click("#tab-library");
+    await click("#tab-templates");
     await js(`document.querySelector('[data-template="quote"]').click()`);
     check("a template opens a dialog with its args", await until("quote dialog", `$("tpl").open && !!$("tpl").querySelector('[name="text"]') && !!$("tpl").querySelector('[data-arg="background"] [role="combobox"]')`));
     const revQ = load().revision;
@@ -965,12 +1141,14 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await until("slideshow dialog", `$("tpl").open && !!$("tpl").querySelector('input[data-asset="${pic}"]')`);
     await js(`$("tpl").querySelector('input[data-asset="${pic}"]').click()`);
     await pick(`$("tpl").querySelector('[data-arg="music"] [role="combobox"]')`, "tplbeat.wav");
+    await typeIn(`$("tpl").querySelector('[data-arg="seconds"] input')`, "4");
+    await typeIn(`$("tpl").querySelector('[data-arg="seconds"] input')`, ""); // cleared: the template's own 2.5 s
     await click("#tgo");
     check("  slideshow from a picked pool asset and pool music (by asset id): the music bed, no asset imported twice",
       await untilFile((tl) => tl.revision === revS + 1 && music(tl).length === 1) && Object.keys(load().assets).length === nAssets, { music: music(load()), assets: Object.keys(load().assets).length, nAssets });
     const after = resolved(load()), added = mainOf(after).slice(lens.length);
-    check("  it is a section after main's end: the clips already there keep their lengths, the music and the new clip start where main ended",
-      lens.every((d: number, i: number) => mainOf(after)[i].duration === d) && added.length === 1 && Math.abs(added[0].start - endS) < 1e-6 && Math.abs(music(after)[0].start - endS) < 1e-6,
+    check("  it is a section after main's end: the clips already there keep their lengths, the music and the new clip start where main ended, a cleared seconds field is the default 2.5 s",
+      lens.every((d: number, i: number) => mainOf(after)[i].duration === d) && added.length === 1 && added[0].duration === 2.5 && Math.abs(added[0].start - endS) < 1e-6 && Math.abs(music(after)[0].start - endS) < 1e-6,
       { lens, now: mainOf(after).map((c: any) => c.duration), added, endS, music: music(after) });
     await until("slideshow seen", atRev(load().revision));
     await click("#tab-media");
@@ -1080,7 +1258,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       for (let t0 = Date.now(); !after.rev && Date.now() - t0 < 12000; await sleep(40)) {
         await hands.on(`if (!document.getElementById("rev").textContent) document.getElementById("undo").click()`);
         after = await hands.on(`({ msg: document.getElementById("msg").textContent, cls: document.getElementById("msg").className, rev: document.getElementById("rev").textContent })`);
-        if (!after.rev) before = after.msg;
+        // a state that has arrived clears the box before React draws its revision: an empty box with no revision yet is that moment, not a missing refusal
+        if (!after.rev && after.msg) before = after.msg;
       }
       check("  and after the entry is removed the page's reconnect fills it in", await watch.onUntil(filled, 12000), await watch.on(`document.getElementById("rev").textContent`));
       check("  the stream's error is gone from the box once the state is there", await watch.onUntil(`document.getElementById("msg").textContent === "" && document.getElementById("msg").className === ""`, 3000), await watch.on(`document.getElementById("msg").textContent`));

@@ -2,6 +2,7 @@
 import {
   allClips, type Clip, clipDur, clipEnd, clipStart, EditError, fieldsFor, findClip, hasSourceTime, isRetimed, iterClips, newId, normAnim, parseTime, resolve, round6,
   type Timeline, type Track, unfollow,
+  reposition,
 } from "./model.ts";
 import type { OpHelpers } from "./ops.ts";
 import { shiftKfs } from "./ops-edit.ts";
@@ -119,7 +120,7 @@ export function registerCompoundOps(h: OpHelpers) {
         } else gaps.push((rep = gap(eOut - prevEnd)));
         tr.clips.splice(i0, idx.length, rep);
       }
-      if (!home.magnetic) { cmp.start = round6(s0); home.clips.push(cmp); home.clips.sort((x, y) => clipStart(x) - clipStart(y)); }
+      if (!home.magnetic) { cmp.start = round6(s0); home.clips.push(cmp); reposition(home, cmp); } // a new clip on a free track: placed by time, the others keep their layers
       fillGaps(tl, gaps);
       const detached: string[] = [];
       for (const [, , , c] of iterClips(tl)) if (c.attach_to && sel.has(c.attach_to)) { detach(c); detached.push(c.id); }
@@ -215,8 +216,7 @@ export function registerCompoundOps(h: OpHelpers) {
           if (above && tr.kind !== "audio") { tl.tracks.splice(tl.tracks.indexOf(tr), 1); tl.tracks.splice(tl.tracks.indexOf(above) + 1, 0, tr); }
           created.push(id);
         }
-        tr.clips.push(...clips);
-        tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+        for (const n of clips) { tr.clips.push(n); reposition(tr, n); } // each comes back by time, in its nested order; the clips already there keep their layers
       }
       if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { // nothing of the compound is on its own storyline: a gap keeps the time
         if (td > EPS) throw new EditError(`'${c.id}' has a transition but none of its clips comes back onto '${home.id}'; expanding would drop it`, "layer_properties",

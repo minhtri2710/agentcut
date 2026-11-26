@@ -7,13 +7,14 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, parseTime, PRESETS, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
+  normAnim, PAIR, blendsFrom, playsFrom, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
 import { copyFile, lexists } from "./safe-write.ts";
 import { captionWords, scriptToWords } from "./captions.ts";
 import { own } from "./own.ts";
+import { speedIntegral } from "./anim.ts";
 import { normWord, registerEditOps, scaleKfs, shiftKfs } from "./ops-edit.ts";
 import { registerCompoundOps } from "./ops-compound.ts";
 import { registerAudioOps } from "./ops-audio.ts";
@@ -277,7 +278,7 @@ function place(tl: Timeline, tr: Track, c: Clip, a: Dict) {
     else if (a.after) c.start = round6(clipEnd(findClip(tl, a.after)[2]));
     else c.start = round6(c.until_end ? Math.max(0, ...clips.filter((x) => !x.until_end).map(clipEnd)) : trackEnd(tr)); // an until_end clip's end is the timeline end: a new one starts at the end of the track's other clips
     clips.push(c);
-    clips.sort((x, y) => clipStart(x) - clipStart(y));
+    reposition(tr, c); // the new clip in time order; the others keep theirs
   }
 }
 
@@ -455,8 +456,7 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
       placeAt(tl, tr, c, clipStart(c));
     }
-    if (!tr.magnetic) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
-    resolve(tl);
+    resolve(tl); // a new start keeps the clip's place in the draw order (a free track's list); transitions pair by time (pair.ts)
     return { id: c.id, start: c.start, duration: c.duration };
   });
 
@@ -546,11 +546,21 @@ function renameNested(tl: Timeline, c: Clip) {
   fix(c.tracks ?? []);
 }
 
-/** right half of a split: the same curves (focus pan, volume, ...) in its own clip-local time; a speed ramp can't be cut this way */
+/** right half of a split: the same curves (focus pan, volume, speed, ...) in its own clip-local time. Keys before its head stay (at negative times),
+ *  so the curve between them plays as it did in the whole clip, an eased speed segment cut in two included (as Premiere's razor keeps a time-remap curve). */
 function rightKfs(c: Clip, left: number) {
-  delete c.keyframes?.speed;
+  if (c.keyframes?.speed) c.keyframes.speed = c.keyframes.speed.map((k: any) => (Array.isArray(k) ? [round6(parseTime(k[0]) - left), ...k.slice(1)] : { ...k, t: round6(parseTime(k.t) - left) }));
   shiftKfs(c, -left); // keyframes, effect windows and caption words; srt cues cannot be moved, so that split is refused
   if (c.keyframes && !Object.keys(c.keyframes).length) delete c.keyframes;
+}
+
+/** the source second a video clip shows at clip-local time `lt` (the renderer's mapping); a reversed speed ramp is refused */
+function sourceAt(c: Clip, lt: number, what: string): number {
+  const cin0 = parseTime(c.in ?? 0), sp = Number(c.speed ?? 1) || 1, ramp = c.keyframes?.speed;
+  if (c.freeze) return cin0;
+  if (ramp && c.reverse) throw new EditError(`${what}: '${c.id}' plays a speed ramp backwards`, "unsupported", `update_clip id=${c.id} to remove reverse or keyframes.speed first`);
+  if (ramp) return cin0 + speedIntegral(ramp, lt);
+  return c.reverse ? cin0 + (clipDur(c) - lt) * sp : cin0 + lt * sp;
 }
 
 function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, number] {
@@ -559,12 +569,15 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   const s = clipStart(c), d = clipDur(c);
   if (!(s < t && t < s + d)) throw new EditError(`split point ${t} is outside clip ${c.id} (${s.toFixed(3)}–${(s + d).toFixed(3)})`, "out_of_range");
   const left = t - s;
+  const ramp = c.type === "video" && !!c.keyframes?.speed && !c.freeze;
   const right: Clip = structuredClone(c);
   right.id = newId(tl, PREFIX[c.type]);
   c.duration = round6(left); right.duration = round6(d - left);
   dropFollow(c); dropFollow(right); // both halves keep their split lengths
   if (c.type === "compound") right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
-  if (c.type === "video" || c.type === "audio") {
+  if (c.freeze) right.in = c.in; // both halves hold the same frame
+  else if (ramp) right.in = round6(sourceAt(c, left, "split_clip"));
+  else if (c.type === "video" || c.type === "audio") {
     if (c.reverse) c.in = round6(parseTime(c.in ?? 0) + (d - left) * (Number(c.speed ?? 1) || 1)), right.in = round6(parseTime(right.in ?? 0));
     else right.in = round6(parseTime(c.in ?? 0) + left * (Number(c.speed ?? 1) || 1));
   }
@@ -573,6 +586,7 @@ function splitAt(tl: Timeline, id: string, t: number): [Clip, Clip, Track, numbe
   if (c.type === "captions" && c.words) c.words = c.words.map(normWord).filter((w: any) => w.start < left);
   placeAt(tl, tr, right, t);
   tr.clips.splice(ci + 1, 0, right);
+  // the right half stays where the clip was in the draw order; a transition that starts over the left half plays from it (pair.ts pairs by time)
   renameNested(tl, right);
   // keep detached audio (J/L cuts) in sync: split it at the same time, the right half follows the right picture
   for (const [atr, au] of linkedAudio(tl, c)) {
@@ -606,7 +620,7 @@ op("freeze_frame", "Freeze the frame at a timeline time for `duration` seconds (
     const t = parseAt(tl, a.at), s = clipStart(c0), e = s + clipDur(c0);
     if (t < s - 1e-3 || t > e + 1e-3) throw new EditError(`at ${round6(t)}s is outside clip '${c0.id}' (${round6(s)}s to ${round6(e)}s)`, "bad_value", `freeze at a timeline time inside the clip: ${round6(s)} to ${round6(e)}`);
     const atStart = t <= s + 1e-3; // a freeze of the first frame plays before the clip
-    const srcT = parseTime(c0.in ?? 0) + Math.max(0, t - s) * (Number(c0.speed ?? 1) || 1);
+    const srcT = sourceAt(c0, Math.min(clipDur(c0), Math.max(0, t - s)), "freeze_frame");
     let insertAfter = c0;
     if (!atStart && t < e - 1e-3) insertAfter = splitAt(tl, a.id, t)[0];
     const [tr] = findClip(tl, insertAfter.id);
@@ -654,16 +668,26 @@ op("set_keyframes", "Animate a property: [[t, value, easing?], ...], t relative 
     return { id: c.id, keyframes: c.keyframes ?? {} };
   });
 
-op("add_transition", "Set the transition into a clip from the previous clip on its track. An attached clip moves by its offset and stays attached.",
+op("add_transition", "Set the transition into a clip from the clip it follows: on a magnetic track the previous clip; on another track the clip that started before it " +
+  "and ends last by its end, and the clip moves to start the transition's length before that one ends. An attached clip moves by its offset and stays attached.",
   { to: "incoming clip id", type: TRANSITIONS.join("|"), duration: "s (0.5)" }, (p, tl, a) => {
     const [tr, ci, c] = findClip(tl, a.to);
-    if (ci === 0) throw new EditError("first clip on the track has no previous clip", "no_previous", "use update_clip enter: 'fade' instead");
     const t = a.type ?? "crossfade";
+    resolve(tl);
+    const from = blendsFrom(tr, ci, PAIR);
+    if (!from && t !== "none") throw new EditError(`'${c.id}' has no clip before it on '${tr.id}' to blend from`, "no_previous", "use update_clip enter: 'fade' instead"); // none still clears one left by a removed clip
     if (t === "none") delete c.transition;
     else {
       if (!TRANSITIONS.includes(t)) { const s = suggest(t, TRANSITIONS); throw new EditError(`unknown transition '${t}'`, "bad_transition", s ? `did you mean '${s}'?` : TRANSITIONS.join(", ")); }
       c.transition = { type: t, duration: parseTime(a.duration ?? 0.5) };
-      if (!tr.magnetic) placeAt(tl, tr, c, Math.max(0, clipEnd(tr.clips[ci - 1]) - c.transition.duration));
+      // on a free track the clip starts the transition's length before the end of the clip it blends from, not before its start (pair.ts then pairs them by
+      // time; the renderer shortens a transition longer than a clip, as on a magnetic track)
+      if (!tr.magnetic) {
+        placeAt(tl, tr, c, Math.max(clipStart(from!), clipEnd(from!) - c.transition.duration));
+        // the incoming clip is drawn over the one it blends from: one below it in the list goes just above it
+        const fi = tr.clips.indexOf(from!);
+        if (ci < fi) { tr.clips.splice(ci, 1); tr.clips.splice(fi, 0, c); }
+      }
     }
     resolve(tl);
     return { id: c.id, transition: c.transition ?? null, start: c.start };

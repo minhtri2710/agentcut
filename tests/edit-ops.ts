@@ -14,6 +14,7 @@ const api = await import("./author-api.ts");
 // most rows here are about ops, not concurrency: a write reads the project's revision (info) and applies at it. The rows about revisions, conflicts and the history
 // (authors, undo, redo, the replace_timeline block, the empty batch) pass theirs by hand.
 const { applyOps } = await import("../src/ops.ts");
+const { PAIR, playsFrom } = await import("../src/model.ts");
 const { newTimeline, validate, resolve, canLoop, totalDuration } = await import("../src/model.ts");
 
 const t0 = performance.now();
@@ -695,6 +696,91 @@ console.log("match_duration by clip reference");
       try { (await run(t1, [{ op: "freeze_frame", id: "vid1", at: atT, duration: 1 }])); } catch (e) { err = e; }
       check(`freeze_frame at a time ${name} is refused with its range, and nothing changes`, err?.code === "bad_value" && /1s to 2s/.test(err.message) && !!err.hint && JSON.stringify(t1) === before, { code: err?.code, message: err?.message });
     }
+    // split and freeze on a clip whose source time is not in + t * speed: the halves and the freeze show what the renderer showed there
+    const { speedIntegral } = await import("../src/anim.ts");
+    const ramp = [[0, 2], [2, 2], [4, 1]];
+    const [xr] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: ramp },
+      { op: "split_clip", id: "rmp", at: 3 }]);
+    const [rl, rr] = xr.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("split_clip of a speed ramp: the right half starts at the source second the ramp reached and keeps the whole curve in its own time (keys before its head at negative times)",
+      Math.abs(rr.in - (1 + speedIntegral(ramp, 3))) < 1e-3 && JSON.stringify(rr.keyframes.speed) === "[[-3,2],[-1,2],[1,1]]" && JSON.stringify(rl.keyframes.speed) === JSON.stringify(ramp)
+      && !validate(xr).some((i: any) => i.level === "error"), { rl, rr });
+    const eased = [[0, 1], [4, 2, "ease_in"]];
+    const [xq] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: eased }, { op: "split_clip", id: "rmp", at: 2 }]);
+    const [, qr] = xq.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("  a cut inside an eased ramp segment keeps its shape: the right half plays the same source seconds the whole clip did, to its end",
+      [0.5, 1, 2].every((u) => Math.abs(qr.in + speedIntegral(qr.keyframes.speed, u) - (1 + speedIntegral(eased, 2 + u))) < 1e-3), qr);
+    const [xf, rf] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rv", at: 0, duration: 4, in: 1, reverse: true }, { op: "freeze_frame", id: "rv", at: 1, duration: 1 }]);
+    check("freeze_frame of a reversed clip holds the frame it showed: in + (duration - t) * speed", at(xf, rf[1].id).in === 4, at(xf, rf[1].id));
+    const [xz] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "fz", at: 0, duration: 4, in: 2, freeze: true }, { op: "split_clip", id: "fz", at: 1 }, { op: "freeze_frame", id: "fz", at: 0.5, duration: 1 }]);
+    check("  split and freeze of a freeze clip keep its frame", xz.tracks.find((tr: any) => tr.id === "overlay")!.clips.every((c: any) => c.in === 2), xz.tracks.find((tr: any) => tr.id === "overlay")!.clips);
+    const [xe, re] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: ramp }, { op: "freeze_frame", id: "rmp", at: 4, duration: 1 }]);
+    check("  freeze_frame at the end of a ramped clip holds the ramp's last source frame", Math.abs(at(xe, re[2].id).in - (1 + speedIntegral(ramp, 4))) < 1e-3, at(xe, re[2].id));
+    const bad = validate({ ...structuredClone(t0), tracks: t0.tracks.map((tr: any) => tr.id === "text" ? { ...tr, clips: [{ id: "tq", type: "text", text: "q", start: 0, duration: 1, x: "%", y: "50%" }] } : tr) });
+    check("validate: an x that is not a length is an error naming it; a percent is fine", bad.some((i: any) => i.level === "error" && /\.x$/.test(i.path)) && !bad.some((i: any) => /\.y$/.test(i.path)), bad.filter((i: any) => i.level === "error"));
+    {
+      // pair.ts on its own: by time on a free track, by list on a magnetic one
+      const { blendsFrom } = await import("../src/pair.ts");
+      const o = { start: (c: any) => c.s, end: (c: any) => c.s + c.d, drawn: (c: any) => c.on !== false };
+      const free = (cl: any[]) => ({ clips: cl.map(([id, s, d, on]) => ({ id, s, d, on })) });
+      const pf = (tr: any, i: number) => playsFrom(tr, i, o)?.id ?? null, bf = (tr: any, i: number) => blendsFrom(tr, i, o)?.id ?? null;
+      const t1 = free([["A", 0, 5], ["B", 1, 8], ["C", 8, 2]]);
+      check("playsFrom on a free track: the clip still playing where it starts that started last (C over B, not A that ended)", pf(t1, 2) === "B" && pf(t1, 1) === "A" && pf(t1, 0) === null);
+      const t2 = free([["C", 8, 2], ["A", 0, 5], ["B", 1, 8]]);
+      check("  whatever the list order", pf(t2, 0) === "B");
+      const t3 = free([["A", 0, 2], ["X", 1, 1, false], ["B", 1.5, 2]]);
+      check("  a clip that is not drawn plays nothing", pf(t3, 2) === "A");
+      const t4 = free([["A", 2, 1], ["B", 2, 1]]);
+      check("  same start: the one below plays into the one above, not the other way", pf(t4, 1) === "A" && pf(t4, 0) === null);
+      const t5 = free([["A", 0, 2], ["B", 3, 1]]);
+      check("blendsFrom: with no overlap, the clip that ended last before it ends (add_transition moves it back over it)", bf(t5, 1) === "A" && pf(t5, 1) === null && bf(t5, 0) === null);
+      check("  magnetic: the clip before in the list, a gap that is not drawn too (the storyline overlaps them)", playsFrom({ magnetic: true, clips: [{ s: 0, d: 1, on: false }, { s: 1, d: 1 }] } as any, 1, o) !== null && playsFrom({ magnetic: true, clips: [{ s: 0, d: 1 }] } as any, 0, o) === null);
+    }
+    // On a free track the list is the draw order (later on top) and a transition plays from the clip pair.ts finds by time: an edit that moves a clip
+    // keeps its layer, and every transition keeps its partner.
+    const ovl = (x: any) => x.tracks.find((tr: any) => tr.id === "overlay")!;
+    const ids = (x: any) => ovl(x).clips.map((c: any) => c.id).join();
+    const from = (x: any, id: string) => { const tr = ovl(x), i = tr.clips.findIndex((c: any) => c.id === id); return playsFrom(tr, i, PAIR)?.id ?? null; };
+    // add_transition into a clip after a short one: it moves back over it by the transition's length (not before its start) and is drawn over it
+    const [xt] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "o1", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "o2", at: 3, duration: 1 },
+      { op: "add_transition", to: "o2", type: "crossfade", duration: 0.5 }]);
+    check("add_transition after a shorter clip: the incoming clip starts at that clip's start, plays from it, and is drawn over it",
+      at(xt, "o2").start === 2 && from(xt, "o2") === "o1" && ids(xt) === "o1,o2", ovl(xt).clips);
+    const [xt2] = await run(xt, [{ op: "add_transition", to: "o2", type: "dip_black", duration: 0.5 }]);
+    check("  add_transition of another type again: same start, same pair, the new type", at(xt2, "o2").start === 2 && from(xt2, "o2") === "o1" && at(xt2, "o2").transition.type === "dip_black", ovl(xt2).clips);
+    const [xu] = await run(xt, [{ op: "update_clip", id: "o2", set: { transition: { ease: "linear" } } }, { op: "trim_clip", id: "o1", trim_end: 0.1 }, { op: "update_clip", id: "o2", set: { transition: { type: "wipe_left" } } }]);
+    check("  update_clip of the transition's type keeps the clip's start, its pair and the transition's length and easing",
+      at(xu, "o2").start === 2 && from(xu, "o2") === "o1" && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ovl(xu).clips);
+    // moving clips keeps their layers: a start edit, a trim_start and a target that carries a connected clip, past other clips
+    const [xs] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "r0", at: 0, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "b1", at: 1, duration: 8 },
+      { op: "update_clip", id: "r0", set: { start: 3 } }]);
+    check("a start edit that moves a clip past another keeps its layer (b1 stays over r0)", ids(xs) === "r0,b1", ovl(xs).clips.map((c: any) => [c.id, c.start]));
+    const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
+      { op: "trim_clip", id: "h1", trim_start: 2 }]);
+    check("  so does trim_start", ids(xh) === "h1,h2" && at(xh, "h1").start === 2, ovl(xh).clips.map((c: any) => [c.id, c.start]));
+    {
+      const tb = structuredClone(t0); tb.assets.p = { path: "/none.png", kind: "image", width: 10, height: 10 };
+      // ga follows the last main clip, gc is added after it at 0 s (so above it); moving that clip to the front carries ga past gc, and ga stays below
+      const [xg] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "ga", attach_to: "m1", duration: 1 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "gc", at: at((await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }]))[0], "m1").start, duration: 1 },
+        { op: "move_clip", id: "m1", index: 0 }]);
+      check("  and a connected clip its target carries past another clip (ga stays below gc, as added)", ids(xg) === "ga,gc" && at(xg, "ga").start === 0 && at(xg, "gc").start > 0, ovl(xg).clips.map((c: any) => [c.id, c.start]));
+      // a split under a transition: connected B starts over A's tail; the cut is in that overlap. B still plays from the left half (pair by time), and the right
+      // half is drawn just above the left one, below B, as A was
+      const [xq] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "pm1", duration: 4.5 }, { op: "add_clip", track: "main", asset: "p", id: "pm2", duration: 3 }]);
+      const s2 = at(xq, "pm2").start;
+      const [xp, rp] = await run(xq, [{ op: "add_clip", track: "overlay", asset: "v", id: "pA", at: s2 - 4.5, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "pB", attach_to: "pm2", offset: 0, duration: 2 },
+        { op: "update_clip", id: "pB", set: { transition: { type: "crossfade", duration: 0.5 } } }, { op: "split_clip", id: "pA", at: s2 + 0.25 }]);
+      check("split_clip inside a transition on a free track: the incoming clip still plays from the left half, and both halves stay below it",
+        ids(xp) === `pA,${rp[3].right},pB` && from(xp, "pB") === "pA", ovl(xp).clips.map((c: any) => [c.id, c.start, c.duration]));
+      // splitting a lower clip under an overlay that started before the cut: the overlay stays on top, and a transition from it keeps its partner
+      const [xl, rl] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "red", at: 0, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "blue", at: 1, duration: 8 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "fin", at: 8, duration: 2, transition: { type: "crossfade", duration: 0.5 } }, { op: "split_clip", id: "red", at: 3 }]);
+      check("  splitting a lower clip keeps the overlay above both halves, and a later transition still plays from the overlay",
+        ids(xl) === `red,${rl[3].right},blue,fin` && from(xl, "fin") === "blue", ovl(xl).clips.map((c: any) => [c.id, c.start]));
+    }
+    const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
+    check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));
     const fz2 = rs2[2];
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }

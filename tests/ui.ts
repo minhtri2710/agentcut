@@ -92,7 +92,8 @@ check("page served: a shell naming its stylesheet and script, each served as its
   && [pageJs, pageCss].every((r) => r.headers["cache-control"] === "public, max-age=31536000, immutable"), { assetUrls, page: page.headers, js: pageJs.headers });
 const gz = await raw(assetUrls[0], { headers: { "accept-encoding": "gzip, br" } });
 check("  gzipped when the browser accepts it, and the same text unzipped", gz.headers["content-encoding"] === "gzip" && gunzipSync(gz.body).equals(assetUrls[0].endsWith(".js") ? pageJs.body : pageCss.body) && gz.body.length < pageJs.body.length / 2);
-check("  an asset of no build is 404", (await raw("/assets/app.000000000000.js")).status === 404);
+check("  not gzipped when the browser refuses it (gzip;q=0)", (await raw(assetUrls[0], { headers: { "accept-encoding": "gzip;q=0, br" } })).headers["content-encoding"] === undefined);
+check("  an asset of no build is 404, an Object property name too", (await raw("/assets/app.000000000000.js")).status === 404 && (await raw("/assets/constructor")).status === 404);
 const st0 = await raw("/api/state");
 const st = await jget("/api/state");
 check("state has timeline + revision + history", st.j.ok && st.j.revision === r0 + N && st.j.timeline.tracks.length > 0 && Array.isArray(st.j.history.undo), st.j);
@@ -1100,9 +1101,20 @@ console.log("page modules");
     && resolveRef(lanes, "a#-1") === "a1" && resolveRef(lanes, "a#0") === "a0" && resolveRef(lanes, "a#5") === null && resolveRef(lanes, "zz#0") === null && resolveRef(lanes, "plain") === "plain", order);
 
   const ks = pts([{ t: "500ms", v: 2, ease: "ease_out" }, [0, 1]]);
-  check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt interpolates, kfBase defaults",
-    JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === 1.5 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
-    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
+  const { edgeZone } = await import("../src/ui/view.ts");
+  check("a press on a clip box: the 8 px at each edge trim, narrowed to a quarter of a short box, the rest moves; a border widens each zone by itself (the handle is drawn inside it)",
+    edgeZone(101, 100, 100) === "l" && edgeZone(199, 100, 100) === "r" && edgeZone(150, 100, 100) === "move" && edgeZone(100.5, 100, 10) === "l" && edgeZone(105, 100, 10) === "move" && edgeZone(108, 100, 10) === "r"
+    && edgeZone(191, 100, 100, 2) === "r" && edgeZone(189.5, 100, 100, 2) === "move" && edgeZone(190, 100, 100, 2) === "r" && edgeZone(109, 100, 100, 2) === "l"
+    && edgeZone(109.4, 100, 30, 2) === "l" && edgeZone(120.6, 100, 30, 2) === "r"
+    && edgeZone(104, 100, 22, 2, 10) === "l" && edgeZone(107, 100, 22, 2, 10) === "move" && edgeZone(118, 100, 22, 2, 10) === "r");
+  const { tickStep, clock } = await import("../src/ui/view.ts");
+  check("the viewer's timecode is mm:ss:ff with whole frames at 29.97 fps too (frame 30 is 00:01:00)", clock(30 / 29.97, 29.97) === "00:01:00" && clock(61.5, 30) === "01:01:15", [clock(30 / 29.97, 29.97), clock(61.5, 30)]);
+  check("ruler ticks stay readable when zoomed out to fit a long timeline (1 px per second: a tick a minute)", tickStep(1) === 60 && tickStep(3) === 30 && tickStep(10) === 10 && tickStep(200) === 0.5);
+  const { kfValue } = await import("../src/anim.ts");
+  check("keyframes: pts sorts both key forms, packKf drops linear easing and clears an empty list, kfAt reads the curve as the renderer does (ease_out, hold), kfBase defaults and reads a % position",
+    JSON.stringify(packKf(ks)) === '[[0,1],[0.5,2,"ease_out"]]' && packKf([]) === null && kfAt(ks, 0.25) === +kfValue([[0, 1], [0.5, 2, "ease_out"]], 0.25).toFixed(4) && kfAt(ks, 0.25) === 1.875
+    && kfAt(pts([[0, 1], [2, 0, "hold"]]), 1) === 1 && kfAt(ks, 9) === 2 && kfAt(ks, -1) === 1
+    && kfBase(clip("c"), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "25%" }), "x", { width: 1080, height: 1920 }) === 270 && kfBase(clip("c", { x: "%" }), "x", { width: 1080, height: 1920 }) === 540 && kfBase(clip("c", { x: "120px" }), "x", { width: 1080, height: 1920 }) === 120 && kfBase(clip("c", { y: "300" }), "y", { width: 1080, height: 1920 }) === 300 && kfBase(clip("c", { opacity: 0.3 }), "opacity", { width: 1, height: 1 }) === 0.3
     && JSON.stringify(kfTimes(clip("c", { keyframes: { x: [[0, 1], [1, 2]], y: [[1, 5], [2, 6]] } }))) === "[0,1,2]", JSON.stringify(packKf(ks)));
 
   const trk = (id: string, magnetic: boolean, clips: any[]): any => ({ id, magnetic, clips });

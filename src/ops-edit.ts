@@ -336,8 +336,7 @@ export function registerEditOps(h: OpHelpers) {
       applyEdges(tl, withAudio(tl, edges, "slide_clip"), by, "slide_clip", Math.max(tr.magnetic ? -Infinity : -clipStart(c), own ? -clipStart(own) : -Infinity));
       if (!tr.magnetic) {
         c.start = round6(clipStart(c) + by);
-        if (next) next.start = round6(clipStart(next) + by);
-        tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+        if (next) next.start = round6(clipStart(next) + by); // both keep their layers (a free track's list is its draw order)
       }
       resolve(tl);
       const out: Dict = { id: c.id, start: c.start, duration: c.duration };

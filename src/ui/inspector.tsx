@@ -2,7 +2,6 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { IconButton } from "@astryxdesign/core/IconButton";
-import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Boxes, Braces, FolderOpen, Group, MousePointerClick, Plus, SquareStack, Trash2, Ungroup, X } from "lucide-react";
@@ -10,12 +9,13 @@ import { ops } from "./api.ts";
 import { clipPatch, regroupIds } from "./edits.ts";
 import { t } from "./i18n.ts";
 import { kfAt, kfBase, near, packKf, pts, type Kf } from "./keyframes.ts";
-import { ico } from "./kit.tsx";
+import { blurOnEnter, ico, Num } from "./kit.tsx";
 import { fail, show } from "./messages.ts";
 import { $, changed, findClip, S, st, trackOf, V } from "./state.ts";
 import { dur, start } from "./time.ts";
 import { Out } from "./export.tsx";
 import { ClipForm } from "./form.tsx";
+import { PROP_TABS, PropTab } from "./props.tsx";
 import { openPath } from "./timeline.tsx";
 import type { Clip } from "./types.ts";
 
@@ -94,8 +94,10 @@ function Keyframes({ c, ro }: { c: Clip | null; ro: boolean }) {
               <IconButton size="sm" variant="ghost" label={t("clearTitle", p)} icon={ico(Trash2)} isDisabled={ro} onClick={() => setKf(c, p, [])} /></div>
             {list.map((q, i) => (
               <div key={key + i} className="kfrow">
-                <NumberInput data-col="t" size="sm" label={t("kfTime")} isLabelHidden step={0.05} value={q[0]} isDisabled={ro} onChange={(v) => commitKey(c, p, list, i, { t: v })} />
-                <NumberInput data-col="v" size="sm" label={p} isLabelHidden step={0.05} value={q[1]} isDisabled={ro} onChange={(v) => commitKey(c, p, list, i, { v })} />
+                <Num data-col="t" aria-label={t("kfTime")} step={0.05} defaultValue={q[0]} disabled={ro} onKeyDown={blurOnEnter}
+                  onBlur={(e) => { const x = e.currentTarget.valueAsNumber; if (Number.isFinite(x) && x !== q[0]) commitKey(c, p, list, i, { t: x }); }} />
+                <Num data-col="v" aria-label={p} step={0.05} defaultValue={q[1]} disabled={ro} onKeyDown={blurOnEnter}
+                  onBlur={(e) => { const x = e.currentTarget.valueAsNumber; if (Number.isFinite(x) && x !== q[1]) commitKey(c, p, list, i, { v: x }); }} />
                 <Selector data-col="ease" size="sm" label="easing" isLabelHidden value={q[2] || "linear"} options={ENUM.easings} isDisabled={ro} onChange={(v) => commitKey(c, p, list, i, { ease: v! })} />
                 <IconButton data-col="del" size="sm" variant="ghost" label={t("kfDelete")} icon={ico(X)} isDisabled={ro} onClick={() => setKf(c, p, list.filter((_, j) => j !== i))} />
               </div>
@@ -110,17 +112,23 @@ function Keyframes({ c, ro }: { c: Clip | null; ro: boolean }) {
 export function Side() {
   const v = st.S ? V() : null, nested = !!v && v.nested, c = st.S && st.sel ? findClip(st.sel) : null, cmp = !!c && c.type === "compound";
   const g = st.S ? groupIds() : [];
+  // CapCut's tabs for the clip's type, then More: every field (the full form), the JSON and the keyframe list
+  const tabs = c ? PROP_TABS.filter((x) => x.has(c)).concat([{ id: "more", label: "tabMore", has: () => true }]) : [];
+  const tab = tabs.some((x) => x.id === st.inspTab) ? st.inspTab : tabs[0]?.id ?? "basic";
   return (
     <aside id="side">
       <div className="ihead" id="selinfo">{c ? t("selInfo", c.id, trackOf(c.id)!.id, c.type) + (nested ? t("insideCompound", st.path[st.path.length - 1]) : "") : t("selectClip")}</div>
-      {!c && <EmptyState isCompact icon={ico(MousePointerClick)} title={t("inspector")} description={t("inspectorHint")} />}
       {c && (
-        <TabList value={st.inspTab} size="sm" hasDivider onChange={(x) => { st.inspTab = x as "form" | "json"; changed(); }}>
-          {(["form", "json"] as const).map((x) => <Tab key={x} id={"itab-" + x} value={x} label={t(x === "form" ? "formTab" : "jsonTab")} />)}
+        <TabList value={tab} size="sm" hasDivider onChange={(x) => { st.inspTab = x; changed(); }}>
+          {tabs.map((x) => <Tab key={x.id} id={"itab-" + x.id} value={x.id} label={t(x.label)} />)}
         </TabList>
       )}
-      {c && st.inspTab === "form" && c.type !== "gap" && <ClipForm c={c} ro={nested} />}
-      <div className="isec" style={{ display: c && st.inspTab === "json" ? "" : "none" }}>
+      <div id="sidebody">
+      {!c && <EmptyState isCompact icon={ico(MousePointerClick)} title={t("inspector")} description={t("inspectorHint")} />}
+      {c && tab !== "more" && <PropTab c={c} tab={tab} ro={nested} />}
+      {c && tab === "more" && c.type !== "gap" && <ClipForm c={c} ro={nested} />}
+      <div className="isec" style={{ display: c && tab === "more" ? "" : "none" }}>
+        <div className="ihead">{ico(Braces)} {t("jsonTab")}</div>
         <textarea id="insp" className="code" spellCheck={false} placeholder={t("clipJson")} readOnly={nested} />
         <div className="row"><Button id="applyc" size="sm" variant="primary" label={t("applyClip")} isDisabled={!c || nested} onClick={applyClip} /></div>
       </div>
@@ -131,14 +139,15 @@ export function Side() {
         <Button id="group" size="sm" icon={ico(Group)} label={t("group", g.length)} style={{ display: g.length && !nested ? "" : "none" }} onClick={group} />
         <span id="regroups">{st.S && !nested && regroupIds(S().timeline.tracks).map((id) => <Button key={id} data-group={id} size="sm" icon={ico(Boxes)} label={t("regroup", id)} onClick={() => regroup(id)} />)}</span>
       </div>
-      <Keyframes c={c} ro={nested} />
-      <details className="isec" id="opsbox" open>
-        <summary className="ihead">{ico(Braces)} {t("opsTitle")}</summary>
+      <div style={{ display: !c || tab === "more" ? "" : "none" }}><Keyframes c={c} ro={nested} /></div>
+      <div className="isec" id="opsbox" style={{ display: !c || tab === "more" ? "" : "none" }}>
+        <div className="ihead">{ico(Braces)} {t("opsTitle")}</div>
         <div className="mut">{t("opsHint")}</div>
         <textarea id="ops" className="code" spellCheck={false} placeholder='[{"op":"add_clip","track":"text","text":"Hi","at":0,"duration":2}]' />
         <div className="row"><Button id="applyo" size="sm" icon={ico(SquareStack)} label={t("applyOps")} onClick={applyOps} /></div>
-      </details>
+      </div>
       <Out />
+      </div>
     </aside>
   );
 }

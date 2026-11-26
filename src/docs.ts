@@ -11,7 +11,10 @@ project.json (the timeline). Edit it with atomic **ops**, LOOK at it with **prev
 - Default tracks: main (magnetic) · overlay · text · voice (audio, role=voice) · music (audio, ducks -20 dB under voice).
 - Magnetic track (Final Cut primary storyline): clips play back-to-back in list order, start is computed; a clip's
   transition overlaps it with the previous clip. Reorder with move_clip index. gap clips = pauses.
-- Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine (later on top).
+- Other tracks: explicit start ('at' when adding: seconds, "end", "end-2"). Overlaps are fine: the clip list is the draw order (later on top). add_clip puts a
+  clip in time order among the others; an edit that moves a clip (start, trim_start, a connected clip's target, split_clip) keeps its layer, so track#n is a
+  place in that list, not always the n-th clip in time. A clip's transition plays from the clip drawn where it starts that started before it (or, at the same
+  start, is below it); add_transition moves the clip back over the clip it cuts from by the transition's length and draws it above that clip.
 - Clip types: video · image · text · captions · shape · color (solid/gradient) · lottie · audio · gap · compound (nested tracks).
 - Times: 2.5, "2.5s", "1500ms", "00:02.5". Lengths: px or "10%". Colours: "#RRGGBB[AA]", rgba(), basic names.
 - until_end: true makes a clip last to the end of everything else (music bed, watermark) - it follows later edits; a clip whose length follows it (match_duration) counts only at its minimum length, and clips that move with it not at all; an explicit length edit of that clip (split, trim, roll, slide, duration) ends the stretch. end_at: "<clip id>" (not on a magnetic track) makes a clip end where that clip starts and follow it (a music bed handing over to the next section's song); the same edits end it; a clip whose length follows it must not be on a magnetic track.
@@ -123,6 +126,8 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"set_keyframes","id":"img2","prop":"scale","keyframes":[[0,1],[3,1.2,"ease_in_out"]]}
 {"op":"add_effect","id":"vid1","type":"glitch","start":0,"duration":0.5}    {"op":"add_effect","type":"letterbox"}  (no id = whole video)
 {"op":"trim_clip","id":"vid1","trim_start":0.5}  {"op":"split_clip","id":"vid1","at":4.2}  {"op":"move_clip","id":"vid3","index":0}
+   split_clip of a speed-ramped video: the right half starts at the source second the ramp reached and keeps the whole curve in its own time (keys before its head
+   at negative times), so both halves play what the clip played; a freeze clip's halves hold its frame. freeze_frame holds the frame the clip shows at 'at' (reverse, ramp, freeze)
 {"op":"add_transition","to":"vid2","type":"dip_black","duration":0.6}  {"op":"set_settings","preset":"reels"}
 
 ## Pro editing (Final Cut style)

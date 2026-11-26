@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Slider } from "@astryxdesign/core/Slider";
 import { ToggleButton } from "@astryxdesign/core/ToggleButton";
-import { Eye, EyeOff, Lock, LockOpen, Volume2, VolumeX, ZoomIn } from "lucide-react";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Copy, Eye, EyeOff, Film, Lock, LockOpen, Magnet, Music, Scissors, Snowflake, Trash2, Type as TypeIcon, Volume2, VolumeX, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 import { ico } from "./kit.tsx";
 import { ops } from "./api.ts";
 import { drag, kfDrag } from "./drag.ts";
@@ -11,10 +12,10 @@ import { select } from "./inspector.tsx";
 import { kfTimes, near, pts } from "./keyframes.ts";
 import { applyLib, LIB_DRAG } from "./library.tsx";
 import { ASSET_DRAG } from "./media.tsx";
-import { $, changed, findClip, LABEL, LANE, refreshView, S, st, total, V } from "./state.ts";
+import { $, changed, findClip, LABEL, LANE, MAIN_LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
-import { clipOrder, resolveRef, tickStep } from "./view.ts";
+import { clipOrder, edgeZone, laneRows, resolveRef, tickStep } from "./view.ts";
 import { seek } from "./viewer.tsx";
 
 /** a clip's colour by type: the theme's hue palette (background, border), so the lanes read like the rest of the page */
@@ -40,7 +41,29 @@ export function openPath(p: string[]) {
   st.path = p; st.sel = null; st.picked = []; refreshView(); select(null);
 }
 
+/** the zoom's range in px per second: the low end fits a 20 minute timeline in about 1,200 px */
+const ZMIN = 1, ZMAX = 400;
+const clampZoom = (pps: number) => Math.max(ZMIN, Math.min(ZMAX, pps));
 function setZoom(pps: number) { st.pps = pps; changed(); }
+/** the whole timeline fills the visible lanes, from its start */
+function fitZoom() { const sc = $("scroll"); if (st.S && total() > 0) { setZoom(clampZoom((sc.clientWidth - LABEL - 24) / total())); sc.scrollLeft = 0; } }
+
+/** CapCut's edit tools over the timeline, on the selected clip at the playhead: split, delete, duplicate, freeze */
+function Tools() {
+  const c = st.S && st.sel && !V().nested ? findClip(st.sel) : null, v = st.S ? V() : null;
+  const at = +st.t.toFixed(3), a0 = c && v ? v.off + v.k * start(c) : 0, a1 = c && v ? v.off + v.k * (start(c) + dur(c)) : 0;
+  const inside = !!c && at > a0 + 1e-3 && at < a1 - 1e-3, on = !!c && at >= a0 - 1e-3 && at <= a1 + 1e-3; // a freeze also takes the first or last frame
+  const tool = (id: string, label: string, icon: Parameters<typeof ico>[0], ok: boolean, run: () => void) =>
+    <IconButton id={id} size="sm" variant="ghost" label={label} tooltip={label} icon={ico(icon)} isDisabled={!ok} onClick={run} />;
+  return (
+    <span className="row" id="tools">
+      {tool("tsplit", t("toolSplit"), Scissors, inside, () => ops([{ op: "split_clip", id: c!.id, at }], "split " + c!.id))}
+      {tool("tdel", t("deleteClip"), Trash2, !!c, () => ops([{ op: "remove_clip", id: c!.id }], "remove " + c!.id))}
+      {tool("tdup", t("toolDuplicate"), Copy, !!c, () => ops([{ op: "duplicate_clip", id: c!.id }], "duplicate " + c!.id))}
+      {tool("tfreeze", t("toolFreeze"), Snowflake, on && c!.type === "video", () => ops([{ op: "freeze_frame", id: c!.id, at }], "freeze " + c!.id))}
+    </span>
+  );
+}
 
 function rulerDown(ev: MouseEvent) {
   const at = (e: MouseEvent) => { const b = $("ruler").getBoundingClientRect(); seek((e.clientX - b.left) / st.pps); };
@@ -48,6 +71,13 @@ function rulerDown(ev: MouseEvent) {
   const up = () => { document.removeEventListener("mousemove", at); document.removeEventListener("mouseup", up); };
   document.addEventListener("mousemove", at); document.addEventListener("mouseup", up);
 }
+
+/** the zone under a press: the trim zones are the painted handles (inside the border) plus the border itself */
+const edgeAt = (ev: MouseEvent, box: HTMLElement) => {
+  // the zones are the handles as drawn: ClipBox sizes them from the width it sets, which padding and borders can make the box wider than
+  const r = box.getBoundingClientRect();
+  return edgeZone(ev.clientX, r.left, r.width, box.clientLeft, parseFloat(box.style.width) || r.width);
+};
 
 function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   const target = ev.target as HTMLElement;
@@ -61,7 +91,7 @@ function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   if (target.dataset.t !== undefined) return kfDrag(ev, c, +target.dataset.t);
   if (ev.detail === 2 && c.type === "compound") { ev.preventDefault(); openPath(st.path.concat([c.id])); return; }
   if (V().nested) { select(c.id); return; }
-  drag(ev, tr, c, (target.dataset.edge as "l" | "r" | undefined) || "move");
+  drag(ev, tr, c, edgeAt(ev, target.closest<HTMLElement>(".clip")!));
 }
 
 /** an asset from the media pool dropped on a lane: one add_clip there (the shown tracks only: an opened compound is read-only) */
@@ -98,10 +128,10 @@ function Wave({ c, path, width }: { c: Clip; path: string; width: number }) {
   for (let b = 0; b < bars; b++) {
     let m = 0;
     for (let k = Math.floor((in0 + (span * b) / bars) * w.rate), end = Math.min(w.peaks.length, Math.ceil((in0 + (span * (b + 1)) / bars) * w.rate)); k < end; k++) m = Math.max(m, w.peaks[k]);
-    const h = Math.max(0.5, (m / 255) * 15);
-    d += "M" + (b * 2 + 1) + " " + (19 - h).toFixed(1) + "V" + (19 + h).toFixed(1);
+    const h = Math.max(0.5, (m / 255) * 13);
+    d += "M" + (b * 2 + 1) + " " + (14 - h).toFixed(1) + "V" + (14 + h).toFixed(1);
   }
-  return <svg className="wave" width={width} height="38"><path d={d} /></svg>;
+  return <svg className="wave" width={width} height="28"><path d={d} /></svg>;
 }
 
 const TILE = 68; // px: one thumbnail of the strip (16:9 at the clip's height)
@@ -129,14 +159,16 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
     <div className={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
       aria-label={t("clipLabel", c.id, c.type, start(c).toFixed(2))} title={c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s"}
       style={{ left: left + "px", width: width + "px", ["--hue" as string]: "var(--color-background-" + (HUE[c.type] || "gray") + ")", ["--hue-line" as string]: "var(--color-border-" + (HUE[c.type] || "gray") + ")", backgroundImage: strip ? strip.image : "", backgroundPosition: strip ? strip.position : "", backgroundRepeat: strip && strip.position ? "no-repeat" : "", transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
-      onMouseDown={(ev) => clipDown(ev.nativeEvent, tr, c)}>
+      onMouseDown={(ev) => clipDown(ev.nativeEvent, tr, c)}
+      onMouseMove={v.nested ? undefined : (ev) => { const b = ev.currentTarget; b.style.cursor = edgeAt(ev.nativeEvent, b) === "move" ? "" : "ew-resize"; }}>
       {c.type === "audio" && a && <Wave c={c} path={a.path || ""} width={width} />}
       <span className="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
       {c.effects && c.effects.length ? <span className="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
       {trn && <div className="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
-      {!v.nested && <div className="h l" data-edge="l" />}
-      {!v.nested && <div className="h r" data-edge="r" />}
-      {kfTimes(c).map((kt) => (
+      {/* the trim handles show the trim zones edgeZone hit-tests (8 px, at most a quarter of the clip each) */}
+      {!v.nested && <div className="h l" data-edge="l" style={{ width: Math.min(8, width / 4) + "px" }} />}
+      {!v.nested && <div className="h r" data-edge="r" style={{ width: Math.min(8, width / 4) + "px" }} />}
+      {kfTimes(c).filter((kt) => kt >= -1e-6 && kt <= dur(c) + 1e-6).map((kt) => ( // a split's right half keeps the curve's keys before its head
         <div key={kt} className="kf" data-t={String(kt)} style={{ left: v.k * kt * pps + (kd && near(kd.kt, kt) ? kd.dx : 0) + "px" }}
           title={t("keyframeAt", kt, Object.keys(c.keyframes).filter((p) => pts(c.keyframes[p]).some((q) => near(q[0], kt))).join(", "))} />
       ))}
@@ -167,22 +199,27 @@ function Toggle({ tr, field, on, off, label, ro }: { tr: Track; field: "hidden" 
   return <ToggleButton data-toggle={field} size="sm" isIconOnly label={label} isPressed={!!tr[field]} isDisabled={ro} icon={ico(off)} pressedIcon={ico(on)} onPressedChange={() => toggleTrack(tr, field)} />;
 }
 
+/** a lane's height: the main (magnetic) track is taller, as CapCut's main track and Final Cut's primary storyline are */
+const laneH = (tr: Track) => (tr.magnetic ? MAIN_LANE : LANE);
+const TRACK_ICON = (tr: Track) => (tr.kind === "audio" ? Music : tr.id === "text" ? TypeIcon : tr.magnetic ? Magnet : Film);
+
 function Lanes({ W }: { W: number }) {
   const tl = S().timeline, v = V(), pps = st.pps;
-  const rows = v.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
-  const laneOf: Record<string, number> = {};
-  rows.forEach((tr, i) => { tr.clips.forEach((c) => { laneOf[c.id] = i; }); });
-  const H = rows.length * LANE;
+  const rows = laneRows(v.tracks), firstAudio = rows.findIndex((t) => t.kind === "audio");
+  const laneOf: Record<string, number> = {}, top: number[] = [];
+  let H = 0;
+  rows.forEach((tr, i) => { top.push(H); H += laneH(tr); tr.clips.forEach((c) => { laneOf[c.id] = i; }); });
+  const mid = (i: number) => top[i] + laneH(rows[i]) / 2;
   return [
     <div key="ruler" id="ruler" style={{ width: W + "px", marginLeft: LABEL + "px" }} onMouseDown={(e) => rulerDown(e.nativeEvent)}>
       {Array.from({ length: Math.ceil(W / pps / tickStep(pps)) }, (_, n) => n * tickStep(pps)).map((x) => <div key={"t" + x} className="tick" style={{ left: x * pps + "px" }}>{x + "s"}</div>)}
       {(tl.markers || []).map((m, n) => <div key={"m" + n} className="marker" style={{ left: num(m.t) * pps + "px" }} title={m.t + "s " + (m.label || "")}>{m.label || ""}</div>)}
     </div>,
     <div key="lanes" id="lanes">
-      {rows.map((tr) => (
-        <div key={tr.id} className={"lane" + (tr.locked ? " locked" : "") + (tr.hidden ? " hidden" : "") + (tr.muted ? " muted" : "")} data-track={tr.id} onDragOver={(e) => laneOver(e.nativeEvent)} onDrop={(e) => laneDrop(e.nativeEvent, e.currentTarget, tr)}>
+      {rows.map((tr, i) => (
+        <div key={tr.id} className={"lane" + (tr.magnetic ? " main" : "") + (i === firstAudio && i > 0 ? " first-audio" : "") + (tr.locked ? " locked" : "") + (tr.hidden ? " hidden" : "") + (tr.muted ? " muted" : "")} data-track={tr.id} onDragOver={(e) => laneOver(e.nativeEvent)} onDrop={(e) => laneDrop(e.nativeEvent, e.currentTarget, tr)}>
           <div className="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
-            <b>{tr.id}</b>
+            <b>{ico(TRACK_ICON(tr))}{tr.id}</b>
             <div className="tbtns">
               {tr.kind !== "audio" && <Toggle tr={tr} field="hidden" on={EyeOff} off={Eye} label={t(tr.hidden ? "showTrack" : "hideTrack", tr.id)} ro={v.nested} />}
               <Toggle tr={tr} field="muted" on={VolumeX} off={Volume2} label={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)} ro={v.nested} />
@@ -198,7 +235,7 @@ function Lanes({ W }: { W: number }) {
         if (!c.attach_to) return null;
         const pid = resolveRef(v.tracks, c.attach_to);
         if (pid === null || laneOf[pid] === undefined) return null;
-        const x = (v.off + v.k * start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
+        const x = (v.off + v.k * start(c)) * pps, y1 = mid(i), y2 = mid(laneOf[pid]);
         return [<path key={c.id + "l"} d={"M" + x + " " + y1 + " L" + x + " " + y2} stroke="var(--color-text-warning)" strokeDasharray="3 3" />, <circle key={c.id + "c"} cx={x} cy={y2} r="3" fill="var(--color-text-warning)" />];
       }))}
     </svg>,
@@ -216,7 +253,7 @@ export function Timeline() {
     const wheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      setZoom(Math.max(10, Math.min(400, st.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+      setZoom(clampZoom(st.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
     };
     sc.addEventListener("wheel", wheel, { passive: false });
     return () => sc.removeEventListener("wheel", wheel);
@@ -226,12 +263,15 @@ export function Timeline() {
   return (
     <section id="tl">
       <div id="tbar">
+        <Tools />
         <Crumbs />
-        <span className="mut tlhint">{t("tlHint")}</span>
         <span className="grow" />
-        <span className="mut mono" id="dur">{st.S ? total().toFixed(2) + " s" : ""}</span>
-        <span className="zoom">{ico(ZoomIn)}
-          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={10} max={400} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={140} />
+        <span className="mut mono" id="dur" title={t("tlHint")}>{st.S ? total().toFixed(2) + " s" : ""}</span>
+        <span className="zoom">
+          <IconButton size="sm" variant="ghost" label={t("zoomOut")} tooltip={t("zoomOut")} icon={ico(ZoomOut)} onClick={() => setZoom(clampZoom(st.pps / 1.5))} />
+          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={ZMIN} max={ZMAX} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={120} />
+          <IconButton size="sm" variant="ghost" label={t("zoomIn")} tooltip={t("zoomIn")} icon={ico(ZoomIn)} onClick={() => setZoom(clampZoom(st.pps * 1.5))} />
+          <IconButton id="zfit" size="sm" variant="ghost" label={t("zoomFit")} tooltip={t("zoomFit")} icon={ico(Maximize2)} onClick={fitZoom} />
         </span>
       </div>
       <div id="scroll" ref={scroll}>

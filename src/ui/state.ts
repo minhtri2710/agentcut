@@ -2,7 +2,7 @@ import type { DragMode } from "./edits.ts";
 import type { ApiError, Clip, Dict, Job, State, Track } from "./types.ts";
 import { findIn, viewOf, type View } from "./view.ts";
 
-export const LABEL = 150, LANE = 44; // px: the lane label column, one lane's height
+export const LABEL = 156, LANE = 40, MAIN_LANE = 56; // px: the lane label column, a lane's height, the main (magnetic) lane's height
 
 /** what the box under the batch shows: a render's progress, its result (with the file's URL), a contact sheet */
 export type Out = { progress?: number; result?: Dict; url?: string; sheet?: string };
@@ -35,7 +35,7 @@ export const st = {
   drag: null as { id: string; mode: DragMode; dx: number } | null, // a clip being dragged, dx in px
   kfDrag: null as { id: string; kt: number; dx: number } | null, // a keyframe tick being dragged
   tab: "media", // the left panel's tab
-  inspTab: "form" as "form" | "json", // the inspector shows the form or the clip's JSON
+  inspTab: "basic", // the inspector's tab (props.tsx PROP_TABS, or "more": every field, the JSON and the keyframe list)
   review: null as { busy: boolean; result?: Dict } | null, // the review panel's last run
   mediaQuery: "",
   uploading: null as string | null, // the dropped file being sent to media/

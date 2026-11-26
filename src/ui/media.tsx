@@ -14,6 +14,8 @@ import type { ApiError } from "./types.ts";
 export const ASSET_DRAG = "application/x-agentcut-asset";
 
 const fileName = (p?: string) => (p || "").split(/[\\/]/).pop() || "";
+/** a length as CapCut labels a thumbnail: m:ss */
+const fmt = (s: number) => Math.floor(s / 60) + ":" + String(Math.round(s % 60)).padStart(2, "0");
 
 /** each dropped file goes to media/ (POST /api/upload), then one import_media, in turn */
 async function uploadAll(files: File[]) {
@@ -51,10 +53,12 @@ export function Media() {
         {!shown.length && <EmptyState isCompact icon={ico(Film)} title={t("noAssets")} />}
         {shown.map(([id, a]) => (
           <div key={id} className="asset" data-asset={id} draggable title={a.path} onDragStart={(e) => { e.dataTransfer.setData(ASSET_DRAG, id); e.dataTransfer.effectAllowed = "copy"; }}>
-            {a.kind === "video" || a.kind === "image" ? <img src={"/api/thumb/" + encodeURIComponent(id) + "?t=0.00"} alt="" loading="lazy" /> : <div className="aicon">{ico(FileAudio)}</div>}
-            {a.duration ? <span className="adur mono">{a.duration.toFixed(1) + " s"}</span> : null}
+            <div className="athumb">
+              {a.kind === "video" || a.kind === "image" ? <img src={"/api/thumb/" + encodeURIComponent(id) + "?t=0.00"} alt="" loading="lazy" /> : <div className="aicon">{ico(FileAudio)}</div>}
+              <span className="akind">{a.kind}</span>
+              {a.duration ? <span className="adur mono">{fmt(a.duration)}</span> : null}
+            </div>
             <div className="aname">{fileName(a.path) || id}</div>
-            <div className="mut">{id + " · " + a.kind}</div>
           </div>
         ))}
       </div>

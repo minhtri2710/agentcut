@@ -28,10 +28,16 @@ export function viewOf(top: Track[], path: string[]): { view: View; path: string
   return { view: { tracks, off, k, lo, hi, nested: path.length > 0 }, path };
 }
 
+/** The lanes top to bottom, as CapCut and Final Cut lay them out: the picture tracks above, the top layer first (tracks[0] is drawn first, so it is the lowest
+ *  picture lane: the main storyline), then the audio tracks below in track order. */
+export function laneRows(tracks: Track[]): Track[] {
+  return tracks.filter((t) => t.kind !== "audio").reverse().concat(tracks.filter((t) => t.kind === "audio"));
+}
+
 /** every clip of the shown tracks in time order (ties: lane order), the order Left and Right walk */
 export function clipOrder(v: View): Clip[] {
   const r: Clip[] = [];
-  v.tracks.slice().reverse().forEach((tr) => tr.clips.forEach((c) => r.push(c)));
+  laneRows(v.tracks).forEach((tr) => tr.clips.forEach((c) => r.push(c)));
   return r.map((c, i) => [v.off + v.k * start(c), i, c] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((x) => x[2]);
 }
 
@@ -48,4 +54,18 @@ export function resolveRef(tracks: Track[], ref: string): string | null {
 }
 
 /** seconds between ruler ticks at this zoom */
-export const tickStep = (pps: number): number => (pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : 10);
+export const tickStep = (pps: number): number => (pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : pps > 5 ? 10 : pps > 1.5 ? 30 : 60);
+
+/** a time as CapCut shows it: mm:ss:ff (frames at the project's rate) */
+export const clock = (s: number, fps: number) => { // 29.97 fps counts 30 frames to a second, as NDF timecode does
+  const n = Math.round(fps), f = Math.round(s * fps), ff = f % n, ss = Math.floor(f / n) % 60, mm = Math.floor(f / n / 60);
+  return [mm, ss, ff].map((x) => String(x).padStart(2, "0")).join(":");
+};
+
+/** which part of a clip box a press is on, by where it lands in the box (border and padding included): the trim zones are 8 px at each edge, at most a
+ *  quarter of the box each, so a narrow clip still moves from its middle and trims from its edges */
+export function edgeZone(x: number, left: number, width: number, border = 0, drawn = width): "l" | "r" | "move" {
+  // the handle is drawn inside the border, as wide as ClipBox makes it: from the width it sets (`drawn`), which CSS padding can make the box wider than
+  const z = border + Math.min(8, drawn / 4);
+  return x - left < z ? "l" : left + width - x <= z ? "r" : "move";
+}

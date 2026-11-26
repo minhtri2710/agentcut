@@ -1,9 +1,11 @@
 // Timeline data model: schema tables, parsing, validation, magnetic resolution.
 // Pure functions only (file existence checks are optional) so they are cheap to call often.
-import { ease, parseKfs, speedIntegral } from "./anim.ts";
+import { parseKfs, speedIntegral } from "./anim.ts";
+import { ease } from "./ease.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 import { own } from "./own.ts";
+import { blendsFrom, playsFrom } from "./pair.ts";
 import { timeValue } from "./time-parse.ts";
 
 export const SCHEMA_VERSION = 1;
@@ -310,7 +312,7 @@ export const VISUAL_FIELDS: F = {
   keyframes: [T("object"), "{prop: [[t, value, easing?], ...]} t relative to clip start; props: " + ANIMATABLE.join(",")],
   enter: [T("string", "object"), "entrance animation: name or {type, duration, ease}: " + ENTER_EXIT.join(",")],
   exit: [T("string", "object"), "exit animation: name or {type, duration, ease}"],
-  transition: [T("string", "object"), "transition FROM the previous clip on the same track: " + TRANSITIONS.join(",")],
+  transition: [T("string", "object"), "transition into this clip: on a magnetic track FROM the previous clip; on another track from the clip it starts over (pair.ts): " + TRANSITIONS.join(",")],
   motion: [T("string", "object"), "continuous motion: name or {type, amount}: " + MOTIONS.join(",")],
   radius: ranged("radius", "rounded corner radius px"),
   shadow: [T("object", "boolean"), "{color, x, y, blur} drop shadow"],
@@ -778,9 +780,24 @@ export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): 
   return out;
 }
 
+/** pair.ts on a resolved timeline: a clip's own start and length, drawn when it is enabled and is a visual clip that is not a gap */
+export const PAIR = { start: (c: Clip) => clipStart(c), end: (c: Clip) => clipEnd(c), drawn: (c: Clip) => c.enabled !== false && c.type !== "gap" && VISUAL_TYPES.has(c.type) };
+export { blendsFrom, playsFrom };
+
+/** A clip placed on a track that is not magnetic (add_clip, move_clip) takes its place in time order among the others, which keep their order. On such a
+ *  track the list order is the draw order (later on top) and nothing else changes it: a transition plays from the clip pair.ts finds by time. */
+export function reposition(tr: Track, c: Clip) {
+  if (tr.magnetic) return;
+  const i = tr.clips.indexOf(c), s = clipStart(c), prev = tr.clips[i - 1], next = tr.clips[i + 1];
+  if ((!prev || clipStart(prev) <= s) && (!next || s <= clipStart(next))) return; // still between its neighbours
+  tr.clips.splice(i, 1);
+  // a tie keeps the clips that were before it before it and the ones after it after it: the later in the list is drawn on top
+  const j = tr.clips.findIndex((x, at) => clipStart(x) > s || (clipStart(x) === s && at >= i));
+  tr.clips.splice(j < 0 ? tr.clips.length : j, 0, c);
+}
+
 function resolveAttached(tl: Timeline) {
   settleChains(tl, (c) => c.attach_to, (c, t) => { c.start = round6(Math.max(0, clipStart(t) + parseTime(c.offset ?? 0))); });
-  for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
 }
 
 /** `end`: where until_end clips stretch to. An until_end clip's overlap is not limited by its own length (that length is made from where it starts), so no start reads `end`; its length is at least the overlap, so the clips after it keep their place. */
@@ -999,6 +1016,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
       clipColorIssues(c, p, issues);
       rangeIssues(c, p, issues);
+      for (const k of ["x", "y"]) if (typeof c[k] === "string" && !/^\s*-?(\d+(\.\d*)?|\.\d+)(px|%)?\s*$/.test(c[k]))
+        issues.push({ level: "error", path: `${p}.${k}`, message: `${k} ${JSON.stringify(c[k])} is not a length`, hint: "use px (540) or percent ('50%')" });
       if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });
@@ -1049,7 +1068,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       }
       for (const [key, opts, what] of [["enter", ENTER_EXIT, "animation"], ["exit", ENTER_EXIT, "animation"], ["transition", TRANSITIONS, "transition"], ["motion", MOTIONS, "motion"]] as const)
         if (key in c) checkName(c[key], opts, `${p}.${key}`, issues, what);
-      if (c.transition && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });
+      if (c.transition && tr.magnetic && ci === 0) issues.push({ level: "warning", path: `${p}.transition`, message: "first clip on a track has no previous clip; use 'enter' instead" });
       for (const [key, opts] of [["fit", FITS], ["blend", BLENDS], ["position", POSITIONS], ["style", CAPTION_STYLES], ["shape", SHAPES]] as const)
         if (key in c && c[key] != null && !(opts as readonly string[]).includes(c[key])) {
           const s = suggest(c[key], opts);
@@ -1164,7 +1183,7 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
           if (lengthTarget(x) === c.id) { bad(`follows '${t.id}', which follows it back`, "break the cycle: give one of the clips its own duration"); break; }
         }
       }
-      if (c.transition && ci > 0 && !tr.magnetic && !(prevEnd !== null && start < prevEnd - 1e-6)) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition only works if this clip overlaps the previous one" });
+      if (c.transition && !tr.magnetic && kind !== "audio" && !playsFrom(tr, ci, PAIR)) issues.push({ level: "warning", path: `${p}.transition`, message: "on a non-magnetic track a transition plays from the clip it starts over, and no clip on this track is playing where it starts", hint: `add_transition to=${c.id} moves it back over the clip before it, or use 'enter' instead` });
       if (!tr.magnetic && kind !== "audio" && prevEnd !== null && start < prevEnd - 1e-6 && !c.transition)
         issues.push({ level: "info", path: p, message: `overlaps the previous clip on '${tr.id}' (drawn on top)` });
       prevEnd = Math.max(prevEnd ?? 0, start + dur);

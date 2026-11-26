@@ -5,7 +5,7 @@ import * as AN from "./analyze.ts";
 import { loadDarkMemo, saveDarkMemo } from "./cache.ts";
 import type { FrameSource } from "./media.ts";
 import {
-  type Clip, clipDur, clipEnd, clipStart, EditError, type Issue, normAnim, parseTime, resolve, TEXTY, type Timeline, totalDuration, type Track,
+  type Clip, clipDur, clipEnd, clipStart, EditError, type Issue, normAnim, PAIR, parseTime, playsFrom, resolve, TEXTY, type Timeline, totalDuration, type Track,
 } from "./model.ts";
 import { type Layer, refuseJpegSize, Renderer, renderTiles, reviewScale, tileSize } from "./render.ts";
 import { cachedFaces } from "./ops-vision.ts";
@@ -21,10 +21,10 @@ export interface Window { label: string; start: number; end: number }
 export function transitionWindows(tl: Timeline, pad = 0.15): Window[] {
   const out: Window[] = [];
   for (const tr of visual(tl)) tr.clips.forEach((c, i) => {
-    const spec = i > 0 ? normAnim(c.transition, 0.5) : null;
-    if (!spec || c.enabled === false) return;
-    const d = Math.min(spec.duration, clipDur(c), clipDur(tr.clips[i - 1])), s = clipStart(c);
-    out.push({ label: `${spec.type} ${tr.clips[i - 1].id} -> ${c.id} (${tr.id})`, start: s - pad, end: s + d + pad });
+    const from = c.transition ? playsFrom(tr, i, PAIR) : null, spec = from ? normAnim(c.transition, 0.5) : null;
+    if (!spec || !from) return;
+    const d = Math.min(spec.duration, clipDur(c), clipDur(from)), s = clipStart(c);
+    out.push({ label: `${spec.type} ${from.id} -> ${c.id} (${tr.id})`, start: s - pad, end: s + d + pad });
   });
   return out.sort((a, b) => a.start - b.start);
 }
@@ -280,7 +280,7 @@ async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: 
   const step = 0.2, r = new Renderer(structuredClone(tl), root, Math.min(1, 64 / tl.settings.width), true);
   const dips: [number, number][] = [];
   for (const tr of visual(tl)) tr.clips.forEach((c, i) => {
-    const s = i > 0 ? normAnim(c.transition, 0.5) : null;
+    const s = c.transition && playsFrom(tr, i, PAIR) ? normAnim(c.transition, 0.5) : null;
     if (s && s.type === "dip_black") dips.push([clipStart(c), clipStart(c) + s.duration]);
   });
   const times: number[] = [];
@@ -295,8 +295,8 @@ async function blackRuns(tl: Timeline, root: string, T: number, fps: number, o: 
     for (const [n, tt] of tts.entries()) {
       const live = r.live(tt), L = live.at(-1), p = L && !tl.settings.effects?.length ? (plains.has(L) ? plains.get(L)! : plains.set(L, plainOf(L, r)).get(L)!) : null;
       if (!L || !p) { drawn.push(n); continue; }
-      const t = tt - L.start, own = transitionLen(L), nx = L.next, next = nx ? transitionLen(nx) : 0;
-      if (own > 0 && t < own + 1e-6 || next > 0 && tt >= nx!.start - 1e-6 && tt < nx!.start + next + 1e-6) { drawn.push(n); continue; }
+      const t = tt - L.start, own = transitionLen(L);
+      if (own > 0 && t < own + 1e-6 || L.next.some((nx) => { const d = transitionLen(nx); return d > 0 && tt >= nx.start - 1e-6 && tt < nx.start + d + 1e-6; })) { drawn.push(n); continue; }
       const g = groups.get(p.key) ?? groups.set(p.key, { key: p.key, owner: p, memo: loadDarkMemo(root, p.key), want: new Map() }).get(p.key)!;
       if (p.base < g.owner.base) g.owner = p;
       const j = p.base + Math.max(0, Math.round(t * r.fps));

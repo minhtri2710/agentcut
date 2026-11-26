@@ -770,6 +770,31 @@ console.log("templates: placement is kept where it was safe, a preset's own plac
   check("slideshow title_preset keeps its own position (bottom-left) at both sizes, with a margin inside the safe area", own.position === "bottom_left" && ownV.position === "bottom_left" && /^[\d.]+% [\d.]+%$/.test(ownV.margin), [own, ownV]);
 }
 
+console.log("a transition on a free track plays from the clip it starts over, whatever the list order");
+{
+  const { Project } = await import("../src/project.ts");
+  const { Renderer } = await import("../src/render.ts");
+  const { resolve } = await import("../src/model.ts");
+  const P = join(tmp, "pair-by-time");
+  api.create(P, { preset: "square" });
+  // red is drawn below blue (it is first in the list) but starts after it ends: the dip_black into green at 2 s plays from blue, the clip it starts over
+  // red is added first at 0 s, then moved to 3 s: a start edit keeps its layer, so it stays first in the list
+  await applyLatest(P, [{ op: "add_clip", track: "overlay", type: "color", color: "red", id: "red", at: 0, duration: 2 },
+    { op: "add_clip", track: "overlay", type: "color", color: "blue", id: "blue", at: 0, duration: 2.5 },
+    { op: "add_clip", track: "overlay", type: "color", color: "#00ff00", id: "grn", at: 2, duration: 1, transition: { type: "dip_black", duration: 0.5, ease: "linear" } },
+    { op: "update_clip", id: "red", set: { start: 3 } }]);
+  const pj = new Project(P), tl = pj.absolutized(resolve(pj.load()));
+  const order = tl.tracks.find((t: any) => t.id === "overlay")!.clips.map((c: any) => c.id).join();
+  const R = new Renderer(tl, pj.root, 0.1);
+  const g = R.layers.find((L) => L.c.id === "grn")!;
+  const px = async (t: number) => { const c = await R.frame(t); const d = c.getContext("2d").getImageData(Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data; return [d[0], d[1], d[2]]; };
+  const mid = await px(2.125); // a quarter in: blue dipping to black
+  R.close();
+  check("the list puts red first, green after blue", order === "red,blue,grn", order);
+  check("  green's transition plays from blue (by time), not from red before it in the list", g.prev?.c.id === "blue", g.prev?.c.id);
+  check("  and the frame a quarter into it is blue dipping to black", mid[2] > 40 && mid[2] < 200 && mid[0] < 20 && mid[1] < 20, mid);
+}
+
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });
 console.log(failures() ? `\n${failures()} check(s) failed` : "\nall review checks passed");
 process.exit(failures() ? 1 : 0);

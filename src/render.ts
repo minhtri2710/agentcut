@@ -4,8 +4,10 @@ import * as Skia from "@napi-rs/canvas";
 import { type Canvas, createCanvas, ImageData, LottieAnimation, type SKRSContext2D } from "@napi-rs/canvas";
 import { setCanvas } from "./canvas.ts";
 import * as A from "./anim.ts";
+import { ease } from "./ease.ts";
 import { applyEffects, applyMask, shapePath } from "./effects.ts";
 import { coverOffset, FrameSource, MATTE_FACTS } from "./media.ts";
+import { playsFrom } from "./pair.ts";
 import { edgesOf, safeZones } from "./safe.ts";
 import {
   type Clip, css, type Dict, EditError, normAnim, parseColor, parseLen, parseTime, resolve, sourceLen, type Timeline, totalDuration,
@@ -45,7 +47,8 @@ class LRU<V> extends Map<string, V> {
 // ------------------------------------------------------------------ per-clip layer
 export class Layer {
   type: string; start: number; dur: number; end: number;
-  prev: Layer | null = null; next: Layer | null = null;
+  /** prev: the layer its transition plays from; next: the layers whose transitions play from it (on a free track, more than one can) */
+  prev: Layer | null = null; next: Layer[] = [];
   q = 1; opaque = false; box: [number, number] = [0, 0];
   asset?: Dict; src?: FrameSource; cache = new LRU<Canvas>(32);
   words: CWord[] = []; pages: number[][] = []; spans: [number, number][] = [];
@@ -262,10 +265,10 @@ export class Layer {
       const j = active ?? 0;
       const w = words[pg[j]];
       const since = tl - w.start;
-      if (since < 0.12) m.scale *= 0.8 + 0.2 * A.ease("back_out", since / 0.12);
+      if (since < 0.12) m.scale *= 0.8 + 0.2 * ease("back_out", since / 0.12);
       return this.cache.getOr(`w${cur}|${j}`, () => renderText(w.text, st, mw, { activeWord: c.highlight_color ? 0 : null, highlightColor: c.highlight_color }));
     }
-    if (tl - pageStart < 0.1) m.scale *= 0.92 + 0.08 * A.ease("ease_out", (tl - pageStart) / 0.1);
+    if (tl - pageStart < 0.1) m.scale *= 0.92 + 0.08 * ease("ease_out", (tl - pageStart) / 0.1);
     if (style === "reveal") { const vis = (active ?? 0) + 1; return this.cache.getOr(`r${cur}|${vis}`, () => renderText(text, st, mw, { visibleWords: vis })); }
     if (style === "line") return this.cache.getOr(`l${cur}`, () => renderText(text, st, mw));
     return this.cache.getOr(`k${cur}|${active}`, () => renderText(text, st, mw, { activeWord: active, highlightColor: c.highlight_color ?? "#FFD60A", highlightBg: c.highlight_bg }));
@@ -364,16 +367,14 @@ export class Renderer {
     this.duration = totalDuration(tl);
     this.canvas = createCanvas(this.W, this.H);
     this.ctx = this.canvas.getContext("2d");
+    const drawn = (c: Clip) => c.enabled !== false && c.type !== "gap" && VISUAL_TYPES.has(c.type) && !(skipText && TEXTY.has(c.type));
+    const at = { start: (c: Clip) => parseTime(c.start ?? 0), end: (c: Clip) => parseTime(c.start ?? 0) + parseTime(c.duration ?? 0), drawn };
     for (const tr of tl.tracks) {
       if (tr.hidden || (tr.kind ?? "video") === "audio") continue;
-      let prev: Layer | null = null;
-      for (const c of tr.clips) {
-        if (c.enabled === false || c.type === "gap" || !VISUAL_TYPES.has(c.type) || skipText && TEXTY.has(c.type)) { prev = null; continue; }
-        const L = new Layer(this, tr, c);
-        if (prev) { L.prev = prev; prev.next = L; }
-        this.layers.push(L);
-        prev = L;
-      }
+      const of = new Map<Clip, Layer>();
+      for (const c of tr.clips) if (drawn(c)) { const L = new Layer(this, tr, c); of.set(c, L); this.layers.push(L); }
+      // a transition plays from the clip pair.ts names: on a free track by time, not by the list's (draw) order
+      tr.clips.forEach((c, i) => { const L = of.get(c), P = L && c.transition ? of.get(playsFrom(tr, i, at)!) : undefined; if (L && P) { L.prev = P; P.next.push(L); } }); // a layer blends only from a layer
     }
   }
 
@@ -435,10 +436,10 @@ export class Renderer {
       A.enterExit(c, tl, L.dur, m, W, H);
       let overlay: ReturnType<typeof A.transitionMods> = null;
       const tr = this.trans(L);
-      if (tr && tl < tr[1]) overlay = A.transitionMods(tr[0], A.ease(tr[2], tl / tr[1]), m, null, W, H);
-      if (L.next) {
-        const tn = this.trans(L.next);
-        if (tn && L.next.start - 1e-9 <= t && t < L.next.start + tn[1]) A.transitionMods(tn[0], A.ease(tn[2], (t - L.next.start) / tn[1]), new A.Mods(), m, W, H);
+      if (tr && tl < tr[1]) overlay = A.transitionMods(tr[0], ease(tr[2], tl / tr[1]), m, null, W, H);
+      for (const N of L.next) {
+        const tn = this.trans(N);
+        if (tn && N.start - 1e-9 <= t && t < N.start + tn[1]) A.transitionMods(tn[0], ease(tn[2], (t - N.start) / tn[1]), new A.Mods(), m, W, H);
       }
       let opacity = P("opacity", 1) * m.opacity;
       if (opacity <= 0.001) { if (overlay) this.overlay(overlay); continue; }
@@ -496,6 +497,12 @@ export class Renderer {
     if (kf.x) cx = A.kfValue(kf.x, tl) * this.k;
     if (kf.y) cy = A.kfValue(kf.y, tl) * this.k;
     return [cx, cy, w, h];
+  }
+
+  /** The centre [x, y] in project px where clip `id` is placed at its clip-local time tl (layout and x/y keys, before animation), or null when it draws nothing then. */
+  async placedCentre(id: string, tl: number): Promise<[number, number] | null> {
+    const L = this.layers.find((x) => x.c.id === id), b = L && (await this.layoutBox(L, tl));
+    return b ? [(b[0] + b[2] / 2) / this.k, (b[1] + b[3] / 2) / this.k] : null;
   }
 
   /** Layout box [x, y, w, h] in canvas px of layer L at clip-local time tl (as placed, before animation). */

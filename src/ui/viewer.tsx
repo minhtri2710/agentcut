@@ -1,5 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
-import { Play, Sparkles, Square } from "lucide-react";
+import { clock } from "./view.ts";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Maximize, Pause, Play, Sparkles, StepBack, StepForward } from "lucide-react";
 import { api } from "./api.ts";
 import { t } from "./i18n.ts";
 import { fail } from "./messages.ts";
@@ -53,12 +55,14 @@ function play() {
 
 const playLabel = () => (st.playing ? t("stop") : !st.play ? t("play") : st.play.pct === null ? t("preparing") : t("preparingPct", st.play.pct));
 const prepLabel = () => (st.prep === "starting" ? t("preparing") : st.prep ? prepareText(st.prep) : t("prepare"));
-const clock = (s: number) => { const m = Math.floor(s / 60); return String(m).padStart(2, "0") + ":" + (s - m * 60).toFixed(2).padStart(5, "0"); };
+const step = (n: number) => { if (st.S) seek(st.t + n / st.S.timeline.settings.fps); };
+const fullScreen = () => { const s = $("stage"); if (document.fullscreenElement) document.exitFullscreen(); else s.requestFullscreen?.().catch(() => {}); };
 
 export function Viewer() {
-  const set = st.S?.timeline.settings, empty = !!st.S && !(total() > 0);
+  const set = st.S?.timeline.settings, empty = !!st.S && !(total() > 0), fps = set ? set.fps : 30;
   return (
     <section id="viewer">
+      <div className="vhead"><span>{t("player")}</span><span className="grow" /><span className="mono">{set ? set.width + "×" + set.height + " · " + set.fps + " fps" : ""}</span></div>
       <div id="stage">
         <img id="frame" className="none" alt="preview" style={{ display: st.playing ? "none" : "", aspectRatio: set ? set.width + "/" + set.height : "" }} />
         <video id="video" controls style={{ display: st.playing ? "" : "none" }}
@@ -67,10 +71,17 @@ export function Viewer() {
         <div className="mut" id="vstat"></div>
       </div>
       <div id="vbar">
-        <span className="vtime mono" aria-hidden="true">{clock(st.t)}<span className="mut"> / {clock(total())}</span></span>
-        <Button id="play" size="sm" variant="primary" icon={ico(st.playing ? Square : Play)} label={playLabel()} isDisabled={empty} onClick={play} />
-        <Button id="prepare" size="sm" icon={ico(Sparkles)} label={prepLabel()} style={{ display: st.needPrepare || st.prep ? "" : "none" }} isDisabled={!!st.prep} onClick={() => startPrepare(false)} />
-        <span id="time" className="mono mut">{st.t.toFixed(2) + " s"}</span>
+        <span className="vtime mono" aria-hidden="true"><b>{clock(st.t, fps)}</b><span className="mut"> / {clock(total(), fps)}</span></span>
+        <span className="vctl">
+          <IconButton size="sm" variant="ghost" label={t("prevFrame")} tooltip={t("prevFrame")} icon={ico(StepBack)} isDisabled={empty} onClick={() => step(-1)} />
+          <Button id="play" size="sm" variant={st.playing ? "secondary" : "primary"} icon={ico(st.playing ? Pause : Play)} label={playLabel()} isDisabled={empty} onClick={play} />
+          <IconButton size="sm" variant="ghost" label={t("nextFrame")} tooltip={t("nextFrame")} icon={ico(StepForward)} isDisabled={empty} onClick={() => step(1)} />
+        </span>
+        <span className="vright">
+          <Button id="prepare" size="sm" icon={ico(Sparkles)} label={prepLabel()} style={{ display: st.needPrepare || st.prep ? "" : "none" }} isDisabled={!!st.prep} onClick={() => startPrepare(false)} />
+          <span id="time" className="mono mut">{st.t.toFixed(2) + " s"}</span>
+          <IconButton size="sm" variant="ghost" label={t("fullScreen")} tooltip={t("fullScreen")} icon={ico(Maximize)} onClick={fullScreen} />
+        </span>
       </div>
     </section>
   );
