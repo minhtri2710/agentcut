@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, PAIR, blendsFrom, playsFrom, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
+  normAnim, PAIR, blendsFrom, blendStart, playsFrom, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -379,6 +379,7 @@ async function addClip(p: Project, tl: Timeline, a: Dict): Promise<Dict> {
   refuseAttachedMagnetic(c, tr);
   place(tl, tr, c, a);
   resolve(tl);
+  if (c.attach_to) reposition(tr, c); // place() put it by a provisional start: the new clip goes where its target puts it (the others keep their layers)
   return { id: c.id, type: c.type, track: tr.id, start: c.start, duration: c.duration };
 }
 
@@ -683,10 +684,14 @@ op("add_transition", "Set the transition into a clip from the clip it follows: o
       // on a free track the clip starts the transition's length before the end of the clip it blends from, not before its start (pair.ts then pairs them by
       // time; the renderer shortens a transition longer than a clip, as on a magnetic track)
       if (!tr.magnetic) {
-        placeAt(tl, tr, c, Math.max(clipStart(from!), clipEnd(from!) - c.transition.duration));
-        // the incoming clip is drawn over the one it blends from: one below it in the list goes just above it
-        const fi = tr.clips.indexOf(from!);
-        if (ci < fi) { tr.clips.splice(ci, 1); tr.clips.splice(fi, 0, c); }
+        placeAt(tl, tr, c, blendStart(from!, c.transition.duration, PAIR));
+        // the incoming clip is drawn just above the one it blends from (the transition fades it in over that clip)
+        tr.clips.splice(ci, 1); tr.clips.splice(tr.clips.indexOf(from!) + 1, 0, c);
+        resolve(tl);
+        // what the renderer pairs at the new start must be the clip chosen (a clip below that started later and still plays there would take its place)
+        const got = playsFrom(tr, tr.clips.indexOf(c), PAIR);
+        if (got !== from) throw new EditError(`at ${round6(clipStart(c))} s, where the transition would start, '${got ? (got as Clip).id : "no clip"}' plays instead of '${from!.id}'`, "bad_value",
+          `shorten the transition, or move '${c.id}' over '${from!.id}' yourself (update_clip start) before add_transition`);
       }
     }
     resolve(tl);

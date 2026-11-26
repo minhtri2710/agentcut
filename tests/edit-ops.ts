@@ -726,8 +726,8 @@ console.log("match_duration by clip reference");
       const pf = (tr: any, i: number) => playsFrom(tr, i, o)?.id ?? null, bf = (tr: any, i: number) => blendsFrom(tr, i, o)?.id ?? null;
       const t1 = free([["A", 0, 5], ["B", 1, 8], ["C", 8, 2]]);
       check("playsFrom on a free track: the clip still playing where it starts that started last (C over B, not A that ended)", pf(t1, 2) === "B" && pf(t1, 1) === "A" && pf(t1, 0) === null);
-      const t2 = free([["C", 8, 2], ["A", 0, 5], ["B", 1, 8]]);
-      check("  whatever the list order", pf(t2, 0) === "B");
+      const t2 = free([["B", 1, 8], ["A", 0, 5], ["C", 8, 2]]);
+      check("  of the clips below it, whatever their order (B is below A here)", pf(t2, 2) === "B" && pf(free([["C", 8, 2], ["A", 0, 5], ["B", 1, 8]]), 0) === null);
       const t3 = free([["A", 0, 2], ["X", 1, 1, false], ["B", 1.5, 2]]);
       check("  a clip that is not drawn plays nothing", pf(t3, 2) === "A");
       const t4 = free([["A", 2, 1], ["B", 2, 1]]);
@@ -778,6 +778,39 @@ console.log("match_duration by clip reference");
         { op: "add_clip", track: "overlay", asset: "v", id: "fin", at: 8, duration: 2, transition: { type: "crossfade", duration: 0.5 } }, { op: "split_clip", id: "red", at: 3 }]);
       check("  splitting a lower clip keeps the overlay above both halves, and a later transition still plays from the overlay",
         ids(xl) === `red,${rl[3].right},blue,fin` && from(xl, "fin") === "blue", ovl(xl).clips.map((c: any) => [c.id, c.start]));
+    }
+    // add_transition picks A; a later, shorter B plays where C will start. C goes just above A in the draw order, below B, so the renderer pairs it with A
+    {
+      const [xk] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "kA", at: 0, duration: 5 }, { op: "add_clip", track: "overlay", asset: "v", id: "kB", at: 3, duration: 1 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "kC", at: 5, duration: 2 }, { op: "add_transition", to: "kC", type: "crossfade", duration: 1.5 }]);
+      check("add_transition over a clip another clip overlaps: the incoming clip goes just above the one it blends from, which the renderer pairs it with",
+        at(xk, "kC").start === 3.5 && ids(xk) === "kA,kC,kB" && from(xk, "kC") === "kA", ovl(xk).clips.map((c: any) => [c.id, c.start]));
+    }
+    // a clip drawn above the incoming one is no partner (the fade-in would happen under it)
+    const [xo] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "uA", at: 0, duration: 2, transition: { type: "crossfade", duration: 0.5 } },
+      { op: "add_clip", track: "overlay", asset: "v", id: "uB", at: 3, duration: 1 }, { op: "update_clip", id: "uA", set: { start: 3.5 } }]);
+    check("playsFrom: a clip drawn above the incoming one is not its partner", from(xo, "uA") === null && ids(xo) === "uA,uB", ovl(xo).clips.map((c: any) => [c.id, c.start]));
+    // a new connected clip added without at goes where its target puts it, below a later clip it would otherwise cover
+    {
+      const tb = structuredClone(t0); tb.assets.p = { path: "/none.png", kind: "image", width: 10, height: 10 };
+      const [xc] = await run(tb, [{ op: "add_clip", track: "overlay", asset: "v", id: "cA", at: 2, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "cB", attach_to: "main#0", duration: 4 }]);
+      check("add_clip of a connected clip with no at: placed by its resolved start, below a clip that starts later", ids(xc) === "cB,cA" && at(xc, "cB").start === 0, ovl(xc).clips.map((c: any) => [c.id, c.start]));
+      // roll and slide find the touching clip by time, whatever the list order
+      const [xr2] = await run(tb, [{ op: "add_clip", track: "overlay", asset: "v", id: "rB", at: 0, duration: 2 }, { op: "add_clip", track: "overlay", asset: "v", id: "rA", at: 4, duration: 2 },
+        { op: "update_clip", id: "rB", set: { start: 6 } }, { op: "roll_edit", id: "rA", by: 0.5 }]);
+      check("roll_edit on a free track finds the clip that starts where it ends, whatever the list order", ids(xr2) === "rB,rA" && at(xr2, "rA").duration === 2.5 && at(xr2, "rB").start === 6.5, ovl(xr2).clips.map((c: any) => [c.id, c.start, c.duration]));
+      const [xl2] = await run(tb, [{ op: "add_clip", track: "overlay", asset: "v", id: "sB", at: 0, duration: 2 }, { op: "add_clip", track: "overlay", asset: "v", id: "sA", at: 4, duration: 2 },
+        { op: "update_clip", id: "sB", set: { start: 6 } }, { op: "slide_clip", id: "sA", by: 0.5 }]);
+      check("  and slide_clip trims that touching clip instead of overlapping it", at(xl2, "sA").start === 4.5 && at(xl2, "sB").start === 6.5 && at(xl2, "sB").duration === 1.5, ovl(xl2).clips.map((c: any) => [c.id, c.start, c.duration]));
+    }
+    {
+      // expand_compound brings free-track clips back in their nested draw order: blue, drawn over red inside the compound, stays over it
+      const [xe2] = await run(t0, [{ op: "add_track", id: "fx", kind: "video" }, { op: "add_clip", track: "fx", asset: "v", id: "eR", at: 0, duration: 5 }, { op: "add_clip", track: "fx", asset: "v", id: "eB", at: 1, duration: 2 },
+        { op: "update_clip", id: "eR", set: { start: 2 } }, { op: "make_compound", ids: ["eR", "eB"], name: "g" }]);
+      const cid = xe2.tracks.find((tr: any) => tr.id === "fx")!.clips.find((c: any) => c.type === "compound")!.id;
+      const [xe3] = await run(xe2, [{ op: "expand_compound", id: cid }]);
+      const fx = xe3.tracks.find((tr: any) => tr.id === "fx")!.clips.map((c: any) => c.id).join();
+      check("expand_compound on a free track keeps the nested draw order (blue over red), not time order", fx === "eR,eB", fx);
     }
     const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
     check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));

@@ -15,7 +15,8 @@ import { ASSET_DRAG } from "./media.tsx";
 import { $, changed, findClip, LABEL, LANE, MAIN_LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
-import { clipOrder, edgeZone, laneRows, resolveRef, tickStep } from "./view.ts";
+import { clipOrder, edgeZone, laneRows, PAIR, resolveRef, tickStep } from "./view.ts";
+import { playsFrom } from "../pair.ts";
 import { seek } from "./viewer.tsx";
 
 /** a clip's colour by type: the theme's hue palette (background, border), so the lanes read like the rest of the page */
@@ -154,7 +155,7 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
   const a = c.asset && S().timeline.assets[c.asset];
   const strip = a && (a.kind === "video" || a.kind === "image") && c.type !== "audio" ? thumbs(c, c.asset, a.kind, width, v.k, pps) : null;
   const label = c.text || c.name || (a ? (a.path || "").split("/").pop() : c.type);
-  const trn = c.transition && i > 0 ? c.transition : null;
+  const trn = c.transition && playsFrom(tr, i, PAIR) ? c.transition : null; // the cue shows a transition that plays (pair.ts, as the renderer pairs)
   return (
     <div className={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
       aria-label={t("clipLabel", c.id, c.type, start(c).toFixed(2))} title={c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s"}

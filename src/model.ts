@@ -5,7 +5,7 @@ import { ease } from "./ease.ts";
 import { AUDIO_FX_DOC, audioFxIssues, PER_CLIP_KEYS } from "./audiofx.ts";
 import { GRADE_FIELDS, gradeIssues, LOOKS } from "./color.ts";
 import { own } from "./own.ts";
-import { blendsFrom, playsFrom } from "./pair.ts";
+import { blendsFrom, blendStart, playsFrom } from "./pair.ts";
 import { timeValue } from "./time-parse.ts";
 
 export const SCHEMA_VERSION = 1;
@@ -782,7 +782,7 @@ export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): 
 
 /** pair.ts on a resolved timeline: a clip's own start and length, drawn when it is enabled and is a visual clip that is not a gap */
 export const PAIR = { start: (c: Clip) => clipStart(c), end: (c: Clip) => clipEnd(c), drawn: (c: Clip) => c.enabled !== false && c.type !== "gap" && VISUAL_TYPES.has(c.type) };
-export { blendsFrom, playsFrom };
+export { blendsFrom, blendStart, playsFrom };
 
 /** A clip placed on a track that is not magnetic (add_clip, move_clip) takes its place in time order among the others, which keep their order. On such a
  *  track the list order is the draw order (later on top) and nothing else changes it: a transition plays from the clip pair.ts finds by time. */

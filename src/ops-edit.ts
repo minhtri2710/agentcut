@@ -92,6 +92,13 @@ const REVERSED_AUDIO = "trim_clip on a reversed video does not reach its audio";
 const alongReversed = (end: "trim_start" | "trim_end", v: Clip, aud: Clip, first = " first") => end === "trim_end"
   ? `trim_clip trim_end${first}, on ${named([v, aud])} (${REVERSED_AUDIO})`
   : `trim_clip trim_start on '${v.id}'${first}, then shorten '${aud.id}' by the same amount (trim_clip id='${aud.id}' duration=<its duration minus that amount>); ${REVERSED_AUDIO}`;
+/** On a track that is not magnetic, the clip whose edge touches c's start (prev) or end (next), by time: the list is the draw order. Of several, the one
+ *  nearest c in the list. A connected clip is not a neighbour (it follows its target). */
+function touching(tr: Track, c: Clip, side: "prev" | "next"): Clip | undefined {
+  const ci = tr.clips.indexOf(c), at = side === "prev" ? clipStart(c) : clipEnd(c);
+  const hits = tr.clips.map((x, j) => [x, j] as const).filter(([x]) => x !== c && !x.attach_to && Math.abs((side === "prev" ? clipEnd(x) : clipStart(x)) - at) <= 1e-3);
+  return hits.sort((a, b) => Math.abs(a[1] - ci) - Math.abs(b[1] - ci))[0]?.[0];
+}
 function applyEdges(tl: Timeline, edges: Edge[], by: number, what: string, lo = -Infinity, hi = Infinity) {
   for (const [c] of edges) if (c.keyframes?.speed)
     throw new EditError(`${what}: '${c.id}' has a speed ramp`, "unsupported", "remove keyframes.speed before rolling or sliding this cut; speed-ramped content cannot yet be rebased by these edits");
@@ -301,10 +308,11 @@ export function registerEditOps(h: OpHelpers) {
     "(this.duration += by; next.in += by*speed, next.duration -= by). Both need spare source media; refused (out_of_range) if a head would move before timeline 0. Detached audio rolls with the picture.",
     { id: "outgoing (left) clip id or ref", by: "+/- seconds (positive = cut later)" }, (p, tl, a) => {
       const [tr, ci, l] = get(tl, a);
-      const r = tr.clips[ci + 1];
+      resolve(tl);
+      // the clip after the cut: on a magnetic track the next in the list; on another the one that starts where it ends (the list is the draw order)
+      const r = tr.magnetic ? tr.clips[ci + 1] : touching(tr, l, "next") ?? tr.clips[ci + 1];
       if (!r) throw new EditError(`'${l.id}' is the last clip on '${tr.id}'; there is no cut after it to roll`, "no_next", "pass the clip BEFORE the cut; to change only this clip's end use trim_clip");
       const by = amount(a, "by", false);
-      resolve(tl);
       if (!tr.magnetic && (Math.abs(clipEnd(l) - clipStart(r)) > 1e-3 || r.attach_to))
         throw new EditError(`'${l.id}' and '${r.id}' do not touch (${clipEnd(l).toFixed(3)} vs ${clipStart(r).toFixed(3)})`, "not_adjacent", "roll_edit needs two adjacent clips; use trim_clip / move_clip for separate clips");
       applyEdges(tl, withAudio(tl, [[l, "tail", 1], [r, "head", -1]], "roll_edit"), by, "roll_edit");
@@ -321,7 +329,7 @@ export function registerEditOps(h: OpHelpers) {
       const by = amount(a, "by", false);
       if (c.attach_to) throw new EditError(`'${c.id}' is attached to '${c.attach_to}'`, "attached", `change its offset instead: update_clip id=${c.id} offset=...`);
       resolve(tl);
-      let prev: Clip | undefined = tr.clips[ci - 1], next: Clip | undefined = tr.clips[ci + 1];
+      let prev: Clip | undefined = tr.magnetic ? tr.clips[ci - 1] : touching(tr, c, "prev"), next: Clip | undefined = tr.magnetic ? tr.clips[ci + 1] : touching(tr, c, "next");
       if (tr.magnetic) {
         if (!prev || !next) throw new EditError(`slide on magnetic track '${tr.id}' needs a clip before and after '${c.id}'`, "no_neighbour", "for the first/last clip use roll_edit on the cut, trim_clip, or move_clip index=...");
       } else {
