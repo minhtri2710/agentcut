@@ -15,8 +15,9 @@ export function stamped(path: string, body: Dict): Promise<Dict> {
 }
 
 /** every edit goes out stamped. Resolves undefined when the edit failed (the error is shown). */
-export function ops(list: Op[], label?: string): Promise<Dict | undefined> {
-  return stamped("/api/ops", { ops: list, label }).then((r): Dict | undefined => {
+/** revision: the one the edit was computed from, when that is not the page's current one (an answer the server measured at a revision) */
+export function ops(list: Op[], label?: string, revision?: number): Promise<Dict | undefined> {
+  return (revision === undefined ? stamped("/api/ops", { ops: list, label }) : api("/api/ops", { ops: list, label, revision })).then((r): Dict | undefined => {
     show("ok", t("applied", r.revision) + (r.errors ? t("errorsRemain", r.errors) : ""));
     return r;
   }, (e) => { fail(e); return undefined; });

@@ -28,13 +28,13 @@ function KeyDiamond({ c, prop, ro }: { c: Clip; prop: string; ro: boolean }) {
   const list = pts((c.keyframes || {})[prop]), lt = localT(c), here = list.findIndex((q) => near(q[0], lt));
   const toggle = async () => {
     let first = list.length ? kfAt(list, lt) : kfBase(c, prop, S().timeline.settings);
-    // a first x/y key takes where the clip is drawn now (Premiere, Final Cut and CapCut start a key at the current value): a position preset hangs on the
-    // layer's rendered size, which only the server knows; the key and the x/y it sets travel in one edit, so the clip does not move
-    if (here < 0 && !list.length && (prop === "x" || prop === "y") && c.position) {
+    // a first x/y key takes where the clip is drawn now (Premiere, Final Cut and CapCut start a key at the current value). A position preset hangs on the
+    // layer's rendered size, which only the server knows; the renderer replaces only the keyed axis, so the preset still places the other one.
+    // The write carries the revision the server measured at: an edit that landed meanwhile makes it a conflict, never a stale overwrite.
+    if (here < 0 && !list.length && (prop === "x" || prop === "y") && c.position && c[prop] === undefined) {
       const at = await api("/api/placed", { id: c.id, t: lt }).catch((e) => { fail(e); return null; });
       if (!at) return;
-      first = at[prop];
-      return ops([{ op: "update_clip", id: c.id, set: { x: at.x, y: at.y, position: null, margin: null } }, { op: "set_keyframes", id: c.id, prop, keyframes: packKf([[lt, first, undefined]]) }], "keyframes " + c.id + "." + prop);
+      return ops([{ op: "set_keyframes", id: c.id, prop, keyframes: packKf([[lt, at[prop], undefined]]) }], "keyframes " + c.id + "." + prop, at.revision);
     }
     const next: Kf[] = here >= 0 ? list.filter((_, i) => i !== here) : list.concat([[lt, first, undefined]]);
     ops([{ op: "set_keyframes", id: c.id, prop, keyframes: packKf(next) }], "keyframes " + c.id + "." + prop);
@@ -99,6 +99,20 @@ function Denoise({ c, label, ro }: { c: Clip; label: string; ro: boolean }) {
 function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: string; ro: boolean; on?: boolean }) {
   const v = on ? c[k] !== false : c[k] === true;
   return <div className="prop"><label>{label}</label><div className="pval one"><Switch label={label} isLabelHidden size="sm" value={v} isDisabled={ro} onChange={(x) => set(c, { [k]: on ? (x ? null : false) : x || null })} /></div><span /></div>;
+}
+
+/** a transition plays into a clip from the one before it on its track: the first clip has none (add_transition refuses it) */
+const hasPrevious = (c: Clip) => { const tr = trackOf(c.id); return !!tr && tr.clips.indexOf(c) > 0; };
+
+/** the transition into the clip, set with add_transition: on a track that is not magnetic it also moves the clip to overlap the one before by its length */
+function TransitionPick({ c, ro }: { c: Clip; ro: boolean }) {
+  const v = named(c.transition);
+  return (
+    <div className="prop"><label>{t("pTransition")}</label>
+      <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={FORM.enums.transition} hasSearch isDisabled={ro}
+        onChange={(x) => ops([{ op: "add_transition", to: c.id, type: x ?? "none" }], "transition " + c.id)} width="100%" /></div><span />
+    </div>
+  );
 }
 
 const visual = (c: Clip) => c.type !== "audio" && c.type !== "gap";
@@ -184,7 +198,7 @@ export function PropTab({ c, tab, ro }: { c: Clip; tab: string; ro: boolean }) {
       <Group title="grpIn"><Choice c={c} k="enter" label={t("pIn")} list={FORM.enums.enter} ro={ro} read={named} /></Group>
       <Group title="grpOut"><Choice c={c} k="exit" label={t("pOut")} list={FORM.enums.exit} ro={ro} read={named} /></Group>
       <Group title="grpLoop"><Choice c={c} k="motion" label={t("pMotion")} list={FORM.enums.motion} ro={ro} read={named} /></Group>
-      <Group title="grpTransition"><Choice c={c} k="transition" label={t("pTransition")} list={FORM.enums.transition} ro={ro} read={named} /></Group>
+      {hasPrevious(c) && <Group title="grpTransition"><TransitionPick c={c} ro={ro} /></Group>}
     </>
   );
   return (

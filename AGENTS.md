@@ -122,6 +122,8 @@ capabilities.engines says which transcription, TTS and vision engines are usable
 {"op":"set_keyframes","id":"img2","prop":"scale","keyframes":[[0,1],[3,1.2,"ease_in_out"]]}
 {"op":"add_effect","id":"vid1","type":"glitch","start":0,"duration":0.5}    {"op":"add_effect","type":"letterbox"}  (no id = whole video)
 {"op":"trim_clip","id":"vid1","trim_start":0.5}  {"op":"split_clip","id":"vid1","at":4.2}  {"op":"move_clip","id":"vid3","index":0}
+   split_clip of a speed-ramped video: the right half starts at the source second the ramp reached and keeps the whole curve in its own time (keys before its head
+   at negative times), so both halves play what the clip played; a freeze clip's halves hold its frame. freeze_frame holds the frame the clip shows at 'at' (reverse, ramp, freeze)
 {"op":"add_transition","to":"vid2","type":"dip_black","duration":0.6}  {"op":"set_settings","preset":"reels"}
 
 ## Pro editing (Final Cut style)

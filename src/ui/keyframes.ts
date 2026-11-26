@@ -33,8 +33,9 @@ export function packKf(list: Kf[]): (number | string | undefined)[][] | null {
 export function kfBase(c: Clip, prop: string, set: { width: number; height: number }): number {
   const d: Record<string, number> = { x: set.width / 2, y: set.height / 2, scale: 1, scale_x: 1, scale_y: 1, opacity: 1, volume: 1, speed: 1, focus_x: 0.5, focus_y: 0.5 };
   const v = c[prop];
-  if ((prop === "x" || prop === "y") && typeof v === "string" && v.trim().endsWith("%")) return +((parseFloat(v) / 100) * (prop === "x" ? set.width : set.height)).toFixed(2);
-  return typeof v === "number" ? v : d[prop] !== undefined ? d[prop] : 0;
+  const pct = (prop === "x" || prop === "y") && typeof v === "string" && v.trim().endsWith("%") ? (parseFloat(v) / 100) * (prop === "x" ? set.width : set.height) : NaN;
+  if (Number.isFinite(pct)) return +pct.toFixed(2);
+  return typeof v === "number" && Number.isFinite(v) ? v : d[prop] !== undefined ? d[prop] : 0; // an unreadable value (validate names it) shows the default
 }
 
 /** value at local time lt as the renderer draws it (anim.ts kfValue: the easing of a key shapes the segment ending at it), so a new key there changes nothing */

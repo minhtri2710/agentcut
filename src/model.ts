@@ -1000,6 +1000,8 @@ function validateTracks(tl: Timeline, o: ValidateOpts, issues: Issue[], clipIds:
       checkFields(c, fieldsFor(c.type), p, issues, c.type);
       clipColorIssues(c, p, issues);
       rangeIssues(c, p, issues);
+      for (const k of ["x", "y"]) if (typeof c[k] === "string" && !/^\s*-?(\d+(\.\d*)?|\.\d+)(px|%)?\s*$/.test(c[k]))
+        issues.push({ level: "error", path: `${p}.${k}`, message: `${k} ${JSON.stringify(c[k])} is not a length`, hint: "use px (540) or percent ('50%')" });
       if (typeof c.speed === "number" && !(Number.isFinite(c.speed) && c.speed >= SPEED_MIN && c.speed <= SPEED_MAX)) issues.push({ level: "error", path: `${p}.speed`, message: `speed must be ${SPEED_MIN}..${SPEED_MAX}` });
       if (c.group && typeof c.group === "object") for (const x of groupIssues(c.group, `${p}.group`)) issues.push({ level: "error", ...x });
       if (c.type === "video" || c.type === "audio") for (const x of audioFxIssues(c, p)) issues.push({ level: "error", ...x });

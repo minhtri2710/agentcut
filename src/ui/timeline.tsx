@@ -41,9 +41,12 @@ export function openPath(p: string[]) {
   st.path = p; st.sel = null; st.picked = []; refreshView(); select(null);
 }
 
+/** the zoom's range in px per second: the low end fits a 20 minute timeline in about 1,200 px */
+const ZMIN = 1, ZMAX = 400;
+const clampZoom = (pps: number) => Math.max(ZMIN, Math.min(ZMAX, pps));
 function setZoom(pps: number) { st.pps = pps; changed(); }
-/** the whole timeline fills the visible lanes */
-function fitZoom() { const sc = $("scroll"); if (st.S && total() > 0) setZoom(Math.max(10, Math.min(400, (sc.clientWidth - LABEL - 24) / total()))); }
+/** the whole timeline fills the visible lanes, from its start */
+function fitZoom() { const sc = $("scroll"); if (st.S && total() > 0) { setZoom(clampZoom((sc.clientWidth - LABEL - 24) / total())); sc.scrollLeft = 0; } }
 
 /** CapCut's edit tools over the timeline, on the selected clip at the playhead: split, delete, duplicate, freeze */
 function Tools() {
@@ -241,7 +244,7 @@ export function Timeline() {
     const wheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      setZoom(Math.max(10, Math.min(400, st.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+      setZoom(clampZoom(st.pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
     };
     sc.addEventListener("wheel", wheel, { passive: false });
     return () => sc.removeEventListener("wheel", wheel);
@@ -256,10 +259,10 @@ export function Timeline() {
         <span className="grow" />
         <span className="mut mono" id="dur" title={t("tlHint")}>{st.S ? total().toFixed(2) + " s" : ""}</span>
         <span className="zoom">
-          <IconButton size="sm" variant="ghost" label={t("zoomOut")} tooltip={t("zoomOut")} icon={ico(ZoomOut)} onClick={() => setZoom(Math.max(10, st.pps / 1.5))} />
-          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={10} max={400} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={120} />
-          <IconButton size="sm" variant="ghost" label={t("zoomIn")} tooltip={t("zoomIn")} icon={ico(ZoomIn)} onClick={() => setZoom(Math.min(400, st.pps * 1.5))} />
-          <IconButton size="sm" variant="ghost" label={t("zoomFit")} tooltip={t("zoomFit")} icon={ico(Maximize2)} onClick={fitZoom} />
+          <IconButton size="sm" variant="ghost" label={t("zoomOut")} tooltip={t("zoomOut")} icon={ico(ZoomOut)} onClick={() => setZoom(clampZoom(st.pps / 1.5))} />
+          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={ZMIN} max={ZMAX} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={120} />
+          <IconButton size="sm" variant="ghost" label={t("zoomIn")} tooltip={t("zoomIn")} icon={ico(ZoomIn)} onClick={() => setZoom(clampZoom(st.pps * 1.5))} />
+          <IconButton id="zfit" size="sm" variant="ghost" label={t("zoomFit")} tooltip={t("zoomFit")} icon={ico(Maximize2)} onClick={fitZoom} />
         </span>
       </div>
       <div id="scroll" ref={scroll}>

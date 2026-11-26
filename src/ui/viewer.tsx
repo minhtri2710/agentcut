@@ -1,4 +1,5 @@
 import { Button } from "@astryxdesign/core/Button";
+import { clock } from "./view.ts";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Maximize, Pause, Play, Sparkles, StepBack, StepForward } from "lucide-react";
 import { api } from "./api.ts";
@@ -54,11 +55,6 @@ function play() {
 
 const playLabel = () => (st.playing ? t("stop") : !st.play ? t("play") : st.play.pct === null ? t("preparing") : t("preparingPct", st.play.pct));
 const prepLabel = () => (st.prep === "starting" ? t("preparing") : st.prep ? prepareText(st.prep) : t("prepare"));
-/** a time as CapCut shows it: mm:ss:ff (frames at the project's rate) */
-const clock = (s: number, fps: number) => {
-  const f = Math.round(s * fps), ff = f % fps, ss = Math.floor(f / fps) % 60, mm = Math.floor(f / fps / 60);
-  return [mm, ss, ff].map((x) => String(x).padStart(2, "0")).join(":");
-};
 const step = (n: number) => { if (st.S) seek(st.t + n / st.S.timeline.settings.fps); };
 const fullScreen = () => { const s = $("stage"); if (document.fullscreenElement) document.exitFullscreen(); else s.requestFullscreen?.().catch(() => {}); };
 

@@ -715,6 +715,8 @@ console.log("match_duration by clip reference");
     check("  split and freeze of a freeze clip keep its frame", xz.tracks.find((tr: any) => tr.id === "overlay")!.clips.every((c: any) => c.in === 2), xz.tracks.find((tr: any) => tr.id === "overlay")!.clips);
     const [xe, re] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "rmp", at: 0, duration: 4, in: 1 }, { op: "set_keyframes", id: "rmp", prop: "speed", keyframes: ramp }, { op: "freeze_frame", id: "rmp", at: 4, duration: 1 }]);
     check("  freeze_frame at the end of a ramped clip holds the ramp's last source frame", Math.abs(at(xe, re[2].id).in - (1 + speedIntegral(ramp, 4))) < 1e-3, at(xe, re[2].id));
+    const bad = validate({ ...structuredClone(t0), tracks: t0.tracks.map((tr: any) => tr.id === "text" ? { ...tr, clips: [{ id: "tq", type: "text", text: "q", start: 0, duration: 1, x: "%", y: "50%" }] } : tr) });
+    check("validate: an x that is not a length is an error naming it; a percent is fine", bad.some((i: any) => i.level === "error" && /\.x$/.test(i.path)) && !bad.some((i: any) => /\.y$/.test(i.path)), bad.filter((i: any) => i.level === "error"));
     const fz2 = rs2[2];
     check("freeze_frame inside a follower: both halves and the freeze clip are plain", [at(x2, "vid1"), at(x2, fz2.id)].every((c: any) => c.match_duration === undefined) && !x2.tracks.flatMap((tr: any) => tr.clips).some((c: any) => c.match_duration), x2.tracks.flatMap((tr: any) => tr.clips).map((c: any) => [c.id, c.match_duration, c.duration]));
   }

@@ -149,11 +149,11 @@ const pick = async (combo: string, label: string) => {
 };
 /** type a value into a text or number field (a page expression) and leave it: the field commits on blur */
 const typeIn = (field: string, v: string) => js(`(function(){var i=${field}; i.focus(); __set(i, ${JSON.stringify(v)}); i.blur();})()`);
-/** the zoom slider to this many px per second (a multiple of 10): Home is 10, each PageUp adds 10 */
+/** the zoom slider to this many px per second (a multiple of 10): End is its maximum, 400, and each PageDown takes 10 off */
 const zoomTo = async (pps: number) => {
   await js(`$("zoom").focus()`);
-  await press("Home", "Home", 36);
-  for (let i = 10; i < pps; i += 10) await press("PageUp", "PageUp", 33);
+  await press("End", "End", 35);
+  for (let i = 400; i > pps; i -= 10) await press("PageDown", "PageDown", 34);
 };
 const shot = async (name: string) => {
   const { data } = await page("Page.captureScreenshot", { format: "png" });
@@ -834,6 +834,20 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   {
     await applyLatest(dir, [{ op: "add_clip", track: "text", text: "Blink", at: 0.3, duration: 0.2, id: "blink" }]);
     await until("blink seen", atRev(load().revision));
+    await click("#tab-media");
+    await js(`$("tab-media").focus()`);
+    await press("ArrowDown", "ArrowDown", 40);
+    const second = await js(`document.querySelectorAll("#rail [role=tab]")[1].id`);
+    check("the tool rail is a vertical tab list: Down opens the next tool and moves focus to it", await until("rail down", `document.activeElement.id === ${JSON.stringify(second)} && document.activeElement.getAttribute("aria-selected") === "true"`), await js(`document.activeElement.id`));
+    await press("End", "End", 35);
+    check("  End the last", await until("rail end", `document.activeElement === document.querySelector("#rail [role=tab]:last-child")`), await js(`document.activeElement.id`));
+    check("  the page is still drawn after the rail moved (no exception unmounted it)", await until("still drawn", `!!$("zfit")`), consoleErrors.slice(-5));
+    const ppsBefore = await js(zoomPps) as number;
+    await js(`$("scroll").scrollLeft = 500`);
+    await click("#zfit");
+    check("Fit timeline zooms so the whole timeline shows from its start", await until("fit", `$("scroll").scrollLeft === 0 && ${zoomPps} * parseFloat($("dur").textContent) <= $("scroll").clientWidth`),
+      await js(`[$("scroll").scrollLeft, ${zoomPps}, $("dur").textContent, $("scroll").clientWidth]`));
+    await zoomTo(ppsBefore); // the rows below seek by clicking the ruler at the scale they set up
     await click("#tab-review");
     await click("#runreview");
     const short = `[].filter.call(document.querySelectorAll("#findings li"), function (l) { return l.dataset.type === "text_too_short" && l.textContent.indexOf("blink") >= 0; })[0]`;
@@ -929,11 +943,26 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       const was = await api.placedAt(dir, "blink", 0.1);
       await js(`document.querySelector('#sidebody [data-prop="x"] .kfd').click()`);
       const kx = (tl: any) => clipOf(tl, "blink")?.keyframes?.x;
-      check("  the X diamond on a clip placed by a position preset keys the x it is drawn at, and sets that x/y so it does not move",
-        await untilFile((tl) => !!kx(tl)) && JSON.stringify(kx(load())) === JSON.stringify([[0.1, was.x]]) && clipOf(load(), "blink").position === undefined
-        && clipOf(load(), "blink").y === was.y && JSON.stringify(await api.placedAt(dir, "blink", 0.1)) === JSON.stringify({ ...was, revision: load().revision }), { was, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`), kfd: await js(`!!document.querySelector('#sidebody [data-prop="x"] .kfd')`) });
+      check("  the X diamond on a clip placed by a position preset keys the x it is drawn at; the preset still places y, and the clip does not move",
+        await untilFile((tl) => !!kx(tl)) && JSON.stringify(kx(load())) === JSON.stringify([[0.1, was.x]]) && clipOf(load(), "blink").position === "top_left"
+        && clipOf(load(), "blink").y === undefined && JSON.stringify(await api.placedAt(dir, "blink", 0.1)) === JSON.stringify({ ...was, revision: load().revision }),
+        { was, clip: clipOf(load(), "blink"), msg: await js(`$("msg").textContent`) });
       await until("x key seen", atRev(load().revision));
-      await applyLatest(dir, [{ op: "set_keyframes", id: "blink", prop: "x", keyframes: null }, { op: "update_clip", id: "blink", set: { x: null, y: null } }]);
+      {
+        // an edit that lands while the page waits for the placement: the key goes out at the revision measured, so it is a conflict, not a stale overwrite
+        await js(`(function(){ var f = window.fetch; window.__hold = null; window.fetch = function (u) { var r = f.apply(this, arguments); if (String(u) !== "/api/placed") return r;
+          window.fetch = f; return r.then(function (x) { return new Promise(function (ok) { window.__hold = function () { ok(x); }; }); }); }; })()`);
+        await js(`document.querySelector('#sidebody [data-prop="y"] .kfd').click()`);
+        await until("placed asked", `!!window.__hold`);
+        await applyLatest(dir, [{ op: "update_clip", id: "blink", set: { margin: "12%" } }]);
+        await until("newer seen", atRev(load().revision));
+        const revN = load().revision;
+        await js(`$("msg").className = ""; window.__hold()`);
+        check("  a placement measured before a newer edit is sent at its own revision: a conflict, and the newer edit stays",
+          await until("conflict", `$("msg").className === "err" && $("msg").textContent.indexOf("conflict") >= 0`) && load().revision === revN && !clipOf(load(), "blink").keyframes?.y && clipOf(load(), "blink").margin === "12%",
+          { msg: await js(`$("msg").textContent`), clip: clipOf(load(), "blink") });
+      }
+      await applyLatest(dir, [{ op: "set_keyframes", id: "blink", prop: "x", keyframes: null }, { op: "update_clip", id: "blink", set: { position: null, margin: null } }]);
       await until("x key gone", atRev(load().revision));
     }
     await click("#itab-more");

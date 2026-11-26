@@ -102,13 +102,23 @@ const TABS = [
   { id: "history", label: () => t("history"), icon: HistoryIcon, body: History },
 ];
 
+/** the rail as a vertical tab list: Up/Down move to the next tool and open it, Home/End to the first and last; Tab leaves the list */
+function railKeys(e: React.KeyboardEvent) {
+  const i = TABS.findIndex((x) => x.id === st.tab), n = TABS.length;
+  const j = e.key === "ArrowDown" ? (i + 1) % n : e.key === "ArrowUp" ? (i - 1 + n) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
+  if (j < 0) return;
+  e.preventDefault();
+  st.tab = TABS[j].id; changed();
+  requestAnimationFrame(() => document.getElementById("tab-" + TABS[j].id)?.focus());
+}
+
 function Left() {
   const tab = TABS.find((x) => x.id === st.tab) || TABS[0];
   return (
     <aside id="left">
-      <nav id="rail" role="tablist" aria-orientation="vertical">
+      <nav id="rail" role="tablist" aria-orientation="vertical" onKeyDown={railKeys}>
         {TABS.map((x) => (
-          <button key={x.id} id={"tab-" + x.id} type="button" role="tab" className="rbtn" aria-selected={x === tab} title={x.label()} onClick={() => { st.tab = x.id; changed(); }}>
+          <button key={x.id} id={"tab-" + x.id} type="button" role="tab" className="rbtn" aria-selected={x === tab} tabIndex={x === tab ? 0 : -1} title={x.label()} onClick={() => { st.tab = x.id; changed(); }}>
             {ico(x.icon)}<span>{x.label()}</span>
           </button>
         ))}

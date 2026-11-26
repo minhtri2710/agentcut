@@ -54,4 +54,10 @@ export function resolveRef(tracks: Track[], ref: string): string | null {
 }
 
 /** seconds between ruler ticks at this zoom */
-export const tickStep = (pps: number): number => (pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : 10);
+export const tickStep = (pps: number): number => (pps > 150 ? 0.5 : pps > 50 ? 1 : pps > 20 ? 5 : pps > 5 ? 10 : pps > 1.5 ? 30 : 60);
+
+/** a time as CapCut shows it: mm:ss:ff (frames at the project's rate) */
+export const clock = (s: number, fps: number) => { // 29.97 fps counts 30 frames to a second, as NDF timecode does
+  const n = Math.round(fps), f = Math.round(s * fps), ff = f % n, ss = Math.floor(f / n) % 60, mm = Math.floor(f / n / 60);
+  return [mm, ss, ff].map((x) => String(x).padStart(2, "0")).join(":");
+};
