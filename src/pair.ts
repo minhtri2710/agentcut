@@ -9,8 +9,8 @@ const EPS = 1e-6;
 
 /** The clip the transition into clips[i] plays from, or null when none does. Magnetic: the clip before in the list, whatever it is (a gap too: the
  *  storyline overlaps the two, and the renderer blends only drawn layers).
- *  Otherwise: of the drawn clips that still play when clips[i] starts and started before it (or with it, below it in the list), the one that started last
- *  (a tie: the later in the list, drawn on top). */
+ *  Otherwise: of the drawn clips below it in the list (the draw order) that still play when clips[i] starts and started before it or with it, the one that
+ *  started last (a tie: the later in the list, nearer it). A clip drawn above the incoming one is no partner: the transition fades the incoming clip in. */
 export function playsFrom<C>(tr: PairTrack<C>, i: number, o: PairOps<C>): C | null {
   const c = tr.clips[i];
   if (!c || !o.drawn(c)) return null;
@@ -18,8 +18,8 @@ export function playsFrom<C>(tr: PairTrack<C>, i: number, o: PairOps<C>): C | nu
   const s = o.start(c);
   let best: C | null = null, at = -1;
   tr.clips.forEach((x, j) => {
-    // started before it (or with it, drawn below it) and still playing when it starts
-    if (j === i || !o.drawn(x) || !(o.end(x) > s + EPS) || !(o.start(x) < s - EPS || (Math.abs(o.start(x) - s) <= EPS && j < i))) return;
+    // drawn below it (the renderer fades the incoming clip in over the outgoing one), started before it or with it, still playing when it starts
+    if (j >= i || !o.drawn(x) || !(o.end(x) > s + EPS) || !(o.start(x) <= s + EPS)) return;
     if (!best || o.start(x) > o.start(best) + EPS || (Math.abs(o.start(x) - o.start(best)) <= EPS && j > at)) { best = x; at = j; }
   });
   return best;
@@ -42,3 +42,6 @@ export function blendsFrom<C>(tr: PairTrack<C>, i: number, o: PairOps<C>): C | n
   });
   return best;
 }
+
+/** Where add_transition puts a free-track clip that blends from `from` with a transition of length d: d before that clip's end, not before its start. */
+export const blendStart = <C>(from: C, d: number, o: PairOps<C>) => Math.max(o.start(from), o.end(from) - d);

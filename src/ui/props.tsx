@@ -8,6 +8,7 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { Diamond } from "lucide-react";
 import { LOOKS } from "../color.ts";
 import { blendsFrom } from "../pair.ts";
+import { PAIR } from "./view.ts";
 import { api, ops } from "./api.ts";
 import { fail } from "./messages.ts";
 import { t, type Key } from "./i18n.ts";
@@ -102,8 +103,6 @@ function Toggle({ c, k, label, ro, on = false }: { c: Clip; k: string; label: st
   return <div className="prop"><label>{label}</label><div className="pval one"><Switch label={label} isLabelHidden size="sm" value={v} isDisabled={ro} onChange={(x) => set(c, { [k]: on ? (x ? null : false) : x || null })} /></div><span /></div>;
 }
 
-const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]); // model.ts VISUAL_TYPES
-const PAIR = { start, end: (c: Clip) => start(c) + dur(c), drawn: (c: Clip) => c.enabled !== false && DRAWN.has(c.type) };
 /** a transition plays into a clip from the clip pair.ts names, on a track the renderer draws (model.ts PAIR, with the page's clip times);
  *  a transition already there can always be cleared */
 const pairsWithPrevious = (c: Clip) => {

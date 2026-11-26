@@ -69,3 +69,7 @@ export function edgeZone(x: number, left: number, width: number, border = 0, dra
   const z = border + Math.min(8, drawn / 4);
   return x - left < z ? "l" : left + width - x <= z ? "r" : "move";
 }
+
+const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "lottie", "compound"]); // model.ts VISUAL_TYPES
+/** pair.ts with the page's clip times (model.ts PAIR) */
+export const PAIR = { start, end: (c: Clip) => start(c) + dur(c), drawn: (c: Clip) => c.enabled !== false && DRAWN.has(c.type) };

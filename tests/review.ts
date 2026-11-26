@@ -793,6 +793,16 @@ console.log("a transition on a free track plays from the clip it starts over, wh
   check("the list puts red first, green after blue", order === "red,blue,grn", order);
   check("  green's transition plays from blue (by time), not from red before it in the list", g.prev?.c.id === "blue", g.prev?.c.id);
   check("  and the frame a quarter into it is blue dipping to black", mid[2] > 40 && mid[2] < 200 && mid[0] < 20 && mid[1] < 20, mid);
+  // a clip drawn above the incoming one is not where it fades from: the fade-in would be hidden under it, so it has no partner (and validate says so)
+  const Q = join(tmp, "pair-below");
+  api.create(Q, { preset: "square" });
+  await applyLatest(Q, [{ op: "add_clip", track: "overlay", type: "color", color: "red", id: "inc", at: 0, duration: 2, transition: { type: "crossfade", duration: 0.5 } },
+    { op: "add_clip", track: "overlay", type: "color", color: "blue", id: "top", at: 3, duration: 1 }, { op: "update_clip", id: "inc", set: { start: 3.5 } }], { allowInvalid: true });
+  const pq = new Project(Q), tq = pq.absolutized(resolve(pq.load())), RQ = new Renderer(tq, pq.root, 0.1);
+  const inc = RQ.layers.find((L) => L.c.id === "inc")!;
+  RQ.close();
+  check("  an incoming clip below the clip playing where it starts has no partner (the renderer would fade it in under that clip)", inc.prev === null, inc.prev?.c.id);
+  check("  and validate warns that the transition plays from no clip", (await api.validate(Q)).issues.some((i: any) => i.level === "warning" && /<inc>\.transition$/.test(i.path)), (await api.validate(Q)).issues);
 }
 
 if (process.argv.includes("--keep")) console.log("kept", tmp); else rmSync(tmp, { recursive: true, force: true });

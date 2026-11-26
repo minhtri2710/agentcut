@@ -163,7 +163,7 @@ export function registerCompoundOps(h: OpHelpers) {
           n.start = round6(base + x0 - w0);
           clips.push(n); placed.set(n.id, n);
         }
-        if (clips.length) lists.push([nt, clips.sort((x, y) => clipStart(x) - clipStart(y))]);
+        if (clips.length) lists.push([nt, clips]); // in the nested track's order: its draw order (a storyline below sorts them by time itself)
       }
       // connected clips keep their position relative to (possibly trimmed) targets; targets that did not come back -> detach
       for (const n of placed.values()) {
@@ -180,8 +180,8 @@ export function registerCompoundOps(h: OpHelpers) {
         if (n.match_duration === true) { const eo = round6(clipDur(t) - off - clipDur(n)); if (eo < -EPS) { delete n.match_duration; delete n.end_offset; } else n.end_offset = eo; }
       }
       /** put `clips` in storyline `tr` at index `at`, where `[base, base + dur)` was; `lead` is the transition into the first one */
-      const splice = (tr: Track, at: number, clips: Clip[], lead: unknown, back: number) => {
-        const seq: Clip[] = [];
+      const splice = (tr: Track, at: number, list: Clip[], lead: unknown, back: number) => {
+        const clips = [...list].sort((x, y) => clipStart(x) - clipStart(y)), seq: Clip[] = [];
         let cur = base;
         for (const n of clips) {
           const st = clipStart(n), lag = seq.length ? 0 : back; // a leading gap cannot overlap the previous clip, so it starts `back` later than the compound did
@@ -216,7 +216,11 @@ export function registerCompoundOps(h: OpHelpers) {
           if (above && tr.kind !== "audio") { tl.tracks.splice(tl.tracks.indexOf(tr), 1); tl.tracks.splice(tl.tracks.indexOf(above) + 1, 0, tr); }
           created.push(id);
         }
-        for (const n of clips) { tr.clips.push(n); reposition(tr, n); } // each comes back by time, in its nested order; the clips already there keep their layers
+        // on a free track the clips come back as one block of layers in their nested order, where the first of them in time would go; the clips already there
+        // keep theirs (a block cannot be split around them without changing which covers which inside it)
+        const first = clips.reduce((a, b) => (clipStart(b) < clipStart(a) ? b : a)), s0 = clipStart(first);
+        const j = tr.clips.findIndex((x) => clipStart(x) > s0);
+        tr.clips.splice(j < 0 ? tr.clips.length : j, 0, ...clips);
       }
       if (home.magnetic && !lists.some(([nt]) => nt.id === home.id)) { // nothing of the compound is on its own storyline: a gap keeps the time
         if (td > EPS) throw new EditError(`'${c.id}' has a transition but none of its clips comes back onto '${home.id}'; expanding would drop it`, "layer_properties",
