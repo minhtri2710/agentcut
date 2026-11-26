@@ -733,6 +733,15 @@ console.log("match_duration by clip reference");
       { op: "trim_clip", id: "pc", trim_start: 0.5 }, { op: "update_clip", id: "pc", set: { start: 7 } }]);
     check("  trim_start or a start edit of a third clip leaves an earlier-starting incoming clip after its transition partner",
       xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "pa,pb,pc" && at(xb, "pb").start === 1.9, xb.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
+    const [xs] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "r0", at: 0, duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "g1", at: 1, duration: 1 },
+      { op: "add_clip", track: "overlay", asset: "v", id: "b2", at: 2, duration: 1 }, { op: "update_clip", id: "r0", set: { start: 2 } }]);
+    check("  a start edit that lands on another clip's start goes below it, as a stable sort by time would place it (the later in the list is on top)",
+      xs.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "g1,r0,b2", xs.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
+    const [xa] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "qa", at: 2, duration: 0.4 }, { op: "add_clip", track: "overlay", asset: "v", id: "qb", at: 3, duration: 1 },
+      { op: "add_transition", to: "qb", type: "crossfade", duration: 0.5 }, { op: "add_clip", track: "text", text: "t", id: "tq", at: 5, duration: 1 },
+      { op: "add_clip", track: "overlay", asset: "v", id: "qc", attach_to: "tq", offset: 0, duration: 1 }, { op: "update_clip", id: "tq", set: { start: 6 } }]);
+    check("  a connected clip on a free track moves in its order alone: an earlier-starting incoming clip stays after its transition partner",
+      xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "qa,qb,qc" && at(xa, "qc").start === 6, xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
     const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
       { op: "trim_clip", id: "h1", trim_start: 2 }, { op: "update_clip", id: "h2", set: { opacity: 0.5 } }]);
     check("  trim_start that moves a clip past its neighbour keeps the free track in time order (roll_edit and transitions pair by it)",

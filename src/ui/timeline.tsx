@@ -74,8 +74,9 @@ function rulerDown(ev: MouseEvent) {
 
 /** the zone under a press: the trim zones are the painted handles (inside the border) plus the border itself */
 const edgeAt = (ev: MouseEvent, box: HTMLElement) => {
-  const r = box.getBoundingClientRect(), b = box.clientLeft; // the left border's width; the right one is the same
-  return edgeZone(ev.clientX, r.left, r.width, b);
+  // the zones are the handles as drawn: ClipBox sizes them from the width it sets, which padding and borders can make the box wider than
+  const r = box.getBoundingClientRect();
+  return edgeZone(ev.clientX, r.left, r.width, box.clientLeft, parseFloat(box.style.width) || r.width);
 };
 
 function clipDown(ev: MouseEvent, tr: Track, c: Clip) {

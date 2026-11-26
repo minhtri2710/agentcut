@@ -7,7 +7,7 @@ import { firstCovering } from "./fonts.ts";
 import { AUDIO_EXT, probe } from "./media.ts";
 import {
   allClips, type Asset, CLIP_TYPES, type Clip, clipDur, clipEnd, clipStart, deepMerge, type Dict, EditError, isProtoKey, plainKey, refuseProtoKeys, refuseUnknown, EFFECTS, effectKeys, fieldsFor, findClip, findTrack, linkedAudio, newId, TRACK_FIELDS,
-  normAnim, parseTime, PRESETS, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
+  normAnim, parseTime, PRESETS, reposition, presetSize, playedCut, resolve, round6, SCHEMA_VERSION, soleAudio, sourceLen, suggest, type Timeline, totalDuration, lengthTarget, type Track, TRANSITIONS, unfollow, computedDuration, ownDuration, hasSourceTime, wordsOnTimeline,
 } from "./model.ts";
 import { expandPreset, TEMPLATES } from "./presets.ts";
 import type { Project } from "./project.ts";
@@ -327,17 +327,6 @@ function lengthOnce(c: Clip) {
 function dropFollow(c: Clip) { if (computedDuration(c)) { delete c.match_duration; delete c.end_offset; } delete c.until_end; delete c.end_at; }
 
 /** Put a piece cut from a clip at timeline time `start`. An attached piece keeps its target and moves by offset (resolve() recomputes its start from the target); others set start on non-magnetic tracks. */
-/** A clip placed anew on a track that is not magnetic takes its place in time order among the others, which keep their order: the order pairs a
- *  transition with the clip before it, and an incoming clip that overlaps a short outgoing clip can start before it. */
-function reposition(tr: Track, c: Clip) {
-  if (tr.magnetic) return;
-  const i = tr.clips.indexOf(c), s = clipStart(c), prev = tr.clips[i - 1], next = tr.clips[i + 1];
-  if ((!prev || clipStart(prev) <= s) && (!next || s <= clipStart(next))) return; // still between its neighbours
-  tr.clips.splice(i, 1);
-  const j = tr.clips.findIndex((x) => clipStart(x) > s);
-  tr.clips.splice(j < 0 ? tr.clips.length : j, 0, c);
-}
-
 function placeAt(tl: Timeline, tr: Track, piece: Clip, start: number) {
   if (piece.attach_to) { piece.offset = round6(start - clipStart(findClip(tl, piece.attach_to)[2])); }
   else if (!tr.magnetic) piece.start = round6(start);

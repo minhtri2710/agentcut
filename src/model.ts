@@ -779,9 +779,22 @@ export function unfollow(clips: Iterable<Clip>, gone: (id: string) => boolean): 
   return out;
 }
 
+/** A clip placed anew on a track that is not magnetic takes its place in time order among the others, which keep their order: the order pairs a
+ *  transition with the clip before it, and an incoming clip that overlaps a short outgoing clip can start before it. */
+export function reposition(tr: Track, c: Clip) {
+  if (tr.magnetic) return;
+  const i = tr.clips.indexOf(c), s = clipStart(c), prev = tr.clips[i - 1], next = tr.clips[i + 1];
+  if ((!prev || clipStart(prev) <= s) && (!next || s <= clipStart(next))) return; // still between its neighbours
+  tr.clips.splice(i, 1);
+  // a tie keeps the clips that were before it before it and the ones after it after it: the later in the list is drawn on top
+  const j = tr.clips.findIndex((x, at) => clipStart(x) > s || (clipStart(x) === s && at >= i));
+  tr.clips.splice(j < 0 ? tr.clips.length : j, 0, c);
+}
+
 function resolveAttached(tl: Timeline) {
   settleChains(tl, (c) => c.attach_to, (c, t) => { c.start = round6(Math.max(0, clipStart(t) + parseTime(c.offset ?? 0))); });
-  for (const tr of tl.tracks) if (!tr.magnetic && tr.clips.some((c) => c.attach_to)) tr.clips.sort((a, b) => clipStart(a) - clipStart(b));
+  // an attached clip that its target carried past a neighbour takes its place in time order; the others keep theirs
+  for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips.filter((x) => x.attach_to)) reposition(tr, c);
 }
 
 /** `end`: where until_end clips stretch to. An until_end clip's overlap is not limited by its own length (that length is made from where it starts), so no start reads `end`; its length is at least the overlap, so the clips after it keep their place. */

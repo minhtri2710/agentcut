@@ -64,7 +64,8 @@ export const clock = (s: number, fps: number) => { // 29.97 fps counts 30 frames
 
 /** which part of a clip box a press is on, by where it lands in the box (border and padding included): the trim zones are 8 px at each edge, at most a
  *  quarter of the box each, so a narrow clip still moves from its middle and trims from its edges */
-export function edgeZone(x: number, left: number, width: number, border = 0): "l" | "r" | "move" {
-  const z = border + Math.min(8, width / 4); // the handle is drawn inside the border, as wide as ClipBox makes it (from the box's width)
+export function edgeZone(x: number, left: number, width: number, border = 0, drawn = width): "l" | "r" | "move" {
+  // the handle is drawn inside the border, as wide as ClipBox makes it: from the width it sets (`drawn`), which CSS padding can make the box wider than
+  const z = border + Math.min(8, drawn / 4);
   return x - left < z ? "l" : left + width - x <= z ? "r" : "move";
 }
