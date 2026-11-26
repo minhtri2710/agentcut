@@ -859,6 +859,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await until("vi", `$("play").textContent === "Phát"`);
     await click("#exportb");
     check("Export… opens the dialog", await until("export open", `$("export").open`));
+    check("  its range fields say their unit once", await js(`[].map.call($("export").querySelectorAll(".nfield"), function (l) { return (l.textContent.match(/\\(s\\)/g) || []).length; }).join()`) === "1,1",
+      await js(`[].map.call($("export").querySelectorAll(".nfield"), function (l) { return l.textContent; })`));
     await pick(`$("eformat")`, "webm");
     await pick(`$("equality")`, "draft");
     await js(`$("eto").focus(); $("eto").select()`);
@@ -966,6 +968,17 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await clickClip("blink");
     // CapCut's Basic tab: a labelled number per property and a keyframe diamond beside each animatable one
     await until("basic tab", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!document.querySelector('#sidebody [data-prop="opacity"] .pnum')`);
+    {
+      // the inspector's six tabs fit its 300 px column in both languages, as CapCut's row does (no scroll arrows to reach Adjust and More)
+      const fits = `(function(){var n=document.querySelector("#side nav"), w=0; [].forEach.call(document.querySelectorAll("[id^=itab-]"), function (t) { w += t.getBoundingClientRect().width; }); return w <= n.getBoundingClientRect().width;})()`;
+      await viewport(1180);
+      const en = await until("tabs fit en", fits);
+      await lang("vi");
+      const vi = await until("tabs fit vi", `$("play").textContent === "Phát" && ${fits}`);
+      await lang("en");
+      await viewport(1440);
+      check("the inspector's tabs fit a 1180 px window in English and in Vietnamese", en && vi, { en, vi });
+    }
     await typeIn(`document.querySelector('#sidebody [data-prop="opacity"] .pnum')`, "40");
     check("the Basic tab's Opacity number (in %) sets the clip's opacity", await untilFile((tl) => clipOf(tl, "blink")?.opacity === 0.4), clipOf(load(), "blink"));
     await until("opacity seen", atRev(load().revision));

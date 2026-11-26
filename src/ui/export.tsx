@@ -43,8 +43,8 @@ export function ExportDialog() {
           <Selector id="equality" label={t("quality")} value={quality} onChange={(x) => setQuality(x!)} options={["standard", "high", "draft"]} />
         </div>
         <div className="row2">
-          <label className="nfield">{t("from")} (s)<Num id="efrom" min={0} step="any" placeholder="0" value={from ?? ""} onChange={(e) => setFrom(numOf(e.currentTarget))} /></label>
-          <label className="nfield">{t("to")} (s)<Num id="eto" min={0} step="any" placeholder={st.S ? st.S.duration.toFixed(2) : ""} value={to ?? ""} onChange={(e) => setTo(numOf(e.currentTarget))} /></label>
+          <label className="nfield">{t("from")}<Num id="efrom" min={0} step="any" placeholder="0" value={from ?? ""} onChange={(e) => setFrom(numOf(e.currentTarget))} /></label>
+          <label className="nfield">{t("to")}<Num id="eto" min={0} step="any" placeholder={st.S ? st.S.duration.toFixed(2) : ""} value={to ?? ""} onChange={(e) => setTo(numOf(e.currentTarget))} /></label>
         </div>
         <CheckboxInput id="esubs" label={t("subtitles")} value={subs} isDisabled={!SUBTITLED.includes(format)} onChange={setSubs} />
         <div className="dactions">
