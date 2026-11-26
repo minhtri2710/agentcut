@@ -125,7 +125,7 @@ const shownRev = `+$("rev").textContent.split(" ")[1]`;
 const atRev = (n: number) => `$("rev").textContent.indexOf("rev ${n} ") === 0`;
 const node = (id: string) => `[].filter.call(document.querySelectorAll(".clip"), function (n) { return n.dataset.id === ${JSON.stringify(id)}; })[0]`;
 const atTop = `$("crumbs").textContent === "timeline"`;
-const zoomPps = `+$("zoom").value`; // the pixels per second, except right after a Ctrl+wheel (the slider rounds to whole numbers)
+const zoomPps = `+$("zoom").getAttribute("aria-valuenow")`; // the pixels per second, except right after a Ctrl+wheel (the slider rounds to whole numbers)
 // (the browser keeps style.left to about 1e-3 px, so this time is exact to about 1e-5 s: rows that compare it use a tolerance well under one frame)
 const nowT = () => js(`(parseFloat($("ph").style.left) - parseFloat(getComputedStyle($("ruler")).marginLeft)) / ${zoomPps}`) as Promise<number>;
 /** a real click on the ruler at this time: the page seeks there */
@@ -138,6 +138,22 @@ const clickClip = async (id: string) => {
   const b = await js(`(function(){var n=${node(id)}; n.scrollIntoView({block:"nearest"}); var r=n.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mousePressed", x: b.x, y: b.y, button: "left", clickCount: 1 });
   await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x, y: b.y, button: "left", clickCount: 1 });
+};
+/** open the list of a Selector (its combobox: a page expression) and pick the option with this text */
+const pick = async (combo: string, label: string) => {
+  await js(`(${combo}).click()`);
+  const opt = `[].filter.call(document.querySelectorAll('[role="option"]'), function (o) { return o.getClientRects().length && o.textContent.trim() === ${JSON.stringify(label)}; })[0]`;
+  if (!(await until(`option ${label}`, `!!${opt}`))) return false;
+  await js(`${opt}.click()`);
+  return true;
+};
+/** type a value into a text or number field (a page expression) and leave it: the field commits on blur */
+const typeIn = (field: string, v: string) => js(`(function(){var i=${field}; i.focus(); __set(i, ${JSON.stringify(v)}); i.blur();})()`);
+/** the zoom slider to this many px per second (a multiple of 10): Home is 10, each PageUp adds 10 */
+const zoomTo = async (pps: number) => {
+  await js(`$("zoom").focus()`);
+  await press("Home", "Home", 36);
+  for (let i = 10; i < pps; i += 10) await press("PageUp", "PageUp", 33);
 };
 const shot = async (name: string) => {
   const { data } = await page("Page.captureScreenshot", { format: "png" });
@@ -170,6 +186,9 @@ try {
   // the page's EventSource (to stop it following the project, or to watch its job events), and a play() that is cut short the moment it starts.
   await page("Page.addScriptToEvaluateOnNewDocument", { source: `(function () {
     window.$ = function (id) { return document.getElementById(id); };
+    // the design system's buttons stay focusable when disabled (aria-disabled); its inputs are React-controlled, so a value is typed through the native setter and an input event
+    window.__off = function (id) { var n = document.getElementById(id); return !!n && (n.disabled === true || n.getAttribute("aria-disabled") === "true"); };
+    window.__set = function (el, v) { Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value").set.call(el, v); el.dispatchEvent(new Event("input", { bubbles: true })); };
     var ES = window.EventSource; window.__es = [];
     window.EventSource = function (u, o) { var e = new ES(u, o); window.__es.push(e); return e; };
     var play = HTMLMediaElement.prototype.play; window.__cutPlays = 0;
@@ -186,11 +205,12 @@ try {
   const stripTimes = await js(`(${node("vid1")}.style.backgroundImage.match(/\\?t=[0-9.]+/g) || []).join()`);
   check("a video clip shows a thumbnail strip: one frame per tile, at the source time each tile plays", stripTimes === "?t=0.50,?t=1.50,?t=2.00", stripTimes);
   check("viewer shows a rendered frame", await until("frame", `$("frame").src.indexOf("blob:") === 0 && $("frame").naturalWidth > 0`));
-  const lang = (l: string) => js(`(function(){var s=$("lang"); s.value=${JSON.stringify(l)}; s.dispatchEvent(new Event("change"));})()`);
+  const lang = (l: string) => js(`$("lang").querySelector('[data-value="${l}"]').click()`);
+  const langNow = `$("lang").querySelector('[aria-checked="true"]').dataset.value`;
   await lang("vi");
   check("the language switch shows the page in Vietnamese", await until("vi", `$("play").textContent === "Phát" && $("selinfo").textContent === "Chọn một clip trên timeline." && document.documentElement.lang === "vi"`), await js(`[$("play").textContent, $("selinfo").textContent]`));
   await js(`location.reload()`);
-  check("  the choice outlives a reload", await until("vi reloaded", `${atRev(load().revision)} && $("play").textContent === "Phát" && $("lang").value === "vi"`), await js(`[$("play").textContent, $("lang").value]`));
+  check("  the choice outlives a reload", await until("vi reloaded", `${atRev(load().revision)} && $("play").textContent === "Phát" && ${langNow} === "vi"`), await js(`[$("play").textContent, ${langNow}]`));
   await lang("en");
   check("  and switching back shows English again", await until("en", `$("play").textContent === "Play" && $("rev").textContent.indexOf("rev ") === 0`), await js(`$("play").textContent`));
 
@@ -206,7 +226,7 @@ try {
   await js(`(function(){var c=JSON.parse($("insp").value); delete c.color.contrast; $("insp").value=JSON.stringify(c,null,2); $("applyc").click();})()`);
   check("a key deleted inside a nested field is removed from project.json", await untilFile((tl) => { const g = clipOf(tl, "vid1")?.color; return g?.exposure === 0.2 && !("contrast" in g); }), clipOf(load(), "vid1")?.color);
   await click(`[data-id="txt1"]`);
-  check("txt1 selected again", await until("reselect", `$("selinfo").textContent.indexOf("txt1") === 0 && $("kfadd") && !$("kfadd").disabled && ${atRev(load().revision)}`), await js(`$("selinfo").textContent`));
+  check("txt1 selected again", await until("reselect", `$("selinfo").textContent.indexOf("txt1") === 0 && $("kfadd") && !__off("kfadd") && ${atRev(load().revision)}`), await js(`$("selinfo").textContent`));
 
   console.log("viewer at the end of the timeline");
   await js(`$("vstat").textContent = ""`);
@@ -215,7 +235,7 @@ try {
 
   console.log("keyframes");
   await seekTo(1);
-  await js(`(function(){var s=$("kfprop"); s.value="opacity"; s.dispatchEvent(new Event("change"));})()`);
+  await pick(`$("kfprop")`, "opacity");
   await click("#kfadd");
   check("+ key at playhead -> set_keyframes", await untilFile((tl) => JSON.stringify(clipOf(tl, "txt1")?.keyframes?.opacity) === "[[0.8,1]]"), clipOf(load(), "txt1").keyframes);
   await until("kf row", `document.querySelectorAll("#kfbox .kfrow").length === 1`);
@@ -223,10 +243,10 @@ try {
   await click("#kfadd");
   await untilFile((tl) => clipOf(tl, "txt1")?.keyframes?.opacity?.length === 2);
   await until("kf rows", `document.querySelectorAll("#kfbox .kfrow").length === 2`);
-  await js(`(function(){var r=document.querySelectorAll("#kfbox .kfrow")[0].children; r[1].value="0"; r[1].dispatchEvent(new Event("change"));})()`);
+  await typeIn(`document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]')`, "0");
   await untilFile((tl) => clipOf(tl, "txt1")?.keyframes?.opacity?.[0]?.[1] === 0);
-  await until("rerender", `${atRev(load().revision)} && document.querySelectorAll("#kfbox .kfrow")[0].children[1].value === "0"`);
-  await js(`(function(){var s=document.querySelectorAll("#kfbox .kfrow")[1].children[2]; s.value="ease_out"; s.dispatchEvent(new Event("change"));})()`);
+  await until("rerender", `${atRev(load().revision)} && document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="v"]').value === "0"`);
+  await pick(`document.querySelectorAll("#kfbox .kfrow")[1].querySelector('[data-col="ease"]')`, "ease_out");
   check("edit value + pick easing", await untilFile((tl) => JSON.stringify(clipOf(tl, "txt1")?.keyframes?.opacity) === `[[0,0],[0.8,1,"ease_out"]]`), clipOf(load(), "txt1").keyframes);
   check("keyframe ticks on the timeline clip", await until("ticks", `${atRev(load().revision)} && document.querySelectorAll('[data-id="txt1"] .kf').length === 2`));
   // drag the 0.8 s tick right by 0.4 s (pps 80 -> 32 px)
@@ -237,7 +257,7 @@ try {
   await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: kb.x + 32, y: kb.y, button: "left", clickCount: 1 });
   check("drag a tick moves the keyframe", await untilFile((tl) => Math.abs(clipOf(tl, "txt1")?.keyframes?.opacity?.[1]?.[0] - 1.2) < 0.02), clipOf(load(), "txt1").keyframes);
   await until("rerender", `document.querySelectorAll("#kfbox .kfrow").length === 2 && ${atRev(load().revision)}`);
-  await js(`document.querySelectorAll("#kfbox .kfrow")[0].children[3].click()`);
+  await js(`document.querySelectorAll("#kfbox .kfrow")[0].querySelector('[data-col="del"]').click()`);
   check("delete a keyframe", await untilFile((tl) => clipOf(tl, "txt1")?.keyframes?.opacity?.length === 1), clipOf(load(), "txt1").keyframes);
   await shot("keyframes");
 
@@ -271,12 +291,12 @@ try {
 
   const revView = load().revision, leftOf = (id: string) => js(`parseFloat(${node(id)}.style.left)`) as Promise<number>;
   const gmStart = Number(clipOf(load(), "gm").start); // the clip's left edge is its start times the scale, so the scale after a wheel zoom is read from it
-  await js(`(function(){var z=$("zoom"); z.value="200"; z.dispatchEvent(new Event("input"));})()`);
+  await zoomTo(200);
   check("the zoom slider rescales the timeline: a clip is drawn at its start times the new scale", await leftOf("gm") === 200 * gmStart, await js(`${node("gm")}.style.left`));
   const sb = await js(`(function(){var r=$("scroll").getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
   await page("Input.dispatchMouseEvent", { type: "mouseWheel", x: sb.x, y: sb.y, deltaX: 0, deltaY: -100, modifiers: 2 });
   check("Ctrl + wheel up zooms in, and the slider follows", await until("wheel zoom", `(function(){var p = parseFloat(${node("gm")}.style.left) / ${gmStart}; return p > 200 && Math.abs(${zoomPps} - p) < 1})()`), await js(`[${node("gm")}.style.left, $("zoom").value]`));
-  await js(`(function(){var z=$("zoom"); z.value="80"; z.dispatchEvent(new Event("input"));})()`);
+  await zoomTo(80);
   check("zooming changes the view only, not the project", await leftOf("gm") === 80 * gmStart && load().revision === revView, { rev: load().revision, revView });
 
   // seek: a click on the ruler puts the playhead at the clicked time; the playhead before is elsewhere
@@ -335,7 +355,7 @@ try {
     await js(`document.querySelector('[data-id="img1"]').style.left`));
   check("nested keyframes show as ticks", await js(`document.querySelectorAll('[data-id="img1"] .kf').length === 2`));
   await click(`[data-id="img1"]`);
-  check("nested clip is read-only (expand to edit)", await until("ro", `$("selinfo").textContent.indexOf("expand") > 0 && $("applyc").disabled && $("insp").readOnly && $("kfadd").disabled`));
+  check("nested clip is read-only (expand to edit)", await until("ro", `$("selinfo").textContent.indexOf("expand") > 0 && __off("applyc") && $("insp").readOnly && __off("kfadd")`));
   await shot("compound-open");
   await js(`document.querySelector("#crumbs a").click()`);
   check("breadcrumb back to the timeline", await until("top view", `document.querySelectorAll("#lanes .clip").length === 3 && ${atTop}`));
@@ -468,12 +488,12 @@ try {
   // a render is under way while the Render button is disabled; a play while the Play button no longer reads "Play"
   await js(`(function(){ var f = window.fetch; window.renderBodies = []; window.fetch = function (u, o) { if (String(u) === "/api/render") window.renderBodies.push(JSON.parse(o.body)); return f.apply(this, arguments); }; return true; })()`);
   check("Tab reaches Render, and Space on it starts a render, not play", await tabTo(`e.id === "render"`)
-    && (await SPACE(), await until("render started", `$("render").disabled || !!document.querySelector("#out a")`)) && await js(`$("play").textContent === "Play" && $("video").style.display === "none"`),
-    await js(`[document.activeElement.id, $("render").disabled, $("play").textContent]`));
+    && (await SPACE(), await until("render started", `__off("render") || !!document.querySelector("#out a")`)) && await js(`$("play").textContent === "Play" && $("video").style.display === "none"`),
+    await js(`[document.activeElement.id, __off("render"), $("play").textContent]`));
   check("  it sends the Draft checkbox (ticked by default) as draft", await js(`window.renderBodies.length === 1 && window.renderBodies[0].draft === true && $("draft").checked`), await js(`window.renderBodies`));
-  check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !$("render").disabled`, 120_000), await js(`[$("msg").textContent, $("render").disabled]`));
+  check("  that render finishes", await until("render done", `!!document.querySelector("#out a") && !__off("render")`, 120_000), await js(`[$("msg").textContent, __off("render")]`));
   await applyLatest(dir, [{ op: "add_marker", t: 0.5 }]);
-  await until("marker seen", `${atRev(load().revision)} && !$("undo").disabled`);
+  await until("marker seen", `${atRev(load().revision)} && !__off("undo")`);
   const rev0 = load().revision;
   await click("#undo");
   check("a mouse click on Undo undoes", await untilFile((tl) => tl.revision > rev0 && !(tl.markers ?? []).some((m: any) => m.t === 0.5)), load().markers);
@@ -611,8 +631,8 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   })()`);
   await click("#prepare");
   check("Prepare with nothing to compute is not stuck when its job event beats the POST response",
-    await until("prepare reset", `$("prepare").style.display === "none" && !$("prepare").disabled && $("prepare").textContent === "Prepare"`, 10_000),
-    await js(`[$("prepare").style.display, $("prepare").disabled, $("prepare").textContent, $("msg").textContent]`));
+    await until("prepare reset", `$("prepare").style.display === "none" && !__off("prepare") && $("prepare").textContent === "Prepare"`, 10_000),
+    await js(`[$("prepare").style.display, __off("prepare"), $("prepare").textContent, $("msg").textContent]`));
   // a missing model is downloaded only after a click in the dialog: Escape and Cancel send nothing, Confirm sends one request with the flag
   console.log("download consent");
   await js(`(function(){
@@ -638,9 +658,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   check("  the first request carried no flag", JSON.stringify(await bodies()) === "[{}]", await bodies());
   await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await page("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  check("Escape closes the dialog and shows the normal failure", await until("escaped", `!$("consent").open && $("msg").textContent.indexOf("[model_not_cached]") === 0 && !$("prepare").disabled && $("prepare").textContent === "Prepare"`),
+  check("Escape closes the dialog and shows the normal failure", await until("escaped", `!$("consent").open && $("msg").textContent.indexOf("[model_not_cached]") === 0 && !__off("prepare") && $("prepare").textContent === "Prepare"`),
     await js(`[$("consent").open, $("msg").textContent, $("prepare").textContent]`));
-  check("Cancel closes the dialog too", await ask() && (await click("#cno"), await until("cancelled", `!$("consent").open && !$("prepare").disabled`)));
+  check("Cancel closes the dialog too", await ask() && (await click("#cno"), await until("cancelled", `!$("consent").open && !__off("prepare")`)));
   await sleep(500);
   check("neither Escape nor Cancel sent a second request", JSON.stringify(await bodies()) === "[{},{}]", await bodies());
   check("a new dialog is not remembered: it opens again and the flag is still unset", await ask() && JSON.stringify(await bodies()) === "[{},{},{}]", await bodies());
@@ -664,7 +684,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
       await click("#cgo");
       check("while the model downloads, the Prepare button reads 'Downloading <model> <done>/<total> MB'", await until("download text", `/^Downloading u2net_human_seg [0-9.]+\\/[0-9.]+ MB$/.test($("prepare").textContent)`), await js(`$("prepare").textContent`));
       release();
-      check("once the download has ended and the helper has not reported a frame, the button no longer reads Downloading", await until("download text gone", `$("prepare").textContent.indexOf("Downloading") !== 0 && $("prepare").disabled`), await js(`$("prepare").textContent`));
+      check("once the download has ended and the helper has not reported a frame, the button no longer reads Downloading", await until("download text gone", `$("prepare").textContent.indexOf("Downloading") !== 0 && __off("prepare")`), await js(`$("prepare").textContent`));
       rmSync(holdFile, { force: true });
       check("Confirm sends exactly one request with the flag, the model is fetched once from its pinned URL, and the prepare completes",
         await until("confirmed", `$("prepare").style.display === "none" && !$("consent").open`, 30_000) && JSON.stringify(await bodies()) === '[{},{},{},{"allow_download":true}]' && asked.join() === pinned.url, { bodies: await bodies(), asked });
@@ -707,12 +727,12 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     check("the Media tab lists every asset of the project", await until("assets", `${atRev(load().revision)} && document.querySelectorAll("#mlist .asset").length === ${Object.keys(load().assets).length}`)
       && await names() === Object.keys(load().assets).sort().join(), await names());
     const jpgId = Object.entries(load().assets).find(([, a]: any) => a.path.endsWith(".jpg"))![0];
-    await js(`(function(){var s=$("msearch"); s.value=".JPG"; s.dispatchEvent(new Event("input"));})()`);
+    await js(`__set($("msearch"), ".JPG")`);
     check("  the search box keeps the assets whose id or file name has the text (any case)", await until("filtered", `document.querySelectorAll("#mlist .asset").length >= 1`) && (await names()).split(",").every((id: string) => (load().assets[id].path as string).toLowerCase().includes(".jpg")) && (await names()).includes(jpgId), await names());
-    await js(`(function(){var s=$("msearch"); s.value=""; s.dispatchEvent(new Event("input"));})()`);
+    await js(`__set($("msearch"), "")`);
     const png = join(media, "imported.png");
     ff("-f", "lavfi", "-i", "color=c=orange:size=64x64", "-frames:v", "1", png);
-    await js(`(function(){var i=document.querySelector("#mimport input"); i.value=${JSON.stringify(png)}; document.querySelector("#mimport button").click();})()`);
+    await js(`(function(){__set(document.querySelector("#mimport input"), ${JSON.stringify(png)}); document.querySelector("#mimport button").click();})()`);
     check("Import with a path -> import_media of that file", await untilFile((tl) => Object.values(tl.assets).some((a: any) => a.path.endsWith("imported.png"))), Object.values(load().assets).map((a: any) => a.path));
     await until("import seen", atRev(load().revision));
     const before = Object.keys(load().assets).length;
@@ -771,7 +791,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   {
     await click("#exportb");
     check("Export… opens the dialog", await until("export open", `$("export").open`));
-    await js(`(function(){var f=document.querySelector("#export form").elements; f.format.value=".webm"; f.quality.value="draft"; f.end.value="1";})()`);
+    await pick(`$("eformat")`, "webm");
+    await pick(`$("equality")`, "draft");
+    await typeIn(`$("eto")`, "1");
     await click("#ego");
     check("the dialog's export writes the chosen format and the result shows its QA", await until("exported", `!$("export").open && !!document.querySelector('#out a[href$=".webm"]') && !!$("qa")`, 120_000)
       && await js(`$("qa").className === "qaok"`), await js(`[$("msg").textContent, $("out").textContent.slice(0, 300)]`));
@@ -837,9 +859,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     try {
       await click("#tab-chat");
       await until("chat panel", `!!document.querySelector("#cform2 textarea")`);
-      await js(`(function(){var f=$("cform2"); f.elements.msg.value="what revision?"; f.requestSubmit();})()`);
+      await js(`(function(){var f=$("cform2"); __set(f.elements.msg, "what revision?"); f.requestSubmit();})()`);
       const log = `[].map.call($("clog").children, function (n) { return n.className + ":" + n.textContent; }).join("|")`;
-      check("a chat message shows as sent, then the agent's text, tool call and result, and the end; Send is back", await until("chat done", `${log}.indexOf("Done.") >= 0 && !$("csend").disabled`, 10_000)
+      check("a chat message shows as sent, then the agent's text, tool call and result, and the end; Send is back", await until("chat done", `${log}.indexOf("Done.") >= 0 && !__off("csend")`, 10_000)
         && /^cuser:what revision\?\|cbot:Looking\.\|ctool:→ project_info \{\}\|ctool:← rev 1\|cbot:It is at rev 1\.\|mut:Done\.$/.test(await js(log)), await js(`${log} + " / " + $("msg").textContent`));
     } finally { process.env.PATH = PATH; }
     await click("#tab-media");
@@ -847,7 +869,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
   console.log("form inspector");
   {
     await until("the page shows the project as it is", atRev(load().revision)); // the history rows' last redo: an edit sent before it arrives is a conflict
-    const setF = (id: string, v: string) => js(`(function(){var i=$(${JSON.stringify(id)}); i.value=${JSON.stringify(v)}; i.dispatchEvent(new Event("change", { bubbles: true }));})()`);
+    const setF = (id: string, v: string) => typeIn(`$(${JSON.stringify(id)})`, v);
     await clickClip("blink");
     check("selecting a clip shows its fields in the form", await until("form", `$("selinfo").textContent.indexOf("blink on ") === 0 && !!$("f-text") && $("f-text").value === "Blink"`), await js(`!!$("cform")`));
     await setF("f-text", "Blinked");
@@ -873,7 +895,7 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     await setF("f-exposure", "0.5");
     check("a grade field is merged into the clip's colour grade", await untilFile((tl) => clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1"));
     await until("grade seen", atRev(load().revision));
-    await setF("f-look", "portra");
+    await pick(`$("f-look")`, "portra");
     check("  and the look list sets the look beside it", await untilFile((tl) => clipOf(tl, "rb1")?.color?.look === "portra" && clipOf(tl, "rb1")?.color?.exposure === 0.5), clipOf(load(), "rb1")?.color);
   }
   // The library: every look, effect, transition and text style with a rendered still; a click puts it on the selected clip, a drag on the clip under the pointer, a text style on a free lane is a new title
@@ -920,12 +942,12 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const ends = (tl: any) => mainOf(tl).reduce((e: number, c: any) => Math.max(e, c.start + c.duration), 0);
     await click("#tab-library");
     await js(`document.querySelector('[data-template="quote"]').click()`);
-    check("a template opens a dialog with its args", await until("quote dialog", `$("tpl").open && !!$("tpl").querySelector('[name="text"]') && !!$("tpl").querySelector('[data-arg="background"] select')`));
+    check("a template opens a dialog with its args", await until("quote dialog", `$("tpl").open && !!$("tpl").querySelector('[name="text"]') && !!$("tpl").querySelector('[data-arg="background"] [role="combobox"]')`));
     const revQ = load().revision;
     await click("#tgo");
     check("  Build without a required arg is refused by name inside the dialog, changes nothing and keeps it open", await until("refused", `!!$("terr") && $("tpl").contains($("terr")) && $("terr").textContent.indexOf("text") >= 0 && $("tpl").open`)
       && load().revision === revQ, await js(`$("terr") && $("terr").textContent`));
-    await js(`$("tpl").querySelector('[name="text"]').value = "Stay hungry"`);
+    await js(`__set($("tpl").querySelector('[name="text"]'), "Stay hungry")`);
     const endQ = ends(resolved(load())); // before Build: the end of main the section follows
     await click("#tgo");
     const quoted = (tl: any) => tl.tracks.flatMap((t: any) => t.clips).filter((c: any) => c.text === "\u201cStay hungry\u201d");
@@ -940,8 +962,9 @@ process.stdout.write(JSON.stringify({ out: job.out, frames: 1 }));
     const music = (tl: any) => tl.tracks.find((t: any) => t.id === "music")?.clips.filter((c: any) => c.asset === beatId) ?? [];
     const before = resolved(load()), lens = mainOf(before).map((c: any) => c.duration), endS = ends(before);
     await js(`document.querySelector('[data-template="slideshow"]').click()`);
-    await until("slideshow dialog", `$("tpl").open && !!$("tpl").querySelector('input[name="media"][value="${pic}"]')`);
-    await js(`$("tpl").querySelector('input[name="media"][value="${pic}"]').click(); $("tpl").querySelector('select[name="music"]').value = ${JSON.stringify(beatId)}`);
+    await until("slideshow dialog", `$("tpl").open && !!$("tpl").querySelector('input[data-asset="${pic}"]')`);
+    await js(`$("tpl").querySelector('input[data-asset="${pic}"]').click()`);
+    await pick(`$("tpl").querySelector('[data-arg="music"] [role="combobox"]')`, "tplbeat.wav");
     await click("#tgo");
     check("  slideshow from a picked pool asset and pool music (by asset id): the music bed, no asset imported twice",
       await untilFile((tl) => tl.revision === revS + 1 && music(tl).length === 1) && Object.keys(load().assets).length === nAssets, { music: music(load()), assets: Object.keys(load().assets).length, nAssets });

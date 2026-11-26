@@ -10,7 +10,7 @@
     "types": [],
     "lib": ["ES2023", "DOM"],
     "jsx": "react-jsx",
-    "jsxImportSource": "preact"
+    "jsxImportSource": "react"
   },
   "include": ["."],
   "exclude": ["page.gen.ts"]

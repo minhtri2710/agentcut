@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
+import { gunzipSync } from "node:zlib";
 import { basename, join, resolve } from "node:path";
 import { CONTAINED_FLAGS, SINGLETON_ALLOW, containmentProblem, profileText, spawnsChromeDirectly } from "./chrome.ts";
 import { applyLatest, check, failures, ff } from "./harness.ts";
@@ -84,7 +85,14 @@ const jget = async (path: string, o?: any) => { const r = await raw(path, o); re
 
 check("bound to 127.0.0.1", ui.url.startsWith("http://127.0.0.1:"));
 const page = await raw("/");
-check("page served", page.status === 200 && page.body.toString().includes("EventSource"));
+const assetUrls = [...page.body.toString().matchAll(/\/assets\/app\.[0-9a-f]{12}\.(?:css|js)/g)].map((m) => m[0]);
+const pageJs = await raw(assetUrls.find((u) => u.endsWith(".js"))!), pageCss = await raw(assetUrls.find((u) => u.endsWith(".css"))!);
+check("page served: a shell naming its stylesheet and script, each served as its type and kept by the browser for good", page.status === 200 && page.headers["cache-control"] === "no-store" && assetUrls.length === 2
+  && pageJs.status === 200 && pageJs.type.startsWith("text/javascript") && pageJs.body.toString().includes("EventSource") && pageCss.status === 200 && pageCss.type.startsWith("text/css")
+  && [pageJs, pageCss].every((r) => r.headers["cache-control"] === "public, max-age=31536000, immutable"), { assetUrls, page: page.headers, js: pageJs.headers });
+const gz = await raw(assetUrls[0], { headers: { "accept-encoding": "gzip, br" } });
+check("  gzipped when the browser accepts it, and the same text unzipped", gz.headers["content-encoding"] === "gzip" && gunzipSync(gz.body).equals(assetUrls[0].endsWith(".js") ? pageJs.body : pageCss.body) && gz.body.length < pageJs.body.length / 2);
+check("  an asset of no build is 404", (await raw("/assets/app.000000000000.js")).status === 404);
 const st0 = await raw("/api/state");
 const st = await jget("/api/state");
 check("state has timeline + revision + history", st.j.ok && st.j.revision === r0 + N && st.j.timeline.tracks.length > 0 && Array.isArray(st.j.history.undo), st.j);
@@ -495,7 +503,7 @@ process.env.AGENTCUT_UV = fake;
 await applyLatest(dir, [{ op: "remove_background", id: vid.id }]);
 const np = await jget("/api/frame?t=0.5&scale=0.25");
 check("frame of an unprepared project -> 422 not_prepared with hint", np.status === 422 && np.j.error.code === "not_prepared" && /prepare/.test(np.j.error.hint), np);
-check("page offers the Prepare action for not_prepared", page.body.toString().includes("/api/prepare"));
+check("page offers the Prepare action for not_prepared", pageJs.body.toString().includes("/api/prepare"));
 const pj = (await jget("/api/prepare", { method: "POST", body: {} })).j;
 const pj2 = (await jget("/api/prepare", { method: "POST", body: {} })).j;
 check("prepare starts a job; a second request joins it", pj.ok && pj.kind === "prepare" && pj2.id === pj.id, [pj, pj2]);
@@ -1161,18 +1169,14 @@ console.log("page modules");
 // ---------------------------------------------------------------- the page bundle's assembly (scripts/build-ui.ts)
 console.log("page assembly");
 {
-  const { inlineScript, assemble, pageModule } = await import("../scripts/build-ui.ts");
-  const hostile = 'var a = "x</script><!-- y</SCRIPT>", b = `${1}`, c = "<!--", d = "$& $` {{STYLE}}"; // </script> <!--\n';
-  const safe = inlineScript(hostile);
-  check("inlineScript leaves no </script or <!-- in the text, and the script means the same", !/<\/script/i.test(safe) && !safe.includes("<!--")
-    && JSON.stringify(new Function(safe + "; return [a, b, c, d]")()) === JSON.stringify(new Function(hostile + "; return [a, b, c, d]")()), safe);
-  const page = assemble("<style>\n{{STYLE}}\n</style>\n<script>\n{{SCRIPT}}\n</script>\n", "p{}\n", hostile);
-  check("assemble puts the style and the script in once each, whatever `$` sequences or tokens the script holds", page.startsWith("<style>\np{}\n</style>") && page.includes('<script>\n"use strict";\nvar a = ')
-    && page.split("</script>").length === 2 && page.includes("{{STYLE}}") && page.includes("$& $`"), page);
-  const text = "a`b${c}</script><!--\n\\n   end\n";
+  const { assemble, pageModule } = await import("../scripts/build-ui.ts");
+  const shell = '<link rel="stylesheet" href="{{STYLE}}"><script defer src="{{SCRIPT}}"></script>';
+  check("assemble names each asset once, by its URL", assemble(shell, "app.a.css", "app.b.js") === '<link rel="stylesheet" href="/assets/app.a.css"><script defer src="/assets/app.b.js"></script>');
+  const text = "a`b${c}</script><!--\n\\n   end\n";
   const gen = join(tmp, "page-gen-probe.ts");
-  writeFileSync(gen, pageModule(text));
-  check("pageModule: the generated module exports the page text exactly, backticks, ${, </script> and line breaks included", (await import(gen)).PAGE === text);
+  writeFileSync(gen, pageModule({ html: text, assets: { "app.x.js": text } }));
+  const mod = await import(gen);
+  check("pageModule: the generated module exports the page and its assets exactly, backticks, ${, </script> and line breaks included", mod.PAGE === text && mod.ASSETS["app.x.js"] === text);
 }
 
 // ---------------------------------------------------------------- the browser suite has no skip

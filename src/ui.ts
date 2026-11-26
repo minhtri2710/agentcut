@@ -7,6 +7,7 @@ import { cpSync, createReadStream, createWriteStream, existsSync, linkSync, mkdt
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { gzipSync } from "node:zlib";
 import { peaks } from "./analyze.ts";
 import * as api from "./api.ts";
 import { capPreviews } from "./cache.ts";
@@ -18,7 +19,7 @@ import { AUDIO_EXT, IMAGE_EXT, seekArgs } from "./media.ts";
 import { type Asset, EditError, PRESETS, resolve as resolveTimeline, totalDuration, type Dict, type VideoFacts } from "./model.ts";
 import { Project, UI_AUTHOR } from "./project.ts";
 import { ensureDir, writeFile } from "./safe-write.ts";
-import { PAGE } from "./ui/page.gen.ts";
+import { ASSETS, PAGE } from "./ui/page.gen.ts";
 
 const MIME: Record<string, string> = {
   ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska", ".gif": "image/gif",
@@ -62,7 +63,7 @@ export async function startUi(project: string | undefined, o: { port?: number } 
     const { url, path } = g;
     if (req.method === "POST" && path === "/api/upload") return json(res, 200, { ok: true, path: await upload(req, url.searchParams.get("name")) });
 
-    if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE); }
+    if (req.method === "GET" && (path === "/" || path.startsWith("/assets/"))) return page(req, res, path, PAGE);
     if (req.method === "GET" && path === "/api/state") return json(res, 200, { ok: true, ...(await state()) });
     if (req.method === "GET" && path === "/api/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
@@ -345,7 +346,7 @@ export async function startDashboard(dir: string, o: { port?: number } = {}) {
     const g = guard(req, res, server);
     if (!g) return;
     const { path } = g;
-    if (req.method === "GET" && path === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(PAGE.replace('<div id="app">', '<div id="app" data-dashboard>')); }
+    if (req.method === "GET" && (path === "/" || path.startsWith("/assets/"))) return page(req, res, path, DASH_PAGE);
     if (req.method === "GET" && path === "/api/projects") return json(res, 200, { ok: true, dir: root, presets: Object.keys(PRESETS), projects: projects() });
     const thumb = /^\/api\/projects\/([^/]+)\/thumb$/.exec(path);
     if (req.method === "GET" && thumb) {
@@ -384,6 +385,25 @@ function listen(server: ReturnType<typeof createServer>, port = 4810) {
     server.once("error", (e: any) => fail(e.code === "EADDRINUSE" ? new EditError(`port ${port} is in use`, "port_in_use", "pass --port N (or --port 0 for any free port)") : e));
     server.listen(port, "127.0.0.1", ok);
   });
+}
+
+const DASH_PAGE = PAGE.replace('<div id="app">', '<div id="app" data-dashboard>');
+const ASSET_TYPE: Record<string, string> = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
+/** gzip of each text, made once: the page and its assets do not change while the process runs */
+const gzipped = new Map<string, Buffer>();
+/** The page ("/", never cached: it names the assets of this build) or one of its assets (/assets/<name>: the name is a hash of the text, so the browser
+ *  keeps it for good), gzipped when the browser accepts it. An unknown asset is 404. */
+function page(req: IncomingMessage, res: ServerResponse, path: string, html: string) {
+  const name = path.slice("/assets/".length), text = path === "/" ? html : ASSETS[name];
+  if (text === undefined) return json(res, 404, { ok: false, error: { code: "not_found", message: `no asset ${name}` } });
+  const head: Record<string, string> = path === "/" ? { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+    : { "content-type": ASSET_TYPE[extname(name)] ?? "application/octet-stream", "cache-control": "public, max-age=31536000, immutable" };
+  head.vary = "accept-encoding";
+  if (!/\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) { res.writeHead(200, head); return res.end(text); }
+  let gz = gzipped.get(text);
+  if (!gz) gzipped.set(text, (gz = gzipSync(text)));
+  res.writeHead(200, { ...head, "content-encoding": "gzip" });
+  res.end(gz);
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {

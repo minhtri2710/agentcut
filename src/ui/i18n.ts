@@ -47,6 +47,7 @@ const EN = {
   by: "by {0}", undoStack: "Edits (newest first): click to undo back to before one", redoStack: "Undone (click to redo up to one)",
   hide: "hide", mute: "mute", hideTrack: "hide track {0} (not drawn)", showTrack: "show track {0}", muteTrack: "mute track {0}", unmuteTrack: "unmute track {0}", lock: "lock", lockTrack: "lock track {0} (no edit may change its clips)", unlockTrack: "unlock track {0}",
   dropHint: "Drop files here to copy them into media/; drag an item onto a track to add it.", uploading: "Uploading {0}…", noAssets: "No media yet.",
+  inspector: "Inspector", inspectorHint: "Select a clip on the timeline to edit its fields, keyframes and grouping.", opsTitle: "Ops batch", emptyTitle: "Nothing on the timeline yet", emptyHint: "Import media on the left, drag it onto a track, or ask the agent in Chat.",
 };
 export type Key = keyof typeof EN;
 
@@ -96,6 +97,7 @@ const VI: Record<Key, string> = {
   by: "bởi {0}", undoStack: "Các bước sửa (mới nhất trước): bấm để hoàn tác về trước một bước", redoStack: "Đã hoàn tác (bấm để làm lại tới một bước)",
   hide: "ẩn", mute: "tắt", hideTrack: "ẩn track {0} (không vẽ)", showTrack: "hiện track {0}", muteTrack: "tắt tiếng track {0}", unmuteTrack: "bật tiếng track {0}", lock: "khóa", lockTrack: "khóa track {0} (không sửa được clip của nó)", unlockTrack: "mở khóa track {0}",
   dropHint: "Thả tệp vào đây để chép vào media/; kéo một mục lên track để thêm.", uploading: "Đang tải lên {0}…", noAssets: "Chưa có media.",
+  inspector: "Thuộc tính", inspectorHint: "Chọn một clip trên timeline để sửa thuộc tính, keyframe và nhóm của nó.", opsTitle: "Lô op", emptyTitle: "Timeline chưa có gì", emptyHint: "Nhập media ở bên trái, kéo nó lên một track, hoặc nhờ agent trong Trò chuyện.",
 };
 
 export type Lang = "en" | "vi";

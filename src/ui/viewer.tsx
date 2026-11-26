@@ -1,7 +1,10 @@
+import { Button } from "@astryxdesign/core/Button";
+import { Play, Sparkles, Square } from "lucide-react";
 import { api } from "./api.ts";
 import { t } from "./i18n.ts";
 import { fail } from "./messages.ts";
 import { settle, startPrepare } from "./jobs.ts";
+import { ico } from "./kit.tsx";
 import { $, changed, LABEL, st, total } from "./state.ts";
 import { frameFailText, frameScale, prepareText } from "./text.ts";
 import type { Job } from "./types.ts";
@@ -17,7 +20,7 @@ export function requestFrame() { clearTimeout(deb); deb = window.setTimeout(() =
 function pump() {
   if (busy || want === null || !st.S) return;
   if (!(total() > 0)) { want = null; return; } // an empty timeline has no frame: the server would refuse it
-  const set = st.S.timeline.settings, box = $("viewer").getBoundingClientRect();
+  const set = st.S.timeline.settings, box = $("stage").getBoundingClientRect();
   const scale = frameScale(box.width, box.height, set.width, set.height, window.devicePixelRatio);
   const at = Math.min(want, Math.max(0, total() - 1 / set.fps)); // the server refuses t at or past the duration: the playhead at the end shows the last frame
   const url = "/api/frame?t=" + at.toFixed(3) + "&scale=" + scale + "&rev=" + st.S.revision;
@@ -50,19 +53,25 @@ function play() {
 
 const playLabel = () => (st.playing ? t("stop") : !st.play ? t("play") : st.play.pct === null ? t("preparing") : t("preparingPct", st.play.pct));
 const prepLabel = () => (st.prep === "starting" ? t("preparing") : st.prep ? prepareText(st.prep) : t("prepare"));
+const clock = (s: number) => { const m = Math.floor(s / 60); return String(m).padStart(2, "0") + ":" + (s - m * 60).toFixed(2).padStart(5, "0"); };
 
 export function Viewer() {
+  const set = st.S?.timeline.settings, empty = !!st.S && !(total() > 0);
   return (
-    <div id="viewer">
-      <img id="frame" class="none" alt="preview" style={{ display: st.playing ? "none" : "" }} />
-      <video id="video" controls style={{ display: st.playing ? "" : "none" }}
-        onTimeUpdate={(e) => { st.t = playStart + e.currentTarget.currentTime; changed(); }} onEnded={stopPlay} />
-      <div id="vbar">
-        <button id="play" onClick={play}>{playLabel()}</button>
-        <button id="prepare" style={{ display: st.needPrepare || st.prep ? "" : "none" }} disabled={!!st.prep} onClick={() => startPrepare(false)}>{prepLabel()}</button>
-        <span id="time">{st.t.toFixed(2) + " s"}</span>
+    <section id="viewer">
+      <div id="stage">
+        <img id="frame" className="none" alt="preview" style={{ display: st.playing ? "none" : "", aspectRatio: set ? set.width + "/" + set.height : "" }} />
+        <video id="video" controls style={{ display: st.playing ? "" : "none" }}
+          onTimeUpdate={(e) => { st.t = playStart + e.currentTarget.currentTime; changed(); }} onEnded={stopPlay} />
+        {empty && <div className="vempty"><b>{t("emptyTitle")}</b><span>{t("emptyHint")}</span></div>}
+        <div className="mut" id="vstat"></div>
       </div>
-      <div class="mut" id="vstat"></div>
-    </div>
+      <div id="vbar">
+        <span className="vtime mono" aria-hidden="true">{clock(st.t)}<span className="mut"> / {clock(total())}</span></span>
+        <Button id="play" size="sm" variant="primary" icon={ico(st.playing ? Square : Play)} label={playLabel()} isDisabled={empty} onClick={play} />
+        <Button id="prepare" size="sm" icon={ico(Sparkles)} label={prepLabel()} style={{ display: st.needPrepare || st.prep ? "" : "none" }} isDisabled={!!st.prep} onClick={() => startPrepare(false)} />
+        <span id="time" className="mono mut">{st.t.toFixed(2) + " s"}</span>
+      </div>
+    </section>
   );
 }

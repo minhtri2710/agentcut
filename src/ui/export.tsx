@@ -1,7 +1,16 @@
-import { useLayoutEffect } from "preact/hooks";
+import { useState } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Download, ExternalLink } from "lucide-react";
 import { t } from "./i18n.ts";
 import { startRender } from "./jobs.ts";
-import { $, changed, st } from "./state.ts";
+import { ico } from "./kit.tsx";
+import { changed, st } from "./state.ts";
 import type { Dict } from "./types.ts";
 import { seek } from "./viewer.tsx";
 
@@ -10,56 +19,67 @@ const FORMATS = [".mp4", ".mov", ".webm", ".mkv", ".gif", ".wav", ".mp3", ".m4a"
 const SUBTITLED = [".mp4", ".mov", ".mkv", ".webm"];
 
 export function openExport() { st.exporting = true; changed(); }
+const close = () => { st.exporting = false; changed(); };
 
 /** the dialog's fields as the render request: only what was set (an empty range field is the timeline's start or end) */
-function submit(e: Event) {
-  e.preventDefault();
-  const f = (e.currentTarget as HTMLFormElement).elements, v = (n: string) => (f.namedItem(n) as HTMLInputElement | HTMLSelectElement).value;
-  const opts: Dict = { format: v("format"), quality: v("quality") };
-  if (v("format") === ".mp4" && v("codec")) opts.codec = v("codec");
-  if (v("start")) opts.start = +v("start");
-  if (v("end")) opts.end = +v("end");
-  if (SUBTITLED.includes(v("format")) && (f.namedItem("subtitles") as HTMLInputElement).checked) opts.subtitles = true;
-  $<HTMLDialogElement>("export").close();
-  startRender(opts);
+function request(f: { format: string; codec: string; quality: string; from: number | null; to: number | null; subs: boolean }): Dict {
+  const opts: Dict = { format: f.format, quality: f.quality };
+  if (f.format === ".mp4" && f.codec) opts.codec = f.codec;
+  if (f.from !== null) opts.start = f.from;
+  if (f.to !== null) opts.end = f.to;
+  if (SUBTITLED.includes(f.format) && f.subs) opts.subtitles = true;
+  return opts;
 }
 
 export function ExportDialog() {
-  useLayoutEffect(() => { const d = $<HTMLDialogElement>("export"); if (st.exporting && !d.open) d.showModal(); }, [st.exporting]);
+  const [format, setFormat] = useState(".mp4"), [codec, setCodec] = useState(""), [quality, setQuality] = useState("standard");
+  const [from, setFrom] = useState<number | null>(null), [to, setTo] = useState<number | null>(null), [subs, setSubs] = useState(false);
   return (
-    <dialog id="export" aria-labelledby="etitle" onClose={() => { st.exporting = false; changed(); }}>
-      <form class="eform" onSubmit={submit}>
-        <p id="etitle"><b>{t("exportTitle")}</b></p>
-        <label>{t("format")}<select name="format">{FORMATS.map((x) => <option value={x}>{x.slice(1)}</option>)}</select></label>
-        <label>{t("codec")}<select name="codec"><option value="">h264</option><option value="hevc">hevc</option></select></label>
-        <label>{t("quality")}<select name="quality"><option value="standard">standard</option><option value="high">high</option><option value="draft">draft</option></select></label>
-        <label>{t("from")}<input name="start" type="number" min="0" step="0.1" placeholder="0" /></label>
-        <label>{t("to")}<input name="end" type="number" min="0" step="0.1" placeholder={st.S ? st.S.duration.toFixed(2) : ""} /></label>
-        <label class="row"><input name="subtitles" type="checkbox" /> {t("subtitles")}</label>
-        <div><button id="ego" class="primary">{t("exportGo")}</button> <button type="button" onClick={() => $<HTMLDialogElement>("export").close()}>{t("cancel")}</button></div>
+    <Dialog id="export" isOpen={st.exporting} onOpenChange={(o) => { if (!o) close(); }} purpose="form" width={460}>
+      <DialogHeader title={t("exportTitle")} onOpenChange={(o) => { if (!o) close(); }} />
+      <form className="eform" onSubmit={(e) => { e.preventDefault(); close(); startRender(request({ format, codec, quality, from, to, subs })); }}>
+        <Selector id="eformat" label={t("format")} value={format} onChange={(x) => setFormat(x!)} options={FORMATS.map((x) => ({ value: x, label: x.slice(1) }))} />
+        <div className="row2">
+          <Selector id="ecodec" label={t("codec")} value={codec} isDisabled={format !== ".mp4"} onChange={(x) => setCodec(x!)} options={[{ value: "", label: "h264" }, { value: "hevc", label: "hevc" }]} />
+          <Selector id="equality" label={t("quality")} value={quality} onChange={(x) => setQuality(x!)} options={["standard", "high", "draft"]} />
+        </div>
+        <div className="row2">
+          <NumberInput id="efrom" label={t("from")} min={0} step={0.1} placeholder="0" value={from} onChange={setFrom} units="s" />
+          <NumberInput id="eto" label={t("to")} min={0} step={0.1} placeholder={st.S ? st.S.duration.toFixed(2) : ""} value={to} onChange={setTo} units="s" />
+        </div>
+        <CheckboxInput id="esubs" label={t("subtitles")} value={subs} isDisabled={!SUBTITLED.includes(format)} onChange={setSubs} />
+        <div className="dactions">
+          <Button label={t("cancel")} onClick={close} />
+          <Button id="ego" type="submit" variant="primary" icon={ico(Download)} label={t("exportGo")} />
+        </div>
       </form>
-    </dialog>
+    </Dialog>
   );
 }
 
 /** a render's result: the file, its facts, the QA of the written file (issues with a time seek there) and the contact sheet */
 export function Out() {
   const o = st.out, r = o && o.result, qa = r && r.qa;
+  if (!o) return <div id="out" />;
   return (
-    <div id="out">
-      {o && o.progress !== undefined && <progress id="prog" max={1} value={o.progress} />}
-      {r && [
-        <a href={o!.url} target="_blank">{t("output", String(r.output).split(/[\\/]/).pop()!)}</a>,
-        <div class="mut">{[r.duration !== undefined && r.duration + " s", r.width && r.width + "x" + r.height, r.loudness && r.loudness.integrated_lufs + " LUFS"].filter(Boolean).join(", ")
-          + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "")}</div>,
-      ]}
-      {qa && (qa.ok ? <div id="qa" class="qaok">{t("qaOk")}</div> : (
+    <div id="out" className="isec">
+      {o.progress !== undefined && <ProgressBar id="prog" label={t("render")} max={1} value={o.progress} hasValueLabel />}
+      {r && (
+        <div className="outfile">
+          <a href={o.url} target="_blank" rel="noreferrer">{ico(ExternalLink)} {t("output", String(r.output).split(/[\\/]/).pop()!)}</a>
+          <div className="mut">{[r.duration !== undefined && r.duration + " s", r.width && r.width + "x" + r.height, r.loudness && r.loudness.integrated_lufs + " LUFS"].filter(Boolean).join(", ")
+            + (r.warnings && r.warnings.length ? " · " + r.warnings.join("; ") : "")}</div>
+        </div>
+      )}
+      {qa && (qa.ok ? <div id="qa" className="qaok"><Banner status="success" title={t("qaOk")} collapsible={false} /></div> : (
         <ul id="qa">
-          {qa.issues.map((i: Dict) => <li>{"[" + i.type + "] " + i.message + " "}{i.t !== undefined && <button onClick={() => seek(i.t)}>{t("seekTo", i.t.toFixed(2))}</button>}</li>)}
+          {qa.issues.map((i: Dict, n: number) => (
+            <li key={n}>{"[" + i.type + "] " + i.message + " "}{i.t !== undefined && <Button size="sm" variant="ghost" label={t("seekTo", i.t.toFixed(2))} onClick={() => seek(i.t)} />}</li>
+          ))}
         </ul>
       ))}
-      {r && r.qa_error && <div class="mut">{r.qa_error}</div>}
-      {o && o.sheet && <img src={o.sheet} title={t("openFull")} onClick={() => { window.open(o.sheet); }} />}
+      {r && r.qa_error && <div className="mut">{r.qa_error}</div>}
+      {o.sheet && <img src={o.sheet} title={t("openFull")} alt="" onClick={() => { window.open(o.sheet); }} />}
     </div>
   );
 }

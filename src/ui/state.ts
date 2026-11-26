@@ -2,7 +2,7 @@ import type { DragMode } from "./edits.ts";
 import type { ApiError, Clip, Dict, Job, State, Track } from "./types.ts";
 import { findIn, viewOf, type View } from "./view.ts";
 
-export const LABEL = 90, LANE = 44; // px: the lane label column, one lane's height
+export const LABEL = 150, LANE = 44; // px: the lane label column, one lane's height
 
 /** what the box under the batch shows: a render's progress, its result (with the file's URL), a contact sheet */
 export type Out = { progress?: number; result?: Dict; url?: string; sheet?: string };
@@ -15,6 +15,7 @@ export const st = {
   sel: null as string | null,
   picked: [] as string[], // shift-click multi-selection
   inspBase: "", // the text the inspector box was filled with
+  draft: true, // the header's Draft checkbox: the quick Render is a draft
   kfProp: "opacity",
   t: 0, // playhead, seconds
   pps: 80, // pixels per second

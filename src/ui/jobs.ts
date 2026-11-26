@@ -25,7 +25,7 @@ export function startPrepare(allowDownload: boolean) {
 }
 
 /** a render into renders/: the header's quick Render (draft or not, .mp4), or the export dialog's choice (format, codec, quality, range, subtitles) */
-export function startRender(opts: Dict = { draft: $<HTMLInputElement>("draft").checked }) {
+export function startRender(opts: Dict = { draft: st.draft }) {
   st.rendering = true; st.out = { progress: 0 }; changed();
   api("/api/render", opts).then((j) => { st.renderJob = j.id; settle(j as Job); }, (e) => { st.rendering = false; st.out = null; changed(); fail(e); });
 }

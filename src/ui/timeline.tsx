@@ -1,4 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { Slider } from "@astryxdesign/core/Slider";
+import { ToggleButton } from "@astryxdesign/core/ToggleButton";
+import { Eye, EyeOff, Lock, LockOpen, Volume2, VolumeX, ZoomIn } from "lucide-react";
+import { ico } from "./kit.tsx";
 import { ops } from "./api.ts";
 import { drag, kfDrag } from "./drag.ts";
 import { dropEdit } from "./edits.ts";
@@ -13,8 +17,8 @@ import type { Clip, Track } from "./types.ts";
 import { clipOrder, resolveRef, tickStep } from "./view.ts";
 import { seek } from "./viewer.tsx";
 
-const COL: Record<string, string> = { video: "#3b6fb6", image: "#2f8f83", text: "#a35bb8", captions: "#b8865b", shape: "#7b8f2f", color: "#8f2f5a",
-  lottie: "#2f5a8f", audio: "#2f8f4a", gap: "#444", compound: "#b85b5b" };
+/** a clip's colour by type: the theme's hue palette (background, border), so the lanes read like the rest of the page */
+const HUE: Record<string, string> = { video: "blue", image: "teal", text: "purple", captions: "orange", shape: "yellow", color: "pink", lottie: "cyan", audio: "green", gap: "gray", compound: "red" };
 
 /** the node of the clip with this id in the shown timeline: ids are free text, so no CSS selector is built from one */
 export const clipNode = (id: string): HTMLElement | undefined =>
@@ -62,11 +66,11 @@ function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
 
 /** an asset from the media pool dropped on a lane: one add_clip there (the shown tracks only: an opened compound is read-only) */
 /** what was dropped on a lane: a media pool asset is a new clip there; a library item goes on the clip under the pointer, or a text preset is a new title there */
-function laneDrop(e: DragEvent, tr: Track) {
+function laneDrop(e: DragEvent, lane: HTMLElement, tr: Track) {
   const dt = e.dataTransfer, id = dt?.getData(ASSET_DRAG), lib = dt?.getData(LIB_DRAG);
   if ((!id && !lib) || V().nested) return;
   e.preventDefault();
-  const at = (e.clientX - (e.currentTarget as HTMLElement).querySelector(".lclips")!.getBoundingClientRect().left) / st.pps;
+  const at = (e.clientX - lane.querySelector(".lclips")!.getBoundingClientRect().left) / st.pps;
   if (id) return ops([dropEdit(tr, { asset: id }, at)], "add " + id + " to " + tr.id);
   const [kind, name] = lib!.split("/"), on = (e.target as HTMLElement).closest<HTMLElement>(".clip");
   if (!on && kind === "text") return ops([dropEdit(tr, { text: t("libTitle"), duration: 3, preset: name }, at)], "add " + name + " title to " + tr.id);
@@ -97,7 +101,7 @@ function Wave({ c, path, width }: { c: Clip; path: string; width: number }) {
     const h = Math.max(0.5, (m / 255) * 15);
     d += "M" + (b * 2 + 1) + " " + (19 - h).toFixed(1) + "V" + (19 + h).toFixed(1);
   }
-  return <svg class="wave" width={width} height="38"><path d={d} /></svg>;
+  return <svg className="wave" width={width} height="38"><path d={d} /></svg>;
 }
 
 const TILE = 68; // px: one thumbnail of the strip (16:9 at the clip's height)
@@ -122,18 +126,18 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
   const label = c.text || c.name || (a ? (a.path || "").split("/").pop() : c.type);
   const trn = c.transition && i > 0 ? c.transition : null;
   return (
-    <div class={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
+    <div className={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
       aria-label={t("clipLabel", c.id, c.type, start(c).toFixed(2))} title={c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s"}
-      style={{ left: left + "px", width: width + "px", backgroundColor: COL[c.type] || "#555", backgroundImage: strip ? strip.image : "", backgroundPosition: strip ? strip.position : "", backgroundRepeat: strip && strip.position ? "no-repeat" : "", transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
-      onMouseDown={(ev) => clipDown(ev, tr, c)}>
+      style={{ left: left + "px", width: width + "px", ["--hue" as string]: "var(--color-background-" + (HUE[c.type] || "gray") + ")", ["--hue-line" as string]: "var(--color-border-" + (HUE[c.type] || "gray") + ")", backgroundImage: strip ? strip.image : "", backgroundPosition: strip ? strip.position : "", backgroundRepeat: strip && strip.position ? "no-repeat" : "", transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
+      onMouseDown={(ev) => clipDown(ev.nativeEvent, tr, c)}>
       {c.type === "audio" && a && <Wave c={c} path={a.path || ""} width={width} />}
-      <span class="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
-      {c.effects && c.effects.length ? <span class="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
-      {trn && <div class="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
-      {!v.nested && <div class="h l" data-edge="l" />}
-      {!v.nested && <div class="h r" data-edge="r" />}
+      <span className="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
+      {c.effects && c.effects.length ? <span className="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
+      {trn && <div className="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
+      {!v.nested && <div className="h l" data-edge="l" />}
+      {!v.nested && <div className="h r" data-edge="r" />}
       {kfTimes(c).map((kt) => (
-        <div key={kt} class="kf" data-t={String(kt)} style={{ left: v.k * kt * pps + (kd && near(kd.kt, kt) ? kd.dx : 0) + "px" }}
+        <div key={kt} className="kf" data-t={String(kt)} style={{ left: v.k * kt * pps + (kd && near(kd.kt, kt) ? kd.dx : 0) + "px" }}
           title={t("keyframeAt", kt, Object.keys(c.keyframes).filter((p) => pts(c.keyframes[p]).some((q) => near(q[0], kt))).join(", "))} />
       ))}
     </div>
@@ -146,7 +150,7 @@ function Crumbs() {
     <span id="crumbs">
       {[t("timeline")].concat(p).map((name, i) => [
         i ? " › " : "",
-        i === p.length ? <span class="cur">{name}</span> : <a onClick={() => openPath(p.slice(0, i))}>{name}</a>,
+        i === p.length ? <span key={i} className="cur">{name}</span> : <a key={i} href="#" onClick={(e) => { e.preventDefault(); openPath(p.slice(0, i)); }}>{name}</a>,
       ])}
       {p.length ? t("readOnly") : ""}
     </span>
@@ -158,6 +162,11 @@ function toggleTrack(tr: Track, field: "hidden" | "muted" | "locked") {
   ops([{ op: "update_track", id: tr.id, set: { [field]: !tr[field] } }], (tr[field] ? "un" : "") + { hidden: "hide ", muted: "mute ", locked: "lock " }[field] + tr.id);
 }
 
+/** a track header toggle: its icon shows the state (on: the track is hidden, muted or locked) */
+function Toggle({ tr, field, on, off, label, ro }: { tr: Track; field: "hidden" | "muted" | "locked"; on: Parameters<typeof ico>[0]; off: Parameters<typeof ico>[0]; label: string; ro: boolean }) {
+  return <ToggleButton data-toggle={field} size="sm" isIconOnly label={label} isPressed={!!tr[field]} isDisabled={ro} icon={ico(off)} pressedIcon={ico(on)} onPressedChange={() => toggleTrack(tr, field)} />;
+}
+
 function Lanes({ W }: { W: number }) {
   const tl = S().timeline, v = V(), pps = st.pps;
   const rows = v.tracks.slice().reverse(); // tracks[0] is the bottom layer: draw it last (lowest lane)
@@ -165,38 +174,35 @@ function Lanes({ W }: { W: number }) {
   rows.forEach((tr, i) => { tr.clips.forEach((c) => { laneOf[c.id] = i; }); });
   const H = rows.length * LANE;
   return [
-    <div id="ruler" style={{ width: W + "px" }} onMouseDown={rulerDown}>
-      {Array.from({ length: Math.ceil(W / pps / tickStep(pps)) }, (_, n) => n * tickStep(pps)).map((x) => <div key={"t" + x} class="tick" style={{ left: x * pps + "px" }}>{x + "s"}</div>)}
-      {(tl.markers || []).map((m, n) => <div key={"m" + n} class="marker" style={{ left: num(m.t) * pps + "px" }} title={m.t + "s " + (m.label || "")}>{m.label || ""}</div>)}
+    <div key="ruler" id="ruler" style={{ width: W + "px", marginLeft: LABEL + "px" }} onMouseDown={(e) => rulerDown(e.nativeEvent)}>
+      {Array.from({ length: Math.ceil(W / pps / tickStep(pps)) }, (_, n) => n * tickStep(pps)).map((x) => <div key={"t" + x} className="tick" style={{ left: x * pps + "px" }}>{x + "s"}</div>)}
+      {(tl.markers || []).map((m, n) => <div key={"m" + n} className="marker" style={{ left: num(m.t) * pps + "px" }} title={m.t + "s " + (m.label || "")}>{m.label || ""}</div>)}
     </div>,
-    <div id="lanes">
+    <div key="lanes" id="lanes">
       {rows.map((tr) => (
-        <div key={tr.id} class={"lane" + (tr.locked ? " locked" : "")} data-track={tr.id} onDragOver={laneOver} onDrop={(e) => laneDrop(e, tr)}>
-          <div class="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
+        <div key={tr.id} className={"lane" + (tr.locked ? " locked" : "") + (tr.hidden ? " hidden" : "") + (tr.muted ? " muted" : "")} data-track={tr.id} onDragOver={(e) => laneOver(e.nativeEvent)} onDrop={(e) => laneDrop(e.nativeEvent, e.currentTarget, tr)}>
+          <div className="lname" title={[tr.kind || "video", tr.magnetic ? "magnetic" : ""].filter(Boolean).join(" ")}>
             <b>{tr.id}</b>
-            <div class="tbtns">
-              {tr.kind !== "audio" && <button class={tr.hidden ? "on" : ""} aria-pressed={!!tr.hidden} disabled={v.nested} title={t(tr.hidden ? "showTrack" : "hideTrack", tr.id)}
-                data-toggle="hidden" onClick={() => toggleTrack(tr, "hidden")}>{t("hide")}</button>}
-              <button class={tr.muted ? "on" : ""} aria-pressed={!!tr.muted} disabled={v.nested} title={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)}
-                data-toggle="muted" onClick={() => toggleTrack(tr, "muted")}>{t("mute")}</button>
-              <button class={tr.locked ? "on" : ""} aria-pressed={!!tr.locked} disabled={v.nested} title={t(tr.locked ? "unlockTrack" : "lockTrack", tr.id)}
-                data-toggle="locked" onClick={() => toggleTrack(tr, "locked")}>{t("lock")}</button>
+            <div className="tbtns">
+              {tr.kind !== "audio" && <Toggle tr={tr} field="hidden" on={EyeOff} off={Eye} label={t(tr.hidden ? "showTrack" : "hideTrack", tr.id)} ro={v.nested} />}
+              <Toggle tr={tr} field="muted" on={VolumeX} off={Volume2} label={t(tr.muted ? "unmuteTrack" : "muteTrack", tr.id)} ro={v.nested} />
+              <Toggle tr={tr} field="locked" on={Lock} off={LockOpen} label={t(tr.locked ? "unlockTrack" : "lockTrack", tr.id)} ro={v.nested} />
             </div>
           </div>
-          <div class="lclips">{tr.clips.map((c, i) => <ClipBox key={c.id} tr={tr} c={c} i={i} />)}</div>
+          <div className="lclips">{tr.clips.map((c, i) => <ClipBox key={c.id} tr={tr} c={c} i={i} />)}</div>
         </div>
       ))}
     </div>,
-    <svg id="links" width={W} height={H}>
+    <svg key="links" id="links" width={W} height={H} style={{ left: LABEL + "px" }}>
       {rows.flatMap((tr, i) => tr.clips.map((c) => {
         if (!c.attach_to) return null;
         const pid = resolveRef(v.tracks, c.attach_to);
         if (pid === null || laneOf[pid] === undefined) return null;
         const x = (v.off + v.k * start(c)) * pps, y1 = i * LANE + LANE / 2, y2 = laneOf[pid] * LANE + LANE / 2;
-        return [<path key={c.id + "l"} d={"M" + x + " " + y1 + " L" + x + " " + y2} stroke="#fc3" stroke-dasharray="3 3" />, <circle key={c.id + "c"} cx={x} cy={y2} r="3" fill="#fc3" />];
+        return [<path key={c.id + "l"} d={"M" + x + " " + y1 + " L" + x + " " + y2} stroke="var(--color-text-warning)" strokeDasharray="3 3" />, <circle key={c.id + "c"} cx={x} cy={y2} r="3" fill="var(--color-text-warning)" />];
       }))}
     </svg>,
-    <div id="ph" style={{ left: LABEL + st.t * pps + "px", height: H + 20 + "px" }} />,
+    <div key="ph" id="ph" style={{ left: LABEL + st.t * pps + "px", height: H + 24 + "px" }} />,
   ];
 }
 
@@ -215,21 +221,24 @@ export function Timeline() {
     sc.addEventListener("wheel", wheel, { passive: false });
     return () => sc.removeEventListener("wheel", wheel);
   }, []);
-  const W = Math.max(total() + 5, 10) * st.pps;
+  const shown = scroll.current ? scroll.current.clientWidth - LABEL : 0; // the lanes and the ruler fill the box at least
+  const W = Math.max((total() + 5) * st.pps, 10 * st.pps, shown);
   return (
-    <div id="tl">
+    <section id="tl">
       <div id="tbar">
-        <span class="mut">{t("zoom")}</span>
-        <input type="range" id="zoom" min="10" max="400" value={String(st.pps)} onInput={(e) => setZoom(+e.currentTarget.value)} />
-        <span class="mut" id="dur">{st.S ? total().toFixed(2) + " s" : ""}</span>
         <Crumbs />
-        <span class="mut">{t("tlHint")}</span>
+        <span className="mut tlhint">{t("tlHint")}</span>
+        <span className="grow" />
+        <span className="mut mono" id="dur">{st.S ? total().toFixed(2) + " s" : ""}</span>
+        <span className="zoom">{ico(ZoomIn)}
+          <Slider id="zoom" label={t("zoom")} isLabelHidden valueDisplay="none" min={10} max={400} step={1} value={Math.round(st.pps)} onChange={(v: number) => setZoom(v)} width={140} />
+        </span>
       </div>
       <div id="scroll" ref={scroll}>
         <div id="inner" style={{ width: st.S ? W + LABEL + "px" : "" }}>
-          {st.S ? <Lanes W={W} /> : [<div id="ruler" />, <div id="lanes" />, <svg id="links" />, <div id="ph" />]}
+          {st.S ? <Lanes W={W} /> : [<div key="ruler" id="ruler" style={{ marginLeft: LABEL + "px" }} />, <div key="lanes" id="lanes" />, <svg key="links" id="links" />, <div key="ph" id="ph" />]}
         </div>
       </div>
-    </div>
+    </section>
   );
 }
