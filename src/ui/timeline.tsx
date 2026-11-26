@@ -15,7 +15,7 @@ import { ASSET_DRAG } from "./media.tsx";
 import { $, changed, findClip, LABEL, LANE, MAIN_LANE, refreshView, S, st, total, V } from "./state.ts";
 import { dur, num, start } from "./time.ts";
 import type { Clip, Track } from "./types.ts";
-import { clipOrder, laneRows, resolveRef, tickStep } from "./view.ts";
+import { clipOrder, edgeZone, laneRows, resolveRef, tickStep } from "./view.ts";
 import { seek } from "./viewer.tsx";
 
 /** a clip's colour by type: the theme's hue palette (background, border), so the lanes read like the rest of the page */
@@ -72,6 +72,8 @@ function rulerDown(ev: MouseEvent) {
   document.addEventListener("mousemove", at); document.addEventListener("mouseup", up);
 }
 
+const edgeAt = (ev: MouseEvent, box: HTMLElement) => { const r = box.getBoundingClientRect(); return edgeZone(ev.clientX, r.left, r.width); };
+
 function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   const target = ev.target as HTMLElement;
   if (ev.shiftKey) {
@@ -84,7 +86,7 @@ function clipDown(ev: MouseEvent, tr: Track, c: Clip) {
   if (target.dataset.t !== undefined) return kfDrag(ev, c, +target.dataset.t);
   if (ev.detail === 2 && c.type === "compound") { ev.preventDefault(); openPath(st.path.concat([c.id])); return; }
   if (V().nested) { select(c.id); return; }
-  drag(ev, tr, c, (target.dataset.edge as "l" | "r" | undefined) || "move");
+  drag(ev, tr, c, edgeAt(ev, target.closest<HTMLElement>(".clip")!));
 }
 
 /** an asset from the media pool dropped on a lane: one add_clip there (the shown tracks only: an opened compound is read-only) */
@@ -152,12 +154,13 @@ function ClipBox({ tr, c, i }: { tr: Track; c: Clip; i: number }) {
     <div className={"clip" + (c.id === st.sel ? " sel" : "") + (st.picked.includes(c.id) ? " pick" : "") + (off ? " off" : "")} data-id={c.id} role="button"
       aria-label={t("clipLabel", c.id, c.type, start(c).toFixed(2))} title={c.id + " " + c.type + "  " + start(c).toFixed(2) + "-" + (start(c) + dur(c)).toFixed(2) + "s"}
       style={{ left: left + "px", width: width + "px", ["--hue" as string]: "var(--color-background-" + (HUE[c.type] || "gray") + ")", ["--hue-line" as string]: "var(--color-border-" + (HUE[c.type] || "gray") + ")", backgroundImage: strip ? strip.image : "", backgroundPosition: strip ? strip.position : "", backgroundRepeat: strip && strip.position ? "no-repeat" : "", transform: d && d.mode === "move" ? "translate(" + d.dx + "px,0px)" : "" }}
-      onMouseDown={(ev) => clipDown(ev.nativeEvent, tr, c)}>
+      onMouseDown={(ev) => clipDown(ev.nativeEvent, tr, c)}
+      onMouseMove={v.nested ? undefined : (ev) => { const b = ev.currentTarget; b.style.cursor = edgeAt(ev.nativeEvent, b) === "move" ? "" : "ew-resize"; }}>
       {c.type === "audio" && a && <Wave c={c} path={a.path || ""} width={width} />}
       <span className="clabel">{c.id + " · " + String(label).slice(0, 60)}</span>
       {c.effects && c.effects.length ? <span className="fx" title={c.effects.map((e: { type?: string }) => e.type).join(", ")}>fx</span> : null}
       {trn && <div className="tr" style={{ width: v.k * (typeof trn === "object" ? num(trn.duration || 0.5) : 0.5) * pps + "px" }} title={t("transition", trn.type || trn)} />}
-      {/* the trim handles narrow with the clip (8 px, at most a quarter of it each), so its middle always moves it and its edges always trim */}
+      {/* the trim handles show the trim zones edgeZone hit-tests (8 px, at most a quarter of the clip each) */}
       {!v.nested && <div className="h l" data-edge="l" style={{ width: Math.min(8, width / 4) + "px" }} />}
       {!v.nested && <div className="h r" data-edge="r" style={{ width: Math.min(8, width / 4) + "px" }} />}
       {kfTimes(c).filter((kt) => kt >= -1e-6 && kt <= dur(c) + 1e-6).map((kt) => ( // a split's right half keeps the curve's keys before its head

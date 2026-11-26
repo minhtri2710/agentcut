@@ -185,7 +185,7 @@ textarea.code:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .clip.sel{border:2px solid #fff;box-shadow:0 0 0 1px #000;z-index:1;padding:1px 6px 1px 12px}
 .clip.pick{border:2px dashed #ffd166}.clip.off{opacity:.4}
 .clip:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.clip .h{position:absolute;top:0;width:8px;height:100%;cursor:ew-resize}.clip .h.l{left:0}.clip .h.r{right:0}
+.clip .h{position:absolute;top:0;width:8px;height:100%;cursor:ew-resize;pointer-events:none}.clip .h.l{left:0}.clip .h.r{right:0}
 .clip.sel .h{background:#fff}.clip.sel .h::after{content:"";position:absolute;left:3px;top:35%;height:30%;border-left:2px solid #0006}
 .tr{position:absolute;top:0;height:100%;left:0;background:linear-gradient(90deg,#ffffff40,#ffffff10);border-right:1px solid #fff6;pointer-events:none}
 #links{position:absolute;top:24px;pointer-events:none;z-index:1}

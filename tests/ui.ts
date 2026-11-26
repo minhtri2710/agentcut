@@ -1101,6 +1101,9 @@ console.log("page modules");
     && resolveRef(lanes, "a#-1") === "a1" && resolveRef(lanes, "a#0") === "a0" && resolveRef(lanes, "a#5") === null && resolveRef(lanes, "zz#0") === null && resolveRef(lanes, "plain") === "plain", order);
 
   const ks = pts([{ t: "500ms", v: 2, ease: "ease_out" }, [0, 1]]);
+  const { edgeZone } = await import("../src/ui/view.ts");
+  check("a press on a clip box: the 8 px at each edge trim, narrowed to a quarter of a short box, the rest moves",
+    edgeZone(101, 100, 100) === "l" && edgeZone(199, 100, 100) === "r" && edgeZone(150, 100, 100) === "move" && edgeZone(100.5, 100, 10) === "l" && edgeZone(105, 100, 10) === "move" && edgeZone(108, 100, 10) === "r");
   const { tickStep, clock } = await import("../src/ui/view.ts");
   check("the viewer's timecode is mm:ss:ff with whole frames at 29.97 fps too (frame 30 is 00:01:00)", clock(30 / 29.97, 29.97) === "00:01:00" && clock(61.5, 30) === "01:01:15", [clock(30 / 29.97, 29.97), clock(61.5, 30)]);
   check("ruler ticks stay readable when zoomed out to fit a long timeline (1 px per second: a tick a minute)", tickStep(1) === 60 && tickStep(3) === 30 && tickStep(10) === 10 && tickStep(200) === 0.5);

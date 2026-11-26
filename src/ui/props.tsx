@@ -106,7 +106,8 @@ const DRAWN = new Set(["video", "image", "text", "captions", "shape", "color", "
  *  or a clip it does not draw breaks); a transition already there can always be cleared */
 const hasPrevious = (c: Clip) => {
   const tr = trackOf(c.id), i = tr ? tr.clips.indexOf(c) : -1, p = i > 0 ? tr!.clips[i - 1] : null;
-  return !!c.transition || (!!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false);
+  const drawn = !!tr && !tr.hidden && (tr.kind ?? "video") !== "audio";
+  return !!c.transition || (drawn && !!p && p.enabled !== false && DRAWN.has(p.type) && c.enabled !== false);
 };
 
 /** the transition into the clip, set with add_transition: on a track that is not magnetic it also moves the clip to overlap the one before by its length */
@@ -115,8 +116,10 @@ function TransitionPick({ c, ro }: { c: Clip; ro: boolean }) {
   return (
     <div className="prop" data-prop="transition"><label>{t("pTransition")}</label>
       <div className="pval one"><Selector label={t("pTransition")} isLabelHidden size="sm" hasClear value={typeof v === "string" ? v : null} options={FORM.enums.transition} hasSearch isDisabled={ro}
-        // another type keeps the transition's length, so add_transition puts the clip where it already overlaps (and keeps the track's order, which update_clip would sort)
-        onChange={(x) => ops([{ op: "add_transition", to: c.id, type: x ?? "none", ...(x && c.transition && typeof c.transition === "object" && c.transition.duration !== undefined ? { duration: c.transition.duration } : {}) }], "transition " + c.id)} width="100%" /></div><span />
+        // another type is a type-only edit (length, easing, the clip's place and the track's order stay); a new one is add_transition, which makes the overlap
+        onChange={(x) => ops([x && c.transition
+          ? { op: "update_clip", id: c.id, set: { transition: typeof c.transition === "object" ? { type: x } : x } }
+          : { op: "add_transition", to: c.id, type: x ?? "none" }], "transition " + c.id)} width="100%" /></div><span />
     </div>
   );
 }

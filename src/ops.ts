@@ -456,7 +456,8 @@ op("update_clip", "Merge fields into a clip: set {field: value}; null deletes. S
       if ("offset" in patch) throw new EditError("start and offset both place an attached clip", "bad_value", "keep one of start and offset");
       placeAt(tl, tr, c, clipStart(c));
     }
-    if (!tr.magnetic) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
+    // only a field that places the clip re-sorts the track: the order pairs a transition with the clip before it, so another edit keeps it
+    if (!tr.magnetic && ["start", "attach_to", "offset"].some((k) => k in patch)) tr.clips.sort((x, y) => clipStart(x) - clipStart(y));
     resolve(tl);
     return { id: c.id, start: c.start, duration: c.duration };
   });

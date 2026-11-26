@@ -61,3 +61,10 @@ export const clock = (s: number, fps: number) => { // 29.97 fps counts 30 frames
   const n = Math.round(fps), f = Math.round(s * fps), ff = f % n, ss = Math.floor(f / n) % 60, mm = Math.floor(f / n / 60);
   return [mm, ss, ff].map((x) => String(x).padStart(2, "0")).join(":");
 };
+
+/** which part of a clip box a press is on, by where it lands in the box (border and padding included): the trim zones are 8 px at each edge, at most a
+ *  quarter of the box each, so a narrow clip still moves from its middle and trims from its edges */
+export function edgeZone(x: number, left: number, width: number): "l" | "r" | "move" {
+  const z = Math.min(8, width / 4);
+  return x - left < z ? "l" : left + width - x <= z ? "r" : "move";
+}

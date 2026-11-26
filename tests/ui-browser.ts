@@ -325,6 +325,14 @@ try {
     await dragBy(`[data-id="gm"]`, 4);
     check("  and a drag of its middle moves it, keeping its length", await untilFile((tl) => Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.4)) < 0.02 && clipOf(tl, "gm")?.duration === d0), clipOf(load(), "gm"));
     await settled();
+    // a real press 1 px inside the clip's right edge (its border included): the trim zone, which the page hit-tests by position
+    const eb = await js(`(function(){var r=${node("gm")}.getBoundingClientRect();return {x:r.right-1,y:r.top+r.height/2}})()`);
+    await page("Input.dispatchMouseEvent", { type: "mousePressed", x: eb.x, y: eb.y, button: "left", clickCount: 1 });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: eb.x + 2, y: eb.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: eb.x + 4, y: eb.y, button: "left" });
+    await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: eb.x + 4, y: eb.y, button: "left", clickCount: 1 });
+    check("  and a drag from its last pixel lengthens it, keeping its start", await untilFile((tl) => Math.abs(clipOf(tl, "gm")?.duration - (d0 + 0.4)) < 0.02 && Math.abs(Number(clipOf(tl, "gm")?.start) - (s0 + 0.4)) < 0.02), clipOf(load(), "gm"));
+    await settled();
   }
   const revZoom = load().revision, gmNow = Number(clipOf(load(), "gm").start); // the drag above was an edit; the zoom after it is not
   await zoomTo(80);

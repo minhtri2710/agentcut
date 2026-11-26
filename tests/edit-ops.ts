@@ -722,6 +722,11 @@ console.log("match_duration by clip reference");
       { op: "add_transition", to: "o2", type: "crossfade", duration: 0.5 }, { op: "add_transition", to: "o2", type: "dip_black", duration: 0.5 }]);
     const ov = xt.tracks.find((tr: any) => tr.id === "overlay")!.clips;
     check("add_transition of another type with the same length: same start, same track order, the new type", ov.map((c: any) => c.id).join() === "o1,o2" && at(xt, "o2").start === 1.9 && at(xt, "o2").transition.type === "dip_black", ov);
+    // a type-only update_clip after the outgoing clip was trimmed: the incoming clip keeps its start, the track its order, the transition its length and easing
+    const [xu] = await run(xt, [{ op: "update_clip", id: "o2", set: { transition: { ease: "linear" } } }, { op: "trim_clip", id: "o1", trim_end: 0.1 }, { op: "update_clip", id: "o2", set: { transition: { type: "wipe_left" } } }]);
+    const ou = xu.tracks.find((tr: any) => tr.id === "overlay")!.clips;
+    check("update_clip of a transition's type keeps the clip's start, the track's order and the transition's length and easing (only a placing field re-sorts)",
+      ou.map((c: any) => c.id).join() === "o1,o2" && at(xu, "o2").start === 1.9 && JSON.stringify(at(xu, "o2").transition) === '{"type":"wipe_left","duration":0.5,"ease":"linear"}', ou);
     const [xn] = await run(xt, [{ op: "remove_clip", id: "o1" }, { op: "add_transition", to: "o2", type: "none" }]);
     check("  type none clears a transition left on what is now the first clip; another type there is still no_previous", !at(xn, "o2").transition, at(xn, "o2"));
     const fz2 = rs2[2];
