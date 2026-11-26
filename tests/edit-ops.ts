@@ -742,6 +742,23 @@ console.log("match_duration by clip reference");
       { op: "add_clip", track: "overlay", asset: "v", id: "qc", attach_to: "tq", offset: 0, duration: 1 }, { op: "update_clip", id: "tq", set: { start: 6 } }]);
     check("  a connected clip on a free track moves in its order alone: an earlier-starting incoming clip stays after its transition partner",
       xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "qa,qb,qc" && at(xa, "qc").start === 6, xa.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
+    // two connected clips carried past a still clip in one batch: the track is in time order before the next op reads overlay#0
+    {
+      const tb = structuredClone(t0); tb.assets.p = { path: "/none.png", kind: "image", width: 10, height: 10 };
+      const [xg] = await run(tb, [{ op: "add_clip", track: "main", asset: "p", id: "m1", duration: 1 }, { op: "add_clip", track: "main", asset: "p", id: "m2", duration: 2 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "ga", attach_to: "m1", duration: 1 }, { op: "add_clip", track: "overlay", asset: "v", id: "gb", attach_to: "m1", duration: 1 },
+        { op: "add_clip", track: "overlay", asset: "v", id: "gc", at: 0, duration: 1 }, { op: "move_clip", id: "m1", index: 1 },
+        { op: "add_clip", track: "text", text: "t", id: "gt", attach_to: "overlay#0", duration: 1 }]);
+      // the same as a stored timeline that resolve lays out: ga and gb follow m1 to 2 s past gc, which stays at 0 s between them in the list
+      const tr2 = structuredClone(tb);
+      tr2.tracks.find((tr: any) => tr.id === "main")!.clips = [{ id: "m2", type: "image", asset: "p", duration: 2 }, { id: "m1", type: "image", asset: "p", duration: 1 }];
+      tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips = ["ga", "gb", "gc"].map((id) => ({ id, type: "video", asset: "v", start: 0, duration: 1, ...(id === "gc" ? {} : { attach_to: "m1", offset: 0 }) }));
+      resolve(tr2);
+      check("  resolve: two connected clips carried past a still clip between them are put in time order as a group (each alone would leave one ahead)",
+        tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", tr2.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]));
+      check("  connected clips carried past a still clip in one batch: the track is in time order at once, so overlay#0 in the next op is the still clip",
+        at(xg, "gt").attach_to === "gc" && xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => c.id).join() === "gc,ga,gb", { gt: at(xg, "gt"), order: xg.tracks.find((tr: any) => tr.id === "overlay")!.clips.map((c: any) => [c.id, c.start]) });
+    }
     const [xh] = await run(t0, [{ op: "add_clip", track: "overlay", asset: "v", id: "h1", at: 0, duration: 3 }, { op: "add_clip", track: "overlay", asset: "v", id: "h2", at: 1, duration: 1 },
       { op: "trim_clip", id: "h1", trim_start: 2 }, { op: "update_clip", id: "h2", set: { opacity: 0.5 } }]);
     check("  trim_start that moves a clip past its neighbour keeps the free track in time order (roll_edit and transitions pair by it)",

@@ -792,9 +792,26 @@ export function reposition(tr: Track, c: Clip) {
 }
 
 function resolveAttached(tl: Timeline) {
+  const was = new Map<Clip, unknown>();
+  for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips) if (c.attach_to) was.set(c, c.start);
   settleChains(tl, (c) => c.attach_to, (c, t) => { c.start = round6(Math.max(0, clipStart(t) + parseTime(c.offset ?? 0))); });
-  // an attached clip that its target carried past a neighbour takes its place in time order; the others keep theirs
-  for (const tr of tl.tracks) if (!tr.magnetic) for (const c of tr.clips.filter((x) => x.attach_to)) reposition(tr, c);
+  for (const tr of tl.tracks) if (!tr.magnetic) regroupAttached(tr, tr.clips.filter((c) => c.attach_to && c.start !== was.get(c)));
+}
+
+/** The connected clips of a free track that their targets moved (`moved`) take their places in time order, as a group: several can move in one edit, past
+ *  each other too. The other clips keep their order (an incoming clip that overlaps a short outgoing one starts before it and stays after it). No moved clip,
+ *  no work. */
+function regroupAttached(tr: Track, moved: Clip[]) {
+  const cs = tr.clips;
+  if (!moved.length) return;
+  const index = new Map(cs.map((c, i) => [c, i])), set = new Set(moved);
+  moved.sort((a, b) => clipStart(a) - clipStart(b) || index.get(a)! - index.get(b)!);
+  const out = cs.filter((c) => !set.has(c));
+  for (const c of moved) { // a tie keeps the side it had: before the clips that were after it in the list
+    const s = clipStart(c), j = out.findIndex((x) => clipStart(x) > s || (clipStart(x) === s && index.get(x)! > index.get(c)!));
+    out.splice(j < 0 ? out.length : j, 0, c);
+  }
+  cs.splice(0, cs.length, ...out); // in place: callers hold the array
 }
 
 /** `end`: where until_end clips stretch to. An until_end clip's overlap is not limited by its own length (that length is made from where it starts), so no start reads `end`; its length is at least the overlap, so the clips after it keep their place. */
