@@ -207,8 +207,11 @@ console.log("history authors");
   const otherOp = cli(["op", "add_marker", "t=7", "--json", JSON.stringify({ op: "set_settings", fps: 24 }), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
   const lastCall = () => JSON.parse(readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").trim().split("\n").at(-1)!);
   const logged = lastCall(), otherAdd = cli(["add", "op=set_settings", "fps=24", "--author", "zed", "--revision", rev0], { ...HC, ok: false });
-  check("the op named on the command line is the op: an op field in --json or op=... naming another is usage, nothing saved, and the call is logged under that name",
-    otherOp.error?.code === "usage" && otherAdd.error?.code === "usage" && rev() === rev0 && logged.cmd === "add_marker" && logged.code === "usage", [otherOp, otherAdd, logged]);
+  const noName = cli(["op", "--json", JSON.stringify({ op: "add_marker", t: 7 }), "--author", "zed", "--revision", rev0], { ...HC, ok: false }), unsaved = rev() === rev0;
+  const sameOp = cli(["op", "add_marker", "--json", JSON.stringify({ op: "add_marker", t: 7 }), "--author", "zed", "--revision", rev0], HC);
+  check("the op named on the command line is the op: an op field in --json or op=... naming another, or no NAME, is usage, nothing saved, and the call is logged under that name; an op field repeating NAME is fine",
+    otherOp.error?.code === "usage" && otherAdd.error?.code === "usage" && noName.error?.code === "usage" && /needs NAME/.test(noName.error.message) && unsaved && logged.cmd === "add_marker" && logged.code === "usage" && sameOp.ok === true,
+    [otherOp, otherAdd, noName, logged, sameOp]);
   const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });

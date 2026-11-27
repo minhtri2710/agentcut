@@ -78,7 +78,8 @@ function kv(pairs: string[]) {
 
 /** The op the command line names, with its fields: a field `op` naming another op is refused, never run in its place (the call is logged under the command line's name). */
 function named(op: string | undefined, fields: Record<string, any>) {
-  if ("op" in fields && fields.op !== op) throw new EditError(`the command line names op ${op ?? "(none)"}, so its fields cannot name op ${JSON.stringify(fields.op)}`, "usage", `run \`agentcut op ${fields.op} ...\` for that edit, or leave op out of the fields`);
+  if (!op) throw new EditError("op needs NAME: agentcut op NAME key=value...", "usage", "the op's name goes on the command line, e.g. agentcut op add_marker t=2");
+  if ("op" in fields && fields.op !== op) throw new EditError(`the command line names op ${op}, so its fields cannot name op ${JSON.stringify(fields.op)}`, "usage", "run each op as its own call (agentcut op NAME ...), or leave op out of the fields");
   return { ...fields, op };
 }
 
