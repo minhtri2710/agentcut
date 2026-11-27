@@ -1587,8 +1587,8 @@ if (process.env.AGENTCUT_TEST_VISION === "1") {
   } finally { process.env.AGENTCUT_CACHE = real.mainCache; }
 } else {
   console.log(`SKIPPED: ${realRows.length} real-helper rows (AGENTCUT_TEST_VISION=1 runs them through uv and downloads packages and models): ${realRows.map(([n]) => n).join(" | ")}`);
-  if (!faceFixture) console.log("SKIPPED: real face row (set AGENTCUT_TEST_VISION_FACE=<image or video with one face> together with AGENTCUT_TEST_VISION=1)");
 }
+if (!faceFixture) console.log("SKIPPED: real face row (set AGENTCUT_TEST_VISION_FACE=<image or video with one face> together with AGENTCUT_TEST_VISION=1)");
 if (!person) console.log("SKIPPED: real RVM flicker row (set AGENTCUT_TEST_VISION_PERSON=<short video of a person standing still> together with AGENTCUT_TEST_VISION=1)");
 
 // ---------------------------------------------------------------- a matte with no frames; a missing source; pending analyses and prune
