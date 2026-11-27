@@ -898,7 +898,7 @@ hold.close();
 // ---------------------------------------------------------------- chat: the agent CLI (a stand-in claude here) on one message, its events to every page
 console.log("chat");
 {
-  const { chatLaunch, chatEvents, piEvents, acpAllowed } = await import("../src/chat.ts");
+  const { chatLaunch, chatEvents, piEvents } = await import("../src/chat.ts");
   const a = chatLaunch("claude", "/p/root", "s0").args, mcp = JSON.parse(a[a.indexOf("--mcp-config") + 1]).mcpServers.agentcut;
   check("chatArgs: streamed JSON, no built-in tools, only the agentcut MCP server for the project, its tools allowed, the session resumed",
     a[0] === "-p" && a[1] === "--output-format" && a[a.indexOf("--output-format") + 1] === "stream-json" && a[a.indexOf("--tools") + 1] === "" && a.includes("--strict-mcp-config")
@@ -906,20 +906,17 @@ console.log("chat");
     && mcp.env.AGENTCUT_PROJECT === "/p/root" && existsSync(mcp.args[mcp.args.length - 1]) && mcp.args[mcp.args.length - 1].endsWith("mcp.ts"), a);
   const pi = chatLaunch("pi", "/p/root", "s0"), omp = chatLaunch("omp", "/p/root", "s0"), named = (f: [string, string][]) => f.map(([p, t]) => [p, JSON.parse(t).mcpServers.agentcut.env.AGENTCUT_PROJECT]);
   check("chatLaunch pi: a scratch folder whose .pi/mcp.json names the project's server, trusted for the run; only codemode and agentcut's tools; the session resumed",
-    pi.cwd === join("/p/root", ".agentcut", "chat", "pi") && JSON.stringify(named(pi.files)) === JSON.stringify([[join(pi.cwd, ".pi", "mcp.json"), "/p/root"]]) && !pi.acp
+    pi.cwd === join("/p/root", ".agentcut", "chat", "pi") && JSON.stringify(named(pi.files)) === JSON.stringify([[join(pi.cwd, ".pi", "mcp.json"), "/p/root"]])
     && pi.args.includes("--approve") && pi.args[pi.args.indexOf("--tools") + 1] === "codemode,mcp__agentcut*" && pi.args[pi.args.indexOf("--mode") + 1] === "json" && pi.args[pi.args.indexOf("--session") + 1] === "s0", pi);
-  check("chatLaunch omp: a scratch .mcp.json, no built-in tools or extensions; the session resumed; agy and devin speak ACP in the project folder",
+  check("chatLaunch omp: a scratch .mcp.json, no built-in tools or extensions; the session resumed",
     omp.cwd === join("/p/root", ".agentcut", "chat", "omp") && JSON.stringify(named(omp.files)) === JSON.stringify([[join(omp.cwd, ".mcp.json"), "/p/root"]]) && omp.args.includes("--no-tools") && omp.args.includes("--no-extensions")
-    && omp.args[omp.args.indexOf("--resume") + 1] === "s0" && chatLaunch("agy", "/p/root").acp && chatLaunch("devin", "/p/root").acp && chatLaunch("devin", "/p/root").cwd === "/p/root", omp);
+    && omp.args[omp.args.indexOf("--resume") + 1] === "s0", omp);
   const pe = (lines: unknown[]) => { const last = {}; return JSON.stringify(lines.flatMap((o) => piEvents(JSON.stringify(o), last))); };
   check("piEvents: the session, a finished assistant message's text and tool calls (server prefix dropped), tool results, the end with the session; a failed model request ends with its error",
     pe([{ type: "session", id: "p1" }, { type: "message_update" }, { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "x" }, { type: "text", text: "ok" }, { type: "toolCall", name: "mcp__agentcut_project_info", arguments: { a: 1 } }] } },
       { type: "message_end", message: { role: "toolResult", isError: true, content: [{ type: "text", text: "conflict" }] } }, { type: "agent_end" }])
       === '[{"kind":"session","session":"p1"},{"kind":"text","text":"ok"},{"kind":"tool","name":"project_info","input":{"a":1}},{"kind":"tool_result","ok":false,"text":"conflict"},{"kind":"done","session":"p1"}]'
     && pe([{ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "quota", content: [] } }, { type: "agent_end" }]) === '[{"kind":"done","error":"quota"}]');
-  check("acpAllowed: an agentcut MCP tool is allowed; a shell command, a file write or another server's tool is not, whatever its title says",
-    acpAllowed({ name: "mcp_agentcut_project_info" }) && acpAllowed({ name: "mcp__agentcut__apply_ops" }) && !acpAllowed({ name: "run_command", title: "mcp_agentcut_x" }) && !acpAllowed({ name: "write_file" })
-    && !acpAllowed({ name: "mcp_devin_ask" }) && !acpAllowed({ name: "mcp_agentcut_x; rm" }) && !acpAllowed({}));
   const ev = (o: unknown) => JSON.stringify(chatEvents(JSON.stringify(o)));
   check("chatEvents: the session, text and tool calls (server prefix dropped), tool results, the end; anything else is no event",
     ev({ type: "system", subtype: "init", session_id: "s1" }) === '[{"kind":"session","session":"s1"}]'
@@ -953,58 +950,26 @@ console.log("chat");
       check("  New chat forgets the session; an empty message is bad_request", reset.j.ok && (await jget("/api/chat")).j.session === null && empty.status === 400, empty.j);
       process.env.PATH = "/usr/bin:/bin";
       const none = await jget("/api/chat"), refused = await jget("/api/chat", { method: "POST", body: { message: "hi" } });
-      check("with no agent CLI on PATH the panel is told how to install one, and a message is missing_dependency", none.j.available === false && /Claude Code \(claude\), pi, omp/.test(none.j.hint) && refused.j.error?.code === "missing_dependency", [none.j, refused.j]);
+      check("with no agent CLI on PATH the panel is told how to install one, and a message is missing_dependency", none.j.available === false && /Claude Code \(claude\), pi or omp/.test(none.j.hint) && refused.j.error?.code === "missing_dependency", [none.j, refused.j]);
     } finally { process.env.PATH = PATH; }
-    // pi (a stand-in printing pi's JSON lines) in its scratch folder, then agy (a stand-in ACP agent): permissions, a resumed session without its replayed history, ask mode
-    const piArgs = join(tmp, "pi.args"), acpLog = join(tmp, "acp.log");
+    // pi (a stand-in printing pi's JSON lines) in its scratch folder, its session resumed
+    const piArgs = join(tmp, "pi.args");
     writeFileSync(join(bin, "pi"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${piArgs}"\npwd -P > "${piArgs}.cwd"\ncat > /dev/null\n`
       + `echo '{"type":"session","id":"p1"}'\necho '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Pi here"},{"type":"toolCall","name":"codemode","arguments":{"code":"x"}}]}}'\n`
       + `echo '{"type":"message_end","message":{"role":"toolResult","isError":false,"content":[{"type":"text","text":"rev 3"}]}}'\necho '{"type":"agent_end"}'\n`, { mode: 0o755 });
-    writeFileSync(join(bin, "agy"), `#!${process.execPath}
-const fs = require("node:fs"), log = (x) => fs.appendFileSync(${JSON.stringify(acpLog)}, JSON.stringify(x) + "\\n"), out = (o) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...o }) + "\\n");
-const up = (u) => out({ method: "session/update", params: { sessionId: "a1", update: u } });
-let prompt;
-require("node:readline").createInterface({ input: process.stdin }).on("line", (l) => {
-  const m = JSON.parse(l);
-  if (m.method === "initialize") return out({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-  if (m.method === "session/new") { log({ new: m.params }); return out({ id: m.id, result: { sessionId: "a1", modes: { currentModeId: "code", availableModes: [{ id: "code" }, { id: "ask" }] } } }); }
-  if (m.method === "session/load") { log({ load: m.params.sessionId }); up({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "OLD" } }); return out({ id: m.id, result: { modes: { currentModeId: "ask", availableModes: [{ id: "ask" }] } } }); }
-  if (m.method === "session/set_mode") { log({ mode: m.params.modeId }); return out({ id: m.id, result: {} }); }
-  if (m.method === "session/prompt") {
-    prompt = m.id; log({ prompt: m.params.prompt[0].text });
-    up({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hel" } }); up({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "lo" } });
-    up({ sessionUpdate: "tool_call", toolCallId: "t1", name: "mcp_agentcut_project_info", status: "pending", rawInput: {} });
-    return out({ id: 900, method: "session/request_permission", params: { sessionId: "a1", toolCall: { name: "mcp_agentcut_project_info" }, options: [{ optionId: "yes", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }] } });
-  }
-  if (m.id === 900) { log({ p900: m.result.outcome.optionId }); return out({ id: 901, method: "session/request_permission", params: { sessionId: "a1", toolCall: { name: "run_command", title: "rm -rf x" }, options: [{ optionId: "yes", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }] } }); }
-  if (m.id === 901) { log({ p901: m.result.outcome.optionId }); up({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", rawOutput: "rev 3" }); return out({ id: prompt, result: { stopReason: "end_turn" } }); }
-});
-`, { mode: 0o755 });
     process.env.PATH = `${bin}:${PATH}`;
     try {
       const idle = async () => { for (let i = 0; i < 100; i++) { if (!(await jget("/api/chat")).j.busy) return true; await Bun.sleep(50); } return false; };
       const since = (n: number) => events.slice(n).filter((e) => e.event === "chat").map((e) => e.data);
       const eng = await jget("/api/chat"), bad = await jget("/api/chat", { method: "POST", body: { message: "hi", cli: "bash" } });
-      check("the panel lists the agent CLIs found on PATH; an unknown CLI is bad_request", eng.j.clis.includes("pi") && eng.j.clis.includes("agy") && bad.status === 400 && bad.j.error.code === "bad_request", [eng.j, bad.j]);
-      let n = events.length;
+      check("the panel lists the agent CLIs found on PATH; an unknown CLI is bad_request", eng.j.clis.includes("pi") && eng.j.clis.includes("claude") && bad.status === 400 && bad.j.error.code === "bad_request", [eng.j, bad.j]);
+      const n = events.length;
       await jget("/api/chat", { method: "POST", body: { message: "hi", cli: "pi" } });
       check("POST /api/chat with cli pi: run in its scratch folder, whose .pi/mcp.json names this project's server; its text, tool call, result and end reach the page",
         await idle() && JSON.stringify(since(n).map((e) => e.kind)) === '["user","session","text","tool","tool_result","done"]' && since(n)[2].text === "Pi here"
         && readFileSync(piArgs + ".cwd", "utf8").trim() === realpathSync(join(dir, ".agentcut", "chat", "pi")) && JSON.parse(readFileSync(join(dir, ".agentcut", "chat", "pi", ".pi", "mcp.json"), "utf8")).mcpServers.agentcut.env.AGENTCUT_PROJECT === dir, since(n));
       await jget("/api/chat", { method: "POST", body: { message: "again", cli: "pi" } });
-      check("  the next pi message resumes its session; switching to agy starts a new conversation", await idle() && readFileSync(piArgs, "utf8").includes("--session\np1\n"), readFileSync(piArgs, "utf8"));
-      n = events.length;
-      await jget("/api/chat", { method: "POST", body: { message: "edit it", cli: "agy" } });
-      const log1 = () => readFileSync(acpLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-      check("agy over ACP: a new session with the agentcut server for this project, ask mode, the instructions before the first message; the agentcut tool allowed, the shell command refused; text in one piece",
-        await idle() && JSON.stringify(since(n).map((e) => e.kind)) === '["user","session","text","tool","tool_result","done"]' && since(n)[2].text === "Hello" && since(n)[3].name === "project_info"
-        && since(n)[4].ok === true && since(n)[5].session === "a1"
-        && log1()[0].new.mcpServers[0].name === "agentcut" && log1()[0].new.mcpServers[0].env[0].value === dir && log1()[1].mode === "ask" && /AgentCut UI[\s\S]*edit it$/.test(log1()[2].prompt)
-        && log1()[3].p900 === "yes" && log1()[4].p901 === "no", [since(n), log1()]);
-      n = events.length;
-      await jget("/api/chat", { method: "POST", body: { message: "more", cli: "agy" } });
-      check("  the next agy message loads its session without showing the replayed history, and sends the message alone",
-        await idle() && !since(n).some((e) => e.text === "OLD" || e.text === "OLDHello") && log1()[5].load === "a1" && log1()[6].prompt === "more", [since(n), log1().slice(5)]);
+      check("  the next pi message resumes its session", await idle() && readFileSync(piArgs, "utf8").includes("--session\np1\n"), readFileSync(piArgs, "utf8"));
     } finally { process.env.PATH = PATH; }
   }
 }
