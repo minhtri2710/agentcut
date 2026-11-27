@@ -970,6 +970,8 @@ console.log("chat");
         && readFileSync(piArgs + ".cwd", "utf8").trim() === realpathSync(join(dir, ".agentcut", "chat", "pi")) && JSON.parse(readFileSync(join(dir, ".agentcut", "chat", "pi", ".pi", "mcp.json"), "utf8")).mcpServers.agentcut.env.AGENTCUT_PROJECT === dir, since(n));
       await jget("/api/chat", { method: "POST", body: { message: "again", cli: "pi" } });
       check("  the next pi message resumes its session", await idle() && readFileSync(piArgs, "utf8").includes("--session\np1\n"), readFileSync(piArgs, "utf8"));
+      await jget("/api/chat", { method: "POST", body: { message: "now claude", cli: "claude" } });
+      check("  switching to claude starts a new conversation: pi's session is not resumed", await idle() && !readFileSync(argsFile, "utf8").includes("--resume"), readFileSync(argsFile, "utf8"));
     } finally { process.env.PATH = PATH; }
   }
 }
