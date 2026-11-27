@@ -108,7 +108,7 @@ else check("xmllint well-formed", lint.status === 0, lint.stderr);
 if (process.env.AGENTCUT_FCPXML_DTD && !lint.error) {
   const v = spawnSync("xmllint", ["--noout", "--dtdvalid", process.env.AGENTCUT_FCPXML_DTD, fcpOut], { encoding: "utf8" });
   check("valid against FCPXML DTD", v.status === 0, v.stderr);
-}
+} else if (!lint.error) console.log("  - AGENTCUT_FCPXML_DTD not set: FCPXML DTD validation skipped");
 
 // ---------------------------------------------------------------- OTIO
 console.log("otio");
