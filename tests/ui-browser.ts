@@ -619,6 +619,7 @@ try {
   await until("nested view", `!(${atTop}) && !!document.querySelector('[data-id="rb"]')`);
   await click(`[data-id="rb"]`);
   const tm = await nowT();
+  await js(`window.freeArrows = 0; window.addEventListener("keydown", function (e) { if (/^Arrow(Left|Right)$/.test(e.key) && !e.defaultPrevented) window.freeArrows++; })`); // an uncancelled arrow also scrolls the timeline (animated), under the next ruler click
   await press("ArrowRight", "ArrowRight", 39);
   check("after a mouse click on a clip that took focus, Right steps the playhead instead of walking the clips", Math.abs(await nowT() - (tm + 1 / 30)) < 1e-3 && await js(`document.activeElement.dataset.id`) === "rb", await js(`[$("time").textContent, document.activeElement.dataset.id, ${tm}]`));
   await js(`document.querySelector("#crumbs a").click()`);
@@ -626,7 +627,7 @@ try {
   await js(`document.activeElement.blur()`);
   await seekTo(1);
   await press("ArrowRight", "ArrowRight", 39);
-  check("with no clip focused, Right still steps the playhead by a frame", Math.abs(await nowT() - (1 + 1 / 30)) < 1e-3, await js(`$("time").textContent`));
+  check("with no clip focused, Right still steps the playhead by a frame, and the page cancels the key (the browser does not also scroll the timeline)", Math.abs(await nowT() - (1 + 1 / 30)) < 1e-3 && await js(`window.freeArrows`) === 0, await js(`[$("time").textContent, window.freeArrows]`));
   const revZ = load().revision;
   check("Tab reaches Contact sheet", await tabTo(`e.id === "sheet"`), await js(`document.activeElement.id`));
   await press("z", "KeyZ", 90, undefined, 2);
