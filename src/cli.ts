@@ -115,11 +115,13 @@ function fail(e: any) {
   return emit({ ok: false, error: { code: "internal", message: `${e?.name}: ${e?.message}`, hint: "this is an AgentCut bug: it was logged; please also run `agentcut feedback add kind=bug title=...` with what you were doing", ...(process.env.AGENTCUT_DEBUG ? { trace: e?.stack } : {}) } }, 3);
 }
 
+const isJsonOps = (s: string) => { try { const v = JSON.parse(s); return v !== null && typeof v === "object"; } catch { return false; } };
 async function readOps(file: string | undefined, inline: string | undefined) {
   let data: any;
   if (inline) data = JSON.parse(inline);
   else if (!file || file === "-") { const b: Buffer[] = []; for await (const c of process.stdin) b.push(c); data = JSON.parse(Buffer.concat(b).toString("utf8")); }
   else {
+    if (!existsSync(file) && isJsonOps(file)) throw new EditError("apply takes a file path, not JSON: the ops given in its place were not read", "usage", "pass them with --ops '[...]', as a JSON file, or on stdin with '-'");
     if (!existsSync(file)) throw new EditError(`ops file not found: ${file}`, "not_found", "pass a JSON file, '-' for stdin, or --ops '[...]'");
     data = JSON.parse(readFileSync(file, "utf8"));
   }
