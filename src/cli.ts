@@ -173,6 +173,7 @@ export async function main(argv = process.argv.slice(2)) {
   const bad = Object.keys(f).filter((k) => !BOOL.has(k) && !OPT.has(k) && !VALUE.has(k));
   if (bad.length) return emit({ ok: false, error: { code: "usage", message: `unknown flag${bad.length > 1 ? "s" : ""}: ${bad.map((k) => "--" + k).join(" ")}`, hint: "run `agentcut help` for the flags of each command" } }, 2);
   if (missing.length) return emit({ ok: false, error: { code: "usage", message: `${missing.join(" ")} ${missing.length > 1 ? "need" : "needs"} a value`, hint: "write the value right after the flag (--author NAME), or join it with = (--author=NAME; for -o and -p the long forms --output=FILE and --project=DIR); a value that starts with -- needs the = form" } }, 2);
+  if (typeof f.json === "string" && cmd !== "op") return emit({ ok: false, error: { code: "usage", message: `--json takes JSON only after op NAME (op NAME --json '{...}'); for ${cmd} it is a switch, so the JSON after it was not read`, hint: "pass apply its ops with --ops '[...]', as a JSON file, or on stdin with '-'" } }, 2);
   const api = await import("./api.ts");
   const { declaredAuthor, requireRevision: needRevision } = await import("./project.ts");
   const requireRevision: (v: unknown) => void = needRevision; // an assertion function can be called only through an annotated name
