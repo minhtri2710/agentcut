@@ -196,6 +196,9 @@ console.log("history authors");
   const asPath = cli(["apply", JSON.stringify([{ op: "add_marker", t: 7 }]), "--author", "zed", "--revision", rev0], { ...HC, ok: false }), noFile = cli(["apply", "[v2] ops.json", "--author", "zed", "--revision", rev0], { ...HC, ok: false });
   check("apply given JSON where its file path goes is a usage error pointing to --ops, nothing saved; a missing file, also one named like [v2] ops.json, is still not_found",
     asPath.error?.code === "usage" && /--ops/.test(asPath.error.hint) && noFile.error?.code === "not_found" && rev() === rev0, [asPath, noFile]);
+  const afterBool = cli(["apply", "--dry-run", JSON.stringify([{ op: "add_marker", t: 7 }]), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  check("a switch takes no value: apply --dry-run followed by JSON leaves the JSON in the path's place (usage, pointing to --ops), never on --dry-run",
+    afterBool.error?.code === "usage" && /--ops/.test(afterBool.error.hint) && rev() === rev0, afterBool);
   const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });

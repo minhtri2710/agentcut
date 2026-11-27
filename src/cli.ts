@@ -55,11 +55,11 @@ function parseArgs(argv: string[]) {
     else if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split(/=(.*)/s, 2);
       if (v !== undefined) flags[k] = (BOOL.has(k) || OPT.has(k)) && (v === "false" || v === "true") ? v === "true" : v;
-      else if (BOOL.has(k) && !/^[[{]/.test(argv[i + 1] ?? "")) flags[k] = true;
+      else if (BOOL.has(k) && !(k === "json" && /^[[{]/.test(argv[i + 1] ?? ""))) flags[k] = true; // a switch takes no value; only --json may: op --json '{...}'
       else if (OPT.has(k) && !(argv[i + 1] ?? "-").startsWith("-")) flags[k] = argv[++i];
       else if (OPT.has(k)) flags[k] = true;
       else if (VALUE.has(k)) { flags[k] = take(i, a); if (flags[k] !== undefined) i++; }
-      else flags[k] = argv[++i]; // an unknown flag (main refuses it by name), or a BOOL flag followed by JSON text, which is its value (op --json '{...}')
+      else flags[k] = argv[++i]; // an unknown flag (main refuses it by name), or --json followed by JSON text, which is its value
     } else pos.push(a);
   }
   return { flags, pos, missing };
