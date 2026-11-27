@@ -105,7 +105,9 @@ check("exportTimeline writes fcpxml", res.output === fcpOut && readFileSync(fcpO
 const lint = spawnSync("xmllint", ["--noout", fcpOut], { encoding: "utf8" });
 if (lint.error) console.log("  - xmllint not found, well-formedness check skipped");
 else check("xmllint well-formed", lint.status === 0, lint.stderr);
-if (process.env.AGENTCUT_FCPXML_DTD && !lint.error) {
+if (!process.env.AGENTCUT_FCPXML_DTD) console.log("  - AGENTCUT_FCPXML_DTD not set: FCPXML DTD validation skipped");
+else if (lint.error) console.log("  - xmllint not found: FCPXML DTD validation skipped");
+else {
   const v = spawnSync("xmllint", ["--noout", "--dtdvalid", process.env.AGENTCUT_FCPXML_DTD, fcpOut], { encoding: "utf8" });
   check("valid against FCPXML DTD", v.status === 0, v.stderr);
 }
