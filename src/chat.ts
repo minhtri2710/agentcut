@@ -50,7 +50,7 @@ export function chatLaunch(cli: ChatCli, root: string, session?: string): { args
     "--no-context-files", "--no-lsp", "--append-system-prompt", instructions(root), ...(session ? ["--resume", session] : [])] };
 }
 
-const toolName = (n: unknown) => String(n).replace(/^mcp_{1,2}agentcut_{1,2}/, "");
+const toolName = (n: unknown) => String(n).replace(/^mcp__agentcut_{1,2}/, ""); // claude and pi: mcp__agentcut__<tool>; omp: mcp__agentcut_<tool>
 const texts = (c: unknown) => (Array.isArray(c) ? c.map((x: any) => x?.text ?? "").join("") : String(c ?? "")).slice(0, 400);
 
 /** one claude stream-json line as chat events (an unknown line is none) */
