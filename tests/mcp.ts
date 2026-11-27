@@ -336,20 +336,20 @@ if (process.platform !== "win32") {
     await c.close();
   }
   { // a cancelled add_voiceover leaves no speech folder behind (agentcut-vo-* holds the call's synthesized speech, agentcut-tts-* the synthesis itself)
-    const SV = join(tmp, "stall-vo"), mine = (n: string) => /^agentcut-(vo|tts)-/.test(n), before = new Set(readdirSync(tmpdir()).filter(mine));
+    const SV = join(tmp, "stall-vo"), ownTmp = mkdtempSync(join(tmp, "own-tmp-")), mine = () => readdirSync(ownTmp).filter((n) => /^agentcut-(vo|tts)-/.test(n)); // the server's own temp dir: another run's folders are not this call's
     await call("create_project", { path: SV, preset: "youtube" });
     stall("p0.wav");
     rmSync(pidFile, { force: true });
     const c = new Client({ name: "agentcut-test-cancel", version: "1" });
-    await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: stallEnv }));
+    await c.connect(new StdioClientTransport({ command: cmd[0], args: cmd.slice(1), env: { ...stallEnv, TMPDIR: ownTmp } }));
     const ac = new AbortController();
     const pending = c.callTool({ name: "apply_ops", arguments: { project: SV, revision: 0, ops: [{ op: "add_voiceover", text: "Hello there." }] } }, undefined, { signal: ac.signal }).then(() => null, (e) => e);
     const pid = await waitPid();
     ac.abort();
     await pending;
-    const gone = await stopped(pid), clean = await until(() => readdirSync(tmpdir()).filter(mine).every((n) => before.has(n)), 3000);
+    const gone = await stopped(pid), clean = await until(() => mine().length === 0, 3000);
     check("a client cancel during apply_ops add_voiceover stops its ffmpeg child, leaves no speech folder in the temp dir and saves nothing", gone && clean && readdirSync(join(SV, "media")).length === 0,
-      { pid, gone, left: readdirSync(tmpdir()).filter((n) => mine(n) && !before.has(n)) });
+      { pid, gone, left: mine() });
     await c.close();
   }
   for (const [tool, args, key] of stalls) {

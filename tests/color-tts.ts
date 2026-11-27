@@ -718,20 +718,23 @@ fi
     const { Project } = await import("../src/project.ts"), { OPS, applyOps } = await import("../src/ops.ts");
     const src = join(tmp, "reply.wav"), load = Project.prototype.load, realNow = Date.now;
     const was = process.env.AGENTCUT_WHISPER_MODEL, started = (f: string) => (existsSync(join(tmp, f)) ? readFileSync(join(tmp, f), "utf8").trim().split("\n").length : 0);
-    const leftovers = () => readdirSync(tmpdir()).filter((f) => f.startsWith("agentcut-vo-"));
+    const ownTmp = mkdtempSync(join(tmp, "own-tmp-")), leftovers = () => readdirSync(ownTmp).filter((f) => f.startsWith("agentcut-vo-")); // its own temp dir: another run's speech folders are not this call's
     process.env.AGENTCUT_WHISPER_MODEL = join(tmp, "fake.bin");
     let rounds = 0;
     Project.prototype.load = function (this: InstanceType<typeof Project>) { rounds++; return load.call(this); }; // api.apply loads once per round
     try {
-      const Z = join(tmp, "rounds"), tmpWas = leftovers();
+      const Z = join(tmp, "rounds"), tmpNow = process.env.TMPDIR;
       api.create(Z, { preset: "720p" });
       const w0 = started("whisper.calls"), p0 = started("piper.calls"), rev0 = (await api.info(Z)).revision, undo0 = api.history(Z).undo.length;
       rounds = 0;
-      const r: any = await api.apply(Z, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "add_voiceover", text: "Chào bạn", voice: "piper" }, { op: "add_marker", t: 1, label: "m" }], { revision: rev0 }); // the revision is passed, not read: reading would add loads to the count
+      process.env.TMPDIR = ownTmp;
+      let r: any;
+      try { r = await api.apply(Z, [{ op: "add_captions", transcribe: src, language: "vi" }, { op: "add_voiceover", text: "Chào bạn", voice: "piper" }, { op: "add_marker", t: 1, label: "m" }], { revision: rev0 }); } // the revision is passed, not read: reading would add loads to the count
+      finally { if (tmpNow === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = tmpNow; }
       const used = rounds;
       check("two analysis ops and an edit take 3 rounds, start each engine once, save once and keep the speech in media/ only",
         used === 3 && started("whisper.calls") === w0 + 1 && started("piper.calls") === p0 + 1 && r.revision === rev0 + 1 && api.history(Z).undo.length === undo0 + 1
-        && /^media\/vo-\d+\.wav$/.test(r.results[1].path) && readdirSync(join(Z, "media")).join() === r.results[1].path.slice(6) && leftovers().every((f) => tmpWas.includes(f)),
+        && /^media\/vo-\d+\.wav$/.test(r.results[1].path) && readdirSync(join(Z, "media")).join() === r.results[1].path.slice(6) && leftovers().length === 0,
         { used, whisper: started("whisper.calls") - w0, piper: started("piper.calls") - p0, rev: r.revision, results: r.results.map((x: any) => x.op), media: readdirSync(join(Z, "media")), left: leftovers() });
       check("the results are those of the batch: captions from the transcript, the voiceover clip, the marker",
         r.results.map((x: any) => x.op).join() === "add_captions,add_voiceover,add_marker" && (await api.info(Z, "json")).timeline.tracks.some((t: any) => t.clips.some((c: any) => c.type === "captions" && c.words.length)) && r.results[1].duration > 0.5, r.results);
