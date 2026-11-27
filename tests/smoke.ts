@@ -198,8 +198,11 @@ console.log("history authors");
     asPath.error?.code === "usage" && /--ops/.test(asPath.error.hint) && noFile.error?.code === "not_found" && rev() === rev0, [asPath, noFile]);
   const afterBool = cli(["apply", "--dry-run", JSON.stringify([{ op: "add_marker", t: 7 }]), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
   const afterJson = cli(["apply", "--json", JSON.stringify([{ op: "add_marker", t: 7 }]), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
-  check("a switch takes no value: apply --dry-run followed by JSON leaves the JSON in the path's place, and --json takes JSON only after op; both are usage pointing to --ops, nothing saved",
-    [afterBool, afterJson].every((r) => r.error?.code === "usage" && /--ops/.test(r.error.hint)) && rev() === rev0, [afterBool, afterJson]);
+  const jsonObj = cli(["apply", "--json", JSON.stringify({ ops: [{ op: "add_marker", t: 7 }] }), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  const jsonPath = cli(["apply", "--json", "[v2] ops.json", "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  check("a switch takes no value: JSON ops after --dry-run or --json stay in the path's place, and --json takes a JSON object only after op; all usage pointing to --ops, nothing saved; a file named like [v2] ops.json after --json is still that file (not_found)",
+    [afterBool, afterJson, jsonObj].every((r) => r.error?.code === "usage" && /--ops/.test(r.error.hint)) && /only after op/.test(jsonObj.error?.message) && jsonPath.error?.code === "not_found" && rev() === rev0,
+    [afterBool, afterJson, jsonObj, jsonPath]);
   const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });

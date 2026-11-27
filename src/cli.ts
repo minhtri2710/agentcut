@@ -41,6 +41,7 @@ Feedback:    feedback add kind=bug|missing_feature|friction|performance|docs|ide
              feedback summary [--md out.md] [--days N] · feedback list [--status open|all] · feedback resolve ID [--status wontfix] [--note ...]
 Global:      -p/--project DIR (or $AGENTCUT_PROJECT, or nearest folder with project.json) · --pretty`;
 
+const jsonObject = (s: string | undefined) => { try { const v = JSON.parse(s ?? ""); return v !== null && typeof v === "object" && !Array.isArray(v); } catch { return false; } };
 /** `missing`: the value flags that were given no value: the end of the arguments, or another flag, came where the value should be (a value that is
  *  a negative number, `--start -1`, is a value; one that starts with `--` is written `--flag=--value`). Such a flag takes nothing, so the flag after it still parses. */
 function parseArgs(argv: string[]) {
@@ -55,11 +56,11 @@ function parseArgs(argv: string[]) {
     else if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split(/=(.*)/s, 2);
       if (v !== undefined) flags[k] = (BOOL.has(k) || OPT.has(k)) && (v === "false" || v === "true") ? v === "true" : v;
-      else if (BOOL.has(k) && !(k === "json" && /^[[{]/.test(argv[i + 1] ?? ""))) flags[k] = true; // a switch takes no value; only --json may: op --json '{...}'
+      else if (BOOL.has(k) && !(k === "json" && jsonObject(argv[i + 1]))) flags[k] = true; // a switch takes no value; only --json may, a JSON object: op --json '{...}'
       else if (OPT.has(k) && !(argv[i + 1] ?? "-").startsWith("-")) flags[k] = argv[++i];
       else if (OPT.has(k)) flags[k] = true;
       else if (VALUE.has(k)) { flags[k] = take(i, a); if (flags[k] !== undefined) i++; }
-      else flags[k] = argv[++i]; // an unknown flag (main refuses it by name), or --json followed by JSON text, which is its value
+      else flags[k] = argv[++i]; // an unknown flag (main refuses it by name), or --json followed by a JSON object, which is its value
     } else pos.push(a);
   }
   return { flags, pos, missing };
