@@ -193,6 +193,9 @@ console.log("history authors");
     const r = cli(args, { ...HC, ok: false });
     check(`a value flag ${what} is a usage error naming it, nothing saved`, r.ok === false && r.error.code === "usage" && r.error.message.includes(named) && /needs? a value/.test(r.error.message) && rev() === rev0 && cli(["history"], HC).undo.length === n1, r);
   }
+  const asPath = cli(["apply", JSON.stringify([{ op: "add_marker", t: 7 }]), "--author", "zed", "--revision", rev0], { ...HC, ok: false }), noFile = cli(["apply", "no-such-ops.json", "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  check("apply given JSON where its file path goes is a usage error pointing to --ops, nothing saved; a missing file is still not_found",
+    asPath.error?.code === "usage" && /--ops/.test(asPath.error.hint) && noFile.error?.code === "not_found" && rev() === rev0, [asPath, noFile]);
   const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });

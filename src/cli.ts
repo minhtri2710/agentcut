@@ -120,6 +120,7 @@ async function readOps(file: string | undefined, inline: string | undefined) {
   if (inline) data = JSON.parse(inline);
   else if (!file || file === "-") { const b: Buffer[] = []; for await (const c of process.stdin) b.push(c); data = JSON.parse(Buffer.concat(b).toString("utf8")); }
   else {
+    if (!existsSync(file) && /^\s*[[{]/.test(file)) throw new EditError("apply takes a file path, not JSON: the ops given in its place were not read", "usage", "pass them with --ops '[...]', as a JSON file, or on stdin with '-'");
     if (!existsSync(file)) throw new EditError(`ops file not found: ${file}`, "not_found", "pass a JSON file, '-' for stdin, or --ops '[...]'");
     data = JSON.parse(readFileSync(file, "utf8"));
   }
