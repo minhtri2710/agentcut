@@ -31,7 +31,8 @@ export function initKeyboard() {
     // a control reached with the keyboard keeps its own keys; one clicked with the mouse does not, so Space still plays. A slider's arrows are its own either way.
     if (g.getAttribute("role") === "slider") return;
     if ((g.tagName === "BUTTON" || g.tagName === "SELECT" || g.tagName === "A" || /^(button|combobox|tab|radio|option|checkbox|switch)$/.test(g.getAttribute("role") || "")) && kbFocus(g)) return;
+    // the page owns these keys (an arrow with Cmd/Ctrl/Alt stays the browser's): its own arrow scroll would also slide the timeline under the playhead
     if (e.key === " ") { e.preventDefault(); $("play").click(); }
-    else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && st.S) { const f = 1 / S().timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(st.t + (e.key === "ArrowLeft" ? -f : f)); }
+    else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && st.S && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); const f = 1 / S().timeline.settings.fps * (e.shiftKey ? 10 : 1); seek(st.t + (e.key === "ArrowLeft" ? -f : f)); }
   });
 }

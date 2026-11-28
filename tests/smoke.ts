@@ -204,6 +204,14 @@ console.log("history authors");
   check("a switch takes no value: JSON ops after --dry-run or --json stay in the path's place, and --json takes a JSON object only after op; all usage pointing to --ops, nothing saved; a file named like [v2] ops.json after --json is still that file (not_found); a broken object after op --json is bad_json",
     [afterBool, afterJson, jsonObj].every((r) => r.error?.code === "usage" && /--ops/.test(r.error.hint)) && /only after op/.test(jsonObj.error?.message) && jsonPath.error?.code === "not_found" && badObj.error?.code === "bad_json" && rev() === rev0,
     [afterBool, afterJson, jsonObj, jsonPath, badObj]);
+  const otherOp = cli(["op", "add_marker", "t=7", "--json", JSON.stringify({ op: "set_settings", fps: 24 }), "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  const lastCall = () => JSON.parse(readFileSync(join(tmp, "home", "feedback", "events.jsonl"), "utf8").trim().split("\n").at(-1)!);
+  const logged = lastCall(), otherAdd = cli(["add", "op=set_settings", "fps=24", "--author", "zed", "--revision", rev0], { ...HC, ok: false });
+  const noName = cli(["op", "--json", JSON.stringify({ op: "add_marker", t: 7 }), "--author", "zed", "--revision", rev0], { ...HC, ok: false }), unsaved = rev() === rev0;
+  const sameOp = cli(["op", "add_marker", "--json", JSON.stringify({ op: "add_marker", t: 7 }), "--author", "zed", "--revision", rev0], HC);
+  check("the op named on the command line is the op: an op field in --json or op=... naming another, or no NAME, is usage, nothing saved, and the call is logged under that name; an op field repeating NAME is fine",
+    otherOp.error?.code === "usage" && otherAdd.error?.code === "usage" && noName.error?.code === "usage" && /needs NAME/.test(noName.error.message) && unsaved && logged.cmd === "add_marker" && logged.code === "usage" && sameOp.ok === true,
+    [otherOp, otherAdd, noName, logged, sameOp]);
   const eq = cliLatest(["op", "add_marker", "t=8", "--author=zed"], HC);
   check("guard: --flag=value still joins its value", eq.ok === true && top().author === "zed", top());
   const neg = cli(["op", "add_marker", "t=9", "--revision", "-1"], { ...HC, ok: false });

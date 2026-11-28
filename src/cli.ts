@@ -76,6 +76,13 @@ function kv(pairs: string[]) {
   return out;
 }
 
+/** The op the command line names, with its fields: a field `op` naming another op is refused, never run in its place (the call is logged under the command line's name). */
+function named(op: string | undefined, fields: Record<string, any>) {
+  if (!op) throw new EditError("op needs NAME: agentcut op NAME key=value...", "usage", "the op's name goes on the command line, e.g. agentcut op add_marker t=2");
+  if ("op" in fields && fields.op !== op) throw new EditError(`the command line names op ${op}, so its fields cannot name op ${JSON.stringify(fields.op)}`, "usage", "run each op as its own call (agentcut op NAME ...), or leave op out of the fields");
+  return { ...fields, op };
+}
+
 let pretty = false;
 const call = { cmd: "", t0: performance.now(), ops: undefined as string[] | undefined };
 let printed = false;
@@ -194,8 +201,8 @@ export async function main(argv = process.argv.slice(2)) {
         if (f.text) { console.log(res.summary); return; }
         break;
       case "apply": { const author = who(), revision = based(f["dry-run"]); res = await api.apply(P, await readOps(pos[0], f.ops).then((l) => { call.ops = l.map((o: any) => o?.op); return l; }), { dryRun: f["dry-run"], allowInvalid: f["allow-invalid"], revision, author, signal }); break; }
-      case "op": res = await api.apply(P, [{ op: pos.shift(), ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) }], { dryRun: f["dry-run"], author: who(), revision: based(f["dry-run"]), signal }); break;
-      case "add": res = await api.apply(P, [{ op: "add_clip", ...kv(pos) }], { author: who(), revision: based(), signal }); break;
+      case "op": { const name = pos.shift(); res = await api.apply(P, [named(name, { ...(typeof f.json === "string" ? JSON.parse(f.json) : {}), ...kv(pos) })], { dryRun: f["dry-run"], author: who(), revision: based(f["dry-run"]), signal }); break; }
+      case "add": res = await api.apply(P, [named("add_clip", kv(pos))], { author: who(), revision: based(), signal }); break;
       case "set": res = await api.apply(P, [{ op: "update_clip", id: pos.shift(), set: kv(pos) }], { author: who(), revision: based(), signal }); break;
       case "rm": res = await api.apply(P, [{ op: "remove_clip", id: pos[0], ripple: !!f.ripple, keep_attached: !!f["keep-attached"] }], { author: who(), revision: based(), signal }); break;
       case "validate": { const v = await api.validate(P); return emit({ ok: v.valid, ...v }, v.valid ? 0 : 1); }
